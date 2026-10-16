@@ -1,0 +1,66 @@
+
+import random
+
+def compute_hand_value(hand, target):
+    """Compute the value of the hand according to the target T."""
+    value = 0
+    aces = 0
+    for card in hand:
+        if card == 'A':
+            aces += 1
+        elif card in ['J', 'Q', 'K']:
+            value += 10
+        else:
+            value += int(card)
+    
+    # Handle aces
+    for _ in range(aces):
+        if value + 11 <= target:
+            value += 11
+        else:
+            value += 1
+    
+    return value
+
+def get_possible_cards(hand):
+    """Get the remaining cards that can be drawn from the deck."""
+    all_cards = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+    remaining_cards = [card for card in all_cards if card not in hand]
+    return remaining_cards
+
+def policy(hand: list[str], target: int) -> str:
+    current_value = compute_hand_value(hand, target)
+    
+    # If we already busted, should not hit (though irrelevant since the game is over)
+    if current_value > target:
+        return "STAY"
+    
+    # If we are at or very close to the target, stay
+    if current_value == target:
+        return "STAY"
+    
+    remaining_cards = get_possible_cards(hand)
+    
+    # If no cards left (unlikely in practice), stay
+    if not remaining_cards:
+        return "STAY"
+    
+    # Compute the expected value if we hit
+    total = 0
+    for card in remaining_cards:
+        new_hand = hand.copy()
+        new_hand.append(card)
+        new_value = compute_hand_value(new_hand, target)
+        if new_value > target:
+            total -= float('inf')  # Avoid busting at all costs if possible
+        else:
+            # Favor moves that get us closer to the target without busting
+            total += (target - new_value)
+    
+    avg_value = total / len(remaining_cards)
+    
+    # Decide to hit or stay based on whether hitting is likely to improve the score
+    if avg_value >= 0 and current_value < target:
+        return "HIT"
+    else:
+        return "STAY"

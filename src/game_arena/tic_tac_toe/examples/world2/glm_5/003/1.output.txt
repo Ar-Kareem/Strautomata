@@ -1,0 +1,156 @@
+The strategy for this policy is to use a Minimax algorithm with Alpha-Beta pruning. It prioritizes immediate wins and blocks immediate losses to ensure survival and capitalize on mistakes. For strategic depth, it uses a heuristic evaluation function that scores the board based on potential winning lines (rows, columns, diagonals), weighting lines with more markers higher. The search depth is adaptive, increasing as the board empties to ensure the move is computed within the time limit while remaining competitive.
+
+<code>
+import math
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    PLAYER = 1
+    OPPONENT = -1
+    EMPTY = 0
+    SIZE = 4
+
+    # Precompute lines (rows, columns, diagonals) for efficient win/checking
+    lines = []
+    # Rows
+    for r in range(SIZE):
+        lines.append([(r, c) for c in range(SIZE)])
+    # Columns
+    for c in range(SIZE):
+        lines.append([(r, c) for r in range(SIZE)])
+    # Diagonals
+    lines.append([(i, i) for i in range(SIZE)])
+    lines.append([(i, SIZE - 1 - i) for i in range(SIZE)])
+
+    def check_win(b, player):
+        for line in lines:
+            if all(b[r][c] == player for r, c in line):
+                return True
+        return False
+
+    def get_valid_moves(b):
+        return [(r, c) for r in range(SIZE) for c in range(SIZE) if b[r][c] == EMPTY]
+
+    def is_full(b):
+        return not any(EMPTY in row for row in b)
+
+    # Heuristic evaluation function
+    def evaluate(b):
+        score = 0
+        for line in lines:
+            # Count markers in the line
+            p_count = 0
+            o_count = 0
+            for r, c in line:
+                if b[r][c] == PLAYER:
+                    p_count += 1
+                elif b[r][c] == OPPONENT:
+                    o_count += 1
+            
+            # If a line is mixed, it is worthless to both
+            if p_count > 0 and o_count > 0:
+                continue
+            
+            # Weighted score: prioritize lines closer to winning
+            if p_count > 0:
+                if p_count == 3: score += 1000
+                elif p_count == 2: score += 100
+                elif p_count == 1: score += 10
+            elif o_count > 0:
+                if o_count == 3: score -= 1000
+                elif o_count == 2: score -= 100
+                elif o_count == 1: score -= 10
+        return score
+
+    # Minimax with Alpha-Beta Pruning
+    def minimax(b, depth, alpha, beta, maximizing_player):
+        if check_win(b, PLAYER):
+            return 10000 + depth
+        if check_win(b, OPPONENT):
+            return -10000 - depth
+        if is_full(b):
+            return 0
+        if depth == 0:
+            return evaluate(b)
+
+        moves = get_valid_moves(b)
+        # Move ordering: center squares are usually stronger
+        moves.sort(key=lambda x: abs(x[0] - 1.5) + abs(x[1] - 1.5))
+
+        if maximizing_player:
+            max_eval = -math.inf
+            for r, c in moves:
+                b[r][c] = PLAYER
+                eval_val = minimax(b, depth - 1, alpha, beta, False)
+                b[r][c] = EMPTY
+                max_eval = max(max_eval, eval_val)
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = math.inf
+            for r, c in moves:
+                b[r][c] = OPPONENT
+                eval_val = minimax(b, depth - 1, alpha, beta, True)
+                b[r][c] = EMPTY
+                min_eval = min(min_eval, eval_val)
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # Main Logic
+    moves = get_valid_moves(board)
+    if not moves:
+        return (-1, -1) # Fallback, should not happen
+
+    # 1. Check for immediate win
+    for r, c in moves:
+        board[r][c] = PLAYER
+        if check_win(board, PLAYER):
+            board[r][c] = EMPTY
+            return (r, c)
+        board[r][c] = EMPTY
+
+    # 2. Check for immediate opponent threat (must block)
+    blocking_moves = []
+    for r, c in moves:
+        board[r][c] = OPPONENT
+        if check_win(board, OPPONENT):
+            blocking_moves.append((r, c))
+        board[r][c] = EMPTY
+    
+    if len(blocking_moves) > 0:
+        # If multiple threats, we are likely losing, but try to block one
+        # Prioritize blocking moves that also give us advantage via minimax
+        candidate_moves = blocking_moves
+    else:
+        candidate_moves = moves
+
+    # 3. Minimax Search
+    # Adaptive depth based on remaining moves
+    remaining = len(moves)
+    if remaining > 10:
+        depth = 3
+    elif remaining > 6:
+        depth = 4
+    else:
+        depth = remaining # Search to end game
+
+    best_move = candidate_moves[0]
+    max_val = -math.inf
+
+    # Order root moves for better pruning
+    candidate_moves.sort(key=lambda x: abs(x[0] - 1.5) + abs(x[1] - 1.5))
+
+    for r, c in candidate_moves:
+        board[r][c] = PLAYER
+        current_val = minimax(board, depth - 1, -math.inf, math.inf, False)
+        board[r][c] = EMPTY
+        
+        if current_val > max_val:
+            max_val = current_val
+            best_move = (r, c)
+
+    return best_move
+</code>

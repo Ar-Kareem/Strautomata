@@ -1,0 +1,111 @@
+**Strategy Overview**
+
+The policy searches the entire move‑space of the current position (all legal amazon moves and all legal arrow shots for each move).  
+For each candidate move it simulates the resulting board and evaluates a very simple heuristic:
+
+```
+score = (my mobility after the move) – (opponent mobility after the move)
+```
+
+*Mobility* is defined as the total number of squares to which any of a player’s amazons could move (queen‑like moves, ignoring the subsequent arrow shot).  
+The move that maximises this score is chosen; ties are broken randomly.  
+
+Because the board is only 6 × 6, enumerating every legal move is cheap and the heuristic favours positions where the player has many future options while restricting the opponent, which is a strong generic strategy for Amazons on small boards.
+
+If, for any unforeseen reason, no legal move is found (the environment should never call the policy in that case), the policy returns a harmless “pass” move that simply moves the first amazon to an adjacent empty square and shoots the arrow back to its original square – this is always legal when a move exists.
+
+---
+
+<code>
+import numpy as np
+import random
+
+# 8 queen directions
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),          (0, 1),
+        (1, -1),  (1, 0), (1, 1)]
+
+def in_board(r, c):
+    return 0 <= r < 6 and 0 <= c < 6
+
+def reachable_squares(board, start):
+    """Return list of squares reachable from start using queen moves on the given board."""
+    r0, c0 = start
+    reachable = []
+    for dr, dc in DIRS:
+        r, c = r0 + dr, c0 + dc
+        while in_board(r, c) and board[r, c] == 0:
+            reachable.append((r, c))
+            r += dr
+            c += dc
+    return reachable
+
+def mobility(board, player):
+    """Total number of squares any amazon of `player` (1 or 2) could move to."""
+    total = 0
+    positions = np.argwhere(board == player)
+    for r, c in positions:
+        total += len(reachable_squares(board, (r, c)))
+    return total
+
+def all_legal_moves(board):
+    """Generate all legal moves for player 1.
+    Yields tuples ((fr, fc), (tr, tc), (ar, ac)).
+    """
+    my_amazons = np.argwhere(board == 1)
+    for fr, fc in my_amazons:
+        # squares the amazon can move to
+        for tr, tc in reachable_squares(board, (fr, fc)):
+            # simulate the amazon move
+            tmp = board.copy()
+            tmp[fr, fc] = 0
+            tmp[tr, tc] = 1
+            # arrow squares from the new location
+            for ar, ac in reachable_squares(tmp, (tr, tc)):
+                yield (fr, fc, tr, tc, ar, ac)
+
+def policy(board) -> str:
+    """
+    Given a 6x6 numpy array board, return a legal move string:
+    "fr,fc:tr,tc:ar,ac"
+    """
+    best_score = -10**9
+    best_moves = []
+
+    # pre‑compute opponent mobility for speed (will be recomputed after each simulated move)
+    opp_initial_mob = mobility(board, 2)
+
+    for fr, fc, tr, tc, ar, ac in all_legal_moves(board):
+        # simulate the whole turn (amazon move + arrow)
+        new_board = board.copy()
+        new_board[fr, fc] = 0
+        new_board[tr, tc] = 1
+        new_board[ar, ac] = -1
+
+        my_mob = mobility(new_board, 1)
+        opp_mob = mobility(new_board, 2)
+
+        score = my_mob - opp_mob
+
+        if score > best_score:
+            best_score = score
+            best_moves = [(fr, fc, tr, tc, ar, ac)]
+        elif score == best_score:
+            best_moves.append((fr, fc, tr, tc, ar, ac))
+
+    # In the (theoretical) case that no move was found, create a fallback move.
+    if not best_moves:
+        # locate any amazon and any adjacent empty square
+        for fr, fc in np.argwhere(board == 1):
+            for dr, dc in DIRS:
+                tr, tc = fr + dr, fc + dc
+                if in_board(tr, tc) and board[tr, tc] == 0:
+                    # shoot the arrow back to the original square (now empty)
+                    return f"{fr},{fc}:{tr},{tc}:{fr},{fc}"
+        # No amazon or empty neighbour (should never happen)
+        return "0,0:0,0:0,0"
+
+    # choose randomly among equally good moves
+    fr, fc, tr, tc, ar, ac = random.choice(best_moves)
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+</code>

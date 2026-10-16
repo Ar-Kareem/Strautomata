@@ -1,0 +1,724 @@
+**Strategy**
+
+This policy is a full alpha‑beta game engine for Breakthrough compressed into a single Python file:
+
+1. **Bitboards** – the whole position is two 64‑bit integers (white/black), with bit index `row*8+col`. Move generation, attacks, wins and evaluation are pure bit arithmetic (shifts/masks), which is the fastest approach available in pure Python.
+2. **Exact rules** – straight/diagonal quiet pushes and diagonal captures are generated; immediate‑win shortcuts: any move reaching the goal row returns a mate‑like score `WIN - ply`, and capturing the last enemy piece is an instant win, so the search never wastes time on won subtrees.
+3. **Search** – iterative‑deepening **PVS/negamax** with a transposition table (positions can never repeat in Breakthrough, so the TT stays valid across moves), killer moves, history heuristic, late‑move reductions, and a **capture‑only quiescence search** with stand‑pat and win‑in‑one detection inside quiescence.
+4. **Evaluation** – material folded into piece‑square tables with a steep advancement gradient (pieces near the goal are worth much more) plus mild center preference, a mobility term, and a big **"passed runner"** bonus for pieces that are already past every enemy piece (provably uncapturable, since pieces only move forward).
+5. **Safety & time** – a ~0.85 s deadline checked every 256 nodes; it always answers with the best move of the deepest completed iteration (partial results are only accepted from fully searched root moves), plays an opening book move on the standard start, short‑circuits forced wins, and is wrapped in exception guards with a plain rule‑level fallback generator, so it can never fail to return a legal move.
+
+<code>
+import time
+
+FULL = 0xFFFFFFFFFFFFFFFF
+NOT_A = 0xFEFEFEFEFEFEFEFE
+NOT_H = 0x7F7F7F7F7F7F7F7F
+GOALW = 0xFF00000000000000   # row 7 : white's goal row
+GOALB = 0x00000000000000FF   # row 0 : black's goal row
+WIN = 1000000
+WT = WIN - 10000
+INF = 1000000000
+
+LE = [0] * 8                 # LE[r] = mask of rows 0..r
+GE = [0] * 8                 # GE[r] = mask of rows r..7
+_a = 0
+for _i in range(8):
+    _a |= 255 << (8 * _i)
+    LE[_i] = _a
+_a = 0
+for _i in range(7, -1, -1):
+    _a |= 255 << (8 * _i)
+    GE[_i] = _a
+
+try:
+    popcount = int.bit_count
+except AttributeError:
+    _POP8 = [bin(_x).count('1') for _x in range(256)]
+
+    def popcount(_x):
+        _c = 0
+        while _x:
+            _c += _POP8[_x & 255]
+            _x >>= 8
+        return _c
+
+ADV = (0, 10, 25, 50, 90, 150, 250, 500)
+CENTER = (0, 4, 8, 12, 12, 8, 4, 0)
+PST_W = [0] * 64
+PST_B = [0] * 64
+for _r in range(8):
+    for _c in range(8):
+        PST_W[_r * 8 + _c] = 100 + ADV[_r] + CENTER[_c]
+        PST_B[_r * 8 + _c] = 100 + ADV[7 - _r] + CENTER[_c]
+
+TW = [[0] * 256 for _ in range(8)]
+TB = [[0] * 256 for _ in range(8)]
+for _r in range(8):
+    _twr = TW[_r]
+    _tbr = TB[_r]
+    _b8 = _r * 8
+    for _byte in range(256):
+        _s = 0
+        _t = 0
+        for _c in range(8):
+            if (_byte >> _c) & 1:
+                _s += PST_W[_b8 + _c]
+                _t += PST_B[_b8 + _c]
+        _twr[_byte] = _s
+        _tbr[_byte] = _t
+
+VW = [30 * (7 - (_i >> 3)) for _i in range(64)]   # black victim value (white capturing)
+VB = [30 * (_i >> 3) for _i in range(64)]         # white victim value (black capturing)
+QW = [3 * (_i >> 3) for _i in range(64)]          # advancement of dest square (white)
+QB = [3 * (7 - (_i >> 3)) for _i in range(64)]    # advancement of dest square (black)
+
+TT = {}
+HIST = [0] * 4096
+KILLERS = [[0, 0] for _ in range(64)]
+NODES = [0]
+DEADLINE = [1e18]
+ROOT_BEST = [0]
+
+
+class Timeout(Exception):
+    pass
+
+
+def evaluate(W, B, _TW=TW, _TB=TB, _NA=NOT_A, _NH=NOT_H,
+             _GE=GE, _LE=LE, _pc=popcount):
+    s = (_TW[0][W & 255] - _TB[0][B & 255]
+         + _TW[1][(W >> 8) & 255] - _TB[1][(B >> 8) & 255]
+         + _TW[2][(W >> 16) & 255] - _TB[2][(B >> 16) & 255]
+         + _TW[3][(W >> 24) & 255] - _TB[3][(B >> 24) & 255]
+         + _TW[4][(W >> 32) & 255] - _TB[4][(B >> 32) & 255]
+         + _TW[5][(W >> 40) & 255] - _TB[5][(B >> 40) & 255]
+         + _TW[6][(W >> 48) & 255] - _TB[6][(B >> 48) & 255]
+         + _TW[7][(W >> 56) & 255] - _TB[7][(B >> 56) & 255])
+    e = ~(W | B)
+    aw = ((W & _NA) << 7) | ((W & _NH) << 9)
+    ab = ((B & _NA) >> 9) | ((B & _NH) >> 7)
+    s += 3 * (_pc((W << 8) & e) + _pc(aw & ~W)
+              - _pc((B >> 8) & e) - _pc(ab & ~B))
+    if B:
+        pw = W & _GE[(B.bit_length() - 1) >> 3]   # past every black piece
+        if pw:
+            s += 160 * _pc(pw)
+    if W:
+        pb = B & _LE[((W & -W).bit_length() - 1) >> 3]   # past every white piece
+        if pb:
+            s -= 160 * _pc(pb)
+    return s
+
+
+def find_win_move(S, O, white, _NA=NOT_A, _NH=NOT_H,
+                  _GW=GOALW, _GB=GOALB):
+    e = ~(S | O)
+    ns = ~S
+    if white:
+        push = (S << 8) & e
+        dL = ((S & _NA) << 7) & ns
+        dR = ((S & _NH) << 9) & ns
+        w = (push | dL | dR) & _GW
+        if w:
+            d = w & -w
+            di = d.bit_length() - 1
+            if d & push:
+                si = (d >> 8).bit_length() - 1
+            elif d & dL:
+                si = (d >> 7).bit_length() - 1
+            else:
+                si = (d >> 9).bit_length() - 1
+            return (si << 6) | di
+    else:
+        push = (S >> 8) & e
+        dL = ((S & _NA) >> 9) & ns
+        dR = ((S & _NH) >> 7) & ns
+        w = (push | dL | dR) & _GB
+        if w:
+            d = w & -w
+            di = d.bit_length() - 1
+            if d & push:
+                si = (d << 8).bit_length() - 1
+            elif d & dL:
+                si = (d << 9).bit_length() - 1
+            else:
+                si = (d << 7).bit_length() - 1
+            return (si << 6) | di
+    return 0
+
+
+def gen_moves(S, O, white, ttmove, k1, k2,
+              _VW=VW, _VB=VB, _QW=QW, _QB=QB, _HIST=HIST,
+              _NA=NOT_A, _NH=NOT_H, _GW=GOALW, _GB=GOALB):
+    # packed move int: key<<13 | capflag<<12 | src<<6 | dst ; None => win in one
+    e = ~(S | O)
+    ns = ~S
+    moves = []
+    ap = moves.append
+    if white:
+        push = (S << 8) & e
+        dL = ((S & _NA) << 7) & ns
+        dR = ((S & _NH) << 9) & ns
+        if (push | dL | dR) & _GW:
+            return None
+        t = dL & O
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            low = (((d >> 7).bit_length() - 1) << 6) | di
+            k = 3000 + _VW[di]
+            if low == ttmove:
+                k += 4096
+            ap((k << 13) | 4096 | low)
+        t = dR & O
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            low = (((d >> 9).bit_length() - 1) << 6) | di
+            k = 3000 + _VW[di]
+            if low == ttmove:
+                k += 4096
+            ap((k << 13) | 4096 | low)
+        t = push
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            low = (((d >> 8).bit_length() - 1) << 6) | di
+            h = _HIST[low]
+            k = _QW[di] + (h if h < 1500 else 1500)
+            if low == ttmove:
+                k += 4096
+            elif low == k1:
+                k += 400
+            elif low == k2:
+                k += 300
+            ap((k << 13) | low)
+        t = dL & e
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            low = (((d >> 7).bit_length() - 1) << 6) | di
+            h = _HIST[low]
+            k = _QW[di] + (h if h < 1500 else 1500)
+            if low == ttmove:
+                k += 4096
+            elif low == k1:
+                k += 400
+            elif low == k2:
+                k += 300
+            ap((k << 13) | low)
+        t = dR & e
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            low = (((d >> 9).bit_length() - 1) << 6) | di
+            h = _HIST[low]
+            k = _QW[di] + (h if h < 1500 else 1500)
+            if low == ttmove:
+                k += 4096
+            elif low == k1:
+                k += 400
+            elif low == k2:
+                k += 300
+            ap((k << 13) | low)
+    else:
+        push = (S >> 8) & e
+        dL = ((S & _NA) >> 9) & ns
+        dR = ((S & _NH) >> 7) & ns
+        if (push | dL | dR) & _GB:
+            return None
+        t = dL & O
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            low = (((d << 9).bit_length() - 1) << 6) | di
+            k = 3000 + _VB[di]
+            if low == ttmove:
+                k += 4096
+            ap((k << 13) | 4096 | low)
+        t = dR & O
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            low = (((d << 7).bit_length() - 1) << 6) | di
+            k = 3000 + _VB[di]
+            if low == ttmove:
+                k += 4096
+            ap((k << 13) | 4096 | low)
+        t = push
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            low = (((d << 8).bit_length() - 1) << 6) | di
+            h = _HIST[low]
+            k = _QB[di] + (h if h < 1500 else 1500)
+            if low == ttmove:
+                k += 4096
+            elif low == k1:
+                k += 400
+            elif low == k2:
+                k += 300
+            ap((k << 13) | low)
+        t = dL & e
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            low = (((d << 9).bit_length() - 1) << 6) | di
+            h = _HIST[low]
+            k = _QB[di] + (h if h < 1500 else 1500)
+            if low == ttmove:
+                k += 4096
+            elif low == k1:
+                k += 400
+            elif low == k2:
+                k += 300
+            ap((k << 13) | low)
+        t = dR & e
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            low = (((d << 7).bit_length() - 1) << 6) | di
+            h = _HIST[low]
+            k = _QB[di] + (h if h < 1500 else 1500)
+            if low == ttmove:
+                k += 4096
+            elif low == k1:
+                k += 400
+            elif low == k2:
+                k += 300
+            ap((k << 13) | low)
+    moves.sort(reverse=True)
+    return moves
+
+
+def qsearch(W, B, white, alpha, beta, ply,
+            _TT=TT, _N=NODES, _DL=DEADLINE, _VW=VW, _VB=VB,
+            _NA=NOT_A, _NH=NOT_H, _GW=GOALW, _GB=GOALB,
+            _ev=evaluate):
+    _N[0] += 1
+    if not _N[0] & 255 and time.perf_counter() > _DL[0]:
+        raise Timeout
+    key = (W << 65) | (B << 1) | (0 if white else 1)
+    ent = _TT.get(key)
+    if ent is not None:
+        td, ts, tf, tm, tp = ent
+        if ts > WT:
+            ts = ts + tp - ply
+        elif ts < -WT:
+            ts = ts - tp + ply
+        if tf == 0:
+            return ts
+        if tf == 1:
+            if ts >= beta:
+                return ts
+        elif ts <= alpha:
+            return ts
+    if white:
+        S = W
+        O = B
+        e = ~(S | O)
+        push = (S << 8) & e
+        dL = ((S & _NA) << 7) & ~S
+        dR = ((S & _NH) << 9) & ~S
+        if (push | dL | dR) & _GW:
+            return WIN - ply
+        caps = (dL | dR) & O
+        stand = _ev(W, B)
+    else:
+        S = B
+        O = W
+        e = ~(S | O)
+        push = (S >> 8) & e
+        dL = ((S & _NA) >> 9) & ~S
+        dR = ((S & _NH) >> 7) & ~S
+        if (push | dL | dR) & _GB:
+            return WIN - ply
+        caps = (dL | dR) & O
+        stand = -_ev(W, B)
+    if not caps or ply >= 96:
+        _TT[key] = (0, stand, 0, 0, ply)
+        return stand
+    if stand >= beta:
+        _TT[key] = (0, stand, 1, 0, ply)
+        return stand
+    if stand > alpha:
+        alpha = stand
+    lst = []
+    ap = lst.append
+    if white:
+        t = dL & O
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            ap((_VW[di] << 13) | 4096
+               | (((d >> 7).bit_length() - 1) << 6) | di)
+        t = dR & O
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            ap((_VW[di] << 13) | 4096
+               | (((d >> 9).bit_length() - 1) << 6) | di)
+    else:
+        t = dL & O
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            ap((_VB[di] << 13) | 4096
+               | (((d << 9).bit_length() - 1) << 6) | di)
+        t = dR & O
+        while t:
+            d = t & -t
+            t ^= d
+            di = d.bit_length() - 1
+            ap((_VB[di] << 13) | 4096
+               | (((d << 7).bit_length() - 1) << 6) | di)
+    lst.sort(reverse=True)
+    onecap = (O & (O - 1)) == 0
+    nw = not white
+    wm1 = WIN - ply - 1
+    best = stand
+    for m in lst:
+        if onecap:
+            score = wm1
+        else:
+            dbb = 1 << (m & 63)
+            sbb = 1 << ((m >> 6) & 63)
+            nS = (S ^ sbb) | dbb
+            nO = O ^ dbb
+            if white:
+                score = -qsearch(nS, nO, nw, -beta, -alpha, ply + 1)
+            else:
+                score = -qsearch(nO, nS, nw, -beta, -alpha, ply + 1)
+        if score > best:
+            best = score
+            if score > alpha:
+                alpha = score
+                if alpha >= beta:
+                    break
+        if score >= wm1:
+            break
+    fl = 1 if best >= beta else 0
+    _TT[key] = (0, best, fl, 0, ply)
+    return best
+
+
+def negamax(W, B, white, depth, alpha, beta, ply,
+            _TT=TT, _KIL=KILLERS, _HIST=HIST, _N=NODES,
+            _DL=DEADLINE, _q=qsearch, _gen=gen_moves):
+    _N[0] += 1
+    if not _N[0] & 255 and time.perf_counter() > _DL[0]:
+        raise Timeout
+    if white:
+        S = W
+        O = B
+    else:
+        S = B
+        O = W
+    if not O:
+        return WIN - ply
+    if not S:
+        return ply - WIN
+    key = (W << 65) | (B << 1) | (0 if white else 1)
+    ent = _TT.get(key)
+    ttmove = 0
+    if ent is not None:
+        td, ts, tf, tm, tp = ent
+        if ts > WT:
+            ts = ts + tp - ply
+        elif ts < -WT:
+            ts = ts - tp + ply
+        if td >= depth:
+            if tf == 0:
+                return ts
+            if tf == 1:
+                if ts >= beta:
+                    return ts
+            elif ts <= alpha:
+                return ts
+        ttmove = tm
+    if depth <= 0:
+        return _q(W, B, white, alpha, beta, ply)
+    kk = _KIL[ply]
+    moves = _gen(S, O, white, ttmove, kk[0], kk[1])
+    if moves is None:
+        return WIN - ply
+    if not moves:
+        return ply - WIN
+    a0 = alpha
+    best = -INF
+    best_move = 0
+    onecap = (O & (O - 1)) == 0
+    nw = not white
+    wm1 = WIN - ply - 1
+    first = True
+    qi = 0
+    for m in moves:
+        low = m & 4095
+        di = low & 63
+        cap = (m >> 12) & 1
+        dbb = 1 << di
+        if cap and onecap:
+            score = wm1
+        else:
+            sbb = 1 << ((low >> 6) & 63)
+            nS = (S ^ sbb) | dbb
+            if cap:
+                nO = O ^ dbb
+                if white:
+                    w2 = nS
+                    b2 = nO
+                else:
+                    w2 = nO
+                    b2 = nS
+            else:
+                qi += 1
+                if white:
+                    w2 = nS
+                    b2 = O
+                else:
+                    w2 = O
+                    b2 = nS
+            if first:
+                first = False
+                score = -negamax(w2, b2, nw, depth - 1,
+                                 -beta, -alpha, ply + 1)
+            else:
+                red = qi >= 5 and depth >= 3 and not cap
+                if red:
+                    score = -negamax(w2, b2, nw, depth - 2,
+                                     -alpha - 1, -alpha, ply + 1)
+                else:
+                    score = -negamax(w2, b2, nw, depth - 1,
+                                     -alpha - 1, -alpha, ply + 1)
+                if score > alpha:
+                    if red:
+                        score = -negamax(w2, b2, nw, depth - 1,
+                                         -alpha - 1, -alpha, ply + 1)
+                    if score > alpha and score < beta:
+                        score = -negamax(w2, b2, nw, depth - 1,
+                                         -beta, -alpha, ply + 1)
+        if score > best:
+            best = score
+            best_move = low
+            if score > alpha:
+                alpha = score
+                if alpha >= beta:
+                    if not cap:
+                        if kk[0] != low:
+                            kk[1] = kk[0]
+                            kk[0] = low
+                        h = _HIST[low] + depth * depth
+                        _HIST[low] = h if h < 1500 else 1500
+                    break
+        if score >= wm1:
+            break
+    if best <= a0:
+        fl = 2
+    elif best >= beta:
+        fl = 1
+    else:
+        fl = 0
+    _TT[key] = (depth, best, fl, best_move, ply)
+    return best
+
+
+def root_search(W, B, white, depth, root_moves,
+                _RB=ROOT_BEST, _na=negamax):
+    if white:
+        S = W
+        O = B
+    else:
+        S = B
+        O = W
+    alpha = -INF
+    scored = []
+    ap = scored.append
+    onecap = (O & (O - 1)) == 0
+    nw = not white
+    n = len(root_moves)
+    i = 0
+    while i < n:
+        m = root_moves[i]
+        low = m & 4095
+        cap = (m >> 12) & 1
+        if cap and onecap:
+            score = WIN - 1
+        else:
+            sbb = 1 << ((low >> 6) & 63)
+            dbb = 1 << (low & 63)
+            nS = (S ^ sbb) | dbb
+            if cap:
+                nO = O ^ dbb
+                if white:
+                    w2 = nS
+                    b2 = nO
+                else:
+                    w2 = nO
+                    b2 = nS
+            else:
+                if white:
+                    w2 = nS
+                    b2 = O
+                else:
+                    w2 = O
+                    b2 = nS
+            if i == 0:
+                score = -_na(w2, b2, nw, depth - 1, -INF, -alpha, 1)
+            else:
+                score = -_na(w2, b2, nw, depth - 1,
+                              -alpha - 1, -alpha, 1)
+                if score > alpha:
+                    score = -_na(w2, b2, nw, depth - 1,
+                                 -INF, -alpha, 1)
+        ap((score, m))
+        if score > alpha:
+            alpha = score
+            _RB[0] = low
+            if score >= WT:
+                break
+        i += 1
+    scored.sort(reverse=True)
+    return scored, alpha
+
+
+def _safe_move(me, opp, color):
+    # plain rule-level generator used only as a failsafe
+    white = (color == 'w')
+    d = 1 if white else -1
+    occ = set()
+    oppset = set()
+    for p in opp:
+        oppset.add((p[0], p[1]))
+        occ.add((p[0], p[1]))
+    for p in me:
+        occ.add((p[0], p[1]))
+    caps = []
+    fwd = []
+    dia = []
+    for p in me:
+        r = p[0]
+        c = p[1]
+        rr = r + d
+        if 0 <= rr < 8:
+            if (rr, c) not in occ:
+                fwd.append(((r, c), (rr, c)))
+            for cc in (c - 1, c + 1):
+                if 0 <= cc < 8:
+                    if (rr, cc) in oppset:
+                        caps.append(((r, c), (rr, cc)))
+                    elif (rr, cc) not in occ:
+                        dia.append(((r, c), (rr, cc)))
+    goal = 7 if white else 0
+    for mv in caps:
+        if mv[1][0] == goal:
+            return mv
+    for mv in fwd:
+        if mv[1][0] == goal:
+            return mv
+    for mv in dia:
+        if mv[1][0] == goal:
+            return mv
+    if caps:
+        return caps[0]
+    if fwd:
+        fwd.sort(key=lambda mv: mv[1][0], reverse=white)
+        return fwd[0]
+    if dia:
+        return dia[0]
+    return ((0, 0), (1, 0))
+
+
+def _policy_inner(me, opp, color):
+    t0 = time.perf_counter()
+    DEADLINE[0] = t0 + 0.85
+    NODES[0] = 0
+    if len(TT) > 400000:
+        TT.clear()
+    W = 0
+    B = 0
+    if color == 'w':
+        for p in me:
+            W |= 1 << (p[0] * 8 + p[1])
+        for p in opp:
+            B |= 1 << (p[0] * 8 + p[1])
+        white = True
+    else:
+        for p in opp:
+            W |= 1 << (p[0] * 8 + p[1])
+        for p in me:
+            B |= 1 << (p[0] * 8 + p[1])
+        white = False
+    # opening book for the standard start position
+    if white and W == 0xFFFF and B == 0xFFFF000000000000:
+        return ((1, 3), (2, 3))
+    if (not white) and B == 0xFFFF000000000000 and W == 0xFFFF:
+        return ((6, 4), (5, 4))
+    if white:
+        S = W
+        O = B
+    else:
+        S = B
+        O = W
+    # defensive: if we already have a piece on the goal row the game is over;
+    # use the plain generator to be safe with any input.
+    if S & (GOALW if white else GOALB):
+        return _safe_move(me, opp, color)
+    wlow = find_win_move(S, O, white)
+    if wlow:
+        si = wlow >> 6
+        di = wlow & 63
+        return ((si >> 3, si & 7), (di >> 3, di & 7))
+    moves = gen_moves(S, O, white, 0, 0, 0)
+    if moves is None:
+        wlow = find_win_move(S, O, white)
+        if wlow:
+            si = wlow >> 6
+            di = wlow & 63
+            return ((si >> 3, si & 7), (di >> 3, di & 7))
+        return _safe_move(me, opp, color)
+    if not moves:
+        return _safe_move(me, opp, color)
+    if len(moves) == 1:
+        low = moves[0] & 4095
+        si = low >> 6
+        di = low & 63
+        return ((si >> 3, si & 7), (di >> 3, di & 7))
+    ROOT_BEST[0] = moves[0] & 4095
+    try:
+        for depth in range(1, 40):
+            scored, alpha = root_search(W, B, white, depth, moves)
+            moves = [mm for _s, mm in scored]
+            ROOT_BEST[0] = scored[0][1] & 4095
+            if alpha >= WT:
+                break
+    except Timeout:
+        pass
+    low = ROOT_BEST[0]
+    si = low >> 6
+    di = low & 63
+    return ((si >> 3, si & 7), (di >> 3, di & 7))
+
+
+def policy(me, opp, color):
+    try:
+        return _policy_inner(me, opp, color)
+    except Exception:
+        try:
+            return _safe_move(me, opp, color)
+        except Exception:
+            return ((0, 0), (1, 0))
+</code>

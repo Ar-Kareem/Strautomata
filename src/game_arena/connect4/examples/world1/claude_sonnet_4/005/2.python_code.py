@@ -1,0 +1,154 @@
+
+def policy(board: list[list[int]]) -> int:
+    def is_valid_move(board, col):
+        return board[0][col] == 0
+    
+    def make_move(board, col, player):
+        new_board = [row[:] for row in board]
+        for row in range(5, -1, -1):
+            if new_board[row][col] == 0:
+                new_board[row][col] = player
+                break
+        return new_board
+    
+    def check_win(board, player):
+        # Check horizontal
+        for row in range(6):
+            for col in range(4):
+                if all(board[row][col + i] == player for i in range(4)):
+                    return True
+        
+        # Check vertical
+        for row in range(3):
+            for col in range(7):
+                if all(board[row + i][col] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (top-left to bottom-right)
+        for row in range(3):
+            for col in range(4):
+                if all(board[row + i][col + i] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (top-right to bottom-left)
+        for row in range(3):
+            for col in range(3, 7):
+                if all(board[row + i][col - i] == player for i in range(4)):
+                    return True
+        
+        return False
+    
+    def get_valid_moves(board):
+        return [col for col in range(7) if is_valid_move(board, col)]
+    
+    def count_sequences(board, player, length):
+        count = 0
+        
+        # Helper to check if a sequence of positions could form a line
+        def check_sequence(positions):
+            pieces = sum(1 for r, c in positions if board[r][c] == player)
+            empty = sum(1 for r, c in positions if board[r][c] == 0)
+            opponent = sum(1 for r, c in positions if board[r][c] == -player)
+            
+            # Only count if no opponent pieces block this sequence
+            if opponent == 0 and pieces > 0:
+                return pieces
+            return 0
+        
+        # Check all possible 4-in-a-row sequences
+        # Horizontal
+        for row in range(6):
+            for col in range(4):
+                positions = [(row, col + i) for i in range(4)]
+                count += check_sequence(positions)
+        
+        # Vertical
+        for row in range(3):
+            for col in range(7):
+                positions = [(row + i, col) for i in range(4)]
+                count += check_sequence(positions)
+        
+        # Diagonal (top-left to bottom-right)
+        for row in range(3):
+            for col in range(4):
+                positions = [(row + i, col + i) for i in range(4)]
+                count += check_sequence(positions)
+        
+        # Diagonal (top-right to bottom-left)
+        for row in range(3):
+            for col in range(3, 7):
+                positions = [(row + i, col - i) for i in range(4)]
+                count += check_sequence(positions)
+        
+        return count
+    
+    def evaluate_board(board):
+        # Simple evaluation: my opportunities minus opponent's opportunities
+        my_score = count_sequences(board, 1, 4)
+        opp_score = count_sequences(board, -1, 4)
+        
+        # Add center preference
+        center_score = 0
+        for row in range(6):
+            if board[row][3] == 1:
+                center_score += 3
+            elif board[row][3] == -1:
+                center_score -= 3
+        
+        return my_score - opp_score + center_score
+    
+    # Get valid moves
+    valid_moves = get_valid_moves(board)
+    
+    if not valid_moves:
+        return 0
+    
+    # Check for immediate win
+    for col in valid_moves:
+        new_board = make_move(board, col, 1)
+        if check_win(new_board, 1):
+            return col
+    
+    # Check for immediate block (prevent opponent win)
+    for col in valid_moves:
+        new_board = make_move(board, col, -1)
+        if check_win(new_board, -1):
+            return col
+    
+    # Evaluate remaining moves
+    best_score = float('-inf')
+    best_moves = []
+    
+    for col in valid_moves:
+        new_board = make_move(board, col, 1)
+        
+        # Make sure this move doesn't give opponent an immediate win
+        gives_opponent_win = False
+        for opp_col in get_valid_moves(new_board):
+            opp_board = make_move(new_board, opp_col, -1)
+            if check_win(opp_board, -1):
+                gives_opponent_win = True
+                break
+        
+        if gives_opponent_win:
+            continue  # Skip moves that give opponent immediate win
+        
+        score = evaluate_board(new_board)
+        
+        if score > best_score:
+            best_score = score
+            best_moves = [col]
+        elif score == best_score:
+            best_moves.append(col)
+    
+    # If all moves give opponent a win, just pick the first valid move
+    if not best_moves:
+        best_moves = valid_moves
+    
+    # Prefer center columns when scores are equal
+    center_preference = [3, 2, 4, 1, 5, 0, 6]
+    for col in center_preference:
+        if col in best_moves:
+            return col
+    
+    return best_moves[0]

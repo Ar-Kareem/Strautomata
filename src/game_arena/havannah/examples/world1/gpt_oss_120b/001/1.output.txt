@@ -1,0 +1,169 @@
+**Strategy Overview**
+
+The policy builds a quick picture of the current position by clustering the player’s own stones into connected components (using a Union‑Find structure on the hex‑grid adjacency).  
+For every empty, playable cell it evaluates a handcrafted score:
+
+1. **Component connectivity** – how many of the player’s separate components would become linked by playing the stone (more is better).  
+2. **Edge / corner reach** – if the move lies on a board edge or corner, the policy checks whether the resulting component would newly touch that edge/corner and adds a bonus. This drives the building of bridges (corner‑to‑corner) and forks (multiple edges).  
+3. **Adjacency to own stones** – a small extra value for cells that are next to at least one own stone, encouraging compact groups.  
+
+The move with the highest score is chosen; ties are broken randomly.  
+If, for any reason, no scored move is found (which should never happen on a legal Havannah board), the policy falls back to a random legal move.
+
+The algorithm runs in well under a second on a 15×15 board because it only scans the board once, uses simple neighbor look‑ups, and works with small Union‑Find structures.
+
+```python
+import random
+import numpy as np
+
+# Hex‑grid neighbour offsets (row, col)
+_NEIGH = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)]
+
+def _in_board(r, c, N=15):
+    return 0 <= r < N and 0 <= c < N
+
+def policy(me, opp, valid_mask):
+    """
+    Return a legal move (row, col) for the player to move.
+    me  : list of (r,c) tuples of our stones
+    opp : list of (r,c) tuples of opponent stones
+    valid_mask : 2D bool array, True where a move is allowed
+    """
+    N = 15
+    occupied = set(me) | set(opp)
+
+    # ------------------------------------------------------------------
+    # Union‑Find for our own stones
+    parent = {}
+    rank = {}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        if rank[ra] < rank[rb]:
+            parent[ra] = rb
+        elif rank[ra] > rank[rb]:
+            parent[rb] = ra
+        else:
+            parent[rb] = ra
+            rank[ra] += 1
+
+    # initialise each of our stones as its own set
+    for (r, c) in me:
+        idx = r * N + c
+        parent[idx] = idx
+        rank[idx] = 0
+
+    # union neighbouring own stones
+    stone_set = set(me)
+    for (r, c) in me:
+        idx = r * N + c
+        for dr, dc in _NEIGH:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in stone_set:
+                union(idx, nr * N + nc)
+
+    # component -> list of stones (optional, we just need edge info)
+    comp_edges = {}   # comp_root -> set of edges touched
+    comp_corners = {} # comp_root -> set of corners touched
+
+    for (r, c) in me:
+        root = find(r * N + c)
+        if root not in comp_edges:
+            comp_edges[root] = set()
+            comp_corners[root] = set()
+        # edges
+        if r == 0:
+            comp_edges[root].add('top')
+        if r == N - 1:
+            comp_edges[root].add('bottom')
+        if c == 0:
+            comp_edges[root].add('left')
+        if c == N - 1:
+            comp_edges[root].add('right')
+        # corners
+        if (r, c) in ((0, 0), (0, N - 1), (N - 1, 0), (N - 1, N - 1)):
+            comp_corners[root].add((r, c))
+
+    # ------------------------------------------------------------------
+    # Gather all candidate cells
+    candidates = np.argwhere(valid_mask)
+    best_score = -1
+    best_moves = []
+
+    for r, c in candidates:
+        if (r, c) in occupied:
+            continue  # not playable
+
+        # neighbour components we would connect
+        neighbour_comps = set()
+        for dr, dc in _NEIGH:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in me:
+                neighbour_comps.add(find(nr * N + nc))
+
+        # Base score = number of distinct components merged
+        score = len(neighbour_comps)
+
+        # Bonus for touching edges / corners
+        edge_bonus = 0
+        corner_bonus = 0
+
+        # Determine which edges/corners this cell lies on
+        edges_here = set()
+        if r == 0:
+            edges_here.add('top')
+        if r == N - 1:
+            edges_here.add('bottom')
+        if c == 0:
+            edges_here.add('left')
+        if c == N - 1:
+            edges_here.add('right')
+        is_corner = (r, c) in ((0, 0), (0, N - 1), (N - 1, 0), (N - 1, N - 1))
+
+        # After the move all neighbour components become one.
+        # For scoring we simply check whether any of those components
+        # already touches the edge; if not, we get a bonus.
+        for edge in edges_here:
+            already = any(edge in comp_edges.get(comp, set()) for comp in neighbour_comps)
+            if not already:
+                edge_bonus += 1
+
+        if is_corner:
+            # corner gives a slightly higher incentive
+            already = any((r, c) in comp_corners.get(comp, set()) for comp in neighbour_comps)
+            if not already:
+                corner_bonus = 2  # stronger than plain edge
+
+        # Small adjacency bonus (encourage playing next to own stone)
+        adjacency_bonus = 0
+        for dr, dc in _NEIGH:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in me:
+                adjacency_bonus = 1
+                break
+
+        total = score + edge_bonus + corner_bonus + adjacency_bonus
+
+        if total > best_score:
+            best_score = total
+            best_moves = [(r, c)]
+        elif total == best_score:
+            best_moves.append((r, c))
+
+    # If for any reason we found no move (should not happen), pick random legal.
+    if not best_moves:
+        legal = [(r, c) for r, c in candidates if (r, c) not in occupied]
+        if not legal:
+            return (0, 0)  # fallback, board full (should never be called)
+        return random.choice(legal)
+
+    return random.choice(best_moves)
+```

@@ -1,0 +1,83 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    def is_winning_move(move, color):
+        to_row, _ = move[1]
+        return (color == 'w' and to_row == 7) or (color == 'b' and to_row == 0)
+
+    def generate_legal_moves(me, opp, color):
+        moves = []
+        opp_set = set(opp)
+        all_pieces = set(me) | opp_set
+        for (r, c) in me:
+            if color == 'w':
+                new_r = r + 1
+                if new_r > 7:
+                    continue
+                # Straight
+                if (new_r, c) not in all_pieces:
+                    moves.append(((r, c), (new_r, c)))
+                # Diagonals
+                for dc in (-1, 1):
+                    new_c = c + dc
+                    if 0 <= new_c <= 7:
+                        if (new_r, new_c) not in all_pieces or (new_r, new_c) in opp_set:
+                            moves.append(((r, c), (new_r, new_c)))
+            else:
+                new_r = r - 1
+                if new_r < 0:
+                    continue
+                # Straight
+                if (new_r, c) not in all_pieces:
+                    moves.append(((r, c), (new_r, c)))
+                # Diagonals
+                for dc in (-1, 1):
+                    new_c = c + dc
+                    if 0 <= new_c <= 7:
+                        if (new_r, new_c) not in all_pieces or (new_r, new_c) in opp_set:
+                            moves.append(((r, c), (new_r, new_c)))
+        return moves
+
+    def evaluate_move(move, me, opp, color):
+        _, to_pos = move
+        to_row, to_col = to_pos
+        opp_set = set(opp)
+        score = 0
+
+        # Advancement (priority)
+        score += (to_row if color == 'w' else 7 - to_row) * 20
+
+        # Capture bonus
+        if to_pos in opp_set:
+            score += 50
+
+        # Vulnerability check
+        attack_rows = [(to_row + 1, to_col - 1), (to_row + 1, to_col + 1)] if color == 'w' else [(to_row - 1, to_col - 1), (to_row - 1, to_col + 1)]
+        for pos in attack_rows:
+            if pos in opp_set:
+                score -= 30
+
+        # Central control
+        score += (3.5 - abs(3.5 - to_col)) * 5
+
+        # Threat potential
+        next_row = to_row + (1 if color == 'w' else -1)
+        if 0 <= next_row <=7:
+            for dc in (-1, 1):
+                if (next_row, to_col + dc) in opp_set:
+                    score += 40
+                    break
+
+        return score
+
+    legal_moves = generate_legal_moves(me, opp, color)
+    winning_moves = [m for m in legal_moves if is_winning_move(m, color)]
+    if winning_moves:
+        return winning_moves[0]
+
+    scored_moves = [(evaluate_move(m, me, opp, color), m) for m in legal_moves]
+    max_score = max(scored_moves, key=lambda x: x[0])[0]
+    best_moves = [m for s, m in scored_moves if s == max_score]
+
+    # Tiebreaker: prefer moves with higher advancement, then leftmost column
+    best_moves.sort(key=lambda m: (-m[1][0] if color == 'w' else m[1][0], m[1][1]))
+    return best_moves[0]

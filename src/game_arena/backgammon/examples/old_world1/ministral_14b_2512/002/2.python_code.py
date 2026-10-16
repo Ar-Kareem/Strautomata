@@ -1,0 +1,210 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+
+    # Helper functions
+    def is_legal_move(from_pt, die):
+        if from_pt == 'B':
+            if my_bar == 0:
+                return False
+            to_pt = die - 1
+            if to_pt < 0 or to_pt > 23:
+                return False
+            if opp_pts[to_pt] >= 2:
+                return False
+            return True
+        else:
+            from_pt = int(from_pt[1:])
+            if my_pts[from_pt] == 0:
+                return False
+            to_pt = from_pt + die
+            if to_pt > 23:
+                return False
+            if opp_pts[to_pt] >= 2:
+                return False
+            return True
+
+    def get_legal_moves():
+        moves = []
+        dice_sorted = sorted(dice, reverse=True)
+
+        # First try to move from bar if needed
+        if my_bar > 0:
+            for die in dice_sorted:
+                if is_legal_move('B', die):
+                    moves.append(('B', die))
+                    break
+
+        # Then try to move other checkers
+        for from_pt in range(24):
+            if my_pts[from_pt] > 0:
+                for die in dice_sorted:
+                    if is_legal_move(f'A{from_pt}', die):
+                        moves.append((f'A{from_pt}', die))
+                        break
+
+        # If no moves found, return pass
+        if not moves:
+            return [('P', 0), ('P', 0)]
+
+        return moves
+
+    def evaluate_move(move1, move2=None):
+        """Evaluate a move based on several factors"""
+        from_pt1, die1 = move1
+        score = 0
+
+        # Moving from bar is always good
+        if from_pt1 == 'B':
+            score += 10
+
+        # Moving toward home board is good
+        if from_pt1 != 'B':
+            from_pt = int(from_pt1[1:])
+            if from_pt < 6:  # Moving toward home board
+                score += 2
+            elif from_pt > 17:  # Already in home board
+                score += 3
+
+        # Avoid creating blots when possible
+        if from_pt1 != 'B':
+            from_pt = int(from_pt1[1:])
+            to_pt = from_pt + die1
+            if opp_pts[to_pt] == 1:  # Creating a blot
+                score -= 3
+
+        # If we can bear off, prioritize
+        if my_off == 24 - len([p for p in my_pts if p > 0]):
+            score += 5
+
+        # If we're about to be hit, prioritize defensive moves
+        if from_pt1 != 'B':
+            from_pt = int(from_pt1[1:])
+            for d in dice:
+                to_pt = from_pt + d
+                if to_pt < 24 and opp_pts[to_pt] == 1:
+                    score += 2
+
+        # If we can extend a prime, do it
+        if from_pt1 != 'B':
+            from_pt = int(from_pt1[1:])
+            to_pt = from_pt + die1
+            if to_pt < 24 and my_pts[to_pt] > 0:
+                score += 1
+
+        # If we can create a prime, do it
+        if from_pt1 != 'B':
+            from_pt = int(from_pt1[1:])
+            to_pt = from_pt + die1
+            if to_pt < 24 and my_pts[to_pt] == 0 and opp_pts[to_pt] == 0:
+                # Check if this creates a potential prime
+                if from_pt + 1 < 24 and my_pts[from_pt + 1] > 0:
+                    score += 2
+
+        return score
+
+    # Get all legal moves
+    legal_moves = get_legal_moves()
+
+    # If no moves, return pass
+    if legal_moves[0][0] == 'P':
+        return "H:P,P"
+
+    # Try to find the best single move
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        score = evaluate_move(move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # If we can play both dice, try to find the best combination
+    if len(dice) == 2 and len(legal_moves) >= 2:
+        # Try all possible combinations
+        best_combo = None
+        best_combo_score = -float('inf')
+
+        # Get all possible first moves
+        first_moves = []
+        for move in legal_moves:
+            if move[0] == 'B' or (move[0] != 'B' and int(move[0][1:]) < 24):
+                first_moves.append(move)
+
+        for move1 in first_moves:
+            # Find remaining die
+            die1 = move1[1]
+            remaining_dice = [d for d in dice if d != die1]
+
+            if not remaining_dice:
+                continue
+
+            # Find possible second moves
+            second_moves = []
+            for move in legal_moves:
+                if move[0] == 'B' or (move[0] != 'B' and int(move[0][1:]) < 24):
+                    if move[1] in remaining_dice:
+                        second_moves.append(move)
+
+            if not second_moves:
+                continue
+
+            # Evaluate all combinations
+            for move2 in second_moves:
+                combo_score = evaluate_move(move1, move2)
+                if combo_score > best_combo_score:
+                    best_combo_score = combo_score
+                    best_combo = (move1, move2)
+
+        if best_combo:
+            move1, move2 = best_combo
+            # Determine order (H or L)
+            die1 = move1[1]
+            die2 = move2[1]
+            if die1 > die2:
+                order = 'H'
+            else:
+                order = 'L'
+            return f"{order}:{move1[0]},{move2[0]}"
+
+    # If we can't play both dice or no good combo found, play the best single move
+    move = best_move
+    from_pt = move[0]
+    die = move[1]
+
+    # Determine if we should use H or L
+    if len(dice) == 2:
+        other_die = [d for d in dice if d != die][0]
+        if die > other_die:
+            order = 'H'
+        else:
+            order = 'L'
+    else:
+        order = 'H'  # Only one die, so must use it
+
+    # Prepare the second move (P if only one die can be played)
+    if len(dice) == 2 and len(legal_moves) >= 2:
+        # Find another legal move with the remaining die
+        remaining_die = [d for d in dice if d != die][0]
+        second_move = None
+        for m in legal_moves:
+            if m[1] == remaining_die:
+                second_move = m
+                break
+
+        if second_move:
+            return f"{order}:{from_pt},{second_move[0]}"
+        else:
+            return f"{order}:{from_pt},P"
+    else:
+        return f"{order}:{from_pt},P"

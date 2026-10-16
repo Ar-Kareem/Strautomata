@@ -1,0 +1,258 @@
+
+import numpy as np
+import random
+import time
+
+def policy(me, opponent, memory):
+    start_time = time.time()
+    board_size = 19
+    
+    # Initialize memory if empty
+    if not memory:
+        memory = {
+            'game_phase': 'opening',
+            'last_move': None,
+            'territory_balance': 0,
+            'move_history': []
+        }
+    
+    # Create board representation (0=empty, 1=me, 2=opponent)
+    board = np.zeros((board_size, board_size), dtype=int)
+    for r, c in me:
+        board[r-1][c-1] = 1
+    for r, c in opponent:
+        board[r-1][c-1] = 2
+    
+    # Determine game phase based on stones played
+    total_stones = len(me) + len(opponent)
+    if total_stones < 20:
+        memory['game_phase'] = 'opening'
+    elif total_stones < 100:
+        memory['game_phase'] = 'midgame'
+    else:
+        memory['game_phase'] = 'endgame'
+    
+    # Generate all legal moves
+    legal_moves = []
+    for i in range(board_size):
+        for j in range(board_size):
+            if board[i][j] == 0 and is_legal_move(board, i, j, 1):
+                legal_moves.append((i+1, j+1))  # Convert to 1-based
+    
+    # If no legal moves, pass
+    if not legal_moves:
+        return ((0, 0), memory)
+    
+    # Simplified MCTS - evaluate moves with random playouts
+    move_scores = {}
+    max_time = 0.8  # seconds
+    evaluated_moves = 0
+    
+    for move in legal_moves:
+        if time.time() - start_time > max_time:
+            break
+        
+        # Evaluate move with random playouts
+        score = evaluate_move(board, move, me, opponent, memory)
+        move_scores[move] = score
+        evaluated_moves += 1
+    
+    # If we didn't have time to evaluate all moves, prioritize corners in opening
+    if evaluated_moves < len(legal_moves) and memory['game_phase'] == 'opening':
+        corner_moves = [(1,1), (1,19), (19,1), (19,19)]
+        for cm in corner_moves:
+            if cm in legal_moves and cm not in move_scores:
+                move_scores[cm] = 50  # Default corner score
+    
+    # Select best move based on scores
+    if move_scores:
+        best_move = max(move_scores.items(), key=lambda x: x[1])[0]
+    else:
+        # Fallback: select random legal move if no evaluation happened
+        best_move = random.choice(legal_moves)
+    
+    # Update memory
+    memory['last_move'] = best_move
+    memory['move_history'].append(best_move)
+    
+    return (best_move, memory)
+
+def is_legal_move(board, row, col, player):
+    """Check if a move is legal (doesn't violate Ko rule, has liberties, etc.)"""
+    if board[row][col] != 0:
+        return False
+    
+    # Make a copy of the board to test the move
+    test_board = board.copy()
+    test_board[row][col] = player
+    
+    # Check liberties
+    liberties = count_liberties(test_board, row, col)
+    if liberties == 0:
+        # Check if captures any opponent stones
+        opponent = 3 - player
+        captured = False
+        
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and test_board[nr][nc] == opponent:
+                if count_liberties(test_board, nr, nc) == 0:
+                    captured = True
+                    break
+        
+        if not captured:
+            return False
+    
+    return True
+
+def count_liberties(board, row, col):
+    """Count liberties of a stone or group"""
+    if board[row][col] == 0:
+        return 0
+    
+    player = board[row][col]
+    visited = set()
+    liberties = 0
+    stack = [(row, col)]
+    
+    while stack:
+        r, c = stack.pop()
+        if (r, c) in visited:
+            continue
+        visited.add((r, c))
+        
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                if board[nr][nc] == 0:
+                    liberties += 1
+                elif board[nr][nc] == player and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+    
+    return liberties
+
+def evaluate_move(board, move, me, opponent, memory):
+    """Evaluate a move using simplified MCTS with random playouts"""
+    row, col = move[0]-1, move[1]-1  # Convert to 0-based
+    player = 1
+    opponent_player = 2
+    
+    # Make a copy of the board for simulation
+    sim_board = board.copy()
+    sim_board[row][col] = player
+    
+    # Immediate capture check
+    captured_stones = 0
+    for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+        nr, nc = row + dr, col + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and sim_board[nr][nc] == opponent_player:
+            if count_liberties(sim_board, nr, nc) == 0:
+                captured_stones += 1
+    
+    # Base score components
+    score = 0
+    score += captured_stones * 10  # Capturing is good
+    
+    # Count liberties of the new stone
+    liberties = count_liberties(sim_board, row, col)
+    score += liberties * 3
+    
+    # Pattern recognition - check for simple shapes
+    # Check for eye shape
+    if is_eye_shape(sim_board, row, col, player):
+        score += 15
+    
+    # Check for ladder pattern
+    if is_ladder_candidate(sim_board, row, col, player):
+        score += 20 if memory['game_phase'] == 'midgame' else 5
+    
+    # Territory potential - distance to edges and corners
+    center_dist = max(abs(row-9), abs(col-9))
+    score += (18 - center_dist) * 0.5  # Prefer center slightly
+    
+    # In opening, prefer corners and sides
+    if memory['game_phase'] == 'opening':
+        if (row in [0, 18] and col in [0, 18]):
+            score += 10  # Corner
+        elif row in [0, 18] or col in [0, 18]:
+            score += 5  # Side
+    
+    # Run a few random playouts to estimate move quality
+    playout_score = 0
+    num_playouts = 5
+    
+    for _ in range(num_playouts):
+        playout_score += random_playout(sim_board, player, opponent_player, memory['game_phase'])
+    
+    score += playout_score / num_playouts
+    
+    return score
+
+def is_eye_shape(board, row, col, player):
+    """Check if move forms an eye shape"""
+    eye_count = 0
+    for dr, dc in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+        nr, nc = row + dr, col + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr][nc] == player:
+            eye_count += 1
+    
+    return eye_count >= 3
+
+def is_ladder_candidate(board, row, col, player):
+    """Simple ladder pattern detection"""
+    opponent = 3 - player
+    
+    # Check if we're adjacent to opponent stone with only 1 liberty
+    for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+        nr, nc = row + dr, col + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr][nc] == opponent:
+            if count_liberties(board, nr, nc) == 1:
+                # Check if opponent has an escape path
+                for edr, edc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                    enr, enc = nr + edr, nc + edc
+                    if (0 <= enr < 19 and 0 <= enc < 19 and 
+                        board[enr][enc] == 0 and 
+                        (enr != row or enc != col)):
+                        return True
+    return False
+
+def random_playout(board, player, opponent_player, game_phase):
+    """Run a random playout from current position"""
+    score = 0
+    current_player = opponent_player  # Opponent moves next
+    temp_board = board.copy()
+    moves_played = 0
+    max_moves = 20 if game_phase == 'opening' else 10
+    
+    while moves_played < max_moves:
+        # Get all legal moves
+        legal_moves = []
+        for i in range(19):
+            for j in range(19):
+                if temp_board[i][j] == 0 and is_legal_move(temp_board, i, j, current_player):
+                    legal_moves.append((i, j))
+        
+        if not legal_moves:
+            break
+        
+        # Play random move
+        move = random.choice(legal_moves)
+        temp_board[move[0]][move[1]] = current_player
+        
+        # Simple scoring - count captures and liberties
+        if current_player == player:
+            # Count liberties for our stones
+            liberties = count_liberties(temp_board, move[0], move[1])
+            score += liberties
+            
+            # Count captures
+            for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nr, nc = move[0] + dr, move[1] + dc
+                if 0 <= nr < 19 and 0 <= nc < 19 and temp_board[nr][nc] == opponent_player:
+                    if count_liberties(temp_board, nr, nc) == 0:
+                        score += 5
+        
+        current_player = 3 - current_player  # Switch player
+        moves_played += 1
+    
+    return score

@@ -1,0 +1,162 @@
+<code>
+import numpy as np
+import random
+from typing import List, Tuple
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    A policy for Breakthrough that uses a combination of heuristics to select the best move.
+    
+    The policy evaluates moves based on:
+    1. Advancing towards opponent's home row
+    2. Capturing opponent pieces
+    3. Avoiding captures
+    4. Strategic piece advancement
+    
+    Args:
+        me: List of (row, col) tuples for my pieces
+        opp: List of (row, col) tuples for opponent pieces
+        color: 'b' for black (moves down), 'w' for white (moves up)
+    
+    Returns:
+        A tuple representing the move: ((from_row, from_col), (to_row, to_col))
+    """
+    
+    # Convert to sets for faster lookups
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Define movement direction
+    if color == 'b':
+        direction = -1  # Black moves down (towards row 0)
+        home_row = 7    # Black starts at row 7
+        target_row = 0  # Black wants to reach row 0
+    else:  # color == 'w'
+        direction = 1   # White moves up (towards row 7)
+        home_row = 0    # White starts at row 0
+        target_row = 7  # White wants to reach row 7
+    
+    # Get all legal moves
+    legal_moves = []
+    
+    for piece in me:
+        row, col = piece
+        
+        # Move forward (straight)
+        new_row = row + direction
+        if 0 <= new_row <= 7 and (new_row, col) not in me_set and (new_row, col) not in opp_set:
+            legal_moves.append((piece, (new_row, col)))
+        
+        # Move diagonally left
+        if col > 0:
+            new_row = row + direction
+            new_col = col - 1
+            if 0 <= new_row <= 7:
+                if (new_row, new_col) in opp_set:
+                    legal_moves.append((piece, (new_row, new_col)))
+                elif (new_row, new_col) not in me_set:
+                    legal_moves.append((piece, (new_row, new_col)))
+        
+        # Move diagonally right
+        if col < 7:
+            new_row = row + direction
+            new_col = col + 1
+            if 0 <= new_row <= 7:
+                if (new_row, new_col) in opp_set:
+                    legal_moves.append((piece, (new_row, new_col)))
+                elif (new_row, new_col) not in me_set:
+                    legal_moves.append((piece, (new_row, new_col)))
+    
+    if not legal_moves:
+        # No legal moves available (shouldn't happen in Breakthrough, but just in case)
+        return None
+    
+    # Evaluate each move
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        from_pos, to_pos = move
+        score = evaluate_move(from_pos, to_pos, me_set, opp_set, direction, target_row)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def evaluate_move(from_pos: tuple, to_pos: tuple, me_set: set, opp_set: set, 
+                 direction: int, target_row: int) -> float:
+    """
+    Evaluate the quality of a move using various heuristics.
+    
+    Args:
+        from_pos: Starting position (row, col)
+        to_pos: Ending position (row, col)
+        me_set: Set of my pieces
+        opp_set: Set of opponent pieces
+        direction: Movement direction (1 for white, -1 for black)
+        target_row: Target row to reach for victory
+    
+    Returns:
+        A score representing the quality of the move
+    """
+    score = 0.0
+    
+    from_row, from_col = from_pos
+    to_row, to_col = to_pos
+    
+    # 1. Advancement heuristic: Prefer moves that get closer to opponent's home row
+    dist_from_target_from = abs(from_row - target_row)
+    dist_from_target_to = abs(to_row - target_row)
+    advancement = dist_from_target_from - dist_from_target_to
+    score += advancement * 10.0
+    
+    # 2. Capture heuristic: Strongly prefer captures
+    if to_pos in opp_set:
+        score += 50.0
+    
+    # 3. Avoidance heuristic: Avoid moving into positions where we can be captured
+    # Check if the new position can be captured on the next turn
+    can_be_captured = False
+    
+    # Check if opponent can capture from left diagonal
+    if to_col > 0:
+        opp_row = to_row - direction  # Opponent would be coming from opposite direction
+        if 0 <= opp_row <= 7 and (opp_row, to_col - 1) in opp_set:
+            can_be_captured = True
+    
+    # Check if opponent can capture from right diagonal  
+    if to_col < 7:
+        opp_row = to_row - direction
+        if 0 <= opp_row <= 7 and (opp_row, to_col + 1) in opp_set:
+            can_be_captured = True
+    
+    if can_be_captured:
+        score -= 20.0
+    
+    # 4. Strategic positioning: Prefer central columns
+    center_bias = 4 - abs(to_col - 3.5)  # Higher score for central columns
+    score += center_bias * 2.0
+    
+    # 5. Breakthrough potential: High score for pieces close to target row
+    if abs(to_row - target_row) <= 2:
+        score += 15.0
+    
+    # 6. Piece safety: Avoid孤 pieces (isolated pieces)
+    # Check if there are friendly pieces on adjacent files
+    has_friendly_adjacent = False
+    
+    if to_col > 0 and (to_row, to_col - 1) in me_set:
+        has_friendly_adjacent = True
+    if to_col < 7 and (to_row, to_col + 1) in me_set:
+        has_friendly_adjacent = True
+    
+    if not has_friendly_adjacent and abs(to_row - target_row) > 3:
+        score -= 5.0
+    
+    # Add small random component to break ties and add variety
+    score += random.uniform(0, 1)
+    
+    return score
+</code>

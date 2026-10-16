@@ -1,0 +1,235 @@
+
+def policy(you, opponent) -> str:
+    # Combine the board: 0 for empty, 1 for our marble, 2 for opponent
+    board = [[0]*6 for _ in range(6)]
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 1:
+                board[r][c] = 1
+            elif opponent[r][c] == 1:
+                board[r][c] = 2
+    
+    # Find empty cells
+    empty_cells = [(r, c) for r in range(6) for c in range(6) if board[r][c] == 0]
+    
+    # Helper function to check for 5 in a row
+    def has_five(board, player):
+        # Check rows
+        for r in range(6):
+            s = ''.join(str(x) for x in board[r])
+            if player == 1 and '11111' in s:
+                return True
+            if player == 2 and '22222' in s:
+                return True
+                
+        # Check columns
+        for c in range(6):
+            s = ''.join(str(board[r][c]) for r in range(6))
+            if player == 1 and '11111' in s:
+                return True
+            if player == 2 and '22222' in s:
+                return True
+                
+        # Check main diagonals
+        for d in range(-5, 6):
+            diag = []
+            for r in range(6):
+                c = r - d
+                if 0 <= c < 6:
+                    diag.append(board[r][c])
+            if len(diag) >= 5:
+                s = ''.join(str(x) for x in diag)
+                if player == 1 and '11111' in s:
+                    return True
+                if player == 2 and '22222' in s:
+                    return True
+                    
+        # Check anti-diagonals
+        for d in range(1, 11):
+            diag = []
+            for r in range(6):
+                c = d - r
+                if 0 <= c < 6:
+                    diag.append(board[r][c])
+            if len(diag) >= 5:
+                s = ''.join(str(x) for x in diag)
+                if player == 1 and '11111' in s:
+                    return True
+                if player == 2 and '22222' in s:
+                    return True
+                    
+        return False
+    
+    # Helper function to rotate a quadrant
+    def rotate_quad(board, quad, direction):
+        # Define the quadrant boundaries
+        if quad == 0:
+            r0, r1 = 0, 2
+            c0, c1 = 0, 2
+        elif quad == 1:
+            r0, r1 = 0, 2
+            c0, c1 = 3, 5
+        elif quad == 2:
+            r0, r1 = 3, 5
+            c0, c1 = 0, 2
+        else:  # quad == 3
+            r0, r1 = 3, 5
+            c0, c1 = 3, 5
+            
+        # Extract the quadrant
+        quad_matrix = []
+        for i in range(r0, r1+1):
+            row = []
+            for j in range(c0, c1+1):
+                row.append(board[i][j])
+            quad_matrix.append(row)
+            
+        # Rotate the quadrant
+        if direction == 'L':
+            # 90 degrees anticlockwise
+            rotated = [list(x) for x in zip(*quad_matrix)][::-1]
+        else:  # 'R'
+            # 90 degrees clockwise
+            rotated = [list(x) for x in zip(*quad_matrix[::-1])]
+            
+        # Put the rotated quadrant back
+        for i in range(3):
+            for j in range(3):
+                board[r0+i][c0+j] = rotated[i][j]
+                
+        return board
+    
+    # Helper function to score the board
+    def score_board(board):
+        our_score = 0
+        opp_score = 0
+        lines = []
+        
+        # Rows
+        for r in range(6):
+            lines.append([board[r][c] for c in range(6)])
+            
+        # Columns
+        for c in range(6):
+            lines.append([board[r][c] for r in range(6)])
+            
+        # Main diagonals
+        for d in range(-5, 6):
+            diag = []
+            for r in range(6):
+                c = r - d
+                if 0 <= c < 6:
+                    diag.append(board[r][c])
+            if len(diag) >= 2:
+                lines.append(diag)
+                
+        # Anti-diagonals
+        for d in range(1, 11):
+            diag = []
+            for r in range(6):
+                c = d - r
+                if 0 <= c < 6:
+                    diag.append(board[r][c])
+            if len(diag) >= 2:
+                lines.append(diag)
+                
+        # Calculate scores
+        for player in [1, 2]:
+            for line in lines:
+                streak = 0
+                for cell in line:
+                    if cell == player:
+                        streak += 1
+                    else:
+                        if streak >= 2:
+                            if player == 1:
+                                if streak == 4:
+                                    our_score += 10000
+                                elif streak == 3:
+                                    our_score += 100
+                                elif streak == 2:
+                                    our_score += 10
+                            else:
+                                if streak == 4:
+                                    opp_score += 10000
+                                elif streak == 3:
+                                    opp_score += 100
+                                elif streak == 2:
+                                    opp_score += 10
+                        streak = 0
+                        
+                # Check the last streak
+                if streak >= 2:
+                    if player == 1:
+                        if streak == 4:
+                            our_score += 10000
+                        elif streak == 3:
+                            our_score += 100
+                        elif streak == 2:
+                            our_score += 10
+                    else:
+                        if streak == 4:
+                            opp_score += 10000
+                        elif streak == 3:
+                            opp_score += 100
+                        elif streak == 2:
+                            opp_score += 10
+                            
+        return our_score - opp_score
+    
+    best_move = None
+    best_score = -10**9
+    draw_move = None
+    fallback_move = None
+    
+    # Try all moves
+    for r, c in empty_cells:
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                # Create a copy of the board
+                board_copy = [row[:] for row in board]
+                # Place our marble
+                board_copy[r][c] = 1
+                
+                # Rotate the quadrant
+                rotated_board = rotate_quad(board_copy, quad, direction)
+                
+                # Check for wins
+                if has_five(rotated_board, 1):
+                    if not has_five(rotated_board, 2):
+                        # Winning move
+                        return f"{r+1},{c+1},{quad},{direction}"
+                    else:
+                        # Draw move
+                        draw_move = (r, c, quad, direction)
+                        continue
+                else:
+                    if has_five(rotated_board, 2):
+                        # Losing move - skip but remember as fallback
+                        if fallback_move is None:
+                            fallback_move = (r, c, quad, direction)
+                        continue
+                    
+                # Evaluate the move
+                score = score_board(rotated_board)
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c, quad, direction)
+    
+    # Return the best move found
+    if draw_move is not None:
+        r, c, quad, direction = draw_move
+        return f"{r+1},{c+1},{quad},{direction}"
+    
+    if best_move is not None:
+        r, c, quad, direction = best_move
+        return f"{r+1},{c+1},{quad},{direction}"
+    
+    # Fallback to the first losing move if necessary
+    if fallback_move is not None:
+        r, c, quad, direction = fallback_move
+        return f"{r+1},{c+1},{quad},{direction}"
+    
+    # This should not happen as there is at least one empty cell
+    r, c = empty_cells[0]
+    return f"{r+1},{c+1},0,R"

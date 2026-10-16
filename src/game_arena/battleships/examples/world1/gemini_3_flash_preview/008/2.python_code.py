@@ -1,0 +1,91 @@
+
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship AI targeting policy.
+    0 = Unknown, -1 = Miss, 1 = Hit.
+    """
+    size = 10
+    ship_lengths = [5, 4, 3, 3, 2]
+
+    # Identify all hits and potential targets adjacent to hits (Target Mode)
+    hits = []
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 1:
+                hits.append((r, c))
+
+    if hits:
+        potential_targets = []
+        for r, c in hits:
+            # Check cardinal neighbors
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < size and 0 <= nc < size and board[nr][nc] == 0:
+                    # Priority weighting: if a hit has hits on both sides, follow the line
+                    weight = 1
+                    # Check if this continues a line of hits
+                    if 0 <= r - dr < size and 0 <= c - dc < size and board[r - dr][c - dc] == 1:
+                        weight = 2
+                    potential_targets.append((weight, (nr, nc)))
+        
+        if potential_targets:
+            # Sort by weight descending and pick from the best
+            potential_targets.sort(key=lambda x: x[0], reverse=True)
+            best_weight = potential_targets[0][0]
+            best_options = [pos for w, pos in potential_targets if w == best_weight]
+            return random.choice(best_options)
+
+    # Hunt Mode: Parity-based Heat Map
+    # Calculate how many ways ships can fit in each cell
+    heatmap = [[0 for _ in range(size)] for _ in range(size)]
+    
+    for length in ship_lengths:
+        # Horizontal placement
+        for r in range(size):
+            for c in range(size - length + 1):
+                segment = [board[r][c + i] for i in range(length)]
+                if -1 not in segment: # No misses in segment
+                    for i in range(length):
+                        if board[r][c + i] == 0:
+                            heatmap[r][c + i] += 1
+        # Vertical placement
+        for r in range(size - length + 1):
+            for c in range(size):
+                segment = [board[r + i][c] for i in range(length)]
+                if -1 not in segment: # No misses in segment
+                    for i in range(length):
+                        if board[r + i][c] == 0:
+                            heatmap[r + i][c] += 1
+
+    # Final decision: Pick highest heat, prefers "checkerboard" cells to improve efficiency
+    max_heat = -1
+    best_move = (0, 0)
+    
+    # Parity helps find ships faster by hitting every other cell
+    candidates = []
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 0:
+                score = heatmap[r][c]
+                # Parity bonus: focus on (r+c)%2 == 0
+                if (r + c) % 2 == 0:
+                    score += 1
+                
+                if score > max_heat:
+                    max_heat = score
+                    candidates = [(r, c)]
+                elif score == max_heat:
+                    candidates.append((r, c))
+    
+    if candidates:
+        return random.choice(candidates)
+
+    # Fallback: find any valid empty cell
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 0:
+                return (r, c)
+
+    return (0, 0)

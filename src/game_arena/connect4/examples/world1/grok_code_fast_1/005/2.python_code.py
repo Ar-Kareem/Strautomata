@@ -1,0 +1,144 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    INF = float('inf')
+    board = np.array(board)
+    valid_cols = [c for c in range(7) if any(board[:, c] == 0)]
+    if not valid_cols:
+        return 0  # Shouldn't happen, but pick one arbitrarily
+
+    for col in valid_cols:
+        new_board = drop(board.copy(), col, 1)
+        if check_win(new_board, 1):
+            return col
+
+    # Block opponent's win
+    for col in valid_cols:
+        new_board = drop(board.copy(), col, -1)
+        if check_win(new_board, -1):
+            return col
+
+    best_col = None
+    best_score = -INF
+    alpha = -INF
+    beta = INF
+    for col in valid_cols:
+        new_board = drop(board.copy(), col, 1)
+        score = minimax(new_board, 5, False, alpha, beta)
+        if score > best_score:
+            best_score = score
+            best_col = col
+        alpha = max(alpha, score)
+        if beta <= alpha:
+            break
+    return best_col or 3  # Fallback to center if something goes wrong
+
+def check_win(board, player):
+    # Rows
+    for r in range(6):
+        for c in range(4):
+            if all(board[r, c + j] == player for j in range(4)):
+                return True
+    # Columns
+    for c in range(7):
+        for r in range(3):
+            if all(board[r + j, c] == player for j in range(4)):
+                return True
+    # Diagonal \
+    for r in range(3):
+        for c in range(4):
+            if all(board[r + j, c + j] == player for j in range(4)):
+                return True
+    # Diagonal /
+    for r in range(3, 6):
+        for c in range(4):
+            if all(board[r - j, c + j] == player for j in range(4)):
+                return True
+    return False
+
+def drop(board, col, player):
+    for r in range(5, -1, -1):
+        if board[r, col] == 0:
+            board[r, col] = player
+            return board
+    raise ValueError("Column is full")
+
+def is_terminal(board):
+    if np.all(board != 0):
+        return True, 0
+    if check_win(board, 1):
+        return True, 100000
+    if check_win(board, -1):
+        return True, -100000
+    return False, None
+
+def heuristic(board):
+    score = 0
+    def score_line(line):
+        num_1 = sum(1 for x in line if x == 1)
+        num_m1 = sum(1 for x in line if x == -1)
+        if num_1 > 0 and num_m1 > 0:
+            return 0
+        if num_1 == 4:
+            return 10000
+        elif num_m1 == 4:
+            return -10000
+        elif num_1 == 3:
+            return 100
+        elif num_m1 == 3:
+            return -100
+        elif num_1 == 2:
+            return 10
+        elif num_m1 == 2:
+            return -10
+        elif num_1 == 1:
+            return 1
+        elif num_m1 == 1:
+            return -1
+        return 0
+    # Rows
+    for r in range(6):
+        for c in range(4):
+            score += score_line(board[r, c:c+4])
+    # Columns
+    for c in range(7):
+        for r in range(3):
+            score += score_line(board[r:r+4, c])
+    # Diagonal \
+    for r in range(3):
+        for c in range(4):
+            score += score_line([board[r+j, c+j] for j in range(4)])
+    # Diagonal /
+    for r in range(3, 6):
+        for c in range(4):
+            score += score_line([board[r-j, c+j] for j in range(4)])
+    return score
+
+def minimax(board, depth, is_max, alpha, beta):
+    terminal, score = is_terminal(board)
+    if terminal or depth == 0:
+        if depth == 0:
+            return heuristic(board)
+        return score
+    valid_cols = [c for c in range(7) if any(board[:, c] == 0)]
+    if is_max:  # Maximizer (current player, 1)
+        max_eval = -INF
+        for col in valid_cols:
+            new_board = drop(board.copy(), col, 1)
+            eval = minimax(new_board, depth - 1, False, alpha, beta)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:  # Minimizer (opponent, -1)
+        min_eval = INF
+        for col in valid_cols:
+            new_board = drop(board.copy(), col, -1)
+            eval = minimax(new_board, depth - 1, True, alpha, beta)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval

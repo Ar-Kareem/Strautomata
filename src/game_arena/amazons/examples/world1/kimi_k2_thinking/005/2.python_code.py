@@ -1,0 +1,106 @@
+
+import numpy as np
+import random
+
+BOARD_SIZE = 6
+DIRECTIONS = [(1, 0), (-1, 0), (0, 1), (0, -1),
+              (1, 1), (-1, -1), (1, -1), (-1, 1)]
+
+def generate_moves(board, player):
+    """
+    Return a list of all legal moves for `player` (1 or 2) on `board`.
+    Each move is a tuple (r0, c0, r1, c1, r2, c2) where:
+        (r0,c0) – starting square,
+        (r1,c1) – landing square,
+        (r2,c2) – arrow square.
+    """
+    moves = []
+    b = board  # local reference
+    size = BOARD_SIZE
+
+    for r in range(size):
+        for c in range(size):
+            if b[r, c] != player:
+                continue
+
+            # queen‑like walk for the amazon itself
+            for dr, dc in DIRECTIONS:
+                nr = r + dr
+                nc = c + dc
+                while 0 <= nr < size and 0 <= nc < size and b[nr, nc] == 0:
+                    # copy board and place the amazon on its new square
+                    new_b = b.copy()
+                    new_b[r, c] = 0
+                    new_b[nr, nc] = player
+
+                    # arrow shot from the new position
+                    for ar_dr, ar_dc in DIRECTIONS:
+                        ar = nr + ar_dr
+                        ac = nc + ar_dc
+                        while 0 <= ar < size and 0 <= ac < size:
+                            if new_b[ar, ac] != 0:
+                                break
+                            # arrow can land here
+                            moves.append((r, c, nr, nc, ar, ac))
+                            ar += ar_dr
+                            ac += ar_dc
+
+                    nr += dr
+                    nc += dc
+    return moves
+
+
+def count_moves(board, player):
+    """Number of legal moves for `player` on `board`."""
+    return len(generate_moves(board, player))
+
+
+def apply_move(board, move_tuple):
+    """Return a new board after executing `move_tuple` (assumes player 1)."""
+    r0, c0, r1, c1, r2, c2 = move_tuple
+    new_board = board.copy()
+    # move amazon
+    new_board[r0, c0] = 0
+    new_board[r1, c1] = 1
+    # place arrow
+    new_board[r2, c2] = -1
+    return new_board
+
+
+def move_to_str(move_tuple):
+    """Convert a move tuple to the required string format."""
+    r0, c0, r1, c1, r2, c2 = move_tuple
+    return f"{r0},{c0}:{r1},{c1}:{r2},{c2}"
+
+
+def policy(board):
+    """
+    Return a legal Amazons move for player 1 on a 6×6 board.
+    The move is chosen by a one‑ply search maximizing
+    (our_mobility – opponent_mobility).
+    """
+    player = 1
+    legal_moves = generate_moves(board, player)
+    if not legal_moves:
+        # Should not happen, but return a dummy to avoid a crash.
+        return ""
+
+    best_score = -10**9
+    candidates = []
+
+    for mv in legal_moves:
+        # board after the candidate move
+        after = apply_move(board, mv)
+        our_mob = count_moves(after, player)
+        opp_mob = count_moves(after, 2)
+        score = our_mob - opp_mob
+
+        if score > best_score:
+            best_score = score
+            candidates = [mv]
+        elif score == best_score:
+            candidates.append(mv)
+
+    # pick one of the best moves at random (prevents predictability)
+    chosen = random.choice(candidates)
+    return move_to_str(chosen)

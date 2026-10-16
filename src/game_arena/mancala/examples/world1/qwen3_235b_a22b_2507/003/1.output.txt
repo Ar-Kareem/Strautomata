@@ -1,0 +1,237 @@
+<thinking>
+To create a strong Kalah policy, I'll implement a minimax algorithm with alpha-beta pruning to look several moves ahead. This is well-suited for Kalah because:
+
+1. The branching factor is low (typically 2-6 legal moves)
+2. Game states are easy to simulate
+3. We can set a depth limit to stay within 1 second
+
+Key design decisions:
+- Use a depth limit of 7-8 to balance lookahead and speed
+- Use a positionally-aware heuristic that values:
+  * Store count (directly contributes to score)
+  * Seeds on your side (potential to score)
+  * Extra moves (high value - continue turn)
+  * Capture opportunities
+- Prioritize moves that end in your store (extra move)
+- Handle the terminal condition properly
+
+I'll implement helper functions for:
+- Making moves with proper rules (wrapping, skipping opponent's store)
+- Checking for captures
+- Evaluating board states
+- Recursive minimax with alpha-beta pruning
+
+The policy will search to a fixed depth and return the move with the highest evaluation.
+</thinking>
+<code>
+import numpy as np
+from typing import Tuple, Optional
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Kalah move selection policy using minimax with alpha-beta pruning.
+    Returns the best move index (0-5) based on lookahead search.
+    """
+    
+    def make_move(you_board: np.ndarray, opp_board: np.ndarray, move: int) -> Tuple[np.ndarray, np.ndarray, bool]:
+        """Execute move and return new boards and whether extra move was earned."""
+        new_you = you_board.copy()
+        new_opp = opp_board.copy()
+        seeds = new_you[move]
+        new_you[move] = 0
+        
+        position = move + 1
+        extra_move = False
+        
+        while seeds > 0:
+            # Place in your houses
+            while seeds > 0 and position <= 5:
+                new_you[position] += 1
+                seeds -= 1
+                if seeds == 0:
+                    break
+                position += 1
+            
+            # Place in your store
+            if seeds > 0:
+                new_you[6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    extra_move = True
+                    break
+                position = 0
+            
+            # Place in opponent's houses
+            while seeds > 0 and position <= 5:
+                new_opp[position] += 1
+                seeds -= 1
+                if seeds == 0:
+                    break
+                position += 1
+            
+            # Skip opponent's store, back to your houses
+            if seeds > 0:
+                position = 0
+        
+        # Check for capture
+        if not extra_move and position <= 5 and new_you[position] == 1:
+            opp_pos = 5 - position
+            if new_opp[opp_pos] > 0:
+                new_you[6] += 1 + new_opp[opp_pos]
+                new_opp[opp_pos] = 0
+                new_you[position] = 0
+        
+        return new_you, new_opp, extra_move
+    
+    def is_game_over(you_board: np.ndarray, opp_board: np.ndarray) -> bool:
+        """Check if either player has no seeds in houses."""
+        return (np.sum(you_board[:6]) == 0) or (np.sum(opp_board[:6]) == 0)
+    
+    def final_score(you_board: np.ndarray, opp_board: np.ndarray) -> int:
+        """Calculate final score difference if game ended."""
+        if not is_game_over(you_board, opp_board):
+            return 0
+        
+        # Move remaining seeds to stores
+        final_you = you_board.copy()
+        final_opp = opp_board.copy()
+        
+        if np.sum(final_you[:6]) == 0:
+            final_opp[6] += np.sum(final_opp[:6])
+            final_opp[:6] = 0
+        
+        if np.sum(final_opp[:6]) == 0:
+            final_you[6] += np.sum(final_you[:6])
+            final_you[:6] = 0
+        
+        return final_you[6] - final_opp[6]
+    
+    def evaluate(you_board: np.ndarray, opp_board: np.ndarray) -> float:
+        """Evaluate board position from current player's perspective."""
+        if is_game_over(you_board, opp_board):
+            return final_score(you_board, opp_board) * 1000  # Large score for win/loss
+        
+        score = 0.0
+        # Base score difference
+        score += (you_board[6] - opp_board[6]) * 10
+        
+        # Add value for seeds on each side, weighted by position
+        # Seeds closer to store are slightly more valuable
+        for i in range(6):
+            # Your seeds - value based on distance to store
+            score += you_board[i] * (1 + (5-i) * 0.1)
+            # Opponent's seeds - negative value
+            score -= opp_board[i] * (1 + (5-i) * 0.1)
+        
+        # Bonus for potential extra moves
+        for i in range(6):
+            if you_board[i] > 0 and (you_board[i] + i) % 13 == 6:  # Ends in store
+                score += 3.0
+        
+        # Bonus for potential captures
+        for i in range(6):
+            if (you_board[i] > 0 and you_board[i] + i <= 5 and 
+                you_board[i+you_board[i]] == 0 and opp_board[5-(i+you_board[i])] > 0):
+                capture_value = 1 + opp_board[5-(i+you_board[i])]
+                score += capture_value * 0.8
+        
+        return score
+    
+    def minimax(you_board: np.ndarray, opp_board: np.ndarray, depth: int, alpha: float, beta: float, 
+                maximizing: bool, extra_turn: bool) -> float:
+        """Minimax search with alpha-beta pruning."""
+        if depth == 0 or is_game_over(you_board, opp_board):
+            return evaluate(you_board, opp_board)
+        
+        if maximizing:
+            max_eval = float('-inf')
+            has_move = False
+            
+            for i in range(6):
+                if you_board[i] > 0:
+                    has_move = True
+                    new_you, new_opp, extra_move = make_move(you_board, opp_board, i)
+                    
+                    if extra_move and extra_turn:
+                        # Two extra moves in a row - likely infinite turn, give high bonus
+                        eval_score = 50.0
+                    elif extra_move:
+                        # Extra move - continue maximizing
+                        eval_score = minimax(new_you, new_opp, depth, alpha, beta, True, True)
+                    else:
+                        # Opponent's turn
+                        eval_score = minimax(new_opp, new_you, depth - 1, alpha, beta, False, False)
+                        # Flip score since perspective changes
+                        eval_score = -eval_score if eval_score != 0 else 0
+                    
+                    max_eval = max(max_eval, eval_score)
+                    alpha = max(alpha, eval_score)
+                    if beta <= alpha:
+                        break
+            
+            return max_eval if has_move else evaluate(you_board, opp_board)
+        
+        else:
+            min_eval = float('inf')
+            has_move = False
+            
+            for i in range(6):
+                if you_board[i] > 0:
+                    has_move = True
+                    new_you, new_opp, extra_move = make_move(you_board, opp_board, i)
+                    
+                    if extra_move:
+                        # Extra move - continue minimizing (opponent continues)
+                        eval_score = minimax(new_you, new_opp, depth, alpha, beta, False, True)
+                    else:
+                        # Back to our turn
+                        eval_score = minimax(new_you, new_opp, depth - 1, alpha, beta, True, False)
+                        eval_score = -eval_score if eval_score != 0 else 0
+                    
+                    min_eval = min(min_eval, eval_score)
+                    beta = min(beta, eval_score)
+                    if beta <= alpha:
+                        break
+            
+            return min_eval if has_move else evaluate(opp_board, you_board)
+    
+    # Convert to numpy arrays for efficiency
+    you_array = np.array(you, dtype=np.int8)
+    opp_array = np.array(opponent, dtype=np.int8)
+    
+    # Get legal moves
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Look for immediate extra moves - very valuable
+    for move in legal_moves:
+        if (you[move] + move) % 13 == 6:  # Will end in store
+            return move
+    
+    # Use minimax to evaluate each move
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    # Adjust depth based on game phase
+    total_seeds = np.sum(you_array[:6]) + np.sum(opp_array[:6])
+    depth = 6 if total_seeds > 20 else 8  # Deeper search in endgame
+    
+    for move in legal_moves:
+        new_you, new_opp, extra_move = make_move(you_array, opp_array, move)
+        
+        if extra_move:
+            # Extra move - evaluate with same player continuing
+            score = minimax(new_you, new_opp, depth, float('-inf'), float('inf'), True, True)
+        else:
+            # Opponent's turn
+            score = minimax(new_opp, new_you, depth - 1, float('-inf'), float('inf'), False, False)
+            score = -score if score != 0 else 0
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+</code>

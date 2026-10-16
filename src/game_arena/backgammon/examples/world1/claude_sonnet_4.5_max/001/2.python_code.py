@@ -1,0 +1,275 @@
+
+def policy(state: dict) -> str:
+    """Main policy - returns best legal move."""
+    moves = generate_all_legal_moves(state)
+    
+    if not moves:
+        return "H:P,P"
+    
+    best_move = max(moves, key=lambda m: evaluate_move(state, m))
+    return best_move
+
+
+def generate_all_legal_moves(state):
+    """Generate all legal moves for current state."""
+    dice = state['dice']
+    
+    if not dice:
+        return []
+    
+    if len(dice) == 1:
+        return gen_single_die_moves(state, dice[0])
+    
+    # Two dice - try both, then higher only, then lower only
+    high_die = max(dice)
+    low_die = min(dice)
+    
+    both_moves = []
+    for order in ['H', 'L']:
+        first_die = high_die if order == 'H' else low_die
+        second_die = low_die if order == 'H' else high_die
+        both_moves.extend(gen_double_die_moves(state, first_die, second_die, order))
+    
+    if both_moves:
+        return both_moves
+    
+    high_moves = gen_single_die_moves(state, high_die)
+    if high_moves:
+        return high_moves
+    
+    return gen_single_die_moves(state, low_die)
+
+
+def gen_single_die_moves(state, die):
+    """Generate moves using a single die."""
+    moves = []
+    my_pts = state['my_pts']
+    my_bar = state['my_bar']
+    opp_pts = state['opp_pts']
+    
+    # Must enter from bar if there are checkers on it
+    if my_bar > 0:
+        entry_point = 24 - die
+        if 0 <= entry_point < 24 and opp_pts[entry_point] < 2:
+            moves.append("H:B,P")
+        return moves
+    
+    # Check if we can bear off (all checkers in home board 0-5)
+    can_bear_off = all(my_pts[i] == 0 for i in range(6, 24))
+    
+    # Try moving from each point
+    for src in range(23, -1, -1):
+        if my_pts[src] == 0:
+            continue
+        
+        dest = src - die
+        
+        if dest < 0:
+            # Bearing off
+            if can_bear_off and src < 6:
+                # Can bear off if exact or no higher checkers
+                if dest == -1 or all(my_pts[i] == 0 for i in range(src + 1, 6)):
+                    moves.append(f"H:A{src},P")
+        else:
+            # Normal move
+            if opp_pts[dest] < 2:
+                moves.append(f"H:A{src},P")
+    
+    return moves
+
+
+def gen_double_die_moves(state, first_die, second_die, order):
+    """Generate moves using both dice in specified order."""
+    moves = []
+    my_pts = state['my_pts']
+    my_bar = state['my_bar']
+    opp_pts = state['opp_pts']
+    
+    # Must enter from bar first
+    if my_bar > 0:
+        entry1 = 24 - first_die
+        if entry1 < 0 or entry1 >= 24 or opp_pts[entry1] >= 2:
+            return []
+        
+        # Simulate first entry
+        my_pts_after_first = my_pts[:]
+        my_pts_after_first[entry1] += 1
+        my_bar_after_first = my_bar - 1
+        
+        if my_bar_after_first > 0:
+            # Must enter second checker
+            entry2 = 24 - second_die
+            if 0 <= entry2 < 24 and opp_pts[entry2] < 2:
+                moves.append(f"{order}:B,B")
+        else:
+            # Second move from board
+            can_bear = all(my_pts_after_first[i] == 0 for i in range(6, 24))
+            for src in range(23, -1, -1):
+                if my_pts_after_first[src] == 0:
+                    continue
+                dest = src - second_die
+                if dest < 0:
+                    if can_bear and src < 6:
+                        if dest == -1 or all(my_pts_after_first[i] == 0 for i in range(src + 1, 6)):
+                            moves.append(f"{order}:B,A{src}")
+                else:
+                    if opp_pts[dest] < 2:
+                        moves.append(f"{order}:B,A{src}")
+        
+        return moves
+    
+    # Both moves from board
+    can_bear = all(my_pts[i] == 0 for i in range(6, 24))
+    
+    for src1 in range(23, -1, -1):
+        if my_pts[src1] == 0:
+            continue
+        
+        dest1 = src1 - first_die
+        
+        # Check if first move is valid
+        valid_first = False
+        if dest1 < 0:
+            if can_bear and src1 < 6:
+                if dest1 == -1 or all(my_pts[i] == 0 for i in range(src1 + 1, 6)):
+                    valid_first = True
+        else:
+            if opp_pts[dest1] < 2:
+                valid_first = True
+        
+        if not valid_first:
+            continue
+        
+        # Simulate first move
+        my_pts_after_first = my_pts[:]
+        my_pts_after_first[src1] -= 1
+        if dest1 >= 0:
+            my_pts_after_first[dest1] += 1
+        
+        can_bear_after = all(my_pts_after_first[i] == 0 for i in range(6, 24))
+        
+        # Try second move
+        for src2 in range(23, -1, -1):
+            if my_pts_after_first[src2] == 0:
+                continue
+            
+            dest2 = src2 - second_die
+            
+            valid_second = False
+            if dest2 < 0:
+                if can_bear_after and src2 < 6:
+                    if dest2 == -1 or all(my_pts_after_first[i] == 0 for i in range(src2 + 1, 6)):
+                        valid_second = True
+            else:
+                if opp_pts[dest2] < 2:
+                    valid_second = True
+            
+            if valid_second:
+                moves.append(f"{order}:A{src1},A{src2}")
+    
+    return moves
+
+
+def evaluate_move(state, move_str):
+    """Evaluate a move by simulating and scoring."""
+    new_state = simulate_move(state, move_str)
+    return score_position(new_state)
+
+
+def simulate_move(state, move_str):
+    """Simulate a move and return new state."""
+    parts = move_str.split(':')
+    order = parts[0]
+    from_positions = parts[1].split(',')
+    
+    dice = state['dice']
+    if len(dice) == 1:
+        dice_to_use = [dice[0]]
+    else:
+        high = max(dice)
+        low = min(dice)
+        dice_to_use = [high, low] if order == 'H' else [low, high]
+    
+    new_state = {
+        'my_pts': state['my_pts'][:],
+        'opp_pts': state['opp_pts'][:],
+        'my_bar': state['my_bar'],
+        'opp_bar': state['opp_bar'],
+        'my_off': state['my_off'],
+        'opp_off': state['opp_off'],
+        'dice': dice
+    }
+    
+    for i, from_pos in enumerate(from_positions):
+        if from_pos == 'P' or i >= len(dice_to_use):
+            continue
+        
+        die = dice_to_use[i]
+        
+        if from_pos == 'B':
+            # Entering from bar
+            new_state['my_bar'] -= 1
+            dest = 24 - die
+            # Check for hit
+            if new_state['opp_pts'][dest] == 1:
+                new_state['opp_pts'][dest] = 0
+                new_state['opp_bar'] += 1
+            new_state['my_pts'][dest] += 1
+        else:
+            # Moving from a point
+            src = int(from_pos[1:])
+            new_state['my_pts'][src] -= 1
+            dest = src - die
+            
+            if dest < 0:
+                # Bearing off
+                new_state['my_off'] += 1
+            else:
+                # Normal move - check for hit
+                if new_state['opp_pts'][dest] == 1:
+                    new_state['opp_pts'][dest] = 0
+                    new_state['opp_bar'] += 1
+                new_state['my_pts'][dest] += 1
+    
+    return new_state
+
+
+def score_position(state):
+    """Score a position (higher is better for me)."""
+    score = 0
+    
+    # Borne off checkers (winning condition)
+    score += state['my_off'] * 10000
+    score -= state['opp_off'] * 10000
+    
+    # Pip count (total distance to goal)
+    my_pips = sum((23 - i + 1) * state['my_pts'][i] for i in range(24))
+    my_pips += state['my_bar'] * 25
+    opp_pips = sum((i + 1) * state['opp_pts'][i] for i in range(24))
+    opp_pips += state['opp_bar'] * 25
+    
+    score -= my_pips * 10
+    score += opp_pips * 5
+    
+    # Checkers on bar (very bad)
+    score -= state['my_bar'] * 500
+    score += state['opp_bar'] * 300
+    
+    # Blots (exposed single checkers - vulnerable to hits)
+    for i in range(24):
+        if state['my_pts'][i] == 1:
+            score -= 50
+        if state['opp_pts'][i] == 1:
+            score += 30
+    
+    # Made points (2+ checkers - safe and blocking)
+    for i in range(24):
+        if state['my_pts'][i] >= 2:
+            score += 20
+    
+    # Home board control (important for bearing off)
+    for i in range(6):
+        if state['my_pts'][i] >= 2:
+            score += 30
+    
+    return score

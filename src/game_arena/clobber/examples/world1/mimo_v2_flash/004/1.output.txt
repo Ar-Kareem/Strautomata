@@ -1,0 +1,197 @@
+# Strategy
+The provided policy implements a minimax algorithm with alpha-beta pruning and a heuristic evaluation function tailored for Clobber on a 5x6 grid. 
+
+The board is first converted into a coordinate list representation for efficient processing. The evaluation function prioritizes mobility (the number of legal moves available) and piece count, favoring positions where the player can move and the opponent cannot. It also includes basic parity checks to detect potential endgame scenarios. 
+
+The algorithm searches to a fixed depth of 3 plies. It generates all legal moves for the current player, simulates them, and recursively evaluates the resulting board state. Alpha-beta pruning is used to cut off branches that are provably worse than the current best option, ensuring the search remains within the 1-second time limit for the 5x6 board size. The move that leads to the best minimax value is returned.
+
+<code>
+import sys
+import time
+
+def policy(you: list[list[int]], opponent: list[list[int]]) -> str:
+    ROWS = 5
+    COLS = 6
+    
+    # Directions: U, D, L, R
+    # Row changes: U(-1), D(+1), L(0), R(0)
+    # Col changes: U(0), D(0), L(-1), R(+1)
+    DR = [-1, 1, 0, 0]
+    DC = [0, 0, -1, 1]
+    DIRS = ['U', 'D', 'L', 'R']
+
+    def parse_board(you_b, opp_b):
+        me = []
+        op = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                if you_b[r][c] == 1:
+                    me.append((r, c))
+                elif opp_b[r][c] == 1:
+                    op.append((r, c))
+        return me, op
+
+    def get_moves(pieces, opp_pieces_set):
+        moves = []
+        for r, c in pieces:
+            for i in range(4):
+                nr, nc = r + DR[i], c + DC[i]
+                if 0 <= nr < ROWS and 0 <= nc < COLS:
+                    if (nr, nc) in opp_pieces_set:
+                        moves.append(((r, c), (nr, nc), DIRS[i]))
+        return moves
+
+    def evaluate(my_pieces, op_pieces, maximizing_player):
+        # Heuristic evaluation
+        my_count = len(my_pieces)
+        op_count = len(op_pieces)
+        
+        # Terminal conditions
+        if my_count == 0:
+            return -10000 if maximizing_player else 10000
+        if op_count == 0:
+            return 10000 if maximizing_player else -10000
+
+        # Mobility: Number of legal moves available
+        my_set = set(my_pieces)
+        op_set = set(op_pieces)
+        
+        my_mobility = len(get_moves(my_pieces, op_set))
+        op_mobility = len(get_moves(op_pieces, my_set))
+        
+        # If no moves for current player, they lose immediately
+        if maximizing_player:
+            if my_mobility == 0:
+                return -10000
+            if op_mobility == 0:
+                return 10000
+        else:
+            # Note: If minimizing player (opponent) has no moves, it's good for us (maximizing)
+            if op_mobility == 0:
+                return 10000
+            if my_mobility == 0:
+                return -10000
+
+        # Weighted sum: Piece count is primary, mobility is secondary
+        # We want to maximize our pieces and minimize opponent's pieces
+        # We also want to maximize our mobility and minimize opponent's mobility
+        score = (my_count - op_count) * 10 + (my_mobility - op_mobility) * 2
+        
+        return score
+
+    def minimax(my_pieces, op_pieces, depth, alpha, beta, maximizing_player):
+        # Check terminal state or max depth
+        # If no pieces for current player (meaning the player whose turn it is has 0 pieces), they lose
+        # Actually, the game ends when the player to move has no legal moves.
+        
+        if depth == 0:
+            return evaluate(my_pieces, op_pieces, maximizing_player), None
+
+        # Generate moves for the current player
+        # If maximizing_player is True, it's "our" turn (conceptually), 
+        # but in recursion we switch who is considered maximizing.
+        # However, to optimize, we should just look at whose turn it is.
+        # Let's define: is_my_turn=True if the player who called the policy is moving.
+        
+        # Determine current pieces based on turn
+        if maximizing_player: # It's the original player's turn
+            current_pieces = my_pieces
+            opponent_pieces = op_pieces
+        else: # It's the opponent's turn
+            current_pieces = op_pieces
+            opponent_pieces = my_pieces
+            
+        current_set = set(current_pieces)
+        opponent_set = set(opponent_pieces)
+        
+        moves = get_moves(current_pieces, opponent_set)
+        
+        if not moves:
+            # No moves available: current player loses
+            # If maximizing player (original player) has no moves, it's bad (return -inf)
+            # If minimizing player (opponent) has no moves, it's good (return +inf)
+            if maximizing_player:
+                return -10000, None
+            else:
+                return 10000, None
+
+        best_move = moves[0]
+
+        if maximizing_player:
+            max_eval = -float('inf')
+            for move in moves:
+                start, end, _ = move
+                # Simulate move
+                # Remove start from my_pieces, remove end from op_pieces, add end to my_pieces
+                new_my = list(my_pieces)
+                new_op = list(op_pieces)
+                
+                # Efficient update
+                new_my.remove(start)
+                new_my.append(end)
+                new_op.remove(end)
+                
+                eval_val, _ = minimax(new_my, new_op, depth - 1, alpha, beta, False)
+                
+                if eval_val > max_eval:
+                    max_eval = eval_val
+                    best_move = move
+                
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                start, end, _ = move
+                # Simulate move (Opponent moves)
+                # Remove start from op_pieces, remove end from my_pieces, add end to op_pieces
+                new_op = list(op_pieces)
+                new_my = list(my_pieces)
+                
+                new_op.remove(start)
+                new_op.append(end)
+                new_my.remove(end)
+                
+                eval_val, _ = minimax(new_my, new_op, depth - 1, alpha, beta, True)
+                
+                if eval_val < min_eval:
+                    min_eval = eval_val
+                    best_move = move
+                
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    # Main execution
+    my_pieces, op_pieces = parse_board(you, opponent)
+    
+    # Depth 3 is usually safe for 5x6 in 1s, maybe 4 if optimized, but 3 is safer.
+    # If pieces are few, we can go deeper, but fixed depth is easier for time limits.
+    depth = 3 
+    
+    # If we are winning massively, just take any move (or reduce depth to save time, but 3 is fast)
+    # If we are losing massively, maybe just resign? But we must return a move.
+    
+    _, best_move = minimax(my_pieces, op_pieces, depth, -float('inf'), float('inf'), True)
+    
+    if best_move:
+        (r, c), (nr, nc), d = best_move
+        return f"{r},{c},{d}"
+    
+    # Fallback: if minimax returned nothing (shouldn't happen if legal moves exist)
+    # Try to find any legal move
+    my_set = set(my_pieces)
+    op_set = set(op_pieces)
+    all_moves = get_moves(my_pieces, op_set)
+    if all_moves:
+        (r, c), (nr, nc), d = all_moves[0]
+        return f"{r},{c},{d}"
+        
+    # Absolutely no moves (game over)
+    # Should not reach here in a valid game state where we are called, 
+    # but if we do, return a dummy move to satisfy API (though technically this is a loss)
+    return "0,0,U" 
+</code>

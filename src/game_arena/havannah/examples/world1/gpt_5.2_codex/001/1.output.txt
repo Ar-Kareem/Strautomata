@@ -1,0 +1,191 @@
+The strategy for this policy is a two‑stage tactical system.  
+First, it detects any immediate winning move (bridge, fork, or ring) by simulating each legal placement.  
+Second, it blocks any opponent move that would win next turn.  
+If neither exists, it chooses a high‑value move using a heuristic that favors:
+- connecting to its own components,
+- touching edges and corners,
+- central positioning,
+- and disrupting opponent stones.
+
+This combines tactical safety with long‑term structure building.
+
+<code>
+from collections import deque
+
+def policy(me, opp, valid_mask):
+    N = len(valid_mask)
+    # All valid cells
+    valid_cells = [(r, c) for r in range(N) for c in range(N) if valid_mask[r][c]]
+    valid_set = set(valid_cells)
+
+    # Hex directions (axial style)
+    dirs = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)]
+
+    # Precompute neighbors and edge information
+    neighbors = {}
+    edge_indices = {}
+    edge_sets = [set() for _ in range(6)]
+    boundary_cells = set()
+
+    for (r, c) in valid_cells:
+        nbrs = []
+        missing = []
+        for i, (dr, dc) in enumerate(dirs):
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in valid_set:
+                nbrs.append((nr, nc))
+            else:
+                missing.append(i)
+        neighbors[(r, c)] = nbrs
+        edge_indices[(r, c)] = missing
+        if missing:
+            boundary_cells.add((r, c))
+            for i in missing:
+                edge_sets[i].add((r, c))
+
+    # Corners are cells missing at least 2 directions
+    corner_set = {cell for cell in valid_cells if len(edge_indices[cell]) >= 2}
+
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+    empty_cells = [cell for cell in valid_cells if cell not in occupied]
+
+    if not empty_cells:
+        return valid_cells[0]
+
+    # First move: take center if possible
+    if not me_set and not opp_set:
+        center = (N // 2, N // 2)
+        if center in valid_set:
+            return center
+        return min(empty_cells, key=lambda x: abs(x[0] - center[0]) + abs(x[1] - center[1]))
+
+    def ring_exists(player_set):
+        open_set = valid_set - player_set
+        if not open_set:
+            return False
+        visited = set()
+        q = deque()
+        for cell in boundary_cells:
+            if cell in open_set:
+                visited.add(cell)
+                q.append(cell)
+        while q:
+            cell = q.popleft()
+            for nb in neighbors[cell]:
+                if nb in open_set and nb not in visited:
+                    visited.add(nb)
+                    q.append(nb)
+        return len(open_set - visited) > 0
+
+    def check_win(player_set, new_cell):
+        # Only check the component containing new_cell
+        visited = set([new_cell])
+        q = deque([new_cell])
+        edges_touched = set()
+        corners_touched = set()
+
+        while q:
+            cell = q.popleft()
+            if cell in corner_set:
+                corners_touched.add(cell)
+            else:
+                for e in edge_indices[cell]:
+                    edges_touched.add(e)
+            for nb in neighbors[cell]:
+                if nb in player_set and nb not in visited:
+                    visited.add(nb)
+                    q.append(nb)
+
+        if len(corners_touched) >= 2:
+            return True
+        if len(edges_touched) >= 3:
+            return True
+        return ring_exists(player_set)
+
+    # 1) Immediate win
+    for cell in empty_cells:
+        if check_win(me_set | {cell}, cell):
+            return cell
+
+    # 2) Immediate block
+    for cell in empty_cells:
+        if check_win(opp_set | {cell}, cell):
+            return cell
+
+    # Compute my components for heuristic scoring
+    comp_id = {}
+    components = []
+    visited = set()
+
+    for cell in me_set:
+        if cell not in visited:
+            q = deque([cell])
+            visited.add(cell)
+            edges = set()
+            corners = set()
+            comp_cells = []
+            while q:
+                cur = q.popleft()
+                comp_cells.append(cur)
+                if cur in corner_set:
+                    corners.add(cur)
+                else:
+                    for e in edge_indices[cur]:
+                        edges.add(e)
+                for nb in neighbors[cur]:
+                    if nb in me_set and nb not in visited:
+                        visited.add(nb)
+                        q.append(nb)
+            cid = len(components)
+            components.append({"edges": edges, "corners": corners})
+            for c in comp_cells:
+                comp_id[c] = cid
+
+    center = (N // 2, N // 2)
+
+    def score_cell(cell):
+        r, c = cell
+        score = 0.0
+        my_adj = 0
+        opp_adj = 0
+        adj_comps = set()
+
+        for nb in neighbors[cell]:
+            if nb in me_set:
+                my_adj += 1
+                adj_comps.add(comp_id[nb])
+            elif nb in opp_set:
+                opp_adj += 1
+
+        score += 1.5 * my_adj + 0.8 * opp_adj
+        score -= 0.1 * (abs(r - center[0]) + abs(c - center[1]))
+
+        if cell in corner_set:
+            score += 3.0
+        elif edge_indices[cell]:
+            score += 1.5
+
+        edges = set()
+        corners = set()
+        for cid in adj_comps:
+            edges |= components[cid]["edges"]
+            corners |= components[cid]["corners"]
+
+        if cell in corner_set:
+            corners.add(cell)
+        else:
+            for e in edge_indices[cell]:
+                edges.add(e)
+
+        score += 2.5 * len(edges) + 4.0 * len(corners) + 0.5 * len(adj_comps)
+
+        if not adj_comps:
+            score -= 0.5
+
+        return score
+
+    best_cell = max(empty_cells, key=score_cell)
+    return best_cell
+</code>

@@ -1,0 +1,173 @@
+
+import numpy as np
+from typing import Tuple, List
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Choose the best move for 3D Tic Tac Toe using minimax with alpha-beta pruning.
+    
+    Args:
+        board: 3x3x3 list of lists representing the game board
+               0 = empty, 1 = player (us), -1 = opponent
+    
+    Returns:
+        Tuple of (x, y, z) coordinates for the next move
+    """
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # First, check if we can win immediately
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board_array[x, y, z] == 0:
+                    board_array[x, y, z] = 1
+                    if check_win(board_array, 1):
+                        return (x, y, z)
+                    board_array[x, y, z] = 0
+    
+    # Then, check if we need to block opponent from winning
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board_array[x, y, z] == 0:
+                    board_array[x, y, z] = -1
+                    if check_win(board_array, -1):
+                        board_array[x, y, z] = 0
+                        return (x, y, z)
+                    board_array[x, y, z] = 0
+    
+    # Otherwise, use minimax to find the best move
+    best_move = None
+    best_score = float('-inf')
+    
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board_array[x, y, z] == 0:
+                    board_array[x, y, z] = 1
+                    score = minimax(board_array, depth=4, alpha=float('-inf'), beta=float('inf'), maximizing=False)
+                    board_array[x, y, z] = 0
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_move = (x, y, z)
+    
+    # Fallback to first available move if minimax didn't find anything
+    if best_move is None:
+        for x in range(3):
+            for y in range(3):
+                for z in range(3):
+                    if board_array[x, y, z] == 0:
+                        return (x, y, z)
+    
+    return best_move
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """
+    Check if the given player has won on the board.
+    """
+    # Check rows in each layer
+    for z in range(3):
+        for x in range(3):
+            if np.all(board[x, :, z] == player):
+                return True
+        for y in range(3):
+            if np.all(board[:, y, z] == player):
+                return True
+    
+    # Check columns in each layer
+    for z in range(3):
+        for y in range(3):
+            if np.all(board[:, y, z] == player):
+                return True
+        for x in range(3):
+            if np.all(board[x, :, z] == player):
+                return True
+                
+    # Check depths (along z-axis)
+    for x in range(3):
+        for y in range(3):
+            if np.all(board[x, y, :] == player):
+                return True
+    
+    # Check main diagonals in xy planes
+    for z in range(3):
+        if np.all(np.diag(board[:, :, z]) == player):
+            return True
+        if np.all(np.diag(np.fliplr(board[:, :, z])) == player):
+            return True
+            
+    # Check vertical diagonals through layers
+    if np.all([board[i, i, i] for i in range(3)] == player):
+        return True
+    if np.all([board[i, 2-i, i] for i in range(3)] == player):
+        return True
+    if np.all([board[i, i, 2-i] for i in range(3)] == player):
+        return True
+    if np.all([board[i, 2-i, 2-i] for i in range(3)] == player):
+        return True
+        
+    # Check face diagonals
+    for x in range(3):
+        if np.all([board[x, i, i] for i in range(3)] == player):
+            return True
+        if np.all([board[x, i, 2-i] for i in range(3)] == player):
+            return True
+            
+    for y in range(3):
+        if np.all([board[i, y, i] for i in range(3)] == player):
+            return True
+        if np.all([board[i, y, 2-i] for i in range(3)] == player):
+            return True
+    
+    return False
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+    """
+    Minimax algorithm with alpha-beta pruning.
+    """
+    # Check terminal states
+    if check_win(board, 1):
+        return 10 + depth
+    if check_win(board, -1):
+        return -10 - depth
+    if depth == 0 or not np.any(board == 0):
+        return 0  # Draw or depth limit reached
+    
+    if maximizing:  # Our turn (player 1)
+        max_eval = float('-inf')
+        for x in range(3):
+            for y in range(3):
+                for z in range(3):
+                    if board[x, y, z] == 0:
+                        board[x, y, z] = 1
+                        eval_score = minimax(board, depth - 1, alpha, beta, False)
+                        board[x, y, z] = 0
+                        max_eval = max(max_eval, eval_score)
+                        alpha = max(alpha, eval_score)
+                        if beta <= alpha:
+                            break
+                if beta <= alpha:
+                    break
+            if beta <= alpha:
+                break
+        return max_eval
+    else:  # Opponent's turn (player -1)
+        min_eval = float('inf')
+        for x in range(3):
+            for y in range(3):
+                for z in range(3):
+                    if board[x, y, z] == 0:
+                        board[x, y, z] = -1
+                        eval_score = minimax(board, depth - 1, alpha, beta, True)
+                        board[x, y, z] = 0
+                        min_eval = min(min_eval, eval_score)
+                        beta = min(beta, eval_score)
+                        if beta <= alpha:
+                            break
+                if beta <= alpha:
+                    break
+            if beta <= alpha:
+                break
+        return min_eval

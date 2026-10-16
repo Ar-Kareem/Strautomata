@@ -1,0 +1,301 @@
+
+import math
+import time
+import random
+
+def policy(board) -> str:
+    # Initialize the agent with the current board and player color (1)
+    # The agent uses iterative deepening minimax search.
+    agent = LoaAgent(board, color=1)
+    best_move = agent.search()
+    
+    # Convert move tuple ((r1, c1), (r2, c2)) to the required string format "r1,c1:r2,c2"
+    return f"{best_move[0][0]},{best_move[0][1]}:{best_move[1][0]},{best_move[1][1]}"
+
+class LoaAgent:
+    def __init__(self, board, color):
+        self.board = board
+        self.color = color
+        self.opp = -color
+        self.start_time = 0
+        self.time_limit = 0.95  # Seconds allowed for search
+
+    def search(self):
+        self.start_time = time.time()
+        moves = self.generate_moves(self.board, self.color)
+        
+        if not moves:
+            # No legal moves available. Return a dummy move (0,0 to 0,0).
+            # In a real game, this usually signifies a loss or pass turn.
+            return ((0, 0), (0, 0))
+            
+        # Basic Move Ordering: Prioritize moves that capture opponent pieces
+        # This helps Alpha-Beta pruning significantly.
+        moves.sort(key=lambda m: 1 if self.board[m[1][0]][m[1][1]] == self.opp else 0, reverse=True)
+        
+        best_move = moves[0]
+        depth = 1
+        # Limit depth to prevent runaway execution in simple endgames
+        max_depth = 6 
+        
+        try:
+            while depth <= max_depth:
+                current_best_move = None
+                alpha = -float('inf')
+                beta = float('inf')
+                best_val = -float('inf')
+                
+                # We iterate the root manually to track the best move for this completed depth
+                for m in moves:
+                    if time.time() - self.start_time > self.time_limit:
+                        raise TimeoutError
+                    
+                    # Execute move
+                    undo_info = self.make_move(self.board, m)
+                    
+                    try:
+                        # Call Minimax for the opponent (minimizing player)
+                        val = self.minimax(depth - 1, alpha, beta, False)
+                    finally:
+                        # Undo move
+                        self.undo_move(self.board, m, undo_info)
+                    
+                    if val > best_val:
+                        best_val = val
+                        current_best_move = m
+                    
+                    alpha = max(alpha, best_val)
+                    
+                    # If we found a winning move, return immediately
+                    if best_val >= 90000:
+                         return current_best_move
+                
+                if current_best_move:
+                    best_move = current_best_move
+                
+                # Heuristic: If we used >50% of time, deeper search is risky
+                if (time.time() - self.start_time) > self.time_limit * 0.5:
+                    break
+                    
+                depth += 1
+                
+        except TimeoutError:
+            # Return the best move found in the last fully completed depth
+            pass
+            
+        return best_move
+
+    def minimax(self, depth, alpha, beta, maximizing):
+        # Check for timeout periodically
+        if (time.time() - self.start_time) > self.time_limit:
+             raise TimeoutError
+
+        # Terminal determination at depth 0
+        if depth == 0:
+            return self.evaluate(self.board)
+
+        player = self.color if maximizing else self.opp
+        moves = self.generate_moves(self.board, player)
+        
+        # If no moves available, it's typically a loss for that player
+        if not moves:
+            return -100000 if maximizing else 100000
+
+        if maximizing:
+            max_eval = -float('inf')
+            for m in moves:
+                undo = self.make_move(self.board, m)
+                try:
+                    eval_val = self.minimax(depth - 1, alpha, beta, False)
+                finally:
+                    self.undo_move(self.board, m, undo)
+                
+                max_eval = max(max_eval, eval_val)
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for m in moves:
+                undo = self.make_move(self.board, m)
+                try:
+                    eval_val = self.minimax(depth - 1, alpha, beta, True)
+                finally:
+                    self.undo_move(self.board, m, undo)
+                
+                min_eval = min(min_eval, eval_val)
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    def generate_moves(self, board, player):
+        moves = []
+        rows = range(8)
+        cols = range(8)
+        
+        # Locate all pieces of the current player
+        pieces = [(r, c) for r in rows for c in cols if board[r][c] == player]
+        
+        for r, c in pieces:
+            # For each piece, check all 4 lines of movement (Horz, Vert, Diag1, Diag2)
+            # We map the 8 logic directions to these 4 lines
+            
+            # 1. Horizontal
+            cnt_h = sum(1 for k in cols if board[r][k] != 0)
+            # 2. Vertical
+            cnt_v = sum(1 for k in rows if board[k][c] != 0)
+            
+            # 3. Main Diagonal (top-left to bottom-right)
+            cnt_d1 = 0
+            # Traverse full diagonal to count
+            tr, tc = r, c
+            while tr > 0 and tc > 0: tr -= 1; tc -= 1
+            while tr < 8 and tc < 8:
+                if board[tr][tc] != 0: cnt_d1 += 1
+                tr += 1; tc += 1
+                
+            # 4. Anti-Diagonal (top-right to bottom-left)
+            cnt_d2 = 0
+            tr, tc = r, c
+            while tr > 0 and tc < 7: tr -= 1; tc += 1
+            while tr < 8 and tc >= 0:
+                if board[tr][tc] != 0: cnt_d2 += 1
+                tr += 1; tc -= 1
+
+            # Map direction vectors to calculated line counts
+            # (dr, dc) -> count
+            dir_context = [
+                ((0, 1), cnt_h), ((0, -1), cnt_h),
+                ((1, 0), cnt_v), ((-1, 0), cnt_v),
+                ((1, 1), cnt_d1), ((-1, -1), cnt_d1),
+                ((1, -1), cnt_d2), ((-1, 1), cnt_d2)
+            ]
+            
+            for (dr, dc), dist in dir_context:
+                if dist == 0: continue # Should be at least 1 (the piece itself)
+                
+                tr = r + dr * dist
+                tc = c + dc * dist
+                
+                # Check boundaries
+                if 0 <= tr < 8 and 0 <= tc < 8:
+                    target = board[tr][tc]
+                    
+                    # Rule: Cannot land on friendly piece
+                    if target == player:
+                        continue
+                        
+                    # Rule: Cannot jump over enemy pieces
+                    path_blocked = False
+                    for k in range(1, dist):
+                        pr = r + dr * k
+                        pc = c + dc * k
+                        mid = board[pr][pc]
+                        # "enemy piece" is any non-zero that is not current player
+                        if mid != 0 and mid != player:
+                            path_blocked = True
+                            break
+                    
+                    if not path_blocked:
+                        moves.append( ((r, c), (tr, tc)) )
+                        
+        return moves
+
+    def make_move(self, board, move):
+        start, end = move
+        captured = board[end[0]][end[1]]
+        board[end[0]][end[1]] = board[start[0]][start[1]]
+        board[start[0]][start[1]] = 0
+        return captured
+
+    def undo_move(self, board, move, captured):
+        start, end = move
+        board[start[0]][start[1]] = board[end[0]][end[1]]
+        board[end[0]][end[1]] = captured
+
+    def evaluate(self, board):
+        # Locate pieces
+        my_pcs = []
+        opp_pcs = []
+        for r in range(8):
+            for c in range(8):
+                v = board[r][c]
+                if v == self.color:
+                    my_pcs.append((r, c))
+                elif v == self.opp:
+                    opp_pcs.append((r, c))
+        
+        # If a player has no pieces (captured?), they lose, or check win conditions
+        if not my_pcs: return -100000
+        if not opp_pcs: return 100000
+        
+        # Calculate connectivity and concentration
+        my_comps, my_conc = self.get_components_and_concentration(my_pcs)
+        opp_comps, opp_conc = self.get_components_and_concentration(opp_pcs)
+        
+        # Victory conditions (1 component = win)
+        # Priority to maximizing player (self)
+        if my_comps == 1: return 100000
+        if opp_comps == 1: return -100000
+        
+        # Heuristic Score
+        # We want fewer components (closest to 1) and lower concentration (tighter pack)
+        score = 0
+        # Heavy penalty for extra components
+        score -= (my_comps - 1) * 5000
+        # Penalty for spread
+        score -= my_conc
+        
+        # Reward opponent fragmentation
+        score += (opp_comps - 1) * 3000
+        # Reward opponent spread
+        score += opp_conc
+        
+        # Small bonus for keeping pieces near center (mobility/blocking)
+        # center is (3.5, 3.5)
+        for r, c in my_pcs:
+            dist_center = abs(r - 3.5) + abs(c - 3.5)
+            score -= dist_center * 5
+            
+        return score
+
+    def get_components_and_concentration(self, pieces):
+        if not pieces: return 0, 0
+        
+        # 1. Count Connected Components via BFS
+        piece_set = set(pieces)
+        visited = set()
+        comps = 0
+        
+        for p in pieces:
+            if p not in visited:
+                comps += 1
+                q = [p]
+                visited.add(p)
+                while q:
+                    cur = q.pop(0)
+                    cx, cy = cur
+                    # 8-direction neighbors
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            if dx == 0 and dy == 0: continue
+                            nx, ny = cx + dx, cy + dy
+                            if (nx, ny) in piece_set and (nx, ny) not in visited:
+                                visited.add((nx, ny))
+                                q.append((nx, ny))
+                                
+        # 2. Calculate Concentration (Spread)
+        # Using Manhattan distance from the Center of Mass
+        sum_r = sum(p[0] for p in pieces)
+        sum_c = sum(p[1] for p in pieces)
+        n = len(pieces)
+        avg_r = sum_r / n
+        avg_c = sum_c / n
+        
+        concentration = 0
+        for r, c in pieces:
+            concentration += abs(r - avg_r) + abs(c - avg_c)
+            
+        return comps, concentration

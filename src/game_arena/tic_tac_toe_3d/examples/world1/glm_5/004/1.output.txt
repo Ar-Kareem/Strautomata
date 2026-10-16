@@ -1,0 +1,240 @@
+The strategy for this policy is based on a combination of immediate tactical analysis and adversarial search.
+1.  **Immediate Win/Loss Check**: Before performing any complex search, the policy scans for two critical conditions: a move that immediately wins the game (completing a line of 3) or a move that blocks an opponent's immediate win.
+2.  **Minimax with Alpha-Beta Pruning**: If no immediate tactical move is found, the policy employs the Minimax algorithm with Alpha-Beta pruning to search the game tree. This allows the AI to look several moves ahead and choose a move that maximizes its chances of winning while minimizing the opponent's opportunities.
+3.  **Heuristic Evaluation**: Since 3D Tic Tac Toe is too complex to solve completely in a short time, a heuristic evaluation function is used for non-terminal nodes. This function scores the board based on the number of "open lines" and potential threats (e.g., lines with two of the player's pieces and no opponent pieces).
+4.  **Move Ordering**: To optimize the Alpha-Beta pruning, moves are ordered by strategic value, prioritizing the center, corners, and face centers, which control more winning lines than edges.
+5.  **Adaptive Depth**: The search depth adjusts based on the number of empty cells remaining, ensuring the policy responds quickly in the opening but searches deeper in the critical mid-to-late game.
+
+<code>
+import math
+
+# Constants
+PLAYER = 1
+OPPONENT = -1
+EMPTY = 0
+SIZE = 3
+
+# Precompute all 49 winning lines
+# Each line is a list of 3 coordinates (i, j, k)
+LINES = []
+
+# Rows (constant i, j)
+for i in range(SIZE):
+    for j in range(SIZE):
+        LINES.append([(i, j, k) for k in range(SIZE)])
+
+# Columns (constant i, k)
+for i in range(SIZE):
+    for k in range(SIZE):
+        LINES.append([(i, j, k) for j in range(SIZE)])
+
+# Pillars (constant j, k)
+for j in range(SIZE):
+    for k in range(SIZE):
+        LINES.append([(i, j, k) for i in range(SIZE)])
+
+# 2D Diagonals in i-planes (constant i)
+for i in range(SIZE):
+    LINES.append([(i, d, d) for d in range(SIZE)])
+    LINES.append([(i, d, SIZE - 1 - d) for d in range(SIZE)])
+
+# 2D Diagonals in j-planes (constant j)
+for j in range(SIZE):
+    LINES.append([(d, j, d) for d in range(SIZE)])
+    LINES.append([(d, j, SIZE - 1 - d) for d in range(SIZE)])
+
+# 2D Diagonals in k-planes (constant k)
+for k in range(SIZE):
+    LINES.append([(d, d, k) for d in range(SIZE)])
+    LINES.append([(d, SIZE - 1 - d, k) for d in range(SIZE)])
+
+# 3D Diagonals
+LINES.append([(d, d, d) for d in range(SIZE)])
+LINES.append([(d, d, SIZE - 1 - d) for d in range(SIZE)])
+LINES.append([(d, SIZE - 1 - d, d) for d in range(SIZE)])
+LINES.append([(SIZE - 1 - d, d, d) for d in range(SIZE)])
+
+
+def check_winner(board):
+    """
+    Checks the board for a winner.
+    Returns 1 if Player wins, -1 if Opponent wins, 0 otherwise.
+    """
+    for line in LINES:
+        s = sum(board[i][j][k] for i, j, k in line)
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+
+def evaluate(board):
+    """
+    Heuristic evaluation of the board state.
+    """
+    score = 0
+    for line in LINES:
+        # Extract values of the cells in the line
+        vals = [board[i][j][k] for i, j, k in line]
+        p1_count = vals.count(PLAYER)
+        p2_count = vals.count(OPPONENT)
+
+        # If a line contains both players' pieces, it is dead (no score)
+        if p1_count > 0 and p2_count > 0:
+            continue
+
+        # Score based on potential
+        if p1_count > 0:
+            if p1_count == 3: return 10000 # Should be caught by winner check, safety
+            score += 10 ** p1_count
+        elif p2_count > 0:
+            if p2_count == 3: return -10000
+            score -= 10 ** p2_count
+            
+    return score
+
+
+def get_move_priority(move):
+    """
+    Assigns a priority score to a move for ordering.
+    Center > Corners > Face Centers > Edges
+    """
+    i, j, k = move
+    
+    # Center (1,1,1) - controls 13 lines
+    if i == 1 and j == 1 and k == 1:
+        return 0
+    
+    # Corners - control 7 lines
+    if (i != 1) and (j != 1) and (k != 1):
+        return 1
+        
+    # Face Centers - control 4 lines
+    # e.g. (0, 1, 1), (1, 0, 1)...
+    ones_count = (i == 1) + (j == 1) + (k == 1)
+    if ones_count == 2:
+        return 2
+        
+    # Edges - control 3 lines
+    return 3
+
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    """
+    Minimax algorithm with Alpha-Beta pruning.
+    """
+    winner = check_winner(board)
+    if winner != 0:
+        return winner * 10000
+    
+    if depth == 0:
+        return evaluate(board)
+    
+    moves = []
+    for i in range(SIZE):
+        for j in range(SIZE):
+            for k in range(SIZE):
+                if board[i][j][k] == EMPTY:
+                    moves.append((i, j, k))
+    
+    if not moves:
+        return 0 # Draw
+    
+    # Sort moves by priority to improve pruning
+    moves.sort(key=get_move_priority)
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        for i, j, k in moves:
+            board[i][j][k] = PLAYER
+            eval_val = minimax(board, depth - 1, alpha, beta, False)
+            board[i][j][k] = EMPTY
+            
+            if eval_val > max_eval:
+                max_eval = eval_val
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for i, j, k in moves:
+            board[i][j][k] = OPPONENT
+            eval_val = minimax(board, depth - 1, alpha, beta, True)
+            board[i][j][k] = EMPTY
+            
+            if eval_val < min_eval:
+                min_eval = eval_val
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval
+
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Main policy function to determine the best move.
+    """
+    
+    # 1. Check for immediate winning move
+    for i in range(SIZE):
+        for j in range(SIZE):
+            for k in range(SIZE):
+                if board[i][j][k] == EMPTY:
+                    board[i][j][k] = PLAYER
+                    if check_winner(board) == PLAYER:
+                        board[i][j][k] = EMPTY
+                        return (i, j, k)
+                    board[i][j][k] = EMPTY
+
+    # 2. Check for immediate blocking move
+    for i in range(SIZE):
+        for j in range(SIZE):
+            for k in range(SIZE):
+                if board[i][j][k] == EMPTY:
+                    board[i][j][k] = OPPONENT
+                    if check_winner(board) == OPPONENT:
+                        board[i][j][k] = EMPTY
+                        return (i, j, k)
+                    board[i][j][k] = EMPTY
+
+    # 3. Gather empty moves for deeper search
+    moves = []
+    for i in range(SIZE):
+        for j in range(SIZE):
+            for k in range(SIZE):
+                if board[i][j][k] == EMPTY:
+                    moves.append((i, j, k))
+    
+    if not moves:
+        return (0, 0, 0) # Should not happen if game not over
+
+    # 4. Determine search depth based on stage of game
+    empty_count = len(moves)
+    if empty_count > 18: # Early game
+        depth = 3
+    elif empty_count > 8: # Mid game
+        depth = 4
+    else: # Late game
+        depth = 6
+
+    # 5. Minimax search
+    best_score = -float('inf')
+    best_move = moves[0]
+    
+    # Sort moves for root node ordering
+    moves.sort(key=get_move_priority)
+    
+    for move in moves:
+        i, j, k = move
+        board[i][j][k] = PLAYER
+        score = minimax(board, depth, -float('inf'), float('inf'), False)
+        board[i][j][k] = EMPTY
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move
+</code>

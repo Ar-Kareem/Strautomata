@@ -1,0 +1,382 @@
+
+import numpy as np
+from typing import List, Tuple, Optional, Dict, Any
+
+def policy(state: dict) -> str:
+    # Unpack state
+    my_pts = state['my_pts']        # length-24 list: my checkers on points 0..23
+    opp_pts = state['opp_pts']      # length-24 list: opponent checkers
+    my_bar = state['my_bar']        # int: checkers on bar
+    opp_bar = state['opp_bar']      # int: opponent checkers on bar
+    my_off = state['my_off']        # int: my borne off
+    opp_off = state['opp_off']      # int: opponent borne off
+    dice = sorted(state['dice'], reverse=True)  # sorted high to low
+    if len(dice) == 0:
+        return "H:P,P"
+
+    # Define constants
+    HOME_BOARD_START = 0
+    HOME_BOARD_END = 5
+    BOARD_SIZE = 24
+
+    def is_blot(count: int) -> bool:
+        return count == 1
+
+    def is_safe(pt_idx: int) -> bool:
+        return my_pts[pt_idx] >= 2
+
+    def can_move_to(pt_idx: int) -> bool:
+        if pt_idx < 0 or pt_idx >= BOARD_SIZE:
+            return False
+        return opp_pts[pt_idx] <= 1
+
+    def can_bear_off() -> bool:
+        # All remaining checkers must be in home board
+        for i in range(HOME_BOARD_END + 1, BOARD_SIZE):
+            if my_pts[i] > 0:
+                return False
+        return True
+
+    def get_dest(from_idx: int, die: int) -> int:
+        if from_idx == 'B':
+            return BOARD_SIZE - die  # entering from bar: die=1 -> point 23, die=6 -> point 18
+        return from_idx - die  # we move from high to low
+
+    def is_valid_move(from_idx: int, die: int) -> bool:
+        dest = get_dest(from_idx, die)
+        if from_idx == 'B':
+            if my_bar == 0:
+                return False
+        else:
+            if my_pts[from_idx] == 0:
+                return False
+        if dest < 0:
+            # Bore off possible?
+            if can_bear_off():
+                # Can only bear off if no checkers behind
+                max_point = -1
+                for i in range(BOARD_SIZE):
+                    if my_pts[i] > 0:
+                        max_point = i
+                if max_point < die:
+                    return True  # can bear off from highest point
+                elif max_point == from_idx:
+                    return True  # can bear off from this point
+                else:
+                    return False
+            return False
+        return can_move_to(dest)
+
+    def apply_move(state_copy: Dict[str, Any], from_idx: int, die: int) -> bool:
+        # Applies a move to a state copy and returns success
+        my_pts_c = state_copy['my_pts']
+        opp_pts_c = state_copy['opp_pts']
+        my_bar_c = state_copy['my_bar']
+        my_off_c = state_copy['my_off']
+
+        dest = get_dest(from_idx, die)
+        if from_idx == 'B':
+            if my_bar_c == 0:
+                return False
+            my_bar_c -= 1
+            source_pts = 0
+        else:
+            if my_pts_c[from_idx] == 0:
+                return False
+            my_pts_c[from_idx] -= 1
+            source_pts = from_idx
+
+        if dest >= 0:
+            if opp_pts_c[dest] == 1:
+                # Hit
+                opp_pts_c[dest] = 0
+                state_copy['opp_bar'] += 1
+            my_pts_c[dest] += 1
+        else:
+            # Bore off
+            my_off_c += 1
+
+        state_copy['my_bar'] = my_bar_c
+        state_copy['my_off'] = my_off_c
+        return True
+
+    def get_legal_moves(dice: List[int]) -> List[Tuple[int, int, int, int]]:
+        # Returns list of (from1, die1, from2, die2)
+        # Each from is either a point index (0..23) or 'B'
+        # die1 and die2 are the dice used (must be in dice)
+        legal = []
+
+        dice1, dice2 = dice[0], dice[1] if len(dice) > 1 else 0
+
+        # If on bar, must use bar moves
+        if my_bar > 0:
+            for die in dice:
+                dest = get_dest('B', die)
+                if 0 <= dest < BOARD_SIZE and can_move_to(dest):
+                    # First move from bar with `die`
+                    remaining_dice = [d for d in dice if d != die] or [0]
+
+                    # After first move, try to make second move
+                    for r_die in remaining_dice:
+                        state_copy = {
+                            'my_pts': my_pts[:],
+                            'opp_pts': opp_pts[:],
+                            'my_bar': my_bar,
+                            'opp_bar': opp_bar,
+                            'my_off': my_off,
+                            'opp_off': opp_off
+                        }
+                        # Apply first move
+                        if apply_move(state_copy, 'B', die):
+                            # Now check if second move is possible
+                            found_second = False
+                            if state_copy['my_bar'] == 0:
+                                # Can move from points
+                                for pt in range(BOARD_SIZE):
+                                    if state_copy['my_pts'][pt] > 0:
+                                        dest2 = pt - r_die
+                                        if dest2 < 0:
+                                            if can_bear_off():
+                                                max_pt = -1
+                                                for i in range(BOARD_SIZE):
+                                                    if state_copy['my_pts'][i] > 0:
+                                                        max_pt = i
+                                                if max_pt < r_die or max_pt == pt:
+                                                    legal.append(('B', die, pt, r_die))
+                                                    found_second = True
+                                        elif dest2 >= 0 and can_move_to(dest2):
+                                            legal.append(('B', die, pt, r_die))
+                                            found_second = True
+                            else:
+                                # Still on bar, second move must be from bar
+                                dest2 = get_dest('B', r_die)
+                                if 0 <= dest2 < BOARD_SIZE and can_move_to(dest2):
+                                    legal.append(('B', die, 'B', r_die))
+                                    found_second = True
+                            if not found_second and len(remaining_dice) == 1:
+                                # Second move not possible
+                                legal.append(('B', die, 'P', 0))
+                    # Also consider only one move (if two dice, but second not playable)
+                    if len(dice) == 2 and not any(m[1] == die and m[3] == (dice[1] if dice[1] != die else dice[0]) for m in legal):
+                        # But only if higher die could be played?
+                        # Rule: if only one die can be played, must play higher if possible
+                        if die == dice1:
+                            legal.append(('B', die, 'P', 0))
+            # If no legal move from bar, cannot move
+            if not legal:
+                legal.append(('P', 0, 'P', 0))
+            return legal
+
+        # Not on bar: generate moves from points
+        # Try both orders if two dice
+        sources = [i for i in range(BOARD_SIZE) if my_pts[i] > 0] + ['P']
+        for from1 in sources:
+            for d1 in dice:
+                if from1 != 'P' and not is_valid_move(from1, d1):
+                    continue
+                # Make first move
+                state_copy1 = {
+                    'my_pts': my_pts[:],
+                    'opp_pts': opp_pts[:],
+                    'my_bar': my_bar,
+                    'opp_bar': opp_bar,
+                    'my_off': my_off,
+                    'opp_off': opp_off
+                }
+                if from1 == 'P':
+                    applied1 = True
+                else:
+                    applied1 = apply_move(state_copy1, from1, d1)
+
+                if not applied1:
+                    continue
+
+                remaining_dice = [d for d in dice if d != d1]
+                if not remaining_dice:
+                    legal.append((from1, d1, 'P', 0))
+                    continue
+
+                r_die = remaining_dice[0]
+                found_second = False
+                # Check all possible second moves
+                for from2 in [i for i in range(BOARD_SIZE) if state_copy1['my_pts'][i] > 0] + ['P']:
+                    if from2 == 'P':
+                        # Second move pass
+                        legal.append((from1, d1, 'P', 0))
+                        found_second = True
+                    elif is_valid_move2(state_copy1, from2, r_die):
+                        legal.append((from1, d1, from2, r_die))
+                        found_second = True
+                if not found_second:
+                    # Can only play one die
+                    # But must play higher die if possible
+                    if d1 == dice1 or len([d for d in dice if is_valid_move_higher(d)]) == 0:
+                        legal.append((from1, d1, 'P', 0))
+        if not legal and len(dice) == 2:
+            # Check if we can play only the lower die? But rule says must play higher if possible
+            # So if higher die is not playable, try lower
+            if not any(is_valid_move(pt, dice1) for pt in range(BOARD_SIZE) if my_pts[pt] > 0):
+                for pt in range(BOARD_SIZE):
+                    if my_pts[pt] > 0 and is_valid_move(pt, dice[1]):
+                        legal.append((pt, dice[1], 'P', 0))
+        if not legal:
+            legal.append(('P', 0, 'P', 0))
+        return legal
+
+    def is_valid_move2(state_c: Dict, from_idx: int, die: int) -> bool:
+        my_pts_c = state_c['my_pts']
+        if my_pts_c[from_idx] == 0:
+            return False
+        dest = from_idx - die
+        if dest < 0:
+            # Bearing off
+            if not can_bear_off_state(state_c):
+                return False
+            max_point = -1
+            for i in range(BOARD_SIZE):
+                if my_pts_c[i] > 0:
+                    max_point = i
+            if max_point < die:
+                return True
+            elif max_point == from_idx:
+                return True
+            else:
+                return False
+        return 0 <= dest < BOARD_SIZE and state_c['opp_pts'][dest] <= 1
+
+    def can_bear_off_state(state_c: Dict) -> bool:
+        for i in range(HOME_BOARD_END + 1, BOARD_SIZE):
+            if state_c['my_pts'][i] > 0:
+                return False
+        return True
+
+    def is_valid_move_any(die: int) -> bool:
+        if my_bar > 0:
+            dest = get_dest('B', die)
+            return 0 <= dest < BOARD_SIZE and can_move_to(dest)
+        for pt in range(BOARD_SIZE):
+            if my_pts[pt] > 0 and is_valid_move(pt, die):
+                return True
+        return False
+
+    def is_valid_move_higher(die: int) -> bool:
+        # Helper to check if a move is possible with `die` (used for rule compliance)
+        if my_bar > 0:
+            dest = get_dest('B', die)
+            return 0 <= dest < BOARD_SIZE and can_move_to(dest)
+        for pt in range(BOARD_SIZE):
+            if my_pts[pt] > 0 and is_valid_move(pt, die):
+                return True
+        return False
+
+    def evaluate_move(from1: int, die1: int, from2: int, die2: int) -> float:
+        score = 0.0
+        # Simulate the move on a copy
+        state_copy = {
+            'my_pts': my_pts[:],
+            'opp_pts': opp_pts[:],
+            'my_bar': my_bar,
+            'opp_bar': opp_bar,
+            'my_off': my_off,
+            'opp_off': opp_off
+        }
+        # First move
+        if from1 != 'P':
+            apply_move(state_copy, from1, die1)
+        # Second move
+        if from2 != 'P':
+            apply_move(state_copy, from2, die2)
+
+        my_pts_c = state_copy['my_pts']
+        opp_pts_c = state_copy['opp_pts']
+        my_bar_c = state_copy['my_bar']
+        my_off_c = state_copy['my_off']
+
+        # 1. Reward bearing off
+        score += (my_off_c - my_off) * 10
+
+        # 2. Penalize having checkers on bar
+        score -= (my_bar_c - my_bar) * 5
+
+        # 3. Reward hitting opponent
+        hits = (opp_bar + len([1 for i in range(BOARD_SIZE) if opp_pts[i] > 0 and opp_pts_c[i] == 0 and opp_pts[i] == 1])) - opp_bar
+        score += hits * 3
+
+        # 4. Build home board: reward points in home board with multiple checkers
+        home_points_built = sum(1 for i in range(HOME_BOARD_END + 1) if my_pts_c[i] >= 2)
+        score += home_points_built * 0.5
+
+        # 5. Avoid leaving blots in opponent's home or outer board
+        for i in range(6, BOARD_SIZE):
+            if my_pts_c[i] == 1:
+                # Check if opponent can hit this point
+                vulnerable = False
+                for die in range(1, 7):
+                    src = i + die
+                    if src < BOARD_SIZE and opp_pts_c[src] > 0:
+                        vulnerable = True
+                        break
+                if vulnerable:
+                    score -= 2
+
+        # 6. Encourage advancing checkers
+        # Compute average position of my checkers (lower is better)
+        total_weight = 0
+        total_pos = 0
+        for i in range(BOARD_SIZE):
+            if my_pts_c[i] > 0:
+                total_weight += my_pts_c[i]
+                total_pos += my_pts_c[i] * i
+        avg_pos = total_pos / total_weight if total_weight > 0 else 0
+        score -= avg_pos * 0.1
+
+        # 7. Prefer making points (multiple checkers on same point)
+        num_points = sum(1 for i in range(BOARD_SIZE) if my_pts_c[i] >= 2)
+        score += num_points * 0.2
+
+        return score
+
+    # Get all legal moves
+    legal_moves = get_legal_moves(dice)
+
+    if not legal_moves:
+        return "H:P,P"
+
+    # Find best move based on evaluation
+    best_score = -np.inf
+    best_move = None
+
+    for move in legal_moves:
+        from1, die1, from2, die2 = move
+        score = evaluate_move(from1, die1, from2, die2)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    from1, die1, from2, die2 = best_move
+
+    # Determine ORDER: H for higher die first, L for lower die first
+    if len(dice) == 1:
+        order = 'H'
+    else:
+        if die1 == dice[0]:  # dice[0] is higher
+            order = 'H'
+        elif die1 == dice[1]:
+            order = 'L'
+        else:
+            # Must be pass
+            order = 'H'
+
+    # Format FROM1 and FROM2
+    def format_from(f):
+        if f == 'B':
+            return 'B'
+        elif f == 'P':
+            return 'P'
+        else:
+            return f'A{f}'
+
+    from1_str = format_from(from1)
+    from2_str = format_from(from2)
+
+    return f"{order}:{from1_str},{from2_str}"

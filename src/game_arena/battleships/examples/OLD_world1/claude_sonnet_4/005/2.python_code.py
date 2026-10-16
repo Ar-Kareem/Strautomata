@@ -1,0 +1,142 @@
+
+import random
+from typing import List, Tuple, Set
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    n = len(board)
+    
+    # Find all available positions (not yet fired)
+    available = []
+    hits = []
+    misses = []
+    
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 0:
+                available.append((r, c))
+            elif board[r][c] == 1:
+                hits.append((r, c))
+            elif board[r][c] == -1:
+                misses.append((r, c))
+    
+    # Helper function to get neighbors
+    def get_neighbors(r, c):
+        neighbors = []
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < n and 0 <= nc < n:
+                neighbors.append((nr, nc))
+        return neighbors
+    
+    # Find ship segments (connected components of hits)
+    visited = set()
+    ship_segments = []
+    
+    def dfs(r, c, segment):
+        if (r, c) in visited or board[r][c] != 1:
+            return
+        visited.add((r, c))
+        segment.append((r, c))
+        for nr, nc in get_neighbors(r, c):
+            dfs(nr, nc, segment)
+    
+    for r, c in hits:
+        if (r, c) not in visited:
+            segment = []
+            dfs(r, c, segment)
+            if segment:
+                ship_segments.append(segment)
+    
+    # Priority 1: Target adjacent to unsunk ships
+    high_priority = []
+    
+    for segment in ship_segments:
+        # Check if this segment is part of a sunk ship
+        segment_sunk = True
+        ship_positions = set()
+        
+        if len(segment) == 1:
+            # Single hit - could extend in any direction
+            segment_sunk = False
+        else:
+            # Multi-hit segment - check if it's complete
+            segment.sort()
+            if len(segment) >= 2:
+                # Determine orientation
+                if segment[0][0] == segment[1][0]:  # Horizontal
+                    row = segment[0][0]
+                    cols = [pos[1] for pos in segment]
+                    cols.sort()
+                    # Check if we need to extend
+                    min_col, max_col = min(cols), max(cols)
+                    if max_col - min_col + 1 != len(cols):
+                        segment_sunk = False  # Gap in segment
+                    else:
+                        # Check ends
+                        if min_col > 0 and board[row][min_col - 1] == 0:
+                            segment_sunk = False
+                        if max_col < n - 1 and board[row][max_col + 1] == 0:
+                            segment_sunk = False
+                else:  # Vertical
+                    col = segment[0][1]
+                    rows = [pos[0] for pos in segment]
+                    rows.sort()
+                    min_row, max_row = min(rows), max(rows)
+                    if max_row - min_row + 1 != len(rows):
+                        segment_sunk = False
+                    else:
+                        if min_row > 0 and board[min_row - 1][col] == 0:
+                            segment_sunk = False
+                        if max_row < n - 1 and board[max_row + 1][col] == 0:
+                            segment_sunk = False
+        
+        if not segment_sunk:
+            # Add adjacent unknown cells to high priority
+            for r, c in segment:
+                for nr, nc in get_neighbors(r, c):
+                    if board[nr][nc] == 0:
+                        high_priority.append((nr, nc))
+    
+    # Remove duplicates while preserving order
+    high_priority = list(dict.fromkeys(high_priority))
+    
+    if high_priority:
+        # For multi-hit segments, prefer extending in the same direction
+        best_targets = []
+        for segment in ship_segments:
+            if len(segment) >= 2:
+                segment.sort()
+                if segment[0][0] == segment[1][0]:  # Horizontal
+                    row = segment[0][0]
+                    cols = [pos[1] for pos in segment]
+                    min_col, max_col = min(cols), max(cols)
+                    # Prefer extending at ends
+                    if min_col > 0 and board[row][min_col - 1] == 0:
+                        best_targets.append((row, min_col - 1))
+                    if max_col < n - 1 and board[row][max_col + 1] == 0:
+                        best_targets.append((row, max_col + 1))
+                else:  # Vertical
+                    col = segment[0][1]
+                    rows = [pos[0] for pos in segment]
+                    min_row, max_row = min(rows), max(rows)
+                    if min_row > 0 and board[min_row - 1][col] == 0:
+                        best_targets.append((min_row - 1, col))
+                    if max_row < n - 1 and board[max_row + 1][col] == 0:
+                        best_targets.append((max_row + 1, col))
+        
+        if best_targets:
+            return random.choice(best_targets)
+        else:
+            return random.choice(high_priority)
+    
+    # Priority 2: Checkerboard pattern for hunting
+    checkerboard = []
+    for r, c in available:
+        if (r + c) % 2 == 0:  # Checkerboard pattern
+            checkerboard.append((r, c))
+    
+    if checkerboard:
+        return random.choice(checkerboard)
+    
+    # Fallback: random available position
+    return random.choice(available)

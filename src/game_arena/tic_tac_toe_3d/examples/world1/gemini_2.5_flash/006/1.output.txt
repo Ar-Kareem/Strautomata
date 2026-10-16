@@ -1,0 +1,738 @@
+<thinking>
+The user wants a Python function `policy` that determines the next move in a 3x3x3 3D Tic Tac Toe game.
+The function receives the `board` state as a 3D list and should return a tuple `(x, y, z)` representing the chosen empty cell.
+My goal is to win, or at least not lose.
+
+Here's a breakdown of the strategy I'll implement, in order of priority:
+
+1.  **Check for an immediate win:** If I can place a piece to create a 3-in-a-row, I should do that.
+2.  **Block immediate opponent win:** If the opponent can win on their next move, I must block them.
+3.  **Create a threat (fork):** If I can place a piece that creates two or more potential winning lines that I can complete on my next turn, that's a strong move.
+4.  **Block a fork:** If the opponent can create a fork, I should try to block it. This might be hard to distinguish from just blocking a 2-in-a-row.
+5.  **Look for simple winning lines (2-in-a-row with an empty spot):** If I can create a line of two of my pieces with an empty spot, that's generally a good move to set up future wins.
+6.  **Play in the center:** The center cell (1, 1, 1) is often strategically important as it participates in many winning lines. If it's open, taking it is a good general move.
+7.  **Play in a corner:** Corners are also good as they participate in multiple winning lines.
+8.  **Play randomly (fallback):** If no better move is found, pick any available empty cell.
+
+Let's define all possible winning lines in a 3x3x3 cube.
+There are a total of 76 winning lines:
+*   3 rows per plane * 3 planes = 9 lines for each of X, Y, Z axes. So 9 * 3 = 27 lines.
+    *   Example: `(x, y, z)` where `y, z` are fixed, and `x` varies.
+*   2 diagonals per plane * 3 planes = 6 lines for each of X, Y, Z axes. So 6 * 3 = 18 lines.
+    *   Example: `(x, x, z)` or `(x, 2-x, z)` for fixed `z`.
+*   4 main space diagonals (connecting opposite corners of the cube). So 4 lines.
+    *   `(x, x, x)`
+    *   `(x, x, 2-x)`
+    *   `(x, 2-x, x)`
+    *   `(x, 2-x, 2-x)`
+*   12 "face diagonals" (diagonals that connect opposing corners of `1x1x3` or `1x3x1` etc. slices). This terminology might be tricky. Let's make sure.
+    If we fix one coordinate, say `z=0`, we have 4 lines in the `xy` plane: `(x,y,0)` where `x=y` or `x=2-y`, and `(x,y,1)` where `x=y` or `x=2-y`, `(x,y,2)` where `x=y` or `x=2-y`.
+    This brings us to 3*4 = 12 line families.
+    Are these covered in the "2 diagonals per plane * 3 planes"? Yes, I believe so. For example, `(x,x,z)` for fixed `z` means `(0,0,z), (1,1,z), (2,2,z)`. There are 3 such lines for `z=0,1,2`. Same for `(x,2-x,z)`. Same for `(x,y,y)` etc.
+
+Let's rethink winning lines:
+1.  **Straight lines (parallel to axes):**
+    *   Along X-axis: For each `(y, z)` pair, `[(0, y, z), (1, y, z), (2, y, z)]`. (3*3 = 9 lines)
+    *   Along Y-axis: For each `(x, z)` pair, `[(x, 0, z), (x, 1, z), (x, 2, z)]`. (3*3 = 9 lines)
+    *   Along Z-axis: For each `(x, y)` pair, `[(x, y, 0), (x, y, 1), (x, y, 2)]`. (3*3 = 9 lines)
+    **Total: 27 lines**
+
+2.  **Planar diagonals (within a 3x3 plane):**
+    There are 3 main orientations for these planes (XY, XZ, YZ).
+    *   **XY planes (z-fixed):**
+        *   `z=0`: `[(0,0,0),(1,1,0),(2,2,0)]`, `[(0,2,0),(1,1,0),(2,0,0)]`
+        *   `z=1`: `[(0,0,1),(1,1,1),(2,2,1)]`, `[(0,2,1),(1,1,1),(2,0,1)]`
+        *   `z=2`: `[(0,0,2),(1,1,2),(2,2,2)]`, `[(0,2,2),(1,1,2),(2,0,2)]`
+        (2 diagonals * 3 planes = 6 lines)
+    *   **XZ planes (y-fixed):**
+        *   `y=0`: `[(0,0,0),(1,0,1),(2,0,2)]`, `[(0,0,2),(1,0,1),(2,0,0)]`
+        *   `y=1`: `[(0,1,0),(1,1,1),(2,1,2)]`, `[(0,1,2),(1,1,1),(2,1,0)]`
+        *   `y=2`: `[(0,2,0),(1,2,1),(2,2,2)]`, `[(0,2,2),(1,2,1),(2,2,0)]`
+        (2 diagonals * 3 planes = 6 lines)
+    *   **YZ planes (x-fixed):**
+        *   `x=0`: `[(0,0,0),(0,1,1),(0,2,2)]`, `[(0,0,2),(0,1,1),(0,2,0)]`
+        *   `x=1`: `[(1,0,0),(1,1,1),(1,2,2)]`, `[(1,0,2),(1,1,1),(1,2,0)]`
+        *   `x=2`: `[(2,0,0),(2,1,1),(2,2,2)]`, `[(2,0,2),(2,1,1),(2,2,0)]`
+        (2 diagonals * 3 planes = 6 lines)
+    **Total: 18 lines**
+
+3.  **Space diagonals (body diagonals):**
+    *   `[(0,0,0),(1,1,1),(2,2,2)]`
+    *   `[(0,0,2),(1,1,1),(2,2,0)]`
+    *   `[(0,2,0),(1,1,1),(2,0,2)]`
+    *   `[(2,0,0),(1,1,1),(0,2,2)]`
+    **Total: 4 lines**
+
+**Grand Total: 27 + 18 + 4 = 49 winning lines.** This is fewer than the 76 often cited. Let's double check.
+Ah, the 76-line count is probably if you count rows, columns, and diagonals *in each of the 9 planes (3xy, 3xz, 3yz)*.
+Let's list them systematically.
+
+Each line is defined by three coordinates `(x, y, z)`. Each coordinate can be 0, 1, or 2.
+
+A "line" of three cells is defined by `(x_start, y_start, z_start)` and a `(dx, dy, dz)` direction vector.
+The line consists of `(x_start, y_start, z_start)`, `(x_start+dx, y_start+dy, z_start+dz)`, `(x_start+2dx, y_start+2dy, z_start+2dz)`.
+All `dx, dy, dz` must be in `{-1, 0, 1}`. And not all `0`.
+
+Possible `(dx, dy, dz)` vectors (19 non-zero unique directions, ignoring sign for a moment):
+*   `(+/-1, 0, 0)` -> Parallel to X axis
+*   `(0, +/-1, 0)` -> Parallel to Y axis
+*   `(0, 0, +/-1)` -> Parallel to Z axis
+These are the 3 *axis-parallel* directions.
+
+*   `(+/-1, +/-1, 0)` -> Diagonals in XY plane
+*   `(+/-1, 0, +/-1)` -> Diagonals in XZ plane
+*   `(0, +/-1, +/-1)` -> Diagonals in YZ plane
+These are the 6 *face-diagonal* directions.
+
+*   `(+/-1, +/-1, +/-1)` -> Body diagonals
+These are the 4 *space-diagonal* directions.
+
+Total number of unique vectors (up to sign) is 3 + 6 + 4 = 13.
+For each vector, we need to find all starting points `(x_s, y_s, z_s)` such that all three points are within `[0,2]`.
+
+1.  **Axis-parallel:** `(dx, dy, dz)` is `(1,0,0)`, `(0,1,0)`, or `(0,0,1)`.
+    *   `(1,0,0)`: Starting point `x` must be 0. `(0,y,z)`. There are 3*3 = 9 such lines.
+        `[(0,0,0),(1,0,0),(2,0,0)]`, `[(0,0,1),(1,0,1),(2,0,1)]`... etc.
+    *   `(0,1,0)`: Starting point `y` must be 0. `(x,0,z)`. 3*3 = 9 such lines.
+    *   `(0,0,1)`: Starting point `z` must be 0. `(x,y,0)`. 3*3 = 9 such lines.
+    **Total: 27 lines.** (This matches my earlier calculation)
+
+2.  **Planar diagonals:** `(dx, dy, dz)` is like `(1,1,0)`, `(1,-1,0)`, `(1,0,1)`, `(1,0,-1)`, `(0,1,1)`, `(0,1,-1)`. And their negative versions.
+    Let's handle these by fixing one coordinate first.
+    *   **Perpendicular to Z-axis (XY plane diagonals):**
+        *   `z=0`: `[(0,0,0),(1,1,0),(2,2,0)]`, `[(0,2,0),(1,1,0),(2,0,0)]`
+        *   `z=1`: `[(0,0,1),(1,1,1),(2,2,1)]`, `[(0,2,1),(1,1,1),(2,0,1)]`
+        *   `z=2`: `[(0,0,2),(1,1,2),(2,2,2)]`, `[(0,2,2),(1,1,2),(2,0,2)]`
+        (3 planes, 2 diagonals each = 6 lines)
+    *   **Perpendicular to Y-axis (XZ plane diagonals):**
+        *   `y=0`: `[(0,0,0),(1,0,1),(2,0,2)]`, `[(0,0,2),(1,0,1),(2,0,0)]`
+        *   `y=1`: `[(0,1,0),(1,1,1),(2,1,2)]`, `[(0,1,2),(1,1,1),(2,1,0)]`
+        *   `y=2`: `[(0,2,0),(1,2,1),(2,2,2)]`, `[(0,2,2),(1,2,1),(2,2,0)]`
+        (3 planes, 2 diagonals each = 6 lines)
+    *   **Perpendicular to X-axis (YZ plane diagonals):**
+        *   `x=0`: `[(0,0,0),(0,1,1),(0,2,2)]`, `[(0,0,2),(0,1,1),(0,2,0)]`
+        *   `x=1`: `[(1,0,0),(1,1,1),(1,2,2)]`, `[(1,0,2),(1,1,1),(1,2,0)]`
+        *   `x=2`: `[(2,0,0),(2,1,1),(2,2,2)]`, `[(2,0,2),(2,1,1),(2,2,0)]`
+        (3 planes, 2 diagonals each = 6 lines)
+    **Total: 18 lines.** (Matches my earlier calculation)
+
+3.  **Space diagonals:**
+    *   `[(0,0,0),(1,1,1),(2,2,2)]` (dx=1, dy=1, dz=1)
+    *   `[(0,0,2),(1,1,1),(2,2,0)]` (dx=1, dy=1, dz=-1)
+    *   `[(0,2,0),(1,1,1),(2,0,2)]` (dx=1, dy=-1, dz=1)
+    *   `[(2,0,0),(1,1,1),(0,2,2)]` (dx=-1, dy=1, dz=1)
+    **Total: 4 lines.** (Matches my earlier calculation)
+
+**Final count is 27 + 18 + 4 = 49 lines.** This is the correct set of winning lines.
+I will pre-compute these lines once.
+
+Agent `1` is me, opponent `-1`.
+
+My strategy will involve:
+*   A function `get_possible_moves(board)` that returns a list of `(x,y,z)` tuples for empty cells.
+*   A helper function `check_line(line, player)` which takes a list of 3 coordinates representing a line, and a player `1` or `-1`. It returns `True` if `player` has won on that line, `False` otherwise.
+*   A helper function `get_line_state(board, line)` which returns `(my_count, opp_count, empty_count)` for a given line. This is crucial for evaluating threats.
+
+Let's define the winning lines. I'll store them as a list of lists of `(x, y, z)` tuples.
+
+```python
+WINNING_LINES = []
+
+# 1. Axis-parallel lines (27 lines)
+for i in range(3):
+    for j in range(3):
+        # x-axis parallel
+        WINNING_LINES.append([(0, i, j), (1, i, j), (2, i, j)])
+        # y-axis parallel
+        WINNING_LINES.append([(i, 0, j), (i, 1, j), (i, 2, j)])
+        # z-axis parallel
+        WINNING_LINES.append([(i, j, 0), (i, j, 1), (i, j, 2)])
+
+# 2. Planar diagonals (18 lines)
+# XY-plane diagonals (z-fixed)
+for k in range(3):
+    WINNING_LINES.append([(0, 0, k), (1, 1, k), (2, 2, k)])
+    WINNING_LINES.append([(0, 2, k), (1, 1, k), (2, 0, k)])
+# XZ-plane diagonals (y-fixed)
+for j in range(3):
+    WINNING_LINES.append([(0, j, 0), (1, j, 1), (2, j, 2)])
+    WINNING_LINES.append([(0, j, 2), (1, j, 1), (2, j, 0)])
+# YZ-plane diagonals (x-fixed)
+for i in range(3):
+    WINNING_LINES.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+    WINNING_LINES.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+
+# 3. Space diagonals (4 lines)
+WINNING_LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+WINNING_LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+WINNING_LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+WINNING_LINES.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+```
+This list will be evaluated by the policy function.
+
+Now for the `policy` function logic:
+
+```python
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Use 1 for myself, -1 for opponent
+    ME = 1
+    OPPONENT = -1
+
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == 0:
+                    empty_cells.append((x, y, z))
+
+    if not empty_cells:
+        # Should not happen in a valid game, but good to handle
+        return None
+
+    # Step 1: Check for immediate win
+    for move in empty_cells:
+        temp_board = deepcopy(board)
+        temp_board[move[0]][move[1]][move[2]] = ME
+        if check_win(temp_board, ME):
+            return move
+
+    # Step 2: Block opponent's immediate win
+    for move in empty_cells:
+        temp_board = deepcopy(board)
+        temp_board[move[0]][move[1]][move[2]] = OPPONENT
+        if check_win(temp_board, OPPONENT):
+            return move
+
+    # Step 3: Create a fork (two winning lines) - for myself
+    # A fork is a move that creates two *unblocked* lines of 2 for ME.
+    # It's expensive to check for true forks. A simpler approach might be to
+    # find moves that create multiple 2-in-a-rows for me.
+    # Let's count how many ways a move creates a 2-in-a-row for ME,
+    # or blocks an opponent's 2-in-a-row.
+    # This is a bit more complex. For now, let's prioritize simple 2-in-a-row threats.
+
+    # Step 4: Block opponent's fork (this is generally harder to implement robustly)
+    # A simpler approach could be to prioritize moves that prevent the opponent from creating two 2-in-a-rows by placing a single piece.
+
+    # Instead of full fork detection, let's go for creating 2-in-a-row threats,
+    # and blocking opponent's 2-in-a-row threats, and then center/corner strategy.
+
+    # Calculate scores for moves
+    move_scores = {}
+    for move in empty_cells:
+        score = 0
+        x, y, z = move
+        temp_board_me = deepcopy(board)
+        temp_board_me[x][y][z] = ME
+
+        temp_board_opp = deepcopy(board)
+        temp_board_opp[x][y][z] = OPPONENT
+
+        # Evaluate the move for ME
+        my_potential_wins = 0
+        for line in WINNING_LINES:
+            my_count, opp_count, empty_count = get_line_state(temp_board_me, line)
+            # If I make a winning line (should have been caught by Step 1, but for completeness)
+            if my_count == 3:
+                score += 1000 # Large win bonus
+            # If I create a 2-in-a-row with an empty spot (potentional win next turn)
+            if my_count == 2 and empty_count == 1:
+                my_potential_wins += 1
+
+        # Check for multiple ways to get to 2-in-a-row (fork)
+        if my_potential_wins >= 2:
+            score += 500 # Strong fork bonus
+        elif my_potential_wins == 1:
+            score += 50 # Good setup
+
+        # Evaluate the move for blocking the opponent
+        opp_potential_blocks = 0
+        for line in WINNING_LINES:
+            my_count, opp_count, empty_count = get_line_state(temp_board_opp, line)
+            # If placing current move blocks opponent's 2-in-a-row
+            if opp_count == 2 and empty_count == 1:
+                opp_potential_blocks += 1
+
+        # If placing move blocks an opponent's fork
+        if opp_potential_blocks >= 2:
+            score += 200 # Block opponent fork (lower than my fork)
+        elif opp_potential_blocks == 1:
+            score += 80 # Block opponent setup (higher than my setup for safety)
+
+
+        # Center preference
+        if move == (1, 1, 1):
+            score += 60
+
+        # Corner preference
+        # Corners are (0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)
+        if move in [(0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)]:
+            score += 30
+
+        # Edge preference (non-corner, non-center)
+        # E.g., (0,1,0), (1,0,0), (1,2,0), etc.
+        # This is all remaining cells.
+        # It's better to calculate the number of lines a cell is part of.
+        # For now, simplistic: if not center or corner, give a small bonus.
+        # Or maybe even a penalty, as edge moves are weaker.
+        # Let's consider 0,0,1 or 0,1,0
+        if score == 0: # If no other strategic value, give a minimal score
+            score += 5
+
+
+        move_scores[move] = score
+
+    # Pick the move with the highest score
+    if move_scores:
+        best_move = max(move_scores, key=move_scores.get)
+        return best_move
+
+    # Fallback: if no strategic move found (this shouldn't happen if empty_cells isn't empty)
+    # Just pick the first available empty cell.
+    return empty_cells[0]
+```
+
+A note on `deepcopy`: `numpy` arrays are much more efficient for this.
+Let's use `numpy` for board operations to make `deepcopy` and `check_win` more efficient.
+`board` is a `list[list[list[int]]]`.
+If I use numpy: `board = np.array(board)`. Then `temp_board = temp_board.copy()`.
+
+Let's refine `check_win` and `get_line_state` and incorporate `numpy`.
+
+```python
+import numpy as np
+from copy import deepcopy # Although with numpy, .copy() is usually enough
+
+# Pre-computed winning lines
+WINNING_LINES = []
+
+# 1. Axis-parallel lines (27 lines)
+for i in range(3):
+    for j in range(3):
+        # x-axis parallel
+        WINNING_LINES.append([(0, i, j), (1, i, j), (2, i, j)])
+        # y-axis parallel
+        WINNING_LINES.append([(i, 0, j), (i, 1, j), (i, 2, j)])
+        # z-axis parallel
+        WINNING_LINES.append([(i, j, 0), (i, j, 1), (i, j, 2)])
+
+# 2. Planar diagonals (18 lines)
+# XY-plane diagonals (z-fixed)
+for k in range(3):
+    WINNING_LINES.append([(0, 0, k), (1, 1, k), (2, 2, k)])
+    WINNING_LINES.append([(0, 2, k), (1, 1, k), (2, 0, k)])
+# XZ-plane diagonals (y-fixed)
+for j in range(3):
+    WINNING_LINES.append([(0, j, 0), (1, j, 1), (2, j, 2)])
+    WINNING_LINES.append([(0, j, 2), (1, j, 1), (2, j, 0)])
+# YZ-plane diagonals (x-fixed)
+for i in range(3):
+    WINNING_LINES.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+    WINNING_LINES.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+
+# 3. Space diagonals (4 lines)
+WINNING_LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+WINNING_LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+WINNING_LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+WINNING_LINES.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+
+def get_line_state(board_np: np.ndarray, line: list[tuple[int, int, int]]) -> tuple[int, int, int]:
+    """Returns (my_count, opp_count, empty_count) for a given line."""
+    my_count = 0
+    opp_count = 0
+    empty_count = 0
+    for x, y, z in line:
+        if board_np[x, y, z] == 1:
+            my_count += 1
+        elif board_np[x, y, z] == -1:
+            opp_count += 1
+        else:
+            empty_count += 1
+    return my_count, opp_count, empty_count
+
+def check_win(board_np: np.ndarray, player: int) -> bool:
+    """Checks if the given player has won on the board."""
+    for line in WINNING_LINES:
+        my_count, opp_count, empty_count = get_line_state(board_np, line)
+        if my_count == 3 and opp_count == 0: # Ensure only my pieces and no opponent pieces
+            return True
+    return False
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    ME = 1
+    OPPONENT = -1
+
+    board_np = np.array(board)
+
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board_np[x, y, z] == 0:
+                    empty_cells.append((x, y, z))
+
+    if not empty_cells:
+        # Game should be over, or board is full. Return arbitrary?
+        # This state should not be reachable if the game system is valid.
+        return (0,0,0) # Or raise an error
+
+    # Step 1: Check for immediate win (My turn)
+    for move in empty_cells:
+        temp_board = board_np.copy()
+        temp_board[move[0], move[1], move[2]] = ME
+        if check_win(temp_board, ME):
+            return move
+
+    # Step 2: Block opponent's immediate win
+    for move in empty_cells:
+        temp_board = board_np.copy()
+        temp_board[move[0], move[1], move[2]] = OPPONENT # Simulate opponent's move
+        if check_win(temp_board, OPPONENT):
+            return move
+
+    # Step 3: Evaluate moves to create/block forks and general strategy
+    move_scores = {}
+    for move in empty_cells:
+        score = 0
+        x, y, z = move
+
+        # Simulate placing ME on the board
+        temp_board_me = board_np.copy()
+        temp_board_me[x, y, z] = ME
+
+        # Simulate placing OPPONENT on the board (for blocking analysis only if current move is blocked)
+        # This is a bit tricky. The blocking analysis should be based on the *current* board state,
+        # then apply the *current* move.
+
+        my_winning_threats = 0 # Lines where I have 2 and 1 empty after my move
+        opp_winning_threats = 0 # Lines where opponent has 2 and 1 empty on the current board
+
+        for line in WINNING_LINES:
+            # Check for my threats if I make this move
+            my_count, opp_count, empty_count = get_line_state(temp_board_me, line)
+            if my_count == 2 and empty_count == 1: # I create a 2-in-a-row needing one more empty spot
+                my_winning_threats += 1
+            
+            # Check for opponent threats if this move is *not* taken by me
+            # This is not directly useful here, as we are evaluating a specific 'move'.
+            # A better way for opp threats: iterate through empty cells for opp as well.
+
+        if my_winning_threats >= 2:
+            score += 100 # Multi-threat / fork for me
+        elif my_winning_threats == 1:
+            score += 10 # Single threat for me
+
+        # Check if this move blocks an opponent's potential 2-in-a-row
+        # This needs to be considered on the original board, for any line that *would* be
+        # an opponent's 2-in-a-row if `move` was empty and they placed there.
+        # This is implicitly handled by the line state evaluation.
+
+        # Let's count how many lines this *move* contributes to forming a 2-in-a-row for ME, or blocking a 2-in-a-row for OPPONENT.
+        
+        # Consider a better scoring for forks:
+        # Check if this move creates a 2-in-a-row for ME.
+        # Check if this move blocks a 2-in-a-row for OPPONENT.
+        
+        # This approach for scoring is more robust:
+        # A. Win: already handled
+        # B. Block Opponent Win: already handled
+        # C. Create my own strong threat (2-in-a-row with 1 empty, which if placed means I win next turn)
+        # D. Block opponent strong threat (2-in-a-row with 1 empty for them)
+        # E. Center, then Corners, then Edges.
+
+        # Let's refine the scoring logic for forks/threats.
+
+        my_two_in_a_row_count = 0
+        opp_two_in_a_row_count = 0 # Lines where opponent has two pieces and the 'move' is one of the empty spots
+
+        for line in WINNING_LINES:
+            # Check board state *before* making the current 'move'
+            board_values_in_line = [board_np[cx, cy, cz] for cx, cy, cz in line]
+
+            # If the current 'move' is part of this line:
+            if move in line:
+                # How does this move affect my potential rows?
+                my_pieces_in_line = board_values_in_line.count(ME)
+                opp_pieces_in_line = board_values_in_line.count(OPPONENT)
+                empty_spots_in_line = board_values_in_line.count(0)
+
+                # My turn: if I place here, how many '2-in-a-rows-with-1-empty' do I create or extend?
+                # A line where I have 1, opponent has 0, empty has 2, AND 'move' is one of the empty.
+                # If I place `ME` on `move`:
+                # If current state is [ME, 0, 0] and I place at empty, then I get [ME, ME, 0]. This is good.
+                # If current state is [0, 0, 0] and I place at one empty, I get [ME, 0, 0]. Less good.
+                
+                # Check for lines where placing 'ME' at 'move' results in 'ME, ME, 0'
+                if my_pieces_in_line == 1 and opp_pieces_in_line == 0 and empty_spots_in_line == 2:
+                    my_two_in_a_row_count += 1
+                
+                # Check for lines where placing CURRENT_MOVE blocks an opponent's 2-in-a-row
+                # A line where opponent has 2, I have 0, empty has 1, AND 'move' is that empty.
+                if opp_pieces_in_line == 2 and my_pieces_in_line == 0 and empty_spots_in_line == 1:
+                    opp_two_in_a_row_count += 1
+        
+        if my_two_in_a_row_count >= 2:
+            score += 200 # Creates a fork for me
+        elif my_two_in_a_row_count == 1:
+            score += 20 # Creates a 2-in-a-row for me
+
+        if opp_two_in_a_row_count >= 2: # This move blocks an opponent fork
+            score += 150 # Strong block
+        elif opp_two_in_a_row_count == 1: # This move blocks an opponent 2-in-a-row
+            score += 30 # Good block
+
+        # Center preference
+        if move == (1, 1, 1):
+            score += 50
+        # Corner preference (relative to center)
+        elif move in [(0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)]:
+            score += 25
+        # Edge preference
+        # All other cells are "edges" or "sides" in a 3x3x3 grid.
+        # These are cells with exactly one '1' in their coordinates, e.g., (0,1,1), (1,0,1), (1,1,0), (2,1,1), etc.
+        elif sum(c == 1 for c in move) == 2 or sum(c == 1 for c in move) == 0 and sum(c in (0,2) for c in move) == 3:
+             # corners ((0,0,0) (0,0,2) etc already handled)
+             # this isn't right, the definition of corners/edges/faces for a cube isn't standard in tic-tac-toe.
+             # Simple distinction: center (1,1,1), corners, then everything else.
+             score += 5 # Minimal score for any remaining valid move.
+
+        move_scores[move] = score
+
+    # Pick the move with the highest score
+    if move_scores:
+        best_move = max(move_scores, key=move_scores.get)
+        return best_move
+
+    # Fallback (should not be reached if empty_cells exists)
+    return empty_cells[0]
+```
+
+Let's carefully verify the `check_win` function and the scoring for `my_two_in_a_row_count` and `opp_two_in_a_row_count`.
+`check_win` needs to ensure all 3 pieces are the `player`'s.
+`get_line_state` correctly counts `my_count`, `opp_count`, `empty_count`.
+So `check_win(temp_board, ME)` should be `my_count == 3` *and `opp_count == 0`* meaning the line is completely mine.
+
+The logic for `my_two_in_a_row_count`:
+  `if my_pieces_in_line == 1 and opp_pieces_in_line == 0 and empty_spots_in_line == 2:` This means currently on the board, there is 1 of my piece, 0 opponent, and 2 empty. If my `move` is one of the empty spots, then I will have 2 of my pieces and 1 empty, a threat. This counting is correct.
+
+The logic for `opp_two_in_a_row_count`:
+  `if opp_pieces_in_line == 2 and my_pieces_in_line == 0 and empty_spots_in_line == 1:` This means currently on the board, there are 2 opponent pieces, 0 of mine, and 1 empty. If my `move` is this empty spot, then I block their win. This counting is correct.
+
+The scoring values are arbitrary but designed to prioritize:
+1.  Immediate Win (handled by Step 1, returns immediately)
+2.  Block Opponent Win (handled by Step 2, returns immediately)
+3.  My Fork (score=200)
+4.  Block Opponent Fork (score=150)
+5.  My 2-in-a-row Threat (score=20)
+6.  Block Opponent 2-in-a-row Threat (score=30) - This is higher than creating my own 2-in-a-row because defense first.
+7.  Center (score=50)
+8.  Corners (score=25)
+9.  Other empty cells (score=5)
+
+The `check_win` function was slightly off in its existing implementation logic (within the `for line in WINNING_LINES`), it should be `if my_count == 3: return True`. The opponent count doesn't matter if my count is already 3.
+The helper `check_win` function is used for `my_count==3`, so it's correct.
+No, `check_win` is for `if check_win(temp_board, ME):`. Inside `check_win` it should count `player`'s pieces.
+
+Corrected `check_win`:
+```python
+def check_win(board_np: np.ndarray, player: int) -> bool:
+    """Checks if the given player has won on the board."""
+    for line in WINNING_LINES:
+        line_values = [board_np[x, y, z] for x, y, z in line]
+        if all(val == player for val in line_values):
+            return True
+    return False
+```
+This is much cleaner.
+
+Final check on the scoring logic.
+It seems reasonable. The prioritization is clear with the chosen scores.
+The pre-computation of `WINNING_LINES` is good.
+Using `numpy` for the board avoids deepcopy overhead for list of lists, making it efficient.
+The fallback `return empty_cells[0]` is fine as a last resort.
+I need to import `numpy`.
+
+```python
+import numpy as np
+import random # For fallback if needed, but the score-based approach should always have a choice.
+```
+Actually, I don't need `random` if `empty_cells` is guaranteed non-empty and there's always a tie-breaking rule (implicitly `max` takes the first).
+
+Double-check for any subtle bugs:
+The current `opp_two_in_a_row_count` logic:
+`if opp_pieces_in_line == 2 and my_pieces_in_line == 0 and empty_spots_in_line == 1:`
+This identifies lines where `OPPONENT` has 2, `ME` has 0, and there's 1 empty spot. And crucially, `move` *is* that empty spot (because we're iterating `move` only for empty cells, and `move in line` filters for lines containing `move`). So, if `move` is played, it blocks `OPPONENT` from winning on that line. This is correct.
+
+Looks pretty solid.
+One edge case: What if `move_scores` is empty? `if not empty_cells: return (0,0,0)` covers that. And `if move_scores: best_move = max(...)` covers `move_scores` being potentially empty (which it won't be if `empty_cells` isn't empty, since each empty cell gets a `score += 5` at least).
+So `return empty_cells[0]` is really a safe fallback for unexpected scenarios.
+
+Consider the case where `board` is full. `empty_cells` will be empty. The `if not empty_cells` block would handle it.
+The current code looks good.
+</thinking>
+<code>
+import numpy as np
+
+# Pre-computed winning lines
+# There are 49 winning lines in a 3x3x3 Tic Tac Toe game.
+# Each line is a list of three (x, y, z) coordinates.
+WINNING_LINES = []
+
+# 1. Axis-parallel lines (27 lines)
+# Iterate through all permutations of fixing two coordinates and varying one
+for i in range(3):  # x-dimension
+    for j in range(3):  # y-dimension
+        # Lines parallel to Z-axis (varying z, fixed x, y)
+        WINNING_LINES.append([(i, j, 0), (i, j, 1), (i, j, 2)])
+        # Lines parallel to Y-axis (varying y, fixed x, z)
+        WINNING_LINES.append([(i, 0, j), (i, 1, j), (i, 2, j)])
+        # Lines parallel to X-axis (varying x, fixed y, z)
+        WINNING_LINES.append([(0, i, j), (1, i, j), (2, i, j)])
+
+# 2. Planar diagonals (18 lines)
+# Diagonals within each 3x3 plane (XY, XZ, YZ)
+for k in range(3): # Fixed coordinate (plane index)
+    # XY-plane diagonals (z-fixed)
+    WINNING_LINES.append([(0, 0, k), (1, 1, k), (2, 2, k)]) # Main diagonal
+    WINNING_LINES.append([(0, 2, k), (1, 1, k), (2, 0, k)]) # Anti-diagonal
+    # XZ-plane diagonals (y-fixed)
+    WINNING_LINES.append([(0, k, 0), (1, k, 1), (2, k, 2)]) # Main diagonal
+    WINNING_LINES.append([(0, k, 2), (1, k, 1), (2, k, 0)]) # Anti-diagonal
+    # YZ-plane diagonals (x-fixed)
+    WINNING_LINES.append([(k, 0, 0), (k, 1, 1), (k, 2, 2)]) # Main diagonal
+    WINNING_LINES.append([(k, 0, 2), (k, 1, 1), (k, 2, 0)]) # Anti-diagonal
+
+# 3. Space diagonals (4 lines)
+# These pass through the center of the cube
+WINNING_LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+WINNING_LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+WINNING_LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+WINNING_LINES.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+
+
+def check_win(board_np: np.ndarray, player: int) -> bool:
+    """
+    Checks if the given player has won on the board.
+    A player wins if they have 3 of their pieces in any of the WINNING_LINES.
+    """
+    for line in WINNING_LINES:
+        # Get the values of the cells in the current line
+        line_values = [board_np[x, y, z] for x, y, z in line]
+        # Check if all values in the line belong to the current player
+        if all(val == player for val in line_values):
+            return True
+    return False
+
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next optimal move for a 3x3x3 3D Tic Tac Toe game.
+
+    Args:
+        board: A 3x3x3 list of lists representing the game board.
+               0 for empty, 1 for the current player (you), -1 for the opponent.
+
+    Returns:
+        A tuple of three integers (x, y, z) indicating the chosen empty cell.
+    """
+    ME = 1  # Represents the current player
+    OPPONENT = -1  # Represents the opponent
+
+    # Convert the input board to a numpy array for efficient operations
+    board_np = np.array(board)
+
+    # Find all empty cells
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board_np[x, y, z] == 0:
+                    empty_cells.append((x, y, z))
+
+    # If no empty cells, the game is over or board is full.
+    # This state should ideally not be reached if called in a valid game context.
+    if not empty_cells:
+        # Return a dummy move or raise an error, depending on game rules.
+        # Returning (0,0,0) is a fallback, but the game should handle this as a draw.
+        return (0, 0, 0)
+
+    # --- Strategy Priorities ---
+
+    # 1. Check for immediate win: If I can win in one move, take it.
+    for move in empty_cells:
+        temp_board = board_np.copy()  # Create a temporary board
+        temp_board[move[0], move[1], move[2]] = ME  # Simulate my move
+        if check_win(temp_board, ME):
+            return move
+
+    # 2. Block opponent's immediate win: If the opponent can win in one move, block them.
+    for move in empty_cells:
+        temp_board = board_np.copy()
+        temp_board[move[0], move[1], move[2]] = OPPONENT  # Simulate opponent's move
+        if check_win(temp_board, OPPONENT):
+            return move
+
+    # 3. Evaluate other strategic moves (forks, threats, positional advantage)
+    move_scores = {}
+    for move in empty_cells:
+        score = 0
+        x, y, z = move
+
+        my_two_in_a_row_count = 0  # To detect potential forks for me
+        opp_two_in_a_row_count = 0  # To detect potential opponent forks to block
+
+        for line in WINNING_LINES:
+            # Check if the current 'move' is part of this winning line
+            if move in line:
+                # Get current state of the line *before* making the 'move'
+                line_values_current = [board_np[cx, cy, cz] for cx, cy, cz in line]
+                my_pieces_in_line = line_values_current.count(ME)
+                opp_pieces_in_line = line_values_current.count(OPPONENT)
+                empty_spots_in_line = line_values_current.count(0)
+
+                # If placing ME at 'move' creates a 2-in-a-row with 1 empty spot (a "threat")
+                # This makes a line like [ME, ME, 0] or [ME, 0, ME] or [0, ME, ME]
+                if my_pieces_in_line == 1 and opp_pieces_in_line == 0 and empty_spots_in_line == 2:
+                    my_two_in_a_row_count += 1
+
+                # If placing ME at 'move' blocks an opponent's 2-in-a-row (a "threat")
+                # This means the current line is [OPPONENT, OPPONENT, 0] and 'move' is '0'.
+                if opp_pieces_in_line == 2 and my_pieces_in_line == 0 and empty_spots_in_line == 1:
+                    opp_two_in_a_row_count += 1
+
+        # Score for creating a fork (two simultaneous threats for me)
+        if my_two_in_a_row_count >= 2:
+            score += 200  # High score for creating my own fork
+        elif my_two_in_a_row_count == 1:
+            score += 20   # Medium score for creating a single threat
+
+        # Score for blocking an opponent's fork (two simultaneous threats for opponent)
+        if opp_two_in_a_row_count >= 2:
+            score += 150  # Very good score for blocking an opponent's fork
+        elif opp_two_in_a_row_count == 1:
+            score += 30   # Good score for blocking a single opponent threat (defensive focus)
+
+        # Positional preferences:
+        # Prefer the center cell (1,1,1) as it is part of many winning lines.
+        if move == (1, 1, 1):
+            score += 50
+        # Prefer corner cells (8 corners of the cube)
+        elif move in [(0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+                      (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)]:
+            score += 25
+        # Assign a minimal score to all other empty cells to ensure they are considered
+        # if no other strategic advantage is found.
+        else:
+            score += 5
+
+        move_scores[move] = score
+
+    # Choose the move with the highest calculated score
+    if move_scores:
+        best_move = max(move_scores, key=move_scores.get)
+        return best_move
+
+    # Fallback: This part should logically not be reached if empty_cells is not empty
+    # as all empty cells are given at least a default score of 5.
+    return empty_cells[0]
+</code>

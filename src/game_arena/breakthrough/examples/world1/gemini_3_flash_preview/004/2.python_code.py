@@ -1,0 +1,128 @@
+
+import random
+
+def get_legal_moves(me, opp, color):
+    moves = []
+    opp_set = set(opp)
+    me_set = set(me)
+    occupied = opp_set | me_set
+    
+    direction = 1 if color == 'w' else -1
+    
+    for r, c in me:
+        # Forward move
+        nr, nc = r + direction, c
+        if 0 <= nr <= 7:
+            if (nr, nc) not in occupied:
+                moves.append(((r, c), (nr, nc)))
+            
+            # Diagonal moves (capture or move)
+            for dc in [-1, 1]:
+                nc = c + dc
+                if 0 <= nc <= 7:
+                    if (nr, nc) in opp_set:
+                        moves.append(((r, c), (nr, nc)))
+                    elif (nr, nc) not in me_set:
+                        moves.append(((r, c), (nr, nc)))
+    return moves
+
+def evaluate(me, opp, color):
+    score = 0
+    # Win condition check
+    win_row = 7 if color == 'w' else 0
+    for r, c in me:
+        if r == win_row: return 10000
+        # Positional score: progress towards end
+        dist = r if color == 'w' else 7 - r
+        score += 10 + dist
+        
+    for r, c in opp:
+        if r == (0 if color == 'w' else 7): return -10000
+        dist = 7 - r if color == 'w' else r
+        score -= (10 + dist)
+    
+    return score + len(me) * 2 - len(opp) * 2
+
+def minimax(me, opp, color, depth, alpha, beta, is_maximizing, original_color):
+    if depth == 0:
+        return evaluate(me, opp, original_color)
+    
+    current_color = color
+    opp_color = 'b' if color == 'w' else 'w'
+    moves = get_legal_moves(me, opp, current_color)
+    
+    if not moves: # No moves left, opponent wins
+        return -9000 if is_maximizing else 9000
+
+    if is_maximizing:
+        max_eval = -float('inf')
+        # Sort moves for better pruning: captures and row progress
+        moves.sort(key=lambda m: abs(m[1][0] - (7 if current_color == 'w' else 0)), reverse=False)
+        for move in moves:
+            # Check for immediate win
+            if move[1][0] == (7 if current_color == 'w' else 0):
+                return 10000 - depth
+            
+            new_me = [p for p in me if p != move[0]] + [move[1]]
+            new_opp = [p for p in opp if p != move[1]]
+            
+            eval = minimax(new_opp, new_me, opp_color, depth - 1, alpha, beta, False, original_color)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        moves.sort(key=lambda m: abs(m[1][0] - (7 if current_color == 'w' else 0)), reverse=False)
+        for move in moves:
+            if move[1][0] == (7 if current_color == 'w' else 0):
+                return -10000 + depth
+                
+            new_me = [p for p in me if p != move[0]] + [move[1]]
+            new_opp = [p for p in opp if p != move[1]]
+            
+            eval = minimax(new_opp, new_me, opp_color, depth - 1, alpha, beta, True, original_color)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    moves = get_legal_moves(me, opp, color)
+    if not moves:
+        return None
+    
+    # Quick check for immediate victory
+    win_row = 7 if color == 'w' else 0
+    for move in moves:
+        if move[1][0] == win_row:
+            return move
+            
+    best_move = moves[0]
+    best_value = -float('inf')
+    
+    # Adjust depth based on number of pieces to stay within 1s
+    depth = 3 if len(me) + len(opp) > 12 else 4
+    
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    opp_color = 'b' if color == 'w' else 'w'
+    
+    # Shuffle to avoid deterministic patterns if values are equal
+    random.shuffle(moves)
+    
+    for move in moves:
+        new_me = [p for p in me if p != move[0]] + [move[1]]
+        new_opp = [p for p in opp if p != move[1]]
+        
+        move_val = minimax(new_opp, new_me, opp_color, depth - 1, alpha, beta, False, color)
+        
+        if move_val > best_value:
+            best_value = move_val
+            best_move = move
+        alpha = max(alpha, best_value)
+            
+    return best_move

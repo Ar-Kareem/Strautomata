@@ -1,0 +1,137 @@
+The strategy for this policy is based on **Dijkstra's shortest path algorithm**, often referred to in Hex as the "electrical resistance" or "path potential" method.
+
+The core idea is to treat the Hex board as a weighted graph:
+1.  **Cost 0**: Cells occupied by the player (free to move through).
+2.  **Cost 1**: Empty cells (require one move to traverse).
+3.  **Cost Infinity**: Cells occupied by the opponent (impassable).
+
+For every possible legal move, the policy simulates placing a stone and evaluates the resulting board state twice:
+1.  **My Potential**: Calculates the shortest path cost from my starting side to my ending side. A cost of 0 indicates an immediate win.
+2.  **Opponent's Potential**: Calculates the shortest path cost for the opponent (treating the newly placed stone as an obstacle).
+
+The move is scored as `Opponent Cost - My Cost`. This score naturally balances:
+*   **Aggression**: Minimizing my own path cost.
+*   **Defense**: Maximizing the opponent's path cost (blocking them).
+
+Additionally, if a move results in a path cost of 0 (a win), it is returned immediately. Tie-breaking is handled by preferring moves closer to the center of the board, as central stones generally control more territory and connectivity options. This approach ensures a smart, defensive, and offensive play style within the 1-second time limit.
+
+```python
+import heapq
+
+BOARD_SIZE = 11
+# Neighbors of (r, c) based on the Hex grid definition provided.
+# "All 8 neighbors except for (i-1, j-1) and (i+1, j+1)"
+NEIGHBORS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+
+def get_shortest_path_cost(player_stones, opponent_stones, color):
+    """
+    Computes the shortest path cost for the player to connect their sides.
+    Cost 0 for own stones, 1 for empty, INF for opponent stones.
+    Uses Dijkstra's algorithm.
+    """
+    # Priority queue: (cost, row, col)
+    pq = []
+    # Distance matrix initialized to infinity
+    dist = [[float('inf')] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    
+    # Initialize starting edge
+    if color == 'b':
+        # Black connects top (row 0) to bottom
+        for c in range(BOARD_SIZE):
+            if (0, c) in opponent_stones:
+                continue
+            cost = 0 if (0, c) in player_stones else 1
+            dist[0][c] = cost
+            heapq.heappush(pq, (cost, 0, c))
+    else:
+        # White connects left (col 0) to right
+        for r in range(BOARD_SIZE):
+            if (r, 0) in opponent_stones:
+                continue
+            cost = 0 if (r, 0) in player_stones else 1
+            dist[r][0] = cost
+            heapq.heappush(pq, (cost, r, 0))
+            
+    # Dijkstra's algorithm
+    while pq:
+        d, r, c = heapq.heappop(pq)
+        
+        if d > dist[r][c]:
+            continue
+        
+        # Check if we reached the target edge
+        if color == 'b' and r == BOARD_SIZE - 1:
+            return d
+        if color == 'w' and c == BOARD_SIZE - 1:
+            return d
+        
+        # Explore neighbors
+        for dr, dc in NEIGHBORS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                if (nr, nc) in opponent_stones:
+                    continue
+                
+                # Cost to move to neighbor
+                weight = 0 if (nr, nc) in player_stones else 1
+                new_dist = d + weight
+                
+                if new_dist < dist[nr][nc]:
+                    dist[nr][nc] = new_dist
+                    heapq.heappush(pq, (new_dist, nr, nc))
+                    
+    return float('inf')
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+    
+    best_move = None
+    best_score = -float('inf')
+    # Center bias: prefer moves closer to center (5,5)
+    # bias is higher for center
+    best_bias = -float('inf')
+    
+    opp_color = 'w' if color == 'b' else 'b'
+    
+    # Iterate over all board positions
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if (r, c) in occupied:
+                continue
+            
+            # Simulate playing (r, c)
+            potential_me = me_set | {(r, c)}
+            
+            # 1. Check if this move wins immediately (My Path Cost == 0)
+            my_path_cost = get_shortest_path_cost(potential_me, opp_set, color)
+            if my_path_cost == 0:
+                return (r, c)
+            
+            # 2. Evaluate opponent's difficulty
+            # For opponent, my new stone is an obstacle
+            opp_path_cost = get_shortest_path_cost(opp_set, potential_me, opp_color)
+            
+            # 3. Calculate score
+            # We want to minimize our path cost and maximize opponent's path cost
+            score = opp_path_cost - my_path_cost
+            
+            # Tie-breaking: Prefer center
+            # Manhattan distance approximation
+            bias = 10 - (abs(r - 5) + abs(c - 5))
+            
+            if score > best_score or (score == best_score and bias > best_bias):
+                best_score = score
+                best_bias = bias
+                best_move = (r, c)
+                
+    # Fallback: This should theoretically never be reached on a non-full board
+    if best_move is None:
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if (r, c) not in occupied:
+                    return (r, c)
+                    
+    return best_move
+```

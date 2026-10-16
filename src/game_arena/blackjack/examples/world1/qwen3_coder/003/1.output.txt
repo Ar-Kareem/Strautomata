@@ -1,0 +1,157 @@
+<thinking>
+I need to implement a policy for a Blackjack-like game where I try to get as close to a target score T as possible without going over.
+
+Key considerations:
+1. I need to calculate my current hand value, handling Aces properly (11 when possible, 1 when it would cause a bust)
+2. I need to decide whether to HIT (draw another card) or STAY (stop drawing)
+3. The decision should be based on how close I am to the target and the risk of busting
+
+Let me think about the strategy:
+- If my current hand value is already over the target, I've busted (this shouldn't happen in the policy call if I busted previously)
+- If my hand value equals the target, I should STAY
+- If I'm far from the target, I should HIT
+- If I'm close to the target, I should consider STAYING to avoid the risk of busting
+
+For calculating hand value with Aces:
+- Count Aces separately
+- Start with all Aces as 11
+- If total exceeds target, convert some Aces to 1 until I'm under target or determine I've busted
+
+For the policy itself, a simple but effective approach:
+- Calculate my best possible hand value
+- If I'm safely below the target, consider hitting
+- If I'm close enough to the target, stay to minimize bust risk
+- The exact threshold can be tuned - something like target - 5 or so
+
+But let me think more carefully. Since I know exactly what cards are in my deck (one of each rank), I could potentially make better decisions by considering which cards I've already drawn and which remain.
+
+Actually, the problem statement doesn't give me information about which cards remain in my deck. It just says I draw "the next card". This suggests the order might matter, but it's not specified.
+
+Let me keep it simpler for now. I'll focus on:
+1. Correctly evaluating my current hand value
+2. Making a decision based on how close I am to the target
+
+A reasonable heuristic: if my current score is less than (target - some threshold), HIT; otherwise STAY. The threshold could be around 4-6.
+
+Let me also consider that with perfect play, I might want to look at the remaining cards, but without knowing the deck order, I'll use a static threshold-based approach.
+
+Let's say: if current_value <= target - 5, then HIT, else STAY.
+This means if I'm within 5 points of the target, I'll stay to minimize bust risk.
+
+But wait, I should also consider the potential improvement from converting Aces. My policy should account for the flexibility that Aces provide.
+
+Actually, let's reconsider the hand evaluation:
+- Try using all Aces as 11 first
+- If that puts me over target, convert Aces to 1 until I'm under or determine bust
+
+Then for the policy:
+- If max possible value (all Aces counted as 11) is <= target and current safe value is <= target - threshold, then HIT
+- Otherwise STAY
+
+Wait, no. Let me re-read... The Ace rule is: A=11 when hand value <= T, A=1 when hand value > T.
+
+So actually, the value of my hand is dynamic. When calculating, I should:
+1. Count non-Ace cards
+2. Count Aces
+3. Try assigning Aces as 11 as much as possible without exceeding T
+4. Assign remaining Aces as 1
+
+That makes more sense.
+
+Let's implement this logic:
+1. Calculate my hand's maximum possible value (counting Aces favorably)
+2. If that maximum is <= T and current conservative estimate suggests room to improve, HIT
+3. Otherwise STAY
+
+But really, I should consider what value my hand currently represents in the game. That is, what value I'd have right now accounting for aces properly per the rules.
+
+The rules say A counts as 11 when hand value <= T, otherwise 1. This needs careful interpretation during calculation.
+
+What I think they mean by "hand value" for determining Aces is:
+The optimal value of the hand given all cards drawn. So calculate optimally, which means:
+1. Sum all non-Ace cards
+2. For each Ace, add 11 if doing so keeps total <= T, otherwise add 1
+
+So algorithm:
+1. Sum all non-Aces
+2. Count Aces
+3. While I have Aces left:
+   - If adding 11 would exceed T, add 1 instead
+   - Else add 11
+
+Okay, with that, I have my current score.
+Now for the policy decision...
+
+If current_score == T: definitely STAY (can't improve, only risk busting)  
+If current_score = T-1, probably STAY unless I think opponent will beat me by also getting T-1  
+But opponent behavior isn't observable.
+
+So simplest approach:
+If current_score < T - threshold: HIT  
+Else: STAY  
+
+Where threshold might depend on T. For larger T, risks are different.
+
+A simple fixed threshold like 5 seems reasonable.
+If T > 20, maybe increase threshold slightly because bust risk is higher?
+Actually, no. With T=25, having a score of 20 still leaves plenty of room.
+
+Let’s just go with T - current_score >= 5 as condition for HIT.
+
+But edge case, small hand early on.. e.g. starting hand "2".
+
+With a low starting hand, I certainly don’t want to stop immediately even if difference >= 5.
+
+So perhaps minimum number of cards? Or require minimum threshold to be HIT?
+
+Alternatively check if there's actual risk of exceeding T with next hit?
+
+But I don’t know what card comes next.
+
+Given that, basic strategy should work reasonably well:
+- Always HIT if current value is << TARGET
+- Stop when close to minimize bust chance
+
+Let me build a function that computes hand value correctly first.
+
+Then decide a policy based on distance from target.
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    def calculate_hand_value(hand_cards):
+        # Separate aces and other cards
+        aces = hand_cards.count("A")
+        non_aces_total = 0
+        
+        for card in hand_cards:
+            if card == "A":
+                continue
+            elif card in ["J", "Q", "K"]:
+                non_aces_total += 10
+            else:
+                non_aces_total += int(card)
+        
+        # Calculate optimal ace values
+        hand_value = non_aces_total
+        for _ in range(aces):
+            if hand_value + 11 <= target:
+                hand_value += 11
+            else:
+                hand_value += 1
+        
+        return hand_value
+    
+    current_value = calculate_hand_value(hand)
+    
+    # If we've reached or exceeded target, must stay
+    if current_value >= target:
+        return "STAY"
+    
+    # Simple threshold-based policy
+    # Hit if we're at least 5 points away from target
+    if target - current_value >= 5:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

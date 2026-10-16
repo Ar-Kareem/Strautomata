@@ -1,0 +1,258 @@
+I'll implement a deterministic-but-smart policy that generates legal moves by simulating the two dice (with an assumed forward direction from low indices to high indices). The policy:
+
+- Handles bar entries and bearing-off rules conservatively and correctly.
+- Searches for a legal two-die sequence (trying both die orders H and L); prefers sequences that hit an opponent checker when found.
+- If no two-die sequence is possible, falls back to legal single-die play. If both single-die plays are available but only one is allowed by rules (play the higher die when only one die can be played), it respects that rule.
+- Returns a legal action string in the required format; if no moves are legal, returns a pass "H:P,P".
+
+This implementation assumes your direction is from lower indices to higher indices (start + die -> destination). This is a common absolute-index convention in backgammon engines; the code is conservative about bearing-off rules to match engine validation.
+
+<code>
+#!/usr/bin/env python3
+from typing import List, Tuple, Optional, Dict
+import copy
+
+def policy(state: dict) -> str:
+    """
+    Compute a legal backgammon move string for the given state.
+    Assumes movement in the forward direction is increasing indices (start + die -> dest).
+    Returns string in format "<ORDER>:<FROM1>,<FROM2>" as required.
+    """
+    my_pts: List[int] = state.get('my_pts', [0]*24)[:]
+    opp_pts: List[int] = state.get('opp_pts', [0]*24)[:]
+    my_bar: int = int(state.get('my_bar', 0))
+    dice: List[int] = list(state.get('dice', []))
+    # Ensure dice are ints and sorted for hi/lo
+    if len(dice) == 0:
+        return "H:P,P"
+    if len(dice) == 1:
+        d0 = int(dice[0])
+        hi, lo = d0, None
+    else:
+        d0, d1 = int(dice[0]), int(dice[1])
+        hi, lo = max(d0, d1), min(d0, d1)
+
+    # Helper functions under assumption forward = +index.
+    def in_home_board(pts: List[int]) -> bool:
+        # Home board for forward-moving player is indices 18..23
+        return sum(pts[:18]) == 0
+
+    def can_bear_off_from(s: int, d: int, pts: List[int]) -> bool:
+        # target index = s + d
+        target = s + d
+        if not in_home_board(pts):
+            return False
+        if target == 24:
+            return True
+        if target > 24:
+            # allowed only if no checkers on points higher than s (s+1..23)
+            for j in range(s+1, 24):
+                if pts[j] > 0:
+                    return False
+            return True
+        return False
+
+    def can_move_from_point(s: int, d: int, my_pts_local: List[int], opp_pts_local: List[int], my_bar_local: int) -> bool:
+        # s is point index 0..23
+        if s < 0 or s > 23:
+            return False
+        if my_pts_local[s] <= 0:
+            return False
+        dest = s + d
+        if dest <= 23:
+            # destination point must not have 2+ opponent checkers
+            return opp_pts_local[dest] < 2
+        else:
+            # bearing off possibility
+            return can_bear_off_from(s, d, my_pts_local)
+    
+    def can_enter_from_bar(d: int, opp_pts_local: List[int]) -> bool:
+        # entry point for forward-moving player is d-1 (0..5)
+        entry = d - 1
+        if entry < 0 or entry > 23:
+            return False
+        return opp_pts_local[entry] < 2
+
+    # Functions to apply a move to local board (simulate) and return updated board and hit flag.
+    def apply_move_from_point(s: int, d: int, my_pts_local: List[int], opp_pts_local: List[int], my_bar_local: int, opp_bar_local: int, my_off_local: int) -> Tuple[List[int], List[int], int, int, int]:
+        # assume move is valid
+        my_pts2 = my_pts_local[:]
+        opp_pts2 = opp_pts_local[:]
+        my_bar2 = my_bar_local
+        opp_bar2 = opp_bar_local
+        my_off2 = my_off_local
+        my_pts2[s] -= 1
+        dest = s + d
+        if dest <= 23:
+            if opp_pts2[dest] == 1:
+                # hit opponent
+                opp_pts2[dest] = 0
+                opp_bar2 += 1
+            my_pts2[dest] += 1
+        else:
+            # bearing off
+            my_off2 += 1
+        return my_pts2, opp_pts2, my_bar2, opp_bar2, my_off2
+
+    def apply_entry_from_bar(d: int, my_pts_local: List[int], opp_pts_local: List[int], my_bar_local: int, opp_bar_local: int, my_off_local: int) -> Tuple[List[int], List[int], int, int, int]:
+        my_pts2 = my_pts_local[:]
+        opp_pts2 = opp_pts_local[:]
+        my_bar2 = my_bar_local
+        opp_bar2 = opp_bar_local
+        my_off2 = my_off_local
+        entry = d - 1
+        my_bar2 -= 1
+        if opp_pts2[entry] == 1:
+            opp_pts2[entry] = 0
+            opp_bar2 += 1
+        my_pts2[entry] += 1
+        return my_pts2, opp_pts2, my_bar2, opp_bar2, my_off2
+
+    # Search for best two-move sequence (try both orders H and L)
+    def find_two_move_sequence() -> Optional[Tuple[str, str, str]]:
+        orders = []
+        if lo is None:
+            # only single die: try to play it as first move, then no second
+            return None
+        if hi == lo:
+            # doubles (but here represented as two identical dice) -> just treat normally; H/L equivalent
+            orders = ['H']
+        else:
+            orders = ['H', 'L']
+        best_seq = None
+        # Prefer sequences that hit opponent. We'll track hit preference.
+        best_hit = -1
+        for order in orders:
+            first_die = hi if order == 'H' else lo
+            second_die = lo if order == 'H' else hi
+            # Candidate starts for first move
+            first_starts = []
+            if my_bar > 0:
+                # must enter from bar first
+                if can_enter_from_bar(first_die, opp_pts):
+                    first_starts = ['B']
+                else:
+                    first_starts = []
+            else:
+                # any point with our checker that can move
+                for s in range(24):
+                    if my_pts[s] > 0 and can_move_from_point(s, first_die, my_pts, opp_pts, my_bar):
+                        first_starts.append(('A{}'.format(s), s))
+                # represent as list of ('A{index}', index)
+            # Normalize first_starts entries to tokens
+            normalized_first = []
+            for item in first_starts:
+                if item == 'B':
+                    normalized_first.append(('B', None))
+                else:
+                    normalized_first.append((item[0], item[1]))
+
+            for token1, s in normalized_first:
+                # simulate first move
+                if token1 == 'B':
+                    my_pts1, opp_pts1, my_bar1, opp_bar1, my_off1 = apply_entry_from_bar(first_die, my_pts, opp_pts, my_bar, state.get('opp_bar', 0), state.get('my_off', 0))
+                    hit1 = 1 if opp_pts[(first_die - 1)] == 1 else 0
+                else:
+                    my_pts1, opp_pts1, my_bar1, opp_bar1, my_off1 = apply_move_from_point(s, first_die, my_pts, opp_pts, my_bar, state.get('opp_bar', 0), state.get('my_off', 0))
+                    dest1 = s + first_die
+                    hit1 = 1 if (dest1 <= 23 and opp_pts[dest1] == 1) else 0
+
+                # Now find possible second starts after first move
+                second_starts = []
+                if my_bar1 > 0:
+                    # must enter from bar
+                    if can_enter_from_bar(second_die, opp_pts1):
+                        second_starts = ['B']
+                    else:
+                        second_starts = []
+                else:
+                    for s2 in range(24):
+                        if my_pts1[s2] > 0 and can_move_from_point(s2, second_die, my_pts1, opp_pts1, my_bar1):
+                            second_starts.append(('A{}'.format(s2), s2))
+                normalized_second = []
+                for item2 in second_starts:
+                    if item2 == 'B':
+                        normalized_second.append(('B', None))
+                    else:
+                        normalized_second.append((item2[0], item2[1]))
+
+                for token2, s2 in normalized_second:
+                    # simulate second move to check hits
+                    if token2 == 'B':
+                        dest_entry = second_die - 1
+                        hit2 = 1 if opp_pts1[dest_entry] == 1 else 0
+                    else:
+                        dest2 = s2 + second_die
+                        hit2 = 1 if (dest2 <= 23 and opp_pts1[dest2] == 1) else 0
+                    total_hits = hit1 + hit2
+                    # choose sequence preferring more hits
+                    if total_hits > best_hit:
+                        best_hit = total_hits
+                        best_seq = (order, token1, token2)
+                        # If we found at least one hitting move, we can still keep searching for better
+                        if best_hit == 2:
+                            return best_seq
+        return best_seq
+
+    seq2 = None
+    if len(dice) >= 2:
+        seq2 = find_two_move_sequence()
+    if seq2:
+        order, t1, t2 = seq2
+        return f"{order}:{t1},{t2}"
+
+    # If no two-die sequence: try single-die plays
+    # For this we must follow rule: if only one die can be played, play the higher when possible.
+    def find_any_move_for_die(d: int) -> List[str]:
+        moves = []
+        # If bar check
+        if my_bar > 0:
+            if can_enter_from_bar(d, opp_pts):
+                moves.append('B')
+            return moves
+        for s in range(24):
+            if my_pts[s] > 0 and can_move_from_point(s, d, my_pts, opp_pts, my_bar):
+                moves.append('A{}'.format(s))
+        return moves
+
+    # For single die (only one die rolled)
+    if lo is None:
+        moves_hi = find_any_move_for_die(hi)
+        if moves_hi:
+            # use H and return first available move
+            return f"H:{moves_hi[0]},P"
+        else:
+            return "H:P,P"
+
+    # Two dice but no two-move sequences found: check which single-die moves are possible
+    moves_hi = find_any_move_for_die(hi)
+    moves_lo = find_any_move_for_die(lo)
+
+    if moves_hi and not moves_lo:
+        # only high die playable
+        return f"H:{moves_hi[0]},P"
+    if moves_lo and not moves_hi:
+        # only low die playable -> must play high die if possible, but it's not, so play low
+        return f"L:{moves_lo[0]},P"
+    if moves_hi and moves_lo:
+        # Both dice have at least one single move but not possible to play both together.
+        # Rule: must play the higher die if only one die can be played. Here both dice individually playable,
+        # but since two-die sequences were impossible, engines typically require playing the higher die.
+        return f"H:{moves_hi[0]},P"
+    # No single-die moves either -> pass
+    return "H:P,P"
+
+# If run as script, provide a trivial test to ensure callable
+if __name__ == "__main__":
+    # trivial example: one checker at A0, opponent empty, dice [3,5]
+    state_example = {
+        'my_pts': [1] + [0]*23,
+        'opp_pts': [0]*24,
+        'my_bar': 0,
+        'opp_bar': 0,
+        'my_off': 0,
+        'opp_off': 0,
+        'dice': [3,5]
+    }
+    print(policy(state_example))
+</code>

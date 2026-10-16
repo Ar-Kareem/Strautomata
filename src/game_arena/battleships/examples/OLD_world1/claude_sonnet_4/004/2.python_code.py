@@ -1,0 +1,188 @@
+
+import random
+from typing import List, Tuple, Set
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Get all unfired positions
+    unfired = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 0]
+    
+    if not unfired:
+        return (0, 0)  # Should never happen in valid game
+    
+    # Get all hit positions that are not part of sunk ships
+    hits = get_unsunk_hits(board)
+    
+    # If we have unsunk hits, prioritize targeting adjacent cells
+    if hits:
+        targets = get_adjacent_targets(board, hits)
+        if targets:
+            return choose_best_target(targets)
+    
+    # No unsunk hits, use hunt mode with checkerboard pattern + probability
+    return hunt_mode(board, unfired)
+
+def get_unsunk_hits(board: List[List[int]]) -> List[Tuple[int, int]]:
+    """Get all hit positions that are likely not part of sunk ships."""
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    
+    # Simple heuristic: if a hit has no adjacent hits and all adjacent cells
+    # are either misses or unknown, it might be a sunk 1-cell ship (but there are none)
+    # or an isolated hit from a larger ship. We'll consider all hits as potentially unsunk.
+    unsunk_hits = []
+    
+    for r, c in hits:
+        # Check if this hit is part of a line that might not be fully sunk
+        is_potentially_unsunk = False
+        
+        # Check horizontal and vertical directions
+        for dr, dc in [(0, 1), (1, 0)]:
+            # Check if there's a line of hits in this direction that could extend
+            line_hits = get_line_hits(board, r, c, dr, dc)
+            if len(line_hits) > 0:
+                # Check if the line could be extended (has unknown cells at ends)
+                if can_extend_line(board, line_hits, dr, dc):
+                    is_potentially_unsunk = True
+                    break
+        
+        # Also check if it's an isolated hit (could be start of any ship)
+        if not is_potentially_unsunk:
+            adjacent_unknowns = get_adjacent_unknowns(board, r, c)
+            if adjacent_unknowns:
+                is_potentially_unsunk = True
+        
+        if is_potentially_unsunk:
+            unsunk_hits.append((r, c))
+    
+    return unsunk_hits if unsunk_hits else hits
+
+def get_line_hits(board: List[List[int]], r: int, c: int, dr: int, dc: int) -> List[Tuple[int, int]]:
+    """Get all consecutive hits in a line starting from (r,c) in direction (dr,dc)."""
+    hits = []
+    
+    # Go in positive direction
+    nr, nc = r, c
+    while 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+        hits.append((nr, nc))
+        nr += dr
+        nc += dc
+    
+    # Go in negative direction (excluding starting point)
+    nr, nc = r - dr, c - dc
+    while 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+        hits.insert(0, (nr, nc))
+        nr -= dr
+        nc -= dc
+    
+    return hits
+
+def can_extend_line(board: List[List[int]], line_hits: List[Tuple[int, int]], dr: int, dc: int) -> bool:
+    """Check if a line of hits can potentially be extended."""
+    if not line_hits:
+        return False
+    
+    # Check both ends of the line
+    start_r, start_c = line_hits[0]
+    end_r, end_c = line_hits[-1]
+    
+    # Check if we can extend before start
+    before_r, before_c = start_r - dr, start_c - dc
+    if 0 <= before_r < 10 and 0 <= before_c < 10 and board[before_r][before_c] == 0:
+        return True
+    
+    # Check if we can extend after end
+    after_r, after_c = end_r + dr, end_c + dc
+    if 0 <= after_r < 10 and 0 <= after_c < 10 and board[after_r][after_c] == 0:
+        return True
+    
+    return False
+
+def get_adjacent_unknowns(board: List[List[int]], r: int, c: int) -> List[Tuple[int, int]]:
+    """Get adjacent unknown cells."""
+    adjacent = []
+    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+            adjacent.append((nr, nc))
+    return adjacent
+
+def get_adjacent_targets(board: List[List[int]], hits: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Get all valid adjacent targets for unsunk hits."""
+    targets = set()
+    
+    for r, c in hits:
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                targets.add((nr, nc))
+    
+    return list(targets)
+
+def choose_best_target(targets: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """Choose the best target from available targets."""
+    # For now, just return a random target
+    # Could be improved with more sophisticated logic
+    return random.choice(targets)
+
+def hunt_mode(board: List[List[int]], unfired: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """Hunt mode: use checkerboard pattern with probability weighting."""
+    
+    # Checkerboard pattern (parity-based)
+    checkerboard = [(r, c) for r, c in unfired if (r + c) % 2 == 0]
+    
+    # If we still have checkerboard positions, prefer those
+    if checkerboard:
+        return choose_by_probability(board, checkerboard)
+    
+    # Otherwise, use remaining positions
+    return choose_by_probability(board, unfired)
+
+def choose_by_probability(board: List[List[int]], candidates: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """Choose position based on ship placement probability."""
+    if not candidates:
+        return random.choice([(r, c) for r in range(10) for c in range(10) if board[r][c] == 0])
+    
+    # Simple probability: prefer center positions and positions that could fit multiple ship orientations
+    scores = []
+    
+    for r, c in candidates:
+        score = 0
+        
+        # Center bias (positions closer to center are slightly preferred)
+        center_distance = abs(r - 4.5) + abs(c - 4.5)
+        score += (10 - center_distance) * 0.1
+        
+        # Ship fit potential (how many different ships could potentially be placed through this cell)
+        for ship_length in [5, 4, 3, 2]:  # Remaining ship lengths
+            # Check horizontal placement potential
+            for start_offset in range(ship_length):
+                start_c = c - start_offset
+                if 0 <= start_c <= 10 - ship_length:
+                    if can_place_ship_horizontally(board, r, start_c, ship_length):
+                        score += 1
+            
+            # Check vertical placement potential
+            for start_offset in range(ship_length):
+                start_r = r - start_offset
+                if 0 <= start_r <= 10 - ship_length:
+                    if can_place_ship_vertically(board, start_r, c, ship_length):
+                        score += 1
+        
+        scores.append(score)
+    
+    # Choose position with highest score
+    best_idx = scores.index(max(scores))
+    return candidates[best_idx]
+
+def can_place_ship_horizontally(board: List[List[int]], r: int, start_c: int, length: int) -> bool:
+    """Check if a ship could potentially be placed horizontally."""
+    for c in range(start_c, start_c + length):
+        if board[r][c] == -1:  # Hit a known miss
+            return False
+    return True
+
+def can_place_ship_vertically(board: List[List[int]], start_r: int, c: int, length: int) -> bool:
+    """Check if a ship could potentially be placed vertically."""
+    for r in range(start_r, start_r + length):
+        if board[r][c] == -1:  # Hit a known miss
+            return False
+    return True

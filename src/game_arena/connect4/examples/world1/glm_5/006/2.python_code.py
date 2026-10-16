@@ -1,0 +1,185 @@
+
+import math
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Connect 4 policy using Minimax with Alpha-Beta Pruning.
+    """
+    # Constants
+    ROWS = 6
+    COLS = 7
+    PLAYER = 1
+    OPPONENT = -1
+    EMPTY = 0
+    SEARCH_DEPTH = 5
+
+    # Helper functions defined locally for speed and scope isolation
+    
+    def is_valid_location(col):
+        return board[0][col] == EMPTY
+
+    def get_next_open_row(col):
+        for r in range(ROWS - 1, -1, -1):
+            if board[r][col] == EMPTY:
+                return r
+        return -1
+
+    def winning_move(player):
+        # Check horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                if board[r][c] == player and board[r][c+1] == player and board[r][c+2] == player and board[r][c+3] == player:
+                    return True
+        # Check vertical
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                if board[r][c] == player and board[r+1][c] == player and board[r+2][c] == player and board[r+3][c] == player:
+                    return True
+        # Check positive diagonal
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                if board[r][c] == player and board[r+1][c+1] == player and board[r+2][c+2] == player and board[r+3][c+3] == player:
+                    return True
+        # Check negative diagonal
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                if board[r][c] == player and board[r-1][c+1] == player and board[r-2][c+2] == player and board[r-3][c+3] == player:
+                    return True
+        return False
+
+    def score_position():
+        score = 0
+        
+        # Score Center Column (Center control is strong)
+        center_array = [board[r][3] for r in range(ROWS)]
+        center_count = center_array.count(PLAYER)
+        score += center_count * 3
+
+        # Score Horizontal
+        for r in range(ROWS):
+            row_array = board[r]
+            for c in range(COLS - 3):
+                window = row_array[c:c+4]
+                score += evaluate_window(window)
+
+        # Score Vertical
+        for c in range(COLS):
+            col_array = [board[r][c] for r in range(ROWS)]
+            for r in range(ROWS - 3):
+                window = col_array[r:r+4]
+                score += evaluate_window(window)
+
+        # Score Positive Diagonal
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [board[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window)
+
+        # Score Negative Diagonal
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                window = [board[r-i][c+i] for i in range(4)]
+                score += evaluate_window(window)
+
+        return score
+
+    def evaluate_window(window):
+        score = 0
+        p_count = window.count(PLAYER)
+        o_count = window.count(OPPONENT)
+        empty_count = window.count(EMPTY)
+
+        if p_count == 4:
+            score += 100
+        elif p_count == 3 and empty_count == 1:
+            score += 5
+        elif p_count == 2 and empty_count == 2:
+            score += 2
+        
+        if o_count == 3 and empty_count == 1:
+            score -= 4
+            
+        return score
+
+    def is_terminal_node():
+        return winning_move(PLAYER) or winning_move(OPPONENT) or len([c for c in range(COLS) if is_valid_location(c)]) == 0
+
+    def minimax(depth, alpha, beta, maximizingPlayer):
+        valid_moves = [c for c in [3, 2, 4, 1, 5, 0, 6] if is_valid_location(c)] # Center-first order
+        is_terminal = is_terminal_node()
+        
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if winning_move(PLAYER):
+                    return (None, 100000000000000)
+                elif winning_move(OPPONENT):
+                    return (None, -100000000000000)
+                else: # Game is over, no more valid moves
+                    return (None, 0)
+            else: # Depth is zero
+                return (None, score_position())
+        
+        if maximizingPlayer:
+            value = -math.inf
+            column = valid_moves[0]
+            for col in valid_moves:
+                row = get_next_open_row(col)
+                board[row][col] = PLAYER
+                new_score = minimax(depth - 1, alpha, beta, False)[1]
+                board[row][col] = EMPTY # Backtrack
+                if new_score > value:
+                    value = new_score
+                    column = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return column, value
+        
+        else: # Minimizing Player
+            value = math.inf
+            column = valid_moves[0]
+            for col in valid_moves:
+                row = get_next_open_row(col)
+                board[row][col] = OPPONENT
+                new_score = minimax(depth - 1, alpha, beta, True)[1]
+                board[row][col] = EMPTY # Backtrack
+                if new_score < value:
+                    value = new_score
+                    column = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return column, value
+
+    # --- Main Execution Flow ---
+    
+    # 1. Check for immediate win
+    for col in range(COLS):
+        if is_valid_location(col):
+            row = get_next_open_row(col)
+            board[row][col] = PLAYER
+            if winning_move(PLAYER):
+                board[row][col] = EMPTY
+                return col
+            board[row][col] = EMPTY
+
+    # 2. Check for immediate block (opponent wins next turn)
+    for col in range(COLS):
+        if is_valid_location(col):
+            row = get_next_open_row(col)
+            board[row][col] = OPPONENT
+            if winning_move(OPPONENT):
+                board[row][col] = EMPTY
+                return col
+            board[row][col] = EMPTY
+
+    # 3. Use Minimax for strategic play
+    col, _ = minimax(SEARCH_DEPTH, -math.inf, math.inf, True)
+    
+    # Fallback safety (should not happen if valid moves exist)
+    if col is None:
+        for c in range(COLS):
+            if is_valid_location(c):
+                return c
+                
+    return col

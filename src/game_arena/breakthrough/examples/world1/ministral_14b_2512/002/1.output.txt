@@ -1,0 +1,144 @@
+### Strategy for Breakthrough Policy
+
+The strategy for this policy is a **hybrid approach** combining **aggressive early-game expansion**, **defensive blocking**, and **late-game promotion**. Here's the breakdown:
+
+1. **Early Game (Few Pieces on Board)**:
+   - **Expand aggressively**: Push pieces forward to control the center and create multiple threats.
+   - **Prioritize diagonal moves** to open up lines for future captures or to threaten the opponent's pieces.
+   - **Avoid unnecessary captures** unless they lead to a clear advantage (e.g., opening a path to the opponent's home row).
+
+2. **Mid Game (Pieces Closer to Opponent's Side)**:
+   - **Defend key squares**: Block opponent pieces from advancing by capturing or positioning pieces to limit their movement.
+   - **Create forks**: Position pieces to threaten multiple opponent pieces or squares, forcing the opponent to react defensively.
+   - **Prioritize captures that reduce opponent mobility** or open paths for your own pieces to advance.
+
+3. **Late Game (Pieces Near Opponent's Home Row)**:
+   - **Focus on promotion**: Direct all pieces toward the opponent's home row, prioritizing the fastest path.
+   - **Sacrifice pieces if necessary** to clear a path for a faster promotion (e.g., capturing an opponent piece blocking your path).
+   - **Avoid unnecessary captures** unless they directly help a piece reach the opponent's home row.
+
+4. **General Rules**:
+   - **Never leave pieces vulnerable**: Always ensure your pieces are not easily captured by the opponent.
+   - **Balance offense and defense**: Don't overcommit to one side; maintain a flexible formation.
+   - **Use evaluation heuristics**: Prefer moves that maximize the number of pieces that can reach the opponent's home row in the fewest moves.
+
+### Key Heuristics:
+- **Piece Value**: A piece closer to the opponent's home row is more valuable.
+- **Mobility**: Prefer moves that give your pieces more options in the next turn.
+- **Threats**: Prioritize moves that threaten to capture opponent pieces or block their advance.
+- **Promotion Potential**: Always consider how a move affects the likelihood of promoting a piece to the opponent's home row.
+
+### Implementation Approach:
+- Use **minimax with alpha-beta pruning** for move evaluation, limited to a shallow depth (e.g., 2-3 plies) due to time constraints.
+- **Static evaluation function** based on:
+  - Distance of your pieces to the opponent's home row.
+  - Distance of opponent pieces to your home row.
+  - Number of pieces controlled by each side.
+  - Potential threats (e.g., pieces that can capture in the next move).
+- **Move ordering**: Sort moves to evaluate the most promising ones first (e.g., captures, promotions, center control).
+
+### Python Implementation:
+```python
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Directions: forward, diagonal forward (left and right)
+    if color == 'w':
+        directions = [(1, 0), (1, -1), (1, 1)]  # White moves up (row increases)
+    else:
+        directions = [(-1, 0), (-1, -1), (-1, 1)]  # Black moves down (row decreases)
+
+    # Generate all legal moves
+    legal_moves = []
+    for (r, c) in me:
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                if (nr, nc) not in me and (nr, nc) not in opp:
+                    legal_moves.append(((r, c), (nr, nc)))
+                elif (nr, nc) in opp:
+                    legal_moves.append(((r, c), (nr, nc)))
+
+    if not legal_moves:
+        return ((0, 0), (0, 0))  # Should not happen per problem statement
+
+    # Evaluate moves using a heuristic
+    def evaluate_move(move, me, opp, color):
+        from_r, from_c = move[0]
+        to_r, to_c = move[1]
+        new_me = me.copy()
+        new_opp = opp.copy()
+        new_me.remove((from_r, from_c))
+        new_me.append((to_r, to_c))
+        if (to_r, to_c) in opp:
+            new_opp.remove((to_r, to_c))
+
+        # Heuristic: prioritize moves that bring pieces closer to opponent's home row
+        if color == 'w':
+            opp_home_row = 7
+        else:
+            opp_home_row = 0
+
+        # Score for my pieces: closer to opponent's home row is better
+        my_score = sum(abs(p[0] - opp_home_row) for p in new_me)
+        # Score for opponent pieces: farther from my home row is better
+        if color == 'w':
+            my_home_row = 0
+        else:
+            my_home_row = 7
+        opp_score = sum(abs(p[0] - my_home_row) for p in new_opp)
+
+        # Bonus for captures
+        if (to_r, to_c) in opp:
+            my_score += 10  # Capture is good
+
+        # Bonus for pieces that can promote next turn
+        for (r, c) in new_me:
+            if color == 'w' and r == 6:
+                my_score += 5  # One step from promotion
+            elif color == 'b' and r == 1:
+                my_score += 5
+
+        # Penalty for leaving pieces vulnerable
+        for (r, c) in new_me:
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    if (nr, nc) in opp:
+                        my_score -= 3  # Vulnerable to capture
+
+        return my_score - opp_score
+
+    # Evaluate all legal moves and pick the best one
+    best_move = None
+    best_score = -float('inf')
+    for move in legal_moves:
+        score = evaluate_move(move, me, opp, color)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+```
+
+### Explanation of the Code:
+1. **Legal Moves Generation**:
+   - For each of your pieces, generate all possible forward (straight or diagonal) moves, including captures.
+   - Ensure moves stay within the board bounds.
+
+2. **Move Evaluation**:
+   - **Piece Positioning**: Pieces closer to the opponent's home row are scored higher.
+   - **Captures**: Capturing opponent pieces gives a bonus.
+   - **Promotion Potential**: Pieces one step away from promotion get a bonus.
+   - **Vulnerability**: Pieces that can be captured next turn are penalized.
+
+3. **Best Move Selection**:
+   - The move with the highest heuristic score is selected.
+
+### Improvements (Optional):
+- **Minimax with Alpha-Beta Pruning**: For deeper lookahead, implement a minimax search with alpha-beta pruning to evaluate moves more accurately.
+- **Move Ordering**: Sort moves to evaluate captures and promotions first, as they often have higher impact.
+- **Dynamic Heuristics**: Adjust weights in the heuristic based on game phase (early/mid/late game).
+
+This policy balances aggression and defense, prioritizing moves that lead to promotion while avoiding unnecessary risks.

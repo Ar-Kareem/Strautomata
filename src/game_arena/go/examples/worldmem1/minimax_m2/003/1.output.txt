@@ -1,0 +1,115 @@
+### Strategy for the Go Policy
+
+The policy I implemented is based on a heuristic evaluation that prioritizes moves based on three key factors:
+1. **Capture Potential**: Moves that capture opponent stones are highly valued. Each captured stone contributes 100 points to the score.
+2. **Stone Liberties**: After a move, the number of liberties (adjacent empty points) for the new stone is added to the score, as more liberties indicate a stronger position.
+3. **Strategic Value**: The position on the board is evaluated using a value function that rewards points closer to corners and edges, as these are generally more valuable in the opening and middle game. The value is computed as `max(r, 20-r) * max(c, 20-c)` for 1-based coordinates (r, c).
+
+The policy scans all empty points on the board. For each point, it checks if the move is legal by simulating the move, capturing any opponent groups with no liberties, and ensuring the new stone has at least one liberty. The move with the highest score is selected. If no legal moves are available, the policy passes.
+
+This approach ensures the move is always legal and leverages simple but effective Go principles to compete in the arena.
+
+<code>
+import copy
+
+def policy(me, opponent, memory):
+    """
+    Determines the next move for a Go game based on a heuristic evaluation.
+    
+    Args:
+        me: List of tuples (row, col) for the current player's stones (1-based).
+        opponent: List of tuples (row, col) for the opponent's stones (1-based).
+        memory: Dictionary for persisting state between calls (not used here).
+    
+    Returns:
+        A tuple (action, memory) where action is (row, col) for the move or (0,0) to pass.
+    """
+    # Helper function to find the group and liberties of a stone on the board.
+    def find_group_and_liberties(board, i, j, owner):
+        """
+        Finds all stones connected to (i, j) and their liberties.
+        
+        Args:
+            board: 2D list representing the board (0=empty, 1=me, -1=opponent).
+            i, j: Indices of the starting stone (0-based).
+            owner: 1 for me, -1 for opponent.
+        
+        Returns:
+            A tuple (group, liberties) where group is a list of (i, j) tuples,
+            and liberties is a set of (i, j) tuples for empty adjacent points.
+        """
+        stack = [(i, j)]
+        group = []
+        visited = set()
+        visited.add((i, j))
+        while stack:
+            i, j = stack.pop()
+            group.append((i, j))
+            for di, dj in [(0, 1), (0, -1), (1, 0), (-1, 0)]:  # right, left, down, up
+                ni, nj = i + di, j + dj
+                if 0 <= ni < 19 and 0 <= nj < 19 and (ni, nj) not in visited and board[ni][nj] == owner:
+                    visited.add((ni, nj))
+                    stack.append((ni, nj))
+        liberties = set()
+        for (i, j) in group:
+            for di, dj in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                ni, nj = i + di, j + dj
+                if 0 <= ni < 19 and 0 <= nj < 19 and board[ni][nj] == 0:
+                    liberties.add((ni, nj))
+        return group, liberties
+
+    # Helper function to compute the strategic value of a board point.
+    def strategic_value(i, j):
+        """
+        Computes the strategic value of a point based on its position.
+        
+        Args:
+            i, j: Board indices (0-based).
+        
+        Returns:
+            Integer value based on distance to corners and edges.
+        """
+        r = i + 1  # Convert to 1-based
+        c = j + 1
+        return max(r, 20 - r) * max(c, 20 - c)
+
+    # Initialize the board from the provided stone lists.
+    board = [[0 for _ in range(19)] for _ in range(19)]
+    for r, c in me:
+        board[r - 1][c - 1] = 1
+    for r, c in opponent:
+        board[r - 1][c - 1] = -1
+
+    # Find all empty points on the board.
+    empty_points = [(i, j) for i in range(19) for j in range(19) if board[i][j] == 0]
+
+    best_score = -1
+    best_move = (0, 0)  # Default to passing if no legal move.
+
+    # Evaluate each empty point as a potential move.
+    for i, j in empty_points:
+        # Create a copy of the board to simulate the move.
+        new_board = [row[:] for row in board]
+        new_board[i][j] = 1
+        num_captured = 0
+
+        # Check for captures of adjacent opponent groups.
+        for di, dj in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            ni, nj = i + di, j + dj
+            if 0 <= ni < 19 and 0 <= nj < 19 and new_board[ni][nj] == -1:
+                group, liberties = find_group_and_liberties(new_board, ni, nj, -1)
+                if len(liberties) == 0:
+                    num_captured += len(group)
+                    for point in group:
+                        new_board[point[0]][point[1]] = 0
+
+        # Check if the new stone has liberties after captures.
+        group, liberties = find_group_and_liberties(new_board, i, j, 1)
+        if len(liberties) > 0:
+            score = num_captured * 100 + len(liberties) + strategic_value(i, j)
+            if score > best_score:
+                best_score = score
+                best_move = (i + 1, j + 1)  # Convert back to 1-based indices.
+
+    return best_move, memory
+</code>

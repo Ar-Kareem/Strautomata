@@ -1,0 +1,354 @@
+The strategy for this policy is:
+
+- Represent the board as a flat 36-cell array with `1 = us`, `-1 = opponent`, `0 = empty`.
+- Generate all legal Pentago moves: place one marble, then rotate one quadrant left or right.
+- Use alpha-beta minimax:
+  - Normally search 2 plies deep (`our move`, `opponent move`).
+  - Search deeper in the late game when the branching factor is smaller.
+- Detect terminal results exactly:
+  - our win
+  - opponent win
+  - simultaneous win = draw
+  - full board = draw
+- Evaluate nonterminal positions with a Pentago-oriented heuristic:
+  - score 5-cell windows in all directions
+  - reward unblocked lines containing our marbles
+  - punish unblocked lines containing opponent marbles
+  - add positional bonuses for strong squares, especially quadrant centers
+- Always keep a legal fallback move and return it if anything unexpected happens, so the policy never fails to output a legal move.
+
+<code>
+# Pentago policy
+# API:
+#   def policy(you, opponent) -> str
+
+WIN_SCORE = 10**8
+INF = 10**12
+
+# Board is flattened row-major: index = r*6 + c
+
+# 3x3 quadrant cells in row-major order
+QUAD_CELLS = (
+    (0, 1, 2, 6, 7, 8, 12, 13, 14),      # 0 top-left
+    (3, 4, 5, 9, 10, 11, 15, 16, 17),    # 1 top-right
+    (18, 19, 20, 24, 25, 26, 30, 31, 32),# 2 bottom-left
+    (21, 22, 23, 27, 28, 29, 33, 34, 35) # 3 bottom-right
+)
+
+# Positional weights: favor stable quadrant centers and generally central influence
+POS_WEIGHTS = (
+    3, 4, 4, 4, 4, 3,
+    4, 8, 5, 5, 8, 4,
+    4, 5, 6, 6, 5, 4,
+    4, 5, 6, 6, 5, 4,
+    4, 8, 5, 5, 8, 4,
+    3, 4, 4, 4, 4, 3
+)
+
+# Score for unblocked 5-cell windows containing k marbles of one player
+LINE_SCORES = (0, 3, 18, 120, 1200, 0)
+
+# Prefer better placement squares first for move ordering
+EMPTY_ORDER = tuple(sorted(range(36), key=lambda i: (-POS_WEIGHTS[i], i)))
+
+# Fixed rotation ordering
+ROTATION_ORDER = (
+    (0, 'R'), (0, 'L'),
+    (1, 'R'), (1, 'L'),
+    (2, 'R'), (2, 'L'),
+    (3, 'R'), (3, 'L'),
+)
+
+# All 5-length winning windows on a 6x6 board
+LINES = []
+
+# Horizontal
+for r in range(6):
+    base = 6 * r
+    for c in range(2):
+        i = base + c
+        LINES.append((i, i + 1, i + 2, i + 3, i + 4))
+
+# Vertical
+for c in range(6):
+    for r in range(2):
+        i = 6 * r + c
+        LINES.append((i, i + 6, i + 12, i + 18, i + 24))
+
+# Diagonal down-right
+for r in range(2):
+    for c in range(2):
+        i = 6 * r + c
+        LINES.append((i, i + 7, i + 14, i + 21, i + 28))
+
+# Diagonal down-left
+for r in range(2):
+    for c in range(4, 6):
+        i = 6 * r + c
+        LINES.append((i, i + 5, i + 10, i + 15, i + 20))
+
+LINES = tuple(LINES)
+
+
+def flatten_board(you, opponent):
+    board = [0] * 36
+    empties = 0
+    for r in range(6):
+        yr = you[r]
+        orow = opponent[r]
+        base = 6 * r
+        for c in range(6):
+            if yr[c]:
+                board[base + c] = 1
+            elif orow[c]:
+                board[base + c] = -1
+            else:
+                empties += 1
+    return board, empties
+
+
+def legal_moves(board):
+    for idx in EMPTY_ORDER:
+        if board[idx] == 0:
+            for quad, d in ROTATION_ORDER:
+                yield (idx, quad, d)
+
+
+def move_to_str(move):
+    idx, quad, d = move
+    return f"{idx // 6 + 1},{idx % 6 + 1},{quad},{d}"
+
+
+def apply_move(board, idx, quad, d, player):
+    nb = board[:]  # copy
+    nb[idx] = player
+    c = QUAD_CELLS[quad]
+
+    if d == 'R':
+        x0 = nb[c[6]]
+        x1 = nb[c[3]]
+        x2 = nb[c[0]]
+        x3 = nb[c[7]]
+        x4 = nb[c[4]]
+        x5 = nb[c[1]]
+        x6 = nb[c[8]]
+        x7 = nb[c[5]]
+        x8 = nb[c[2]]
+    else:  # 'L'
+        x0 = nb[c[2]]
+        x1 = nb[c[5]]
+        x2 = nb[c[8]]
+        x3 = nb[c[1]]
+        x4 = nb[c[4]]
+        x5 = nb[c[7]]
+        x6 = nb[c[0]]
+        x7 = nb[c[3]]
+        x8 = nb[c[6]]
+
+    nb[c[0]] = x0
+    nb[c[1]] = x1
+    nb[c[2]] = x2
+    nb[c[3]] = x3
+    nb[c[4]] = x4
+    nb[c[5]] = x5
+    nb[c[6]] = x6
+    nb[c[7]] = x7
+    nb[c[8]] = x8
+    return nb
+
+
+def terminal_score(board, empties):
+    my_win = False
+    opp_win = False
+
+    for line in LINES:
+        s = (
+            board[line[0]] + board[line[1]] + board[line[2]] +
+            board[line[3]] + board[line[4]]
+        )
+        if s == 5:
+            my_win = True
+        elif s == -5:
+            opp_win = True
+        if my_win and opp_win:
+            return 0  # simultaneous win => draw
+
+    if my_win:
+        return WIN_SCORE
+    if opp_win:
+        return -WIN_SCORE
+    if empties == 0:
+        return 0
+    return None
+
+
+def evaluate(board):
+    score = 0
+
+    # Line-based evaluation
+    for line in LINES:
+        cnt_me = 0
+        cnt_opp = 0
+
+        v = board[line[0]]
+        if v == 1:
+            cnt_me += 1
+        elif v == -1:
+            cnt_opp += 1
+
+        v = board[line[1]]
+        if v == 1:
+            cnt_me += 1
+        elif v == -1:
+            cnt_opp += 1
+
+        v = board[line[2]]
+        if v == 1:
+            cnt_me += 1
+        elif v == -1:
+            cnt_opp += 1
+
+        v = board[line[3]]
+        if v == 1:
+            cnt_me += 1
+        elif v == -1:
+            cnt_opp += 1
+
+        v = board[line[4]]
+        if v == 1:
+            cnt_me += 1
+        elif v == -1:
+            cnt_opp += 1
+
+        if cnt_me and cnt_opp:
+            continue
+        if cnt_me:
+            score += LINE_SCORES[cnt_me]
+        elif cnt_opp:
+            score -= LINE_SCORES[cnt_opp]
+
+    # Positional evaluation
+    for i, v in enumerate(board):
+        if v == 1:
+            score += POS_WEIGHTS[i]
+        elif v == -1:
+            score -= POS_WEIGHTS[i]
+
+    return score
+
+
+def search(board, player, depth, alpha, beta, empties):
+    term = terminal_score(board, empties)
+    if term is not None:
+        return term
+
+    if depth <= 0:
+        return evaluate(board)
+
+    # Fast path for one remaining ply
+    if depth == 1:
+        if player == 1:
+            best = -INF
+            for idx, quad, d in legal_moves(board):
+                nb = apply_move(board, idx, quad, d, 1)
+                t = terminal_score(nb, empties - 1)
+                v = t if t is not None else evaluate(nb)
+                if v > best:
+                    best = v
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta:
+                    break
+            return best
+        else:
+            best = INF
+            for idx, quad, d in legal_moves(board):
+                nb = apply_move(board, idx, quad, d, -1)
+                t = terminal_score(nb, empties - 1)
+                v = t if t is not None else evaluate(nb)
+                if v < best:
+                    best = v
+                if best < beta:
+                    beta = best
+                if alpha >= beta:
+                    break
+            return best
+
+    if player == 1:
+        best = -INF
+        for idx, quad, d in legal_moves(board):
+            nb = apply_move(board, idx, quad, d, 1)
+            v = search(nb, -1, depth - 1, alpha, beta, empties - 1)
+            if v > best:
+                best = v
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return best
+    else:
+        best = INF
+        for idx, quad, d in legal_moves(board):
+            nb = apply_move(board, idx, quad, d, -1)
+            v = search(nb, 1, depth - 1, alpha, beta, empties - 1)
+            if v < best:
+                best = v
+            if best < beta:
+                beta = best
+            if alpha >= beta:
+                break
+        return best
+
+
+def choose_depth(empties):
+    # Deeper search late in the game when branching shrinks.
+    if empties <= 5:
+        return 4
+    if empties <= 8:
+        return 3
+    return 2
+
+
+def best_move(board, empties):
+    depth = choose_depth(empties)
+
+    best = None
+    best_val = -INF
+    alpha = -INF
+    beta = INF
+
+    for move in legal_moves(board):
+        idx, quad, d = move
+        nb = apply_move(board, idx, quad, d, 1)
+        v = search(nb, -1, depth - 1, alpha, beta, empties - 1)
+
+        if v > best_val or best is None:
+            best_val = v
+            best = move
+
+        if best_val > alpha:
+            alpha = best_val
+
+        if best_val >= WIN_SCORE:
+            break
+
+    return best
+
+
+def policy(you, opponent) -> str:
+    board, empties = flatten_board(you, opponent)
+
+    # Guaranteed legal fallback
+    fallback = None
+    for move in legal_moves(board):
+        fallback = move_to_str(move)
+        break
+
+    try:
+        move = best_move(board, empties)
+        if move is None:
+            return fallback
+        return move_to_str(move)
+    except Exception:
+        return fallback
+</code>

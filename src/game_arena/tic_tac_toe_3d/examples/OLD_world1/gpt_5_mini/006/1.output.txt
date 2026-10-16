@@ -1,0 +1,110 @@
+```python
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Choose a move for 3x3x3 Tic-Tac-Toe.
+    board is expected as board[z][y][x] with values: 0 empty, 1 (us), -1 (opponent).
+    Returns (x, y, z) with coordinates in 0..2.
+    Strategy:
+    1. If we can win immediately, play the winning cell.
+    2. If opponent can win next, block that cell.
+    3. Otherwise, score empty cells by how many "good" lines they participate in,
+       giving preference to lines without opponent pieces and lines where we already have pieces.
+       Tie-break deterministically by lexicographic (x,y,z).
+    """
+    n = len(board)
+    assert n == 3, "This policy expects a 3x3x3 board."
+    # helper to get cell value with coordinates (x,y,z)
+    def val(x, y, z):
+        return board[z][y][x]
+
+    # generate all straight lines of length n by direction stepping
+    dirs = [(dx, dy, dz) for dx in (-1, 0, 1)
+                        for dy in (-1, 0, 1)
+                        for dz in (-1, 0, 1)
+                        if not (dx == dy == dz == 0)]
+    unique_lines = set()
+    lines = []
+    for x in range(n):
+        for y in range(n):
+            for z in range(n):
+                for dx, dy, dz in dirs:
+                    coords = []
+                    for i in range(n):
+                        xi = x + i*dx
+                        yi = y + i*dy
+                        zi = z + i*dz
+                        if 0 <= xi < n and 0 <= yi < n and 0 <= zi < n:
+                            coords.append((xi, yi, zi))
+                        else:
+                            break
+                    if len(coords) == n:
+                        key = tuple(sorted(coords))
+                        if key not in unique_lines:
+                            unique_lines.add(key)
+                            # keep original order (from start in this direction) for convenience
+                            # but also store sorted key for deterministic processing
+                            lines.append(tuple(coords))
+
+    # Function to find the empty cell in a line if exactly one empty
+    def find_single_empty(line):
+        empties = [c for c in line if val(*c) == 0]
+        if len(empties) == 1:
+            return empties[0]
+        return None
+
+    # 1) Win if possible
+    for line in lines:
+        s = sum(val(*c) for c in line)
+        if s == n - 1:  # our pieces fill 2 cells (1 + 1) in 3-length line -> we can win
+            e = find_single_empty(line)
+            if e is not None:
+                return e  # play winning move
+
+    # 2) Block opponent immediate win
+    for line in lines:
+        s = sum(val(*c) for c in line)
+        if s == -(n - 1):  # opponent has 2 in a line, we must block
+            e = find_single_empty(line)
+            if e is not None:
+                return e
+
+    # 3) Heuristic scoring for remaining empty cells
+    scores = {}
+    for x in range(n):
+        for y in range(n):
+            for z in range(n):
+                if val(x, y, z) != 0:
+                    continue
+                score = 0
+                # big bonus for center
+                if (x, y, z) == (1, 1, 1):
+                    score += 10
+                # corner bonus
+                if x in (0, 2) and y in (0, 2) and z in (0, 2):
+                    score += 2
+                # evaluate lines that include this cell
+                for line in lines:
+                    if (x, y, z) not in line:
+                        continue
+                    line_vals = [val(*c) for c in line]
+                    if any(v == -1 for v in line_vals):
+                        # if opponent present, this line is not a pure opportunity
+                        continue
+                    # reward lines with our pieces already (closer to completion)
+                    my_count = sum(1 for v in line_vals if v == 1)
+                    # base reward: more for more of our pieces
+                    score += (1 + my_count * 3)
+                scores[(x, y, z)] = score
+
+    if scores:
+        # choose the highest score; tie-break by lexicographic (x,y,z)
+        best = max(sorted(scores.keys()), key=lambda c: (scores[c], tuple(-i for i in c)))
+        # note: sorting/stability ensures deterministic selection; we prefer larger scores,
+        # and among equal scores the "smallest" coordinate in lexicographic order (by negation we flip)
+        return best
+
+    # If no empty cell found (shouldn't happen in normal play), return first cell (0,0,0)
+    return (0, 0, 0)
+```

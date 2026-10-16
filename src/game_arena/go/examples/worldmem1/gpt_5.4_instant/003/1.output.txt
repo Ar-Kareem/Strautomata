@@ -1,0 +1,337 @@
+The strategy for this policy is a fast tactical Go heuristic designed to always return a legal move while still being competitive under a 1-second budget.
+
+Core ideas:
+1. Always reconstruct the board from `me` and `opponent`.
+2. Generate only legal moves, including suicide checking.
+3. Prioritize urgent tactics:
+   - play immediate captures,
+   - save own groups in atari,
+   - prefer moves that create pressure on weak opponent groups.
+4. If no urgent tactical move exists, score candidate legal moves using simple positional features:
+   - liberties gained,
+   - adjacent friendly/enemy stones,
+   - centrality,
+   - connection to own groups,
+   - reducing opponent liberties.
+5. Restrict search mostly to moves near existing stones for speed, but fall back to any legal move if needed.
+6. Pass only if no legal board move exists.
+
+This policy does not attempt full territory evaluation or deep reading, but it is robust, legal, and tactically sharp enough to outperform naive random or purely positional agents.
+
+<code>
+from typing import List, Tuple, Dict
+import math
+
+BOARD_SIZE = 19
+DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+
+def in_bounds(r: int, c: int) -> bool:
+    return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+
+
+def neighbors(r: int, c: int):
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+            yield nr, nc
+
+
+def build_board(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]):
+    board = {}
+    for p in me:
+        board[p] = 1
+    for p in opponent:
+        board[p] = 2
+    return board
+
+
+def get_group_and_liberties(board: Dict[Tuple[int, int], int], start: Tuple[int, int]):
+    color = board[start]
+    stack = [start]
+    seen = {start}
+    group = []
+    liberties = set()
+    while stack:
+        p = stack.pop()
+        group.append(p)
+        r, c = p
+        for q in neighbors(r, c):
+            if q not in board:
+                liberties.add(q)
+            elif board[q] == color and q not in seen:
+                seen.add(q)
+                stack.append(q)
+    return group, liberties
+
+
+def play_move(board: Dict[Tuple[int, int], int], move: Tuple[int, int], color: int):
+    if move == (0, 0):
+        return board.copy(), True
+    if move in board:
+        return board, False
+
+    nb = board.copy()
+    nb[move] = color
+    opp = 3 - color
+
+    # Capture opponent groups with no liberties
+    checked = set()
+    for q in neighbors(*move):
+        if q in nb and nb[q] == opp and q not in checked:
+            group, libs = get_group_and_liberties(nb, q)
+            checked.update(group)
+            if not libs:
+                for s in group:
+                    del nb[s]
+
+    # Suicide check
+    group, libs = get_group_and_liberties(nb, move)
+    if not libs:
+        return board, False
+
+    return nb, True
+
+
+def legal_moves(board: Dict[Tuple[int, int], int], color: int, candidates=None):
+    if candidates is None:
+        candidates = [(r, c) for r in range(1, BOARD_SIZE + 1) for c in range(1, BOARD_SIZE + 1)]
+    out = []
+    for mv in candidates:
+        if mv in board:
+            continue
+        _, ok = play_move(board, mv, color)
+        if ok:
+            out.append(mv)
+    return out
+
+
+def all_groups(board: Dict[Tuple[int, int], int], color: int):
+    seen = set()
+    groups = []
+    for p, col in board.items():
+        if col == color and p not in seen:
+            g, libs = get_group_and_liberties(board, p)
+            seen.update(g)
+            groups.append((g, libs))
+    return groups
+
+
+def candidate_moves(board: Dict[Tuple[int, int], int]):
+    if not board:
+        # Strong opening points preference
+        return [
+            (4, 4), (4, 16), (16, 4), (16, 16),
+            (10, 10), (4, 10), (10, 4), (10, 16), (16, 10)
+        ]
+
+    cand = set()
+    stones = list(board.keys())
+    for r, c in stones:
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                nr, nc = r + dr, c + dc
+                if in_bounds(nr, nc) and (nr, nc) not in board:
+                    cand.add((nr, nc))
+
+    # Add strategic fallback points
+    extras = [
+        (4, 4), (4, 10), (4, 16),
+        (10, 4), (10, 10), (10, 16),
+        (16, 4), (16, 10), (16, 16),
+        (7, 7), (7, 13), (13, 7), (13, 13)
+    ]
+    for p in extras:
+        if p not in board:
+            cand.add(p)
+    return list(cand)
+
+
+def count_captures(before: Dict[Tuple[int, int], int], after: Dict[Tuple[int, int], int], opp_color: int):
+    b = sum(1 for v in before.values() if v == opp_color)
+    a = sum(1 for v in after.values() if v == opp_color)
+    return b - a
+
+
+def move_score(board: Dict[Tuple[int, int], int], mv: Tuple[int, int], color: int):
+    opp = 3 - color
+    nb, ok = play_move(board, mv, color)
+    if not ok:
+        return -10**9
+
+    score = 0.0
+    captures = count_captures(board, nb, opp)
+    score += 1000 * captures
+
+    # Liberties of resulting group
+    g, libs = get_group_and_liberties(nb, mv)
+    lcount = len(libs)
+    score += 18 * min(lcount, 6)
+
+    # Connection / contact features
+    friendly_adj = 0
+    enemy_adj = 0
+    empty_adj = 0
+    for q in neighbors(*mv):
+        if q not in board:
+            empty_adj += 1
+        elif board[q] == color:
+            friendly_adj += 1
+        else:
+            enemy_adj += 1
+    score += 14 * friendly_adj
+    score += 8 * enemy_adj
+    score += 3 * empty_adj
+
+    # Put pressure on neighboring enemy groups by reducing liberties
+    touched_enemy = set()
+    for q in neighbors(*mv):
+        if q in board and board[q] == opp and q not in touched_enemy:
+            eg, elibs = get_group_and_liberties(board, q)
+            touched_enemy.update(eg)
+            before_libs = len(elibs)
+            after_probe = None
+            if q in nb and nb[q] == opp:
+                _, after_libs_set = get_group_and_liberties(nb, q)
+                after_libs = len(after_libs_set)
+                score += 20 * (before_libs - after_libs)
+                if after_libs == 1:
+                    score += 80
+                elif after_libs == 2:
+                    score += 25
+            else:
+                score += 150  # captured
+
+    # Save own neighboring weak groups
+    touched_me = set()
+    for q in neighbors(*mv):
+        if q in board and board[q] == color and q not in touched_me:
+            mg, mlibs = get_group_and_liberties(board, q)
+            touched_me.update(mg)
+            before_libs = len(mlibs)
+            if before_libs <= 2:
+                score += 35 * (3 - before_libs)
+
+    # Avoid self-atari unless capturing significantly
+    if lcount == 1 and captures == 0:
+        score -= 220
+    elif lcount == 2:
+        score -= 30
+
+    # Prefer centrality mildly
+    r, c = mv
+    dist_center = abs(r - 10) + abs(c - 10)
+    score += max(0, 12 - dist_center)
+
+    # Slight preference for star points early
+    occupied = len(board)
+    stars = {(4, 4), (4, 10), (4, 16), (10, 4), (10, 10), (10, 16), (16, 4), (16, 10), (16, 16)}
+    if occupied < 20 and mv in stars:
+        score += 18
+
+    return score
+
+
+def emergency_tactical_move(board: Dict[Tuple[int, int], int], color: int):
+    opp = 3 - color
+
+    # 1. Capture any opponent group in atari
+    opp_groups = all_groups(board, opp)
+    capture_moves = []
+    for g, libs in opp_groups:
+        if len(libs) == 1:
+            mv = next(iter(libs))
+            nb, ok = play_move(board, mv, color)
+            if ok:
+                captures = count_captures(board, nb, opp)
+                capture_moves.append((captures, len(g), mv))
+    if capture_moves:
+        capture_moves.sort(reverse=True)
+        return capture_moves[0][2]
+
+    # 2. Save own groups in atari
+    my_groups = all_groups(board, color)
+    save_moves = []
+    for g, libs in my_groups:
+        if len(libs) == 1:
+            mv = next(iter(libs))
+            nb, ok = play_move(board, mv, color)
+            if ok:
+                _, new_libs = get_group_and_liberties(nb, mv)
+                save_moves.append((len(new_libs), len(g), mv))
+    if save_moves:
+        save_moves.sort(reverse=True)
+        return save_moves[0][2]
+
+    return None
+
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: dict) -> Tuple[Tuple[int, int], dict]:
+    try:
+        board = build_board(me, opponent)
+
+        # Tactical urgency first
+        urgent = emergency_tactical_move(board, 1)
+        if urgent is not None:
+            return urgent, memory if isinstance(memory, dict) else {}
+
+        # Candidate generation
+        cand = candidate_moves(board)
+        legal = legal_moves(board, 1, cand)
+
+        # Fallback to full-board legal search if local candidates somehow fail
+        if not legal:
+            legal = legal_moves(board, 1)
+
+        if not legal:
+            return (0, 0), memory if isinstance(memory, dict) else {}
+
+        # Opening preference on empty board
+        if not board:
+            for mv in [(4, 4), (4, 16), (16, 4), (16, 16), (10, 10)]:
+                nb, ok = play_move(board, mv, 1)
+                if ok:
+                    return mv, memory if isinstance(memory, dict) else {}
+
+        # Score legal moves
+        best_mv = legal[0]
+        best_sc = -10**18
+        for mv in legal:
+            sc = move_score(board, mv, 1)
+            # deterministic tie-breaks: prefer more central, then lexicographic
+            if sc > best_sc:
+                best_sc = sc
+                best_mv = mv
+            elif sc == best_sc:
+                d1 = abs(mv[0] - 10) + abs(mv[1] - 10)
+                d2 = abs(best_mv[0] - 10) + abs(best_mv[1] - 10)
+                if d1 < d2 or (d1 == d2 and mv < best_mv):
+                    best_mv = mv
+
+        # Final legal guard
+        _, ok = play_move(board, best_mv, 1)
+        if ok:
+            return best_mv, memory if isinstance(memory, dict) else {}
+
+        # Absolute safety fallback
+        for mv in legal:
+            _, ok = play_move(board, mv, 1)
+            if ok:
+                return mv, memory if isinstance(memory, dict) else {}
+
+        return (0, 0), memory if isinstance(memory, dict) else {}
+
+    except Exception:
+        # Never crash; always return a legal move if possible
+        try:
+            board = build_board(me, opponent)
+            for r in range(1, BOARD_SIZE + 1):
+                for c in range(1, BOARD_SIZE + 1):
+                    mv = (r, c)
+                    _, ok = play_move(board, mv, 1)
+                    if ok:
+                        return mv, {}
+            return (0, 0), {}
+        except Exception:
+            return (0, 0), {}
+</code>

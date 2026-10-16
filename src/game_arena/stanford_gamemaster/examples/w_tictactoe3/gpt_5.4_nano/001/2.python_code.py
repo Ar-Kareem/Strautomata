@@ -1,0 +1,121 @@
+
+import functools
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Build board: 3x3 with values 'x', 'o', or None
+    board = [[None for _ in range(3)] for _ in range(3)]
+    for fact in state:
+        # fact like ["cell", "1", "2", "x"] or ["control", "x"]
+        if isinstance(fact, list) and len(fact) == 4 and fact[0] == "cell":
+            r = int(fact[1]) - 1
+            c = int(fact[2]) - 1
+            v = fact[3]
+            if v in ("x", "o", "b"):
+                board[r][c] = None if v == "b" else v
+
+    me = role
+    opp = "o" if me == "x" else "x"
+
+    # Convert to immutable representation for memo keys
+    def board_to_tuple(b):
+        return tuple(tuple(cell if cell is not None else "." for cell in row) for row in b)
+
+    # Check winner on a given board
+    lines = [
+        # rows
+        [(0,0),(0,1),(0,2)],
+        [(1,0),(1,1),(1,2)],
+        [(2,0),(2,1),(2,2)],
+        # cols
+        [(0,0),(1,0),(2,0)],
+        [(0,1),(1,1),(2,1)],
+        [(0,2),(1,2),(2,2)],
+        # diags
+        [(0,0),(1,1),(2,2)],
+        [(0,2),(1,1),(2,0)],
+    ]
+
+    def winner(b):
+        for line in lines:
+            vals = [b[r][c] for (r,c) in line]
+            if vals[0] is not None and vals[0] == vals[1] == vals[2]:
+                return vals[0]
+        return None
+
+    def is_full(b):
+        return all(b[r][c] is not None for r in range(3) for c in range(3))
+
+    # Minimax returns score from perspective of `me`
+    # score: +1 win, 0 draw, -1 loss
+    @functools.lru_cache(maxsize=None)
+    def minimax(state_tup, turn):
+        b = [[None if ch == "." else ch for ch in row] for row in state_tup]
+        w = winner(b)
+        if w == me:
+            return 1
+        if w == opp:
+            return -1
+        if is_full(b):
+            return 0
+
+        next_turn = opp if turn == me else me
+
+        # Determine best move for current turn
+        if turn == me:
+            best = -2
+            for r in range(3):
+                for c in range(3):
+                    if b[r][c] is None:
+                        b[r][c] = turn
+                        score = minimax(board_to_tuple(b), next_turn)
+                        b[r][c] = None
+                        if score > best:
+                            best = score
+            return best
+        else:
+            best = 2
+            for r in range(3):
+                for c in range(3):
+                    if b[r][c] is None:
+                        b[r][c] = turn
+                        score = minimax(board_to_tuple(b), next_turn)
+                        b[r][c] = None
+                        if score < best:
+                            best = score
+            return best
+
+    # Determine current turn is `role` (as per problem statement)
+    turn = me
+
+    # Choose best legal move for `me`
+    state_tup = board_to_tuple(board)
+    best_score = -2
+    best_move = None
+
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] is None:
+                board[r][c] = me
+                score = minimax(board_to_tuple(board), opp)
+                board[r][c] = None
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+                # Early exit if winning move found
+                if best_score == 1:
+                    break
+        if best_score == 1:
+            break
+
+    # Fallback (should not happen): choose first empty cell
+    if best_move is None:
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] is None:
+                    best_move = (r, c)
+                    break
+            if best_move is not None:
+                break
+
+    r, c = best_move
+    return f"mark({r+1},{c+1})"

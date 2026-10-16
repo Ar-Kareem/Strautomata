@@ -1,0 +1,161 @@
+The strategy for this policy is to always obey mandatory captures, rank capture moves by the value of the captured piece and promotion potential, and otherwise choose safe, centrally improving moves while avoiding immediate recapture when possible.
+
+<code>
+import math
+from typing import List, Tuple, Set, Optional
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    # Helper functions
+    def in_bounds(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def is_dark(r, c):
+        return (r + c) % 2 == 1
+
+    def directions(piece_type, color):
+        if piece_type == 'king':
+            return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        if color == 'b':
+            return [(-1, -1), (-1, 1)]
+        else:
+            return [(1, -1), (1, 1)]
+
+    def promotion_row(color):
+        return 0 if color == 'b' else 7
+
+    def generate_captures(men_set, kings_set, opp_men_set, opp_kings_set, color):
+        moves = []
+        occupied = men_set | kings_set | opp_men_set | opp_kings_set
+        for pos in men_set:
+            r, c = pos
+            for dr, dc in directions('man', color):
+                mid = (r + dr, c + dc)
+                land = (r + 2*dr, c + 2*dc)
+                if in_bounds(*land) and is_dark(*land):
+                    if mid in opp_men_set or mid in opp_kings_set:
+                        if land not in occupied:
+                            jumped_is_king = mid in opp_kings_set
+                            moves.append({'from': pos, 'to': land, 'piece': 'man',
+                                          'capture': True, 'jumped': mid, 'jumped_is_king': jumped_is_king})
+        for pos in kings_set:
+            r, c = pos
+            for dr, dc in directions('king', color):
+                mid = (r + dr, c + dc)
+                land = (r + 2*dr, c + 2*dc)
+                if in_bounds(*land) and is_dark(*land):
+                    if mid in opp_men_set or mid in opp_kings_set:
+                        if land not in occupied:
+                            jumped_is_king = mid in opp_kings_set
+                            moves.append({'from': pos, 'to': land, 'piece': 'king',
+                                          'capture': True, 'jumped': mid, 'jumped_is_king': jumped_is_king})
+        return moves
+
+    def generate_moves(men_set, kings_set, opp_men_set, opp_kings_set, color):
+        moves = []
+        occupied = men_set | kings_set | opp_men_set | opp_kings_set
+        for pos in men_set:
+            r, c = pos
+            for dr, dc in directions('man', color):
+                land = (r + dr, c + dc)
+                if in_bounds(*land) and is_dark(*land) and land not in occupied:
+                    moves.append({'from': pos, 'to': land, 'piece': 'man',
+                                  'capture': False, 'jumped': None, 'jumped_is_king': False})
+        for pos in kings_set:
+            r, c = pos
+            for dr, dc in directions('king', color):
+                land = (r + dr, c + dc)
+                if in_bounds(*land) and is_dark(*land) and land not in occupied:
+                    moves.append({'from': pos, 'to': land, 'piece': 'king',
+                                  'capture': False, 'jumped': None, 'jumped_is_king': False})
+        return moves
+
+    def simulate_move(move, men_set, kings_set, opp_men_set, opp_kings_set, color):
+        men = set(men_set)
+        kings = set(kings_set)
+        opp_men = set(opp_men_set)
+        opp_kings = set(opp_kings_set)
+
+        frm = move['from']
+        to = move['to']
+        piece = move['piece']
+
+        if piece == 'man':
+            men.remove(frm)
+        else:
+            kings.remove(frm)
+
+        if move['capture']:
+            jumped = move['jumped']
+            if jumped in opp_men:
+                opp_men.remove(jumped)
+            elif jumped in opp_kings:
+                opp_kings.remove(jumped)
+
+        # Promotion
+        if piece == 'man' and to[0] == promotion_row(color):
+            kings.add(to)
+        else:
+            if piece == 'man':
+                men.add(to)
+            else:
+                kings.add(to)
+
+        return men, kings, opp_men, opp_kings
+
+    def evaluate_move(move, men_set, kings_set, opp_men_set, opp_kings_set, color):
+        score = 0.0
+        frm = move['from']
+        to = move['to']
+        piece = move['piece']
+
+        # Base scoring
+        if move['capture']:
+            score += 3.0 if move['jumped_is_king'] else 1.5
+
+        # Promotion bonus
+        if piece == 'man' and to[0] == promotion_row(color):
+            score += 2.5
+
+        # Centrality
+        score += -0.1 * (abs(to[0] - 3.5) + abs(to[1] - 3.5))
+
+        # Simulate and check for immediate recapture
+        new_men, new_kings, new_opp_men, new_opp_kings = simulate_move(
+            move, men_set, kings_set, opp_men_set, opp_kings_set, color
+        )
+        opp_color = 'w' if color == 'b' else 'b'
+        opp_caps = generate_captures(new_opp_men, new_opp_kings, new_men, new_kings, opp_color)
+        moved_pos = to
+        for oc in opp_caps:
+            if oc['jumped'] == moved_pos:
+                score -= 2.5  # avoid immediate capture
+                break
+
+        return score
+
+    # Convert to sets
+    my_men_set = set(my_men)
+    my_kings_set = set(my_kings)
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+
+    # Mandatory captures
+    captures = generate_captures(my_men_set, my_kings_set, opp_men_set, opp_kings_set, color)
+    if captures:
+        best_move = max(captures, key=lambda m: evaluate_move(m, my_men_set, my_kings_set, opp_men_set, opp_kings_set, color))
+        return (best_move['from'], best_move['to'])
+
+    # Otherwise, normal moves
+    moves = generate_moves(my_men_set, my_kings_set, opp_men_set, opp_kings_set, color)
+    if moves:
+        best_move = max(moves, key=lambda m: evaluate_move(m, my_men_set, my_kings_set, opp_men_set, opp_kings_set, color))
+        return (best_move['from'], best_move['to'])
+
+    # Fallback (should not happen)
+    # Return any legal move if possible; otherwise a dummy (but arena should not call in terminal states)
+    if my_men:
+        return (my_men[0], my_men[0])
+    if my_kings:
+        return (my_kings[0], my_kings[0])
+    return ((0, 0), (0, 0))
+</code>

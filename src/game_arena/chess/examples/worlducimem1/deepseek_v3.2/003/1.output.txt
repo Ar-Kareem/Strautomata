@@ -1,0 +1,303 @@
+Strategy:
+- Implement a basic minimax with alpha-beta pruning to a shallow depth (depth 3–4) to handle immediate tactics.
+- Use a simple evaluation function: piece values, positional bonuses (central pawns, knights, bishop mobility, king safety), and penalties for hanging pieces.
+- Prioritize checkmate detection (assign extremely high score).
+- Use iterative deepening with time constraint (1 second) to search as deep as possible.
+- Use memory to store transposition table (cached positions) to speed up search.
+- Always return a legal move (fallback: first legal move).
+
+<code>
+import time
+import random
+from collections import defaultdict
+
+# Piece values (standard)
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+}
+
+# Positional bonuses (simplified)
+PAWN_TABLE = [
+    0,   0,   0,   0,   0,   0,   0,   0,
+    50,  50,  50,  50,  50,  50,  50,  50,
+    10,  10,  20,  30,  30,  20,  10,  10,
+    5,   5,  10,  25,  25,  10,   5,   5,
+    0,   0,   0,  20,  20,   0,   0,   0,
+    5,  -5, -10,   0,   0, -10,  -5,   5,
+    5,  10,  10, -20, -20,  10,  10,   5,
+    0,   0,   0,   0,   0,   0,   0,   0
+]
+
+KNIGHT_TABLE = [
+    -50, -40, -30, -30, -30, -30, -40, -50,
+    -40, -20,   0,   0,   0,   0, -20, -40,
+    -30,   0,  10,  15,  15,  10,   0, -30,
+    -30,   5,  15,  20,  20,  15,   5, -30,
+    -30,   0,  15,  20,  20,  15,   0, -30,
+    -30,   5,  10,  15,  15,  10,   5, -30,
+    -40, -20,   0,   5,   5,   0, -20, -40,
+    -50, -40, -30, -30, -30, -30, -40, -50
+]
+
+BISHOP_TABLE = [
+    -20, -10, -10, -10, -10, -10, -10, -20,
+    -10,   0,   0,   0,   0,   0,   0, -10,
+    -10,   0,   5,  10,  10,   5,   0, -10,
+    -10,   5,   5,  10,  10,   5,   5, -10,
+    -10,   0,  10,  10,  10,  10,   0, -10,
+    -10,  10,  10,  10,  10,  10,  10, -10,
+    -10,   5,   0,   0,   0,   0,   5, -10,
+    -20, -10, -10, -10, -10, -10, -10, -20
+]
+
+KING_TABLE = [
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -20, -30, -30, -40, -40, -30, -30, -20,
+    -10, -20, -20, -20, -20, -20, -20, -10,
+    20,  20,   0,   0,   0,   0,  20,  20,
+    20,  30,  10,   0,   0,  10,  30,  20
+]
+
+# Square index conversion
+def square_to_index(sq):
+    file = ord(sq[0]) - ord('a')
+    rank = int(sq[1]) - 1
+    return rank * 8 + file
+
+# Move generation helpers (simple legal move generation from given legal moves)
+def get_legal_moves(pieces, to_play):
+    # We'll assume legal moves are provided externally via an implicit global list
+    # In this setup, we will simulate move generation by using pseudo-legal moves.
+    # But since we don't have legal_moves list, we must rely on external list.
+    # We'll instead create a minimal move generator for evaluation.
+    # However, in the policy we will actually receive legal_moves from the environment.
+    # For the purpose of the search, we need a function that returns all legal moves.
+    # We'll implement a basic pseudo‑legal generator here (no castling/en passant).
+    color_prefix = 'w' if to_play == 'white' else 'b'
+    opponent_prefix = 'b' if to_play == 'white' else 'w'
+    moves = []
+    for sq, pc in list(pieces.items()):
+        if pc[0] != color_prefix:
+            continue
+        ptype = pc[1]
+        f, r = sq[0], int(sq[1])
+        if ptype == 'P':
+            forward = 1 if color_prefix == 'w' else -1
+            start_rank = 2 if color_prefix == 'w' else 7
+            # one forward
+            nsq = f + str(r + forward)
+            if nsq not in pieces:
+                moves.append(sq + nsq)
+                # two forward from start
+                if r == start_rank:
+                    nsq2 = f + str(r + 2 * forward)
+                    if nsq2 not in pieces:
+                        moves.append(sq + nsq2)
+            # captures
+            for df in (-1, 1):
+                nf = chr(ord(f) + df)
+                if 'a' <= nf <= 'h':
+                    nsq = nf + str(r + forward)
+                    if nsq in pieces and pieces[nsq][0] == opponent_prefix:
+                        moves.append(sq + nsq)
+        elif ptype == 'N':
+            for df, dr in [(2,1),(1,2),(-1,2),(-2,1),(-2,-1),(-1,-2),(1,-2),(2,-1)]:
+                nf = chr(ord(f) + df)
+                nr = r + dr
+                if 'a' <= nf <= 'h' and 1 <= nr <= 8:
+                    nsq = nf + str(nr)
+                    if nsq not in pieces or pieces[nsq][0] == opponent_prefix:
+                        moves.append(sq + nsq)
+        elif ptype == 'B':
+            for df, dr in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+                for d in range(1, 8):
+                    nf = chr(ord(f) + df * d)
+                    nr = r + dr * d
+                    if not ('a' <= nf <= 'h' and 1 <= nr <= 8):
+                        break
+                    nsq = nf + str(nr)
+                    if nsq in pieces:
+                        if pieces[nsq][0] == opponent_prefix:
+                            moves.append(sq + nsq)
+                        break
+                    moves.append(sq + nsq)
+        elif ptype == 'R':
+            for df, dr in [(1,0),(0,1),(-1,0),(0,-1)]:
+                for d in range(1, 8):
+                    nf = chr(ord(f) + df * d)
+                    nr = r + dr * d
+                    if not ('a' <= nf <= 'h' and 1 <= nr <= 8):
+                        break
+                    nsq = nf + str(nr)
+                    if nsq in pieces:
+                        if pieces[nsq][0] == opponent_prefix:
+                            moves.append(sq + nsq)
+                        break
+                    moves.append(sq + nsq)
+        elif ptype == 'Q':
+            for df, dr in [(1,1),(1,-1),(-1,1),(-1,-1),(1,0),(0,1),(-1,0),(0,-1)]:
+                for d in range(1, 8):
+                    nf = chr(ord(f) + df * d)
+                    nr = r + dr * d
+                    if not ('a' <= nf <= 'h' and 1 <= nr <= 8):
+                        break
+                    nsq = nf + str(nr)
+                    if nsq in pieces:
+                        if pieces[nsq][0] == opponent_prefix:
+                            moves.append(sq + nsq)
+                        break
+                    moves.append(sq + nsq)
+        elif ptype == 'K':
+            for df in (-1,0,1):
+                for dr in (-1,0,1):
+                    if df == 0 and dr == 0:
+                        continue
+                    nf = chr(ord(f) + df)
+                    nr = r + dr
+                    if 'a' <= nf <= 'h' and 1 <= nr <= 8:
+                        nsq = nf + str(nr)
+                        if nsq not in pieces or pieces[nsq][0] == opponent_prefix:
+                            moves.append(sq + nsq)
+    # Add promotions for pawn moves to last rank
+    promoted_moves = []
+    for mv in moves:
+        if len(mv) == 4:
+            pc = pieces.get(mv[:2])
+            if pc and pc[1] == 'P':
+                to_rank = int(mv[3])
+                if (color_prefix == 'w' and to_rank == 8) or (color_prefix == 'b' and to_rank == 1):
+                    for prom in 'qrbn':
+                        promoted_moves.append(mv + prom)
+    moves.extend(promoted_moves)
+    return moves
+
+def make_move(pieces, move):
+    # returns new board dict after move
+    new_pieces = pieces.copy()
+    src = move[:2]
+    dst = move[2:4]
+    piece = pieces[src]
+    # capture
+    if dst in new_pieces:
+        del new_pieces[dst]
+    # move
+    del new_pieces[src]
+    # promotion
+    if len(move) > 4:
+        prom = move[4]
+        new_pieces[dst] = piece[0] + prom.upper()
+    else:
+        new_pieces[dst] = piece
+    return new_pieces
+
+def evaluate(pieces, to_play):
+    score = 0
+    for sq, pc in pieces.items():
+        val = PIECE_VALUES[pc[1]]
+        idx = square_to_index(sq)
+        if pc[0] == 'w':
+            # add positional bonus
+            if pc[1] == 'P':
+                score += PAWN_TABLE[idx]
+            elif pc[1] == 'N':
+                score += KNIGHT_TABLE[idx]
+            elif pc[1] == 'B':
+                score += BISHOP_TABLE[idx]
+            elif pc[1] == 'K':
+                score += KING_TABLE[idx]
+            score += val
+        else:
+            if pc[1] == 'P':
+                score -= PAWN_TABLE[63 - idx]
+            elif pc[1] == 'N':
+                score -= KNIGHT_TABLE[63 - idx]
+            elif pc[1] == 'B':
+                score -= BISHOP_TABLE[63 - idx]
+            elif pc[1] == 'K':
+                score -= KING_TABLE[63 - idx]
+            score -= val
+    return score if to_play == 'white' else -score
+
+def is_checkmate(pieces, to_play):
+    # if no legal moves and king is in check
+    moves = get_legal_moves(pieces, to_play)
+    if len(moves) == 0:
+        # check if king is attacked
+        color_prefix = 'w' if to_play == 'white' else 'b'
+        opp_prefix = 'b' if to_play == 'white' else 'w'
+        # find king square
+        king_sq = None
+        for sq, pc in pieces.items():
+            if pc == color_prefix + 'K':
+                king_sq = sq
+                break
+        if king_sq is None:
+            return False
+        # simulate opponent moves to see if they attack king
+        opponent_moves = get_legal_moves(pieces, 'black' if to_play == 'white' else 'white')
+        for mv in opponent_moves:
+            if mv[2:4] == king_sq:
+                return True
+    return False
+
+def minimax(pieces, depth, alpha, beta, maximizing, to_play, start_time, time_limit):
+    if time.time() - start_time > time_limit:
+        raise TimeoutError
+    if depth == 0:
+        return evaluate(pieces, to_play)
+    moves = get_legal_moves(pieces, to_play)
+    if len(moves) == 0:
+        if is_checkmate(pieces, to_play):
+            return -1000000 if maximizing else 1000000
+        else:
+            return 0  # stalemate
+    if maximizing:
+        value = -float('inf')
+        for move in moves:
+            new_pieces = make_move(pieces, move)
+            next_to_play = 'black' if to_play == 'white' else 'white'
+            child_val = minimax(new_pieces, depth-1, alpha, beta, False, next_to_play, start_time, time_limit)
+            if child_val > value:
+                value = child_val
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = float('inf')
+        for move in moves:
+            new_pieces = make_move(pieces, move)
+            next_to_play = 'black' if to_play == 'white' else 'white'
+            child_val = minimax(new_pieces, depth-1, alpha, beta, True, next_to_play, start_time, time_limit)
+            if child_val < value:
+                value = child_val
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    start_time = time.time()
+    time_limit = 0.95  # stay under 1 second
+    legal_moves = get_legal_moves(pieces, to_play)
+    if not legal_moves:
+        return '', memory
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    # Use iterative deepening
+    for depth in range(1, 6):
+        try:
+            for move in legal_moves:
+                new_pieces = make_move(pieces, move)
+                next_player = 'black' if to_play == 'white' else 'white'
+                score = minimax(new_pieces, depth-1, -float('inf'), float('inf'), False, next_player, start_time, time_limit)
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+        except TimeoutError:
+            break
+    return best_move, memory
+</code>

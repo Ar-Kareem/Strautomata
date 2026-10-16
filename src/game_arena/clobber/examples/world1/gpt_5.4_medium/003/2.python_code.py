@@ -1,0 +1,355 @@
+
+import time
+
+ROWS = 5
+COLS = 6
+NCELLS = ROWS * COLS
+
+INF = 10**9
+MATE = 1_000_000
+WIN_BOUND = MATE // 2
+
+# Precomputed board data
+NEIGHBORS = [[] for _ in range(NCELLS)]
+ADJ_MASK = [0] * NCELLS
+CENTER = [0] * NCELLS
+
+for r in range(ROWS):
+    for c in range(COLS):
+        i = r * COLS + c
+        nbrs = []
+        if r > 0:
+            nbrs.append((i - COLS, "U"))
+        if c < COLS - 1:
+            nbrs.append((i + 1, "R"))
+        if r < ROWS - 1:
+            nbrs.append((i + COLS, "D"))
+        if c > 0:
+            nbrs.append((i - 1, "L"))
+        NEIGHBORS[i] = nbrs
+
+        mask = 0
+        for j, _ in nbrs:
+            mask |= 1 << j
+        ADJ_MASK[i] = mask
+
+        # Larger is more central.
+        CENTER[i] = 12 - (abs(2 * r - 4) + abs(2 * c - 5))
+
+TT = {}
+HISTORY = {}
+
+END_TIME = 0.0
+NODES = 0
+
+
+class SearchTimeout(Exception):
+    pass
+
+
+def _check_time():
+    if time.perf_counter() >= END_TIME:
+        raise SearchTimeout
+
+
+def _flatten(board):
+    if hasattr(board, "tolist"):
+        board = board.tolist()
+
+    if isinstance(board, (list, tuple)):
+        if len(board) == NCELLS and (not board or not isinstance(board[0], (list, tuple))):
+            return [int(x) for x in board]
+
+        flat = []
+        for row in board:
+            if hasattr(row, "tolist"):
+                row = row.tolist()
+            if isinstance(row, (list, tuple)):
+                flat.extend(int(x) for x in row)
+            else:
+                try:
+                    flat.extend(int(x) for x in row)
+                except TypeError:
+                    flat.append(int(row))
+        return flat
+
+    return [int(x) for x in board]
+
+
+def _to_bits(board):
+    flat = _flatten(board)
+    bits = 0
+    for i, v in enumerate(flat[:NCELLS]):
+        if int(v):
+            bits |= 1 << i
+    return bits
+
+
+def gen_moves(Y, O):
+    moves = []
+    b = Y
+    while b:
+        lsb = b & -b
+        src = lsb.bit_length() - 1
+        for dst, d in NEIGHBORS[src]:
+            if (O >> dst) & 1:
+                moves.append((src, dst, d))
+        b ^= lsb
+    return moves
+
+
+def count_moves(Y, O):
+    total = 0
+    b = Y
+    while b:
+        lsb = b & -b
+        src = lsb.bit_length() - 1
+        total += (ADJ_MASK[src] & O).bit_count()
+        b ^= lsb
+    return total
+
+
+def active_pieces(Y, O):
+    total = 0
+    b = Y
+    while b:
+        lsb = b & -b
+        src = lsb.bit_length() - 1
+        if ADJ_MASK[src] & O:
+            total += 1
+        b ^= lsb
+    return total
+
+
+def center_score(B):
+    total = 0
+    b = B
+    while b:
+        lsb = b & -b
+        src = lsb.bit_length() - 1
+        total += CENTER[src]
+        b ^= lsb
+    return total
+
+
+def heuristic(Y, O, moves=None):
+    my_moves = len(moves) if moves is not None else count_moves(Y, O)
+    if my_moves == 0:
+        return -WIN_BOUND
+
+    opp_moves = count_moves(O, Y)
+    if opp_moves == 0:
+        return WIN_BOUND // 2
+
+    score = 100 * (my_moves - opp_moves)
+    score += 18 * (active_pieces(Y, O) - active_pieces(O, Y))
+    score += 3 * (center_score(Y) - center_score(O))
+    score += 6 * (Y.bit_count() - O.bit_count())
+    return score
+
+
+def order_moves(Y, O, moves, tt_move=None):
+    scored = []
+    for m in moves:
+        src, dst, _ = m
+        score = HISTORY.get(src * NCELLS + dst, 0)
+
+        if tt_move == m:
+            score += 1_000_000
+
+        newY = (Y ^ (1 << src)) | (1 << dst)
+        newO = O ^ (1 << dst)
+
+        opp_moves = count_moves(newO, newY)
+        if opp_moves == 0:
+            score += 500_000
+
+        my_future = count_moves(newY, newO)
+        score += 80 * (my_future - opp_moves)
+        score += 5 * (CENTER[dst] - CENTER[src])
+
+        scored.append((score, m))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [m for _, m in scored]
+
+
+def _mate_adjust(v):
+    if v > WIN_BOUND:
+        return v - 1
+    if v < -WIN_BOUND:
+        return v + 1
+    return v
+
+
+def negamax(Y, O, depth, alpha, beta):
+    global NODES
+
+    NODES += 1
+    if (NODES & 511) == 0:
+        _check_time()
+
+    alpha_orig = alpha
+    beta_orig = beta
+    key = (Y << NCELLS) | O
+
+    tt_move = None
+    entry = TT.get(key)
+    if entry is not None:
+        e_depth, e_flag, e_val, e_move = entry
+        tt_move = e_move
+        if e_depth >= depth:
+            if e_flag == 0:
+                return e_val
+            if e_flag == 1 and e_val > alpha:
+                alpha = e_val
+            elif e_flag == -1 and e_val < beta:
+                beta = e_val
+            if alpha >= beta:
+                return e_val
+
+    moves = gen_moves(Y, O)
+    if not moves:
+        return -MATE
+
+    if depth <= 0:
+        rem = (Y | O).bit_count()
+        if rem <= 12:
+            depth = rem
+        else:
+            return heuristic(Y, O, moves)
+
+    ordered = order_moves(Y, O, moves, tt_move)
+
+    best_val = -INF
+    best_move = ordered[0]
+
+    for src, dst, d in ordered:
+        newY = (Y ^ (1 << src)) | (1 << dst)
+        newO = O ^ (1 << dst)
+
+        val = -negamax(newO, newY, depth - 1, -beta, -alpha)
+        val = _mate_adjust(val)
+
+        if val > best_val:
+            best_val = val
+            best_move = (src, dst, d)
+
+        if val > alpha:
+            alpha = val
+
+        if alpha >= beta:
+            HISTORY[src * NCELLS + dst] = HISTORY.get(src * NCELLS + dst, 0) + depth * depth
+            break
+
+    if best_val <= alpha_orig:
+        flag = -1
+    elif best_val >= beta_orig:
+        flag = 1
+    else:
+        flag = 0
+
+    TT[key] = (depth, flag, best_val, best_move)
+    return best_val
+
+
+def _format_move(move):
+    src, _, d = move
+    return f"{src // COLS},{src % COLS},{d}"
+
+
+def policy(you, opponent):
+    global END_TIME, NODES
+
+    Y = _to_bits(you)
+    O = _to_bits(opponent)
+    O &= ~Y  # sanitize overlap, giving priority to "you"
+
+    if len(TT) > 300000:
+        TT.clear()
+
+    if len(HISTORY) > 8000:
+        for k in list(HISTORY.keys()):
+            v = HISTORY[k] // 2
+            if v:
+                HISTORY[k] = v
+            else:
+                del HISTORY[k]
+
+    moves = gen_moves(Y, O)
+    if not moves:
+        # No legal move exists; arena should normally not call policy here.
+        return "0,0,U"
+
+    fallback = moves[0]
+
+    # Fast tactical pass: return immediate wins, otherwise pick a decent fallback.
+    best_quick = fallback
+    best_quick_score = -INF
+    for m in moves:
+        src, dst, _ = m
+        newY = (Y ^ (1 << src)) | (1 << dst)
+        newO = O ^ (1 << dst)
+
+        opp_moves = count_moves(newO, newY)
+        if opp_moves == 0:
+            return _format_move(m)
+
+        my_future = count_moves(newY, newO)
+        qscore = 50 * (my_future - opp_moves) + 5 * (CENTER[dst] - CENTER[src])
+        if qscore > best_quick_score:
+            best_quick_score = qscore
+            best_quick = m
+
+    fallback = best_quick
+
+    END_TIME = time.perf_counter() + 0.94
+    NODES = 0
+
+    best_move = fallback
+    best_score = -INF
+    max_depth = min(30, (Y | O).bit_count())
+
+    root_key = (Y << NCELLS) | O
+    root_entry = TT.get(root_key)
+    if root_entry is not None and root_entry[3] is not None:
+        best_move = root_entry[3]
+
+    for depth in range(1, max_depth + 1):
+        try:
+            _check_time()
+
+            ordered = order_moves(Y, O, moves, best_move)
+            current_best = ordered[0]
+            current_score = -INF
+            alpha = -INF
+            beta = INF
+
+            for src, dst, d in ordered:
+                if (NODES & 255) == 0:
+                    _check_time()
+
+                newY = (Y ^ (1 << src)) | (1 << dst)
+                newO = O ^ (1 << dst)
+
+                val = -negamax(newO, newY, depth - 1, -beta, -alpha)
+                val = _mate_adjust(val)
+
+                if val > current_score:
+                    current_score = val
+                    current_best = (src, dst, d)
+
+                if val > alpha:
+                    alpha = val
+
+            best_move = current_best
+            best_score = current_score
+            TT[root_key] = (depth, 0, best_score, best_move)
+
+            if abs(best_score) > WIN_BOUND:
+                break
+
+        except SearchTimeout:
+            break
+
+    return _format_move(best_move)

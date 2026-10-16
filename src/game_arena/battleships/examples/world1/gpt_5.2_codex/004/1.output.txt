@@ -1,0 +1,156 @@
+The strategy for this policy is a classic **hunt/target** Battleship solver.  
+- **Target mode**: If there are any hit cells with adjacent unknowns, we group connected hits into clusters, infer their orientation, and choose the best adjacent shot that maximizes the number of possible ship placements consistent with those hits.  
+- **Hunt mode**: If no active targets exist, we compute a probability heatmap by counting all legal ship placements on unknown cells (ignoring misses and sunk hits). We then fire at the cell with the highest score.  
+This balances fast ship finishing with efficient global searching, making it competitive against most arena strategies.
+
+<code>
+import random
+from collections import deque
+
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    n = 10
+
+    def in_bounds(r, c):
+        return 0 <= r < n and 0 <= c < n
+
+    # Find all hit clusters
+    hits = [(r, c) for r in range(n) for c in range(n) if board[r][c] == 1]
+    visited = [[False]*n for _ in range(n)]
+    clusters = []
+
+    for r, c in hits:
+        if visited[r][c]:
+            continue
+        q = deque()
+        q.append((r, c))
+        visited[r][c] = True
+        cluster = []
+        while q:
+            cr, cc = q.popleft()
+            cluster.append((cr, cc))
+            for dr, dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+                nr, nc = cr + dr, cc + dc
+                if in_bounds(nr, nc) and not visited[nr][nc] and board[nr][nc] == 1:
+                    visited[nr][nc] = True
+                    q.append((nr, nc))
+        clusters.append(cluster)
+
+    # scoring helpers
+    def count_horizontal(row, required_cols, L):
+        count = 0
+        for start in range(0, n - L + 1):
+            end = start + L - 1
+            if any(c < start or c > end for c in required_cols):
+                continue
+            valid = True
+            for c in range(start, start + L):
+                if board[row][c] == -1:
+                    valid = False
+                    break
+            if valid:
+                count += 1
+        return count
+
+    def count_vertical(col, required_rows, L):
+        count = 0
+        for start in range(0, n - L + 1):
+            end = start + L - 1
+            if any(r < start or r > end for r in required_rows):
+                continue
+            valid = True
+            for r in range(start, start + L):
+                if board[r][col] == -1:
+                    valid = False
+                    break
+            if valid:
+                count += 1
+        return count
+
+    def score_candidate(cluster, cand):
+        required = cluster + [cand]
+        rows = {r for r, _ in required}
+        cols = {c for _, c in required}
+
+        score = 0
+        if len(rows) == 1:  # horizontal
+            row = next(iter(rows))
+            required_cols = [c for _, c in required]
+            for L in SHIP_LENGTHS:
+                score += count_horizontal(row, required_cols, L)
+        elif len(cols) == 1:  # vertical
+            col = next(iter(cols))
+            required_rows = [r for r, _ in required]
+            for L in SHIP_LENGTHS:
+                score += count_vertical(col, required_rows, L)
+        else:
+            return 0
+        return score
+
+    # Target mode: find best candidate adjacent to a hit cluster
+    best_candidates = []
+    best_score = -1
+
+    for cluster in clusters:
+        # collect adjacent unknowns
+        candidates = set()
+        for r, c in cluster:
+            for dr, dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+                nr, nc = r + dr, c + dc
+                if in_bounds(nr, nc) and board[nr][nc] == 0:
+                    candidates.add((nr, nc))
+
+        for cand in candidates:
+            score = score_candidate(cluster, cand)
+            if score > best_score:
+                best_score = score
+                best_candidates = [cand]
+            elif score == best_score and score > -1:
+                best_candidates.append(cand)
+
+    if best_candidates and best_score > 0:
+        return random.choice(best_candidates)
+
+    # Hunt mode: probability density over unknown cells
+    scores = [[0]*n for _ in range(n)]
+
+    for L in SHIP_LENGTHS:
+        # horizontal placements
+        for r in range(n):
+            for start in range(0, n - L + 1):
+                segment = [(r, c) for c in range(start, start + L)]
+                if all(board[r][c] == 0 for _, c in segment):
+                    for _, c in segment:
+                        scores[r][c] += 1
+        # vertical placements
+        for c in range(n):
+            for start in range(0, n - L + 1):
+                segment = [(r, c) for r in range(start, start + L)]
+                if all(board[r][c] == 0 for r, _ in segment):
+                    for r, _ in segment:
+                        scores[r][c] += 1
+
+    max_score = -1
+    hunt_candidates = []
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 0:
+                if scores[r][c] > max_score:
+                    max_score = scores[r][c]
+                    hunt_candidates = [(r, c)]
+                elif scores[r][c] == max_score:
+                    hunt_candidates.append((r, c))
+
+    if hunt_candidates:
+        return random.choice(hunt_candidates)
+
+    # Fallback: choose any legal unknown
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 0:
+                return (r, c)
+
+    # Should never happen
+    return (0, 0)
+</code>

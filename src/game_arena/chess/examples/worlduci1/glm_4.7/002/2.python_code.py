@@ -1,0 +1,474 @@
+
+import random
+import copy
+
+# --- Constants & Piece-Square Tables ---
+# Piece values: Pawn, Knight, Bishop, Rook, Queen, King
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000,
+    'p': 100, 'n': 320, 'b': 330, 'r': 500, 'q': 900, 'k': 20000
+}
+
+# Simplified Piece-Square Tables (PST) for positional evaluation
+# Tables are from White's perspective. Black is mirrored.
+PST = {
+    'P': [
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [50, 50, 50, 50, 50, 50, 50, 50],
+        [10, 10, 20, 30, 30, 20, 10, 10],
+        [5,  5, 10, 25, 25, 10,  5,  5],
+        [0,  0,  0, 20, 20,  0,  0,  0],
+        [5, -5,-10,  0,  0,-10, -5,  5],
+        [5, 10, 10,-20,-20, 10, 10,  5],
+        [0,  0,  0,  0,  0,  0,  0,  0]
+    ],
+    'N': [
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+        [-40,-20,  0,  0,  0,  0,-20,-40],
+        [-30,  0, 10, 15, 15, 10,  0,-30],
+        [-30,  5, 15, 20, 20, 15,  5,-30],
+        [-30,  0, 15, 20, 20, 15,  0,-30],
+        [-30,  5, 10, 15, 15, 10,  5,-30],
+        [-40,-20,  0,  5,  5,  0,-20,-40],
+        [-50,-40,-30,-30,-30,-30,-40,-50]
+    ],
+    'B': [
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5, 10, 10,  5,  0,-10],
+        [-10,  5,  5, 10, 10,  5,  5,-10],
+        [-10,  0, 10, 10, 10, 10,  0,-10],
+        [-10, 10, 10, 10, 10, 10, 10,-10],
+        [-10,  5,  0,  0,  0,  0,  5,-10],
+        [-20,-10,-10,-10,-10,-10,-10,-20]
+    ],
+    'R': [
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [5, 10, 10, 10, 10, 10, 10,  5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [0,  0,  0,  5,  5,  0,  0,  0]
+    ],
+    'Q': [
+        [-20,-10,-10, -5, -5,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5,  5,  5,  5,  0,-10],
+        [-5,  0,  5,  5,  5,  5,  0, -5],
+        [0,  0,  5,  5,  5,  5,  0, -5],
+        [-10,  5,  5,  5,  5,  5,  0,-10],
+        [-10,  0,  5,  0,  0,  0,  0,-10],
+        [-20,-10,-10, -5, -5,-10,-10,-20]
+    ],
+    'K': [
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-20,-30,-30,-40,-40,-30,-30,-20],
+        [-10,-20,-20,-20,-20,-20,-20,-10],
+        [20, 20,  0,  0,  0,  0, 20, 20],
+        [20, 30, 10,  0,  0, 10, 30, 20]
+    ]
+}
+
+# --- Helper Functions ---
+
+def s2i(square):
+    """Convert square 'e2' to indices (row, col)."""
+    return 8 - int(square[1]), ord(square[0]) - ord('a')
+
+def i2s(r, c):
+    """Convert indices (row, col) to square 'e2'."""
+    return chr(ord('a') + c) + str(8 - r)
+
+def is_opponent(p1, p2):
+    if not p1 or not p2: return False
+    return p1[0] != p2[0]
+
+def get_color(piece):
+    return piece[0] if piece else None
+
+def get_type(piece):
+    return piece[1] if piece else None
+
+# --- Chess Engine Class ---
+
+class ChessEngine:
+    def __init__(self):
+        self.board = [['' for _ in range(8)] for _ in range(8)]
+        self.to_play = 'white'
+
+    def set_state(self, pieces, to_play):
+        self.to_play = to_play
+        self.board = [['' for _ in range(8)] for _ in range(8)]
+        for sq, p in pieces.items():
+            r, c = s2i(sq)
+            self.board[r][c] = p
+
+    def get_legal_moves(self):
+        moves = []
+        my_color = 'w' if self.to_play == 'white' else 'b'
+        
+        # 1. Generate pseudo-legal moves
+        for r in range(8):
+            for c in range(8):
+                p = self.board[r][c]
+                if not p or p[0] != my_color:
+                    continue
+                
+                p_type = p[1]
+                
+                # Pawn
+                if p_type == 'P':
+                    direction = -1 if my_color == 'w' else 1
+                    start_rank = 6 if my_color == 'w' else 1
+                    
+                    # Forward 1
+                    nr, nc = r + direction, c
+                    if 0 <= nr < 8:
+                        if self.board[nr][nc] == '':
+                            # Promotion?
+                            if nr == 0 or nr == 7:
+                                moves.append((r, c, nr, nc, 'q'))
+                            else:
+                                moves.append((r, c, nr, nc, ''))
+                            
+                            # Forward 2
+                            if r == start_rank:
+                                nnr = r + 2 * direction
+                                if self.board[nnr][c] == '':
+                                    moves.append((r, c, nnr, c, ''))
+                    
+                    # Captures
+                    for dc in [-1, 1]:
+                        nr, nc = r + direction, c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            target = self.board[nr][nc]
+                            if target and target[0] != my_color:
+                                if nr == 0 or nr == 7:
+                                    moves.append((r, c, nr, nc, 'q'))
+                                else:
+                                    moves.append((r, c, nr, nc, ''))
+
+                # Knight
+                elif p_type == 'N':
+                    offsets = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+                    for dr, dc in offsets:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            target = self.board[nr][nc]
+                            if not target or target[0] != my_color:
+                                moves.append((r, c, nr, nc, ''))
+
+                # King
+                elif p_type == 'K':
+                    offsets = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+                    for dr, dc in offsets:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            target = self.board[nr][nc]
+                            if not target or target[0] != my_color:
+                                moves.append((r, c, nr, nc, ''))
+                    
+                    # Castling (Conservative: check only if pieces are home, path clear, not in check)
+                    # Note: This assumes castling rights exist if pieces are in place.
+                    if not self.is_square_attacked(r, c, 'b' if my_color == 'w' else 'w'):
+                        # Kingside
+                        if my_color == 'w' and r == 7 and c == 4:
+                            if self.board[7][5] == '' and self.board[7][6] == '' and self.board[7][7] == 'wR':
+                                if not self.is_square_attacked(7, 5, 'b') and not self.is_square_attacked(7, 6, 'b'):
+                                    moves.append((7, 4, 7, 6, ''))
+                        elif my_color == 'b' and r == 0 and c == 4:
+                            if self.board[0][5] == '' and self.board[0][6] == '' and self.board[0][7] == 'bR':
+                                if not self.is_square_attacked(0, 5, 'w') and not self.is_square_attacked(0, 6, 'w'):
+                                    moves.append((0, 4, 0, 6, ''))
+                        
+                        # Queenside
+                        if my_color == 'w' and r == 7 and c == 4:
+                            if self.board[7][3] == '' and self.board[7][2] == '' and self.board[7][1] == '' and self.board[7][0] == 'wR':
+                                if not self.is_square_attacked(7, 3, 'b') and not self.is_square_attacked(7, 2, 'b'):
+                                    moves.append((7, 4, 7, 2, ''))
+                        elif my_color == 'b' and r == 0 and c == 4:
+                            if self.board[0][3] == '' and self.board[0][2] == '' and self.board[0][1] == '' and self.board[0][0] == 'bR':
+                                if not self.is_square_attacked(0, 3, 'w') and not self.is_square_attacked(0, 2, 'w'):
+                                    moves.append((0, 4, 0, 2, ''))
+
+                # Sliding pieces (B, R, Q)
+                else:
+                    directions = []
+                    if p_type == 'B' or p_type == 'Q':
+                        directions += [(-1,-1), (-1,1), (1,-1), (1,1)]
+                    if p_type == 'R' or p_type == 'Q':
+                        directions += [(-1,0), (1,0), (0,-1), (0,1)]
+                    
+                    for dr, dc in directions:
+                        nr, nc = r + dr, c + dc
+                        while 0 <= nr < 8 and 0 <= nc < 8:
+                            target = self.board[nr][nc]
+                            if target == '':
+                                moves.append((r, c, nr, nc, ''))
+                            else:
+                                if target[0] != my_color:
+                                    moves.append((r, c, nr, nc, ''))
+                                break
+                            nr += dr
+                            nc += dc
+
+        # 2. Filter illegal moves (moves that leave king in check)
+        legal_moves = []
+        king_pos = self.find_king(my_color)
+        
+        for r1, c1, r2, c2, promo in moves:
+            # Simulate move
+            captured = self.board[r2][c2]
+            mover = self.board[r1][c1]
+            
+            self.board[r2][c2] = mover
+            self.board[r1][c1] = ''
+            
+            # Special case: En Passant capture (logic simplified out due to state limitations, but move generation doesn't produce EP)
+            # Special case: Castling move validation (King path check handled in gen, just need to verify not in check at end)
+            # Actually, for castling, the intermediate square check was done in generation.
+            # We just need to verify final position safety.
+            
+            is_check = self.is_square_attacked(king_pos[0], king_pos[1], 'b' if my_color == 'w' else 'w')
+            
+            # Update King pos if King moved
+            final_king_pos = (r2, c2) if mover[1] == 'K' else king_pos
+            if mover[1] == 'K':
+                is_check = self.is_square_attacked(r2, c2, 'b' if my_color == 'w' else 'w')
+            
+            if not is_check:
+                legal_moves.append((r1, c1, r2, c2, promo))
+            
+            # Undo move
+            self.board[r1][c1] = mover
+            self.board[r2][c2] = captured
+
+        return legal_moves
+
+    def find_king(self, color):
+        c_char = 'w' if color == 'white' else 'b'
+        for r in range(8):
+            for c in range(8):
+                if self.board[r][c] == c_char + 'K':
+                    return (r, c)
+        return (-1, -1) # Should not happen
+
+    def is_square_attacked(self, r, c, attacker_color_code):
+        # Check by opponent piece types
+        # Pawns
+        pawn_dir = -1 if attacker_color_code == 'w' else 1 # Pawns attack "forward" relative to themselves
+        # If we are looking for attacks from White, White pawns are at r-1 attacking diagonals
+        dr = -1 if attacker_color_code == 'w' else 1
+        for dc in [-1, 1]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                if self.board[nr][nc] == attacker_color_code + 'P':
+                    return True
+        
+        # Knights
+        offsets = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+        for dr, dc in offsets:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                if self.board[nr][nc] == attacker_color_code + 'N':
+                    return True
+        
+        # Sliding (B, R, Q) and King
+        directions = [
+            (0, 1, 'R'), (0, -1, 'R'), (1, 0, 'R'), (-1, 0, 'R'),
+            (1, 1, 'B'), (1, -1, 'B'), (-1, 1, 'B'), (-1, -1, 'B')
+        ]
+        
+        for dr, dc, p_type in directions:
+            nr, nc = r + dr, c + dc
+            dist = 0
+            while 0 <= nr < 8 and 0 <= nc < 8:
+                dist += 1
+                piece = self.board[nr][nc]
+                if piece:
+                    if piece[0] == attacker_color_code:
+                        if piece[1] == 'Q' or piece[1] == p_type:
+                            return True
+                        if dist == 1 and piece[1] == 'K':
+                            return True
+                    break # Blocked
+                nr += dr
+                nc += dc
+        return False
+
+    def evaluate(self):
+        score = 0
+        for r in range(8):
+            for c in range(8):
+                p = self.board[r][c]
+                if not p: continue
+                
+                val = PIECE_VALUES[p[1]]
+                
+                # PST
+                pst_key = p[1]
+                table = PST[pst_key]
+                
+                # Mirror PST for Black
+                if p[0] == 'w':
+                    score += (val + table[r][c])
+                else:
+                    score -= (val + table[7-r][c])
+        return score
+
+    def minimax(self, depth, alpha, beta, maximizing):
+        if depth == 0:
+            return self.evaluate()
+        
+        my_color = 'white' if maximizing else 'black'
+        # Toggle color for next recursion? 
+        # Actually standard minimax:
+        # If maximizing (White), we look for max score. 
+        # Next call should be minimizing (Black).
+        
+        # But `get_legal_moves` depends on `self.to_play`.
+        # We need to manage turns manually or toggle `self.to_play` temporarily.
+        
+        original_turn = self.to_play
+        self.to_play = my_color
+        
+        moves = self.get_legal_moves()
+        
+        if not moves:
+            self.to_play = original_turn
+            # Checkmate or Stalemate logic
+            king_pos = self.find_king(my_color)
+            opp_color_code = 'b' if my_color == 'white' else 'w'
+            if self.is_square_attacked(king_pos[0], king_pos[1], opp_color_code):
+                return -100000 if maximizing else 100000
+            return 0 # Stalemate
+
+        # Move Ordering: Captures first
+        def move_score(m):
+            r1, c1, r2, c2, promo = m
+            target = self.board[r2][c2]
+            if target:
+                return PIECE_VALUES[target[1]] - PIECE_VALUES[self.board[r1][c1][1]]
+            return 0
+            
+        moves.sort(key=move_score, reverse=True)
+
+        if maximizing:
+            max_eval = -float('inf')
+            for r1, c1, r2, c2, promo in moves:
+                captured = self.board[r2][c2]
+                mover = self.board[r1][c1]
+                
+                # Make move
+                self.board[r2][c2] = mover[0] + (promo if promo else mover[1])
+                self.board[r1][c1] = ''
+                
+                eval = self.minimax(depth - 1, alpha, beta, False)
+                
+                # Undo
+                self.board[r1][c1] = mover
+                self.board[r2][c2] = captured
+                
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            self.to_play = original_turn
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for r1, c1, r2, c2, promo in moves:
+                captured = self.board[r2][c2]
+                mover = self.board[r1][c1]
+                
+                # Make move
+                self.board[r2][c2] = mover[0] + (promo if promo else mover[1])
+                self.board[r1][c1] = ''
+                
+                eval = self.minimax(depth - 1, alpha, beta, True)
+                
+                # Undo
+                self.board[r1][c1] = mover
+                self.board[r2][c2] = captured
+                
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            self.to_play = original_turn
+            return min_eval
+
+# --- Policy API ---
+
+engine = ChessEngine()
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    engine.set_state(pieces, to_play)
+    legal_moves = engine.get_legal_moves()
+    
+    if not legal_moves:
+        return "" # Should not happen in valid game
+    
+    # Depth 3 search
+    best_move = None
+    best_val = -float('inf') if to_play == 'white' else float('inf')
+    
+    # Shuffle moves for variety if scores are equal
+    random.shuffle(legal_moves)
+    
+    # Ordering for root
+    def move_score(m):
+        r1, c1, r2, c2, promo = m
+        target = engine.board[r2][c2]
+        if target:
+            return PIECE_VALUES[target[1]]
+        return 0
+    legal_moves.sort(key=move_score, reverse=True)
+    
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    is_white = (to_play == 'white')
+    
+    for r1, c1, r2, c2, promo in legal_moves:
+        captured = engine.board[r2][c2]
+        mover = engine.board[r1][c1]
+        
+        # Make move
+        engine.board[r2][c2] = mover[0] + (promo if promo else mover[1])
+        engine.board[r1][c1] = ''
+        
+        val = engine.minimax(2, alpha, beta, not is_white)
+        
+        # Undo
+        engine.board[r1][c1] = mover
+        engine.board[r2][c2] = captured
+        
+        if is_white:
+            if val > best_val:
+                best_val = val
+                best_move = (r1, c1, r2, c2, promo)
+            alpha = max(alpha, val)
+        else:
+            if val < best_val:
+                best_val = val
+                best_move = (r1, c1, r2, c2, promo)
+            beta = min(beta, val)
+            
+    # Format move string
+    if best_move:
+        uci = i2s(best_move[0], best_move[1]) + i2s(best_move[2], best_move[3])
+        if best_move[4]:
+            uci += best_move[4].lower() # e.g. 'q'
+        return uci
+    
+    # Fallback to first legal move if search fails (should not happen)
+    r1, c1, r2, c2, promo = legal_moves[0]
+    uci = i2s(r1, c1) + i2s(r2, c2)
+    if promo: uci += promo.lower()
+    return uci

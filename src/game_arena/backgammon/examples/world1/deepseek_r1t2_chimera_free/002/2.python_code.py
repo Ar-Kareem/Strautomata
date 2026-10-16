@@ -1,0 +1,231 @@
+
+import numpy as np
+
+def policy(state: dict) -> str:
+    # Generate moves and select best based on heuristic score
+    moves_with_scores = []
+    dice = sorted(state['dice'], reverse=True)  # Handle die orders: H and L
+    
+    # Generate moves considering both H first and L first
+    all_dice_orders = [('H', dice), ('L', list(reversed(dice)))] if len(dice) == 2 else [('H', dice)]
+    
+    for order_prefix, current_dice in all_dice_orders:
+        if state['my_bar'] > 0:
+            # Generate bar re-entry moves
+            possible_moves = generate_bar_moves(state, current_dice, order_prefix)
+        else:
+            # Generate normal moves
+            possible_moves = generate_normal_moves(state, current_dice, order_prefix)
+        for move_str in possible_moves:
+            score = evaluate_move(state, move_str, current_dice)
+            moves_with_scores.append((move_str, score))
+    
+    # Fallback if no moves (unlikely due to pass option)
+    if not moves_with_scores:
+        return "H:P,P"
+    
+    # Select best move (highest score)
+    best_move = max(moves_with_scores, key=lambda x: x[1])[0]
+    return best_move
+
+def simulate_move(s, from_point, die):
+    """Simulate moving from point (or bar) with die, return new state."""
+    new_state = {
+        'my_pts': s['my_pts'].copy(),
+        'opp_pts': s['opp_pts'].copy(),
+        'my_bar': s['my_bar'],
+        'opp_bar': s['opp_bar'],
+        'my_off': s['my_off'],
+        'opp_off': s['opp_off'],
+        'dice': s['dice']
+    }
+    
+    if from_point == 'B':
+        # Handle bar re-entry
+        target = 24 - die
+        if s['opp_pts'][target] < 2:
+            new_state['my_bar'] -= 1
+            # Opponent hit if single checker
+            if s['opp_pts'][target] == 1:
+                new_state['opp_pts'][target] = 0
+                new_state['opp_bar'] += 1
+            else:
+                new_state['my_pts'][target] += 1
+    else:
+        # Handle point move
+        p = int(from_point[1:]) if from_point.startswith('A') else int(from_point)
+        checker_count = new_state['my_pts'][p]
+        dest = p - die
+        
+        # Bearing off logic
+        if all_in_home(new_state) and (dest < 0 or dest == 0):
+            new_state['my_pts'][p] -= 1
+            new_state['my_off'] += 1
+        else:
+            # Normal move
+            if dest >= 0 and new_state['opp_pts'][dest] < 2:
+                new_state['my_pts'][p] -= 1
+                # Opponent hit if single checker at destination
+                if new_state['opp_pts'][dest] == 1:
+                    new_state['opp_pts'][dest] = 0
+                    new_state['opp_bar'] += 1
+                new_state['my_pts'][dest] += 1
+    return new_state
+
+def all_in_home(state):
+    """Check if all checkers are in the home board (points 0-5)."""
+    home_pts = state['my_pts'][:6]
+    outer_pts = state['my_pts'][6:] + [state['my_bar']]
+    return sum(outer_pts) == 0
+
+def generate_bar_moves(state, dice, order_prefix):
+    """Generate moves when on bar."""
+    moves = []
+    die1, die2 = (dice[0], None) if len(dice) == 1 else (dice[0], dice[1])
+    target1 = 24 - die1
+    if state['opp_pts'][target1] < 2:
+        # Use first die to re-enter
+        new_state = simulate_move(state, 'B', die1)
+        moves1 = ['B']
+        if die2 is None:
+            moves.append(f"{order_prefix}:B,P")
+        else:
+            # Second die re-entry or point move
+            if new_state['my_bar'] > 0:
+                target2 = 24 - die2
+                if new_state['opp_pts'][target2] < 2:
+                    moves.append(f"{order_prefix}:B,B")
+                else:
+                    moves.append(f"{order_prefix}:B,P")
+            else:
+                # Find moves for second die
+                possible_seconds = get_possible_moves(new_state, die2)
+                if possible_seconds:
+                    for p in possible_seconds:
+                        moves.append(f"{order_prefix}:B,{p}")
+                else:
+                    moves.append(f"{order_prefix}:B,P")
+    # Try second die first if two dice
+    if die2 is not None:
+        target2 = 24 - die2
+        if state['opp_pts'][target2] < 2:
+            new_state = simulate_move(state, 'B', die2)
+            if die1 is not None:
+                if new_state['my_bar'] > 0:
+                    target1 = 24 - die1
+                    if new_state['opp_pts'][target1] < 2:
+                        moves.append(f"{order_prefix}:B,B")
+                    else:
+                        moves.append(f"{order_prefix}:B,P")
+                else:
+                    possible_firsts = get_possible_moves(new_state, die1)
+                    if possible_firsts:
+                        for p in possible_firsts:
+                            moves.append(f"{order_prefix}:B,{p}")
+                    else:
+                        moves.append(f"{order_prefix}:B,P")
+    # Fallback if no moves
+    if not moves:
+        moves = [f"{order_prefix}:P,P"]
+    return moves
+
+def get_possible_moves(state, die):
+    """Get possible from-points for a single die in non-bar state."""
+    moves = []
+    if state['my_bar'] > 0:
+        return moves if die != 'B' else ['B']  # Shouldn't happen in non-bar
+    
+    for p in range(24):
+        if state['my_pts'][p] == 0:
+            continue
+        dest = p - die
+        if all_in_home(state):
+            if dest < 0:
+                moves.append(f"A{p}")
+            elif dest >= 0 and state['opp_pts'][dest] < 2:
+                moves.append(f"A{p}")
+        else:
+            if dest >= 0 and state['opp_pts'][dest] < 2:
+                moves.append(f"A{p}")
+    return moves
+
+def generate_normal_moves(state, dice, order_prefix):
+    """Generate all legal non-bar moves."""
+    moves = []
+    die1, die2 = (dice[0], None) if len(dice) == 1 else (dice[0], dice[1])
+    
+    # Single die case
+    if die2 is None:
+        possible = get_possible_moves(state, die1)
+        if possible:
+            return [f"{order_prefix}:{possible[0]},P"]
+        else:
+            return [f"{order_prefix}:P,P"]
+    
+    # Two dice: generate combinations
+    possible_firsts = get_possible_moves(state, die1)
+    for p1 in possible_firsts:
+        new_state = simulate_move(state, p1, die1)
+        possible_seconds = get_possible_moves(new_state, die2)
+        if possible_seconds:
+            for p2 in possible_seconds:
+                moves.append(f"{order_prefix}:{p1},{p2}")
+        else:
+            moves.append(f"{order_prefix}:{p1},P")
+    
+    # Handle die order inversion if no moves found
+    if not moves:
+        moves = [f"{order_prefix}:P,P"]
+    return moves
+
+def evaluate_move(original_state, move_str, dice):
+    """Score a move by simulating its impact."""
+    parts = move_str.split(':')
+    order = parts[0]
+    from_parts = parts[1].split(',')
+    moves = list(zip(from_parts, dice))
+    
+    # Simulate each step to get final state
+    temp_state = original_state.copy()
+    for from_point, die in moves:
+        if from_point == 'P':
+            continue
+        die_val = die if isinstance(die, int) else dice[1] if die == dice[1] else dice[0]
+        if from_point == 'B':
+            temp_state = simulate_move(temp_state, 'B', die_val)
+        else:
+            p = int(from_point[1:]) if from_point.startswith('A') else int(from_point)
+            temp_state = simulate_move(temp_state, p, die_val)
+    
+    score = 0
+    
+    # Hitting bonus
+    hits = original_state['opp_bar'] - temp_state['opp_bar']
+    score += 5 * hits
+    
+    # Bearing off bonus
+    off = temp_state['my_off'] - original_state['my_off']
+    score += 4 * off
+    
+    # Block creation
+    for i in range(24):
+        if original_state['my_pts'][i] < 2 and temp_state['my_pts'][i] >= 2:
+            score += 2
+            if i >= 18:  # Opponent's home
+                score += 1
+    
+    # Progression (closer to home)
+    for i in range(24):
+        original_pos = (23 - i)  # Weights back checkers more
+        score += (original_state['my_pts'][i] - temp_state['my_pts'][i]) * (i // 4)
+    
+    # Safety penalty
+    for i in range(24):
+        if temp_state['my_pts'][i] == 1:
+            # Check if in opponent's attack range (within 6 points from their front)
+            if i >= 18 and (i - 18) <= 6:
+                opponent_cover = sum(temp_state['opp_pts'][18:i+1])
+                if opponent_cover > 1:
+                    score -= 3
+    
+    return score

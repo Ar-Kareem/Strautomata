@@ -1,0 +1,159 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me, opponent, memory):
+    # Initialize board
+    board = np.zeros((19, 19), dtype=int)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = -1
+
+    # Helper: BFS to get group and liberties
+    def get_group_and_liberties(start_r, start_c, player):
+        visited = set()
+        q = deque([(start_r, start_c)])
+        group = []
+        libs = set()
+        while q:
+            r, c = q.popleft()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            group.append((r, c))
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 19 and 0 <= nc < 19:
+                    if board[nr, nc] == 0:
+                        libs.add((nr, nc))
+                    elif board[nr, nc] == player:
+                        q.append((nr, nc))
+        return group, libs
+
+    # Find all groups for both players
+    def find_all_groups(player):
+        groups = []
+        seen = set()
+        for r in range(19):
+            for c in range(19):
+                if board[r, c] == player and (r, c) not in seen:
+                    group, libs = get_group_and_liberties(r, c, player)
+                    groups.append((group, libs))
+                    seen.update(group)
+        return groups
+
+    my_groups = find_all_groups(1)
+    opp_groups = find_all_groups(-1)
+
+    # 1. Capture: opponent groups with 1 liberty
+    for group, libs in opp_groups:
+        if len(libs) == 1:
+            capture_move = list(libs)[0]
+            # Check it's not suicide for us
+            board_try = board.copy()
+            board_try[capture_move[0], capture_move[1]] = 1
+            # Quick liberty check for the new stone
+            lib_count = 0
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = capture_move[0] + dr, capture_move[1] + dc
+                if 0 <= nr < 19 and 0 <= nc < 19:
+                    if board_try[nr, nc] == 0:
+                        lib_count += 1
+                    elif board_try[nr, nc] == 1:
+                        # Check if connected group has >1 liberty
+                        _, con_libs = get_group_and_liberties(nr, nc, 1)
+                        if len(con_libs) > 1:
+                            lib_count += 1
+            if lib_count > 0:
+                return ((capture_move[0]+1, capture_move[1]+1), memory)
+
+    # 2. Save my groups in atari (1 liberty)
+    for group, libs in my_groups:
+        if len(libs) == 1:
+            save_move = list(libs)[0]
+            # Check not suicide (should be safe since it's our liberty)
+            return ((save_move[0]+1, save_move[1]+1), memory)
+
+    # 3. Attack opponent weak groups (2-3 liberties)
+    for group, libs in opp_groups:
+        if 2 <= len(libs) <= 3:
+            # Try to reduce liberties by playing adjacent
+            for r, c in group:
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                        # Check not suicide
+                        board_try = board.copy()
+                        board_try[nr, nc] = 1
+                        lib_count = 0
+                        for ddr, ddc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                            nnr, nnc = nr + ddr, nc + ddc
+                            if 0 <= nnr < 19 and 0 <= nnc < 19:
+                                if board_try[nnr, nnc] == 0:
+                                    lib_count += 1
+                                elif board_try[nnr, nnc] == 1:
+                                    _, con_libs = get_group_and_liberties(nnr, nnc, 1)
+                                    if len(con_libs) > 1:
+                                        lib_count += 1
+                        if lib_count > 0:
+                            return ((nr+1, nc+1), memory)
+
+    # 4. Expand influence: play near center or near existing stones
+    # Compute influence heatmap
+    influence = np.zeros((19, 19))
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] == 1:
+                for dr in range(-3, 4):
+                    for dc in range(-3, 4):
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                            dist = abs(dr) + abs(dc)
+                            if dist <= 3:
+                                influence[nr, nc] += (4 - dist)
+            elif board[r, c] == -1:
+                for dr in range(-3, 4):
+                    for dc in range(-3, 4):
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                            dist = abs(dr) + abs(dc)
+                            if dist <= 3:
+                                influence[nr, nc] -= (4 - dist) * 0.5
+
+    # Add center bias
+    for r in range(19):
+        for c in range(19):
+            influence[r, c] += 5 - (abs(r-9) + abs(c-9)) * 0.1
+
+    # Pick best empty intersection
+    best_score = -999
+    best_move = None
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] == 0:
+                # Check not suicide
+                board_try = board.copy()
+                board_try[r, c] = 1
+                lib_count = 0
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 19 and 0 <= nc < 19:
+                        if board_try[nr, nc] == 0:
+                            lib_count += 1
+                        elif board_try[nr, nc] == 1:
+                            _, con_libs = get_group_and_liberties(nr, nc, 1)
+                            if len(con_libs) > 1:
+                                lib_count += 1
+                if lib_count == 0:
+                    continue  # suicide
+                score = influence[r, c]
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+
+    if best_move is not None:
+        return ((best_move[0]+1, best_move[1]+1), memory)
+
+    # No move found (should not happen) — pass
+    return ((0, 0), memory)

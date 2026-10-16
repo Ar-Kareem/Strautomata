@@ -1,0 +1,139 @@
+I will choose a simple safe strategy:
+- Simulate all legal placement+rotation moves.
+- If any move gives me (sole) immediate 5-in-a-row, play it.
+- Otherwise, prefer any move after which the opponent has no immediate winning reply.
+- If none found, return the first empty cell with a default rotation.
+
+This always returns a legal move and checks wins correctly by simulating placements and quadrant rotations.
+
+<code>
+#!/usr/bin/env python3
+# Pentago move policy
+# Always returns a legal move string "row,col,quad,dir"
+# Strategy:
+# 1) If any move gives an immediate (exclusive) win for us, play it.
+# 2) Otherwise pick any move after which the opponent has no immediate winning reply.
+# 3) Otherwise pick the first empty cell with a default rotation.
+
+from copy import deepcopy
+
+def rotate_quad(board_you, board_opp, quad, dir):
+    """
+    Rotate the 3x3 quadrant in place on both boards.
+    quad: 0..3 (0: top-left, 1: top-right, 2: bottom-left, 3: bottom-right)
+    dir: 'L' anticlockwise, 'R' clockwise
+    Boards are 6x6 lists of lists.
+    """
+    r0 = 0 if quad in (0,1) else 3
+    c0 = 0 if quad in (0,2) else 3
+    # extract 3x3
+    a_you = [[board_you[r0 + i][c0 + j] for j in range(3)] for i in range(3)]
+    a_opp = [[board_opp[r0 + i][c0 + j] for j in range(3)] for i in range(3)]
+    # rotate
+    if dir == 'R':  # clockwise
+        rot_you = [[a_you[2-j][i] for j in range(3)] for i in range(3)]
+        rot_opp = [[a_opp[2-j][i] for j in range(3)] for i in range(3)]
+    else:  # 'L' anticlockwise
+        rot_you = [[a_you[j][2-i] for j in range(3)] for i in range(3)]
+        rot_opp = [[a_opp[j][2-i] for j in range(3)] for i in range(3)]
+    # write back
+    for i in range(3):
+        for j in range(3):
+            board_you[r0 + i][c0 + j] = rot_you[i][j]
+            board_opp[r0 + i][c0 + j] = rot_opp[i][j]
+
+def has_five(board):
+    """
+    Return True if board (6x6 list) has 5 or more in a row in any direction.
+    """
+    R = 6
+    C = 6
+    dirs = [(0,1),(1,0),(1,1),(1,-1)]
+    for r in range(R):
+        for c in range(C):
+            if board[r][c] != 1:
+                continue
+            for dr,dc in dirs:
+                cnt = 0
+                rr, cc = r, c
+                while 0 <= rr < R and 0 <= cc < C and board[rr][cc] == 1:
+                    cnt += 1
+                    rr += dr
+                    cc += dc
+                    if cnt >= 5:
+                        return True
+    return False
+
+def simulate_move(you, opponent, r, c, quad, dir):
+    """
+    Return new (you2, opp2) after placing at (r,c) (0-indexed) and rotating.
+    Both you and opponent are 6x6 lists.
+    """
+    you2 = [row[:] for row in you]
+    opp2 = [row[:] for row in opponent]
+    # place
+    you2[r][c] = 1
+    # rotate quadrant in both boards
+    rotate_quad(you2, opp2, quad, dir)
+    return you2, opp2
+
+def list_empty_cells(you, opponent):
+    empties = []
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                empties.append((r,c))
+    return empties
+
+def policy(you, opponent) -> str:
+    # Defensive copies assumed not necessary but work with list-like objects.
+    # Convert to plain lists if they're e.g. numpy arrays.
+    you_board = [list(row) for row in you]
+    opp_board = [list(row) for row in opponent]
+
+    empties = list_empty_cells(you_board, opp_board)
+    # Guarantee at least one empty as per problem statement.
+    # 1) immediate exclusive win
+    for (r,c) in empties:
+        for quad in range(4):
+            for dirc in ('L','R'):
+                you2, opp2 = simulate_move(you_board, opp_board, r, c, quad, dirc)
+                if has_five(you2) and not has_five(opp2):
+                    # return 1-indexed row,col
+                    return f"{r+1},{c+1},{quad},{dirc}"
+
+    # 2) find a move after which opponent has no immediate winning reply
+    for (r,c) in empties:
+        for quad in range(4):
+            for dirc in ('L','R'):
+                you2, opp2 = simulate_move(you_board, opp_board, r, c, quad, dirc)
+                # If after our move opponent already has an immediate 5 (without moving),
+                # that means our move created opponent's 5 (draw or opponent win) -> we avoid if possible.
+                if has_five(opp2):
+                    # this move creates opponent win/draw immediately; skip it
+                    continue
+                # Now check if opponent has any winning reply (one move)
+                opp_empties = list_empty_cells(you2, opp2)
+                opp_has_immediate = False
+                for (orow, ocol) in opp_empties:
+                    for oquad in range(4):
+                        for odir in ('L','R'):
+                            opp_you3, opp_opp3 = simulate_move(you2, opp2, orow, ocol, oquad, odir)
+                            # opponent's stones are in second returned board (opp_opp3)
+                            if has_five(opp_opp3):
+                                opp_has_immediate = True
+                                break
+                        if opp_has_immediate:
+                            break
+                    if opp_has_immediate:
+                        break
+                if not opp_has_immediate:
+                    return f"{r+1},{c+1},{quad},{dirc}"
+
+    # 3) fallback: pick first empty with default rotation 0,R
+    r,c = empties[0]
+    return f"{r+1},{c+1},0,R"
+
+# If module loaded and policy needs to be callable, it's defined above.
+# No top-level execution.
+</code>

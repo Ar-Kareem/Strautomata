@@ -1,0 +1,218 @@
+My strategy:
+- Play a legal, tactical move that balances immediate captures, defense, and positional influence.
+- Detect and prioritize capturing opponent groups in atari and defending my own groups in atari.
+- Evaluate every legal move by simulating captures and scoring by: captured stones (heavy), saving own groups, connecting to my stones, attacking neighbors, liberties gained, star-point and center preference.
+- Always avoid suicide; if no legal move is found, pass (0,0).
+
+<code>
+#!/usr/bin/env python3
+# Go policy for 19x19 board
+# Implements a tactical heuristic: prefer captures, defend atari, connect, and influence.
+
+from collections import deque
+
+BOARD_SIZE = 19
+
+def policy(me, opponent):
+    """
+    me: list of (r,c) tuples with our stones (1..19)
+    opponent: list of (r,c) tuples with opponent stones (1..19)
+    Returns a single move tuple (r,c) or (0,0) to pass.
+    """
+
+    # Build board: 0 empty, 1 me, 2 opp; indices 1..19
+    board = [[0] * (BOARD_SIZE + 1) for _ in range(BOARD_SIZE + 1)]
+    for (r, c) in me:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r][c] = 1
+    for (r, c) in opponent:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r][c] = 2
+
+    # Helpers
+    def neighbors(r, c):
+        for dr, dc in ((-1,0),(1,0),(0,-1),(0,1)):
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                yield nr, nc
+
+    def group_and_liberties(board_loc, start_r, start_c):
+        """Return (stones_set, liberties_set) for group at start."""
+        color = board_loc[start_r][start_c]
+        if color == 0:
+            return set(), set()
+        visited = set()
+        liberties = set()
+        q = deque()
+        q.append((start_r, start_c))
+        visited.add((start_r, start_c))
+        while q:
+            r, c = q.popleft()
+            for nr, nc in neighbors(r, c):
+                v = board_loc[nr][nc]
+                if v == 0:
+                    liberties.add((nr, nc))
+                elif v == color and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    q.append((nr, nc))
+        return visited, liberties
+
+    # Find opponent groups in atari and own groups in atari for urgent moves
+    opp_atari_libs = set()
+    my_atari_libs = set()
+
+    seen = set()
+    for r in range(1, BOARD_SIZE+1):
+        for c in range(1, BOARD_SIZE+1):
+            if board[r][c] == 2 and (r,c) not in seen:
+                stones, libs = group_and_liberties(board, r, c)
+                seen |= stones
+                if len(libs) == 1:
+                    opp_atari_libs |= libs
+    seen = set()
+    for r in range(1, BOARD_SIZE+1):
+        for c in range(1, BOARD_SIZE+1):
+            if board[r][c] == 1 and (r,c) not in seen:
+                stones, libs = group_and_liberties(board, r, c)
+                seen |= stones
+                if len(libs) == 1:
+                    my_atari_libs |= libs
+
+    # Star points on 19x19
+    star_points = {(4,4),(4,10),(4,16),(10,4),(10,10),(10,16),(16,4),(16,10),(16,16)}
+    center = (10,10)
+
+    # Simulation for a move: returns (legal(bool), captured_count, own_libs_count, own_group_size, adj_my, adj_opp)
+    def simulate_move(r, c):
+        if not (1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE):
+            return False, 0, 0, 0, 0, 0
+        if board[r][c] != 0:
+            return False, 0, 0, 0, 0, 0
+
+        # copy board
+        b = [row[:] for row in board]
+        b[r][c] = 1  # place our stone
+
+        # Check adjacent opponent groups for captures (only adjacent groups can lose liberties)
+        captured = 0
+        checked = set()
+        for nr, nc in neighbors(r, c):
+            if b[nr][nc] == 2 and (nr,nc) not in checked:
+                stones, libs = group_and_liberties(b, nr, nc)
+                checked |= stones
+                if len(libs) == 0:
+                    # remove captured stones
+                    for (sr, sc) in stones:
+                        b[sr][sc] = 0
+                    captured += len(stones)
+
+        # After captures, check own group liberties
+        stones_me, libs_me = group_and_liberties(b, r, c)
+        if len(libs_me) == 0:
+            # Suicide (illegal)
+            return False, 0, 0, 0, 0, 0
+
+        # Compute adjacency counts
+        adj_my = 0
+        adj_opp = 0
+        for nr, nc in neighbors(r, c):
+            if b[nr][nc] == 1:
+                adj_my += 1
+            elif b[nr][nc] == 2:
+                adj_opp += 1
+
+        return True, captured, len(libs_me), len(stones_me), adj_my, adj_opp
+
+    best_move = None
+    best_score = float('-inf')
+
+    # Precompute empty points list
+    empties = [(r,c) for r in range(1, BOARD_SIZE+1) for c in range(1, BOARD_SIZE+1) if board[r][c] == 0]
+
+    # If there are immediate captures or defenses, prioritize scanning those moves first
+    priority_moves = set()
+    priority_moves |= opp_atari_libs
+    priority_moves |= my_atari_libs
+    # Also consider empties adjacent to any stone (local fights)
+    adjacent_to_stones = set()
+    for r,c in empties:
+        for nr,nc in neighbors(r,c):
+            if board[nr][nc] != 0:
+                adjacent_to_stones.add((r,c))
+                break
+
+    # Build candidate list: priority moves first (if empty), then adjacent moves, then all empties
+    candidates = []
+    for m in priority_moves:
+        if board[m[0]][m[1]] == 0:
+            candidates.append(m)
+    # Add adjacent moves
+    for m in adjacent_to_stones:
+        if m not in candidates and board[m[0]][m[1]] == 0:
+            candidates.append(m)
+    # Fill with remaining empties
+    for m in empties:
+        if m not in candidates:
+            candidates.append(m)
+
+    # Scoring weights
+    W_CAPTURE = 1000
+    W_DEFEND = 800
+    W_ADJ_MY = 20
+    W_ADJ_OPP = 12
+    W_LIB = 8
+    W_GROUP_SIZE = 1
+    W_STAR = 60
+    W_CENTER = 12
+    W_DISTANCE_INFLUENCE = -0.5  # slight penalty for far from center
+
+    # If no candidate moves, pass
+    if not candidates:
+        return (0, 0)
+
+    # Evaluate candidates
+    for (r, c) in candidates:
+        legal, captured, libs_me, group_size, adj_my, adj_opp = simulate_move(r, c)
+        if not legal:
+            continue
+
+        score = 0
+        score += captured * W_CAPTURE
+        # If this move defends our atari group (i.e., is one of my atari libs), give big bonus
+        if (r, c) in my_atari_libs:
+            score += W_DEFEND
+        # If this move captures opponent atari, give bonus
+        if (r, c) in opp_atari_libs:
+            score += captured * W_CAPTURE  # captured already counts but give extra emphasis
+
+        score += adj_my * W_ADJ_MY
+        score += adj_opp * W_ADJ_OPP
+        score += libs_me * W_LIB
+        score += group_size * W_GROUP_SIZE
+
+        if (r, c) in star_points:
+            score += W_STAR
+
+        # center distance penalty to slightly prefer center influence
+        dr = r - center[0]
+        dc = c - center[1]
+        dist = (dr*dr + dc*dc) ** 0.5
+        score += W_CENTER * (1.0 / (1.0 + dist))  # more for closer to center
+        score += W_DISTANCE_INFLUENCE * dist
+
+        # Slight heuristic: prefer moves that touch opponent (aggression)
+        if adj_opp > 0 and captured == 0:
+            score += 2  # small preference to fight
+
+        # Minor tie-breaker: prefer lower row then col deterministically (to be reproducible)
+        score += -1e-6 * (r * (BOARD_SIZE+1) + c)
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    # If nothing legal found (shouldn't happen), pass
+    if best_move is None:
+        return (0, 0)
+    return best_move
+</code>

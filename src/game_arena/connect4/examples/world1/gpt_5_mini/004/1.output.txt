@@ -1,0 +1,205 @@
+<thinking>
+I can't share internal chain-of-thought, but here is a brief, non-sensitive summary of the implemented policy:
+- Check for an immediate winning move for the current player and take it.
+- Check for immediate opponent winning moves and block one if possible.
+- Avoid moves that give the opponent an immediate win on their next turn whenever possible.
+- Among safe moves, pick one favoring central columns and moves that create 2/3-in-a-row threats.
+- If no safe move exists, pick the best available column by the heuristic above.
+
+The code below implements these steps and always returns a valid non-full column index (0-6).
+</thinking>
+<code>
+#!/usr/bin/env python3
+from typing import List, Optional, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Choose a column (0-6) to drop the current player's disc (encoded as 1).
+    Board is 6 rows (0 top .. 5 bottom) x 7 cols (0..6).
+    0 = empty, 1 = our disc, -1 = opponent disc.
+    Strategy:
+      1. If there's a winning move for us, play it.
+      2. If opponent has a winning move next, block it.
+      3. Avoid moves that allow opponent an immediate win next turn when possible.
+      4. Prefer center columns and moves that form 2-3 in a row.
+    """
+
+    ROWS = 6
+    COLS = 7
+
+    # Helpers
+    def is_valid_col(bd, c: int) -> bool:
+        return bd[0][c] == 0
+
+    def find_row(bd, c: int) -> Optional[int]:
+        for r in range(ROWS - 1, -1, -1):
+            if bd[r][c] == 0:
+                return r
+        return None
+
+    def win_check_at(bd, r: int, c: int, player: int) -> bool:
+        # Check 4-in-a-row including (r,c)
+        directions = [(0,1), (1,0), (1,1), (1,-1)]
+        for dr, dc in directions:
+            count = 1
+            # positive direction
+            rr, cc = r + dr, c + dc
+            while 0 <= rr < ROWS and 0 <= cc < COLS and bd[rr][cc] == player:
+                count += 1
+                rr += dr; cc += dc
+            # negative direction
+            rr, cc = r - dr, c - dc
+            while 0 <= rr < ROWS and 0 <= cc < COLS and bd[rr][cc] == player:
+                count += 1
+                rr -= dr; cc -= dc
+            if count >= 4:
+                return True
+        return False
+
+    def simulate_move_and_check_win(bd, col: int, player: int) -> Tuple[Optional[int], bool]:
+        """
+        Simulate dropping 'player' in 'col' on a copy and return (row, is_win).
+        Returns (None, False) if column full.
+        """
+        r = find_row(bd, col)
+        if r is None:
+            return None, False
+        bd[r][col] = player
+        w = win_check_at(bd, r, col, player)
+        bd[r][col] = 0
+        return r, w
+
+    def make_move_on_copy(bd, col: int, player: int):
+        # returns a new board with move applied (or None if invalid)
+        r = find_row(bd, col)
+        if r is None:
+            return None, None
+        new = [row[:] for row in bd]
+        new[r][col] = player
+        return new, r
+
+    def opponent_can_win_after(bd) -> List[int]:
+        # returns list of columns where opponent (-1) would win immediately if they play
+        cols = []
+        for c in range(COLS):
+            if not is_valid_col(bd, c):
+                continue
+            r = find_row(bd, c)
+            if r is None:
+                continue
+            bd[r][c] = -1
+            if win_check_at(bd, r, c, -1):
+                cols.append(c)
+            bd[r][c] = 0
+        return cols
+
+    def would_give_opponent_win(bd, col: int) -> bool:
+        # simulate our move in 'col' then check if opponent has immediate winning move
+        new, r = make_move_on_copy(bd, col, 1)
+        if new is None:
+            return True
+        for c in range(COLS):
+            if new[0][c] != 0:
+                continue
+            rr = find_row(new, c)
+            if rr is None:
+                continue
+            new[rr][c] = -1
+            if win_check_at(new, rr, c, -1):
+                return True
+            new[rr][c] = 0
+        return False
+
+    def score_move(bd, col: int) -> float:
+        # Heuristic score: center preference + create 2/3-in-row
+        center_weights = [3, 4, 5, 7, 5, 4, 3]
+        new, r = make_move_on_copy(bd, col, 1)
+        if new is None:
+            return -9999.0
+        score = center_weights[col]
+        # Count potential in four directions
+        directions = [(0,1), (1,0), (1,1), (1,-1)]
+        for dr, dc in directions:
+            cnt = 1
+            # positive
+            rr, cc = r + dr, col + dc
+            while 0 <= rr < ROWS and 0 <= cc < COLS and new[rr][cc] == 1:
+                cnt += 1; rr += dr; cc += dc
+            # negative
+            rr, cc = r - dr, col - dc
+            while 0 <= rr < ROWS and 0 <= cc < COLS and new[rr][cc] == 1:
+                cnt += 1; rr -= dr; cc -= dc
+            if cnt >= 4:
+                score += 1000.0
+            elif cnt == 3:
+                score += 50.0
+            elif cnt == 2:
+                score += 10.0
+        return score
+
+    # Main logic
+    # Valid candidate columns
+    candidates = [c for c in range(COLS) if is_valid_col(board, c)]
+    if not candidates:
+        # Should not happen in normal gameplay, but pick 0 fallback
+        return 0
+
+    # 1) Immediate winning move for us
+    for c in candidates:
+        r = find_row(board, c)
+        # simulate
+        if r is None:
+            continue
+        board[r][c] = 1
+        if win_check_at(board, r, c, 1):
+            board[r][c] = 0
+            return c
+        board[r][c] = 0
+
+    # 2) Block opponent immediate wins
+    opp_wins = []
+    for c in candidates:
+        r = find_row(board, c)
+        if r is None:
+            continue
+        board[r][c] = -1
+        if win_check_at(board, r, c, -1):
+            opp_wins.append(c)
+        board[r][c] = 0
+
+    if opp_wins:
+        # Try to block by playing in one of those columns.
+        # Prefer one that doesn't give opponent another immediate win afterwards.
+        for c in opp_wins:
+            if not is_valid_col(board, c):
+                continue
+            # if we play in c, check if opponent will still have immediate win somewhere
+            if not would_give_opponent_win(board, c):
+                return c
+        # if none of them are safe, at least play one of them (cannot block all)
+        return opp_wins[0]
+
+    # 3) Avoid moves that give opponent immediate win
+    safe_moves = []
+    for c in candidates:
+        if not would_give_opponent_win(board, c):
+            safe_moves.append(c)
+
+    # 4) Choose best among safe_moves by heuristic; if none, choose best among candidates
+    pool = safe_moves if safe_moves else candidates
+    best_col = pool[0]
+    best_score = score_move(board, best_col)
+    for c in pool[1:]:
+        sc = score_move(board, c)
+        if sc > best_score:
+            best_score = sc
+            best_col = c
+
+    return best_col
+
+# If run as script, do nothing (policy is intended to be imported/called).
+if __name__ == "__main__":
+    # quick sanity check on an empty board
+    empty = [[0]*7 for _ in range(6)]
+    print(policy(empty))
+</code>

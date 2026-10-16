@@ -1,0 +1,102 @@
+
+import random
+
+def check_win(board: list[list[list[int]]], player: int) -> bool:
+    """Checks if the given player has won the game."""
+    size = len(board)
+
+    # Check rows, columns, and depth
+    for i in range(size):
+        for j in range(size):
+            # Rows
+            if all(board[i][j][k] == player for k in range(size)):
+                return True
+            # Columns
+            if all(board[i][k][j] == player for k in range(size)):
+                return True
+            # Depth
+            if all(board[k][i][j] == player for k in range(size)):
+                return True
+
+    # Check diagonals (major diagonals in each plane)
+    for i in range(size):
+        if all(board[i][k][k] == player for k in range(size)):
+            return True
+        if all(board[k][i][k] == player for k in range(size)):
+            return True
+        if all(board[k][k][i] == player for k in range(size)):
+            return True
+
+    # Check diagonals (minor diagonals in each plane)
+    for i in range(size):
+        if all(board[i][k][size - 1 - k] == player for k in range(size)):
+            return True
+        if all(board[k][i][size - 1 - k] == player for k in range(size)):
+            return True
+        if all(board[k][size - 1 - k][i] == player for k in range(size)):
+            return True
+    
+    # Check space diagonals
+    if all(board[k][k][k] == player for k in range(size)):
+        return True
+    if all(board[k][k][size - 1 - k] == player for k in range(size)):
+        return True
+    if all(board[k][size - 1 - k][k] == player for k in range(size)):
+        return True
+    if all(board[k][size-1-k][size-1-k] == player for k in range(size)):
+        return True
+
+    return False
+
+
+def get_possible_moves(board: list[list[list[int]]]) -> list[tuple[int, int, int]]:
+    """Returns a list of all empty cells (tuples of coordinates)."""
+    possible_moves = []
+    for i in range(len(board)):
+        for j in range(len(board[i])):
+            for k in range(len(board[i][j])):
+                if board[i][j][k] == 0:
+                    possible_moves.append((i, j, k))
+    return possible_moves
+
+
+def find_winning_move(board: list[list[list[int]]], player: int) -> None:
+    """Searches for a move that would result in the given player winning."""
+    possible_moves = get_possible_moves(board)
+    for move in possible_moves:
+        i, j, k = move
+        board[i][j][k] = player
+        if check_win(board, player):
+            board[i][j][k] = 0  # Reset the board
+            return move
+        board[i][j][k] = 0  # Reset the board
+    return None
+
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """Returns the next move for the AI."""
+    ai_player = 1
+    opponent_player = -1
+
+    # 1. Check for a winning move for the AI
+    winning_move = find_winning_move(board, ai_player)
+    if winning_move:
+        return winning_move
+
+    # 2. Block the opponent's winning move
+    blocking_move = find_winning_move(board, opponent_player)
+    if blocking_move:
+        return blocking_move
+    
+    # 3. Choose the center cell if available
+    center_index = len(board) // 2
+    if board[center_index][center_index][center_index] == 0:
+        return (center_index, center_index, center_index)
+
+    # 4. Choose a random empty cell
+    possible_moves = get_possible_moves(board)
+    if possible_moves:
+        return random.choice(possible_moves)
+    
+    # If no moves are possible, return (0, 0, 0) as a default. This should not happen in a valid game.
+    return (0, 0, 0)

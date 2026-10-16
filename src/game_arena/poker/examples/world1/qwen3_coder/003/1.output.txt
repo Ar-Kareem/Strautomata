@@ -1,0 +1,163 @@
+The strategy for this poker policy is to evaluate the strength of our hand based on the current stage of the game (pre-flop, flop, turn, river) and the potential combinations we can make. We will calculate the equity of our hand against a reasonable range of opponent hands, considering the public cards. The decision-making process weighs the pot odds and implied odds against the estimated probability of winning the hand. We will be more aggressive with strong hands and in position, and more cautious when the hand is weak or when facing large bets. The policy also considers stack sizes and pot commitments to make appropriate decisions, especially with marginal hands.
+
+<code>
+import math
+from itertools import combinations
+
+def evaluate_hand(cards):
+    """Evaluate the best 5-card poker hand from a list of cards."""
+    if len(cards) < 5:
+        return 0  # Not enough cards to evaluate
+    ranks = [card['rank'] for card in cards]
+    suits = [card['suit'] for card in cards]
+    
+    rank_counts = {}
+    for rank in ranks:
+        rank_counts[rank] = rank_counts.get(rank, 0) + 1
+        
+    sorted_ranks = sorted(rank_counts.items(), key=lambda x: (x[1], x[0]), reverse=True)
+    is_flush = len(set(suits)) == 1
+    unique_ranks = sorted(list(set(ranks)), reverse=True)
+    is_straight = len(unique_ranks) >= 5 and unique_ranks[0] - unique_ranks[4] == 4
+    
+    # Check for straight with low Ace
+    if not is_straight and set([14, 2, 3, 4, 5]).issubset(set(ranks)):
+        is_straight = True
+        unique_ranks = [5, 4, 3, 2, 14]  # Reorder for evaluation
+    
+    # Royal Flush
+    if is_straight and is_flush and unique_ranks[0] == 14:
+        return 10000 + unique_ranks[0]
+    # Straight Flush
+    if is_straight and is_flush:
+        return 9000 + unique_ranks[0]
+    # Four of a Kind
+    if sorted_ranks[0][1] == 4:
+        return 8000 + sorted_ranks[0][0] * 10 + sorted_ranks[1][0]
+    # Full House
+    if sorted_ranks[0][1] == 3 and sorted_ranks[1][1] >= 2:
+        return 7000 + sorted_ranks[0][0] * 10 + sorted_ranks[1][0]
+    # Flush
+    if is_flush:
+        value = 6000
+        for i, rank in enumerate(unique_ranks[:5]):
+            value += rank * (10 ** (4 - i))
+        return value
+    # Straight
+    if is_straight:
+        return 5000 + unique_ranks[0]
+    # Three of a Kind
+    if sorted_ranks[0][1] == 3:
+        value = 4000 + sorted_ranks[0][0] * 100
+        kicker_ranks = [rank for rank, count in sorted_ranks if count < 3]
+        kicker_ranks.sort(reverse=True)
+        for i, kicker in enumerate(kicker_ranks[:2]):
+            value += kicker * (10 ** (1 - i))
+        return value
+    # Two Pair
+    if sorted_ranks[0][1] == 2 and sorted_ranks[1][1] == 2:
+        value = 3000 + sorted_ranks[0][0] * 100 + sorted_ranks[1][0] * 10
+        kicker_ranks = [rank for rank, count in sorted_ranks if count < 2]
+        if kicker_ranks:
+            value += max(kicker_ranks)
+        return value
+    # One Pair
+    if sorted_ranks[0][1] == 2:
+        value = 2000 + sorted_ranks[0][0] * 100
+        kicker_ranks = [rank for rank, count in sorted_ranks if count < 2]
+        kicker_ranks.sort(reverse=True)
+        for i, kicker in enumerate(kicker_ranks[:3]):
+            value += kicker * (10 ** (2 - i))
+        return value
+    # High Card
+    value = 1000
+    for i, rank in enumerate(unique_ranks[:5]):
+        value += rank * (10 ** (4 - i))
+    return value
+
+def hand_strength_estimate(private_card, public_cards):
+    """Estimate hand strength based on potential."""
+    deck_ranks = list(range(2, 15))
+    deck_suits = list(range(4))
+    known_cards = [private_card] + public_cards
+    unknown_cards = []
+    for rank in deck_ranks:
+        for suit in deck_suits:
+            card = {'rank': rank, 'suit': suit}
+            if card not in known_cards:
+                unknown_cards.append(card)
+    
+    if len(public_cards) == 0:
+        # Pre-flop strength
+        rank1 = private_card['rank']
+        if rank1 >= 10:
+            return 0.65
+        elif rank1 >= 8:
+            return 0.55
+        else:
+            return 0.45
+    elif len(public_cards) <= 5:
+        # Post-flop, turn, river simulation
+        wins = 0
+        total = 0
+        all_cards = known_cards
+        my_best = evaluate_hand(all_cards)
+        if my_best == 0:
+            return 0.3  # Can't evaluate
+        # Simplified opponent modeling
+        for opp_card in unknown_cards[:200]:  # Sample to save time
+            total += 1
+            opp_best = evaluate_hand([opp_card] + public_cards)
+            if my_best > opp_best:
+                wins += 1
+            elif my_best == opp_best and private_card['rank'] > opp_card['rank']:
+                wins += 0.5
+        return wins / total if total > 0 else 0.5
+    return 0.5
+
+def policy(state):
+    private_cards = state['private_cards']
+    public_cards = state['public_cards']
+    pot = state['pot']
+    my_spent = state['my_spent']
+    opponent_spent = state['opponent_spent']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    
+    private_card = private_cards[0]
+    hand_strength = hand_strength_estimate(private_card, public_cards)
+    
+    # Calculate pot odds
+    pot_odds = to_call / (pot + to_call) if (pot + to_call) > 0 else 0
+    
+    # Decision making
+    if to_call == 0:
+        # We can check
+        if hand_strength > 0.6 or 'raise' not in allowed_actions:
+            return 'check' if 'check' in allowed_actions else 'call'
+        else:
+            if 'raise' in allowed_actions and hand_strength > 0.5:
+                return 'raise'
+            else:
+                return 'check' if 'check' in allowed_actions else 'call'
+    else:
+        # We need to call, fold, or raise
+        if hand_strength > pot_odds + 0.1:
+            if hand_strength > 0.8 and 'raise' in allowed_actions:
+                return 'raise'
+            else:
+                return 'call'
+        else:
+            if 'fold' in allowed_actions:
+                return 'fold'
+            else:
+                return 'call'
+    
+    # Fallback
+    if 'call' in allowed_actions:
+        return 'call'
+    elif 'check' in allowed_actions:
+        return 'check'
+    else:
+        return 'fold'
+</code>

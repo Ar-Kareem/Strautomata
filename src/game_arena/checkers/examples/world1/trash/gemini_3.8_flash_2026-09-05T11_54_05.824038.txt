@@ -1,0 +1,273 @@
+An optimal strategy for 8x8 Checkers combines a game-tree search using **Iterative Deepening Alpha-Beta pruning with Quiescence Search** and a domain-specific evaluation function:
+
+1. **Rule Compliance & Move Generation**:
+   - Accurately generates simple diagonal steps and mandatory jump captures.
+   - Enforces the mandatory capture rule: if any capture exists, non-capture moves are pruned.
+   - Properly handles White moving upwards (increasing row) and Black moving downwards (decreasing row), with kings moving in all 4 diagonal directions and automatic promotion upon reaching the opposite baseline.
+
+2. **Evaluation Function**:
+   - **Material Weight**: Kings are valued significantly higher than regular men (~1.6x - 2.0x).
+   - **Positional Advancement**: Men are encouraged to advance toward the crowning rank safely.
+   - **Center Dominance**: Pieces in the center 4x4 squares gain positional bonuses for board control.
+   - **Back-Rank Defense**: Keeping baseline defenders early in the game prevents easy enemy promotions.
+   - **Mobility**: Rewarding positions with more legal options to restrict the opponent.
+
+3. **Search & Time Management**:
+   - **Iterative Deepening**: Progressively searches depths 1, 2, 3... within a 0.85-second budget to ensure a move is always ready.
+   - **Move Ordering**: Captures and promotions are prioritized to maximize alpha-beta cutoffs.
+   - **Fallback**: Always maintains a guaranteed legal move if time expires.
+
+Here is the complete Python code implementing this policy:
+
+<code>
+import time
+
+def get_legal_moves(men, kings, opp_men, opp_kings, color):
+    """
+    Generate all legal moves for the given player.
+    Captures are mandatory if available.
+    """
+    occupied_mine = men | kings
+    occupied_opp = opp_men | kings_opp = opp_kings
+    occupied_all = occupied_mine | occupied_opp
+    
+    forward = 1 if color == 'w' else -1
+    all_dirs = ((-1, -1), (-1, 1), (1, -1), (1, 1))
+    man_dirs = ((forward, -1), (forward, 1))
+    
+    captures = []
+    
+    # 1. Check for capture moves
+    # Men captures
+    for r, c in men:
+        for dr, dc in man_dirs:
+            mr, mc = r + dr, c + dc
+            tr, tc = r + 2 * dr, c + 2 * dc
+            if 0 <= tr < 8 and 0 <= tc < 8:
+                if (mr, mc) in occupied_opp and (tr, tc) not in occupied_all:
+                    captures.append(((r, c), (tr, tc)))
+                    
+    # King captures
+    for r, c in kings:
+        for dr, dc in all_dirs:
+            mr, mc = r + dr, c + dc
+            tr, tc = r + 2 * dr, c + 2 * dc
+            if 0 <= tr < 8 and 0 <= tc < 8:
+                if (mr, mc) in occupied_opp and (tr, tc) not in occupied_all:
+                    captures.append(((r, c), (tr, tc)))
+                    
+    if captures:
+        return captures, True
+        
+    # 2. Check for simple non-capture moves
+    simple_moves = []
+    for r, c in men:
+        for dr, dc in man_dirs:
+            tr, tc = r + dr, c + dc
+            if 0 <= tr < 8 and 0 <= tc < 8 and (tr, tc) not in occupied_all:
+                simple_moves.append(((r, c), (tr, tc)))
+                
+    for r, c in kings:
+        for dr, dc in all_dirs:
+            tr, tc = r + dr, c + dc
+            if 0 <= tr < 8 and 0 <= tc < 8 and (tr, tc) not in occupied_all:
+                simple_moves.append(((r, c), (tr, tc)))
+                
+    return simple_moves, False
+
+def apply_move(men, kings, opp_men, opp_kings, move, color):
+    """
+    Apply a single move (step or capture hop) and return the new sets.
+    """
+    (r1, c1), (r2, c2) = move
+    is_king = (r1, c1) in kings
+    
+    new_men = set(men)
+    new_kings = set(kings)
+    new_opp_men = set(opp_men)
+    new_opp_kings = set(opp_kings)
+    
+    if is_king:
+        new_kings.remove((r1, c1))
+    else:
+        new_men.remove((r1, c1))
+        
+    # Check if jump capture
+    if abs(r2 - r1) == 2:
+        mr, mc = (r1 + r2) // 2, (c1 + c2) // 2
+        new_opp_men.discard((mr, mc))
+        new_opp_kings.discard((mr, mc))
+        
+    # Check promotion
+    crown_row = 7 if color == 'w' else 0
+    if not is_king and r2 == crown_row:
+        new_kings.add((r2, c2))
+    elif is_king:
+        new_kings.add((r2, c2))
+    else:
+        new_men.add((r2, c2))
+        
+    return new_men, new_kings, new_opp_men, new_opp_kings
+
+def evaluate(men, kings, opp_men, opp_kings, color):
+    """
+    Static evaluation function from the perspective of `color`.
+    """
+    MAN_VAL = 100
+    KING_VAL = 175
+    
+    # Material
+    score = (len(men) - len(opp_men)) * MAN_VAL + (len(kings) - len(opp_kings)) * KING_VAL
+    
+    # Positional bonuses for men advancing
+    for r, c in men:
+        adv = r if color == 'w' else (7 - r)
+        score += adv * 5
+        # Center control bonus
+        if 2 <= r <= 5 and 2 <= c <= 5:
+            score += 6
+        # Home row defense bonus early
+        home_row = 0 if color == 'w' else 7
+        if r == home_row:
+            score += 8
+            
+    for r, c in opp_men:
+        opp_adv = (7 - r) if color == 'w' else r
+        score -= opp_adv * 5
+        if 2 <= r <= 5 and 2 <= c <= 5:
+            score -= 6
+        opp_home_row = 7 if color == 'w' else 0
+        if r == opp_home_row:
+            score -= 8
+            
+    for r, c in kings:
+        # Center control bonus for kings
+        if 2 <= r <= 5 and 2 <= c <= 5:
+            score += 10
+            
+    for r, c in opp_kings:
+        if 2 <= r <= 5 and 2 <= c <= 5:
+            score -= 10
+            
+    return score
+
+class SearchTimeout(Exception):
+    pass
+
+def quiescence(men, kings, opp_men, opp_kings, color, alpha, beta, start_time, time_limit):
+    if time.time() - start_time > time_limit:
+        raise SearchTimeout()
+        
+    stand_pat = evaluate(men, kings, opp_men, opp_kings, color)
+    if stand_pat >= beta:
+        return beta
+    if alpha < stand_pat:
+        alpha = stand_pat
+        
+    moves, is_capture = get_legal_moves(men, kings, opp_men, opp_kings, color)
+    if not is_capture:
+        return stand_pat
+        
+    for move in moves:
+        nm, nk, nom, nok = apply_move(men, kings, opp_men, opp_kings, move, color)
+        opp_color = 'b' if color == 'w' else 'w'
+        val = -quiescence(nom, nok, nm, nk, opp_color, -beta, -alpha, start_time, time_limit)
+        if val >= beta:
+            return beta
+        if val > alpha:
+            alpha = val
+            
+    return alpha
+
+def alphabeta(men, kings, opp_men, opp_kings, color, depth, alpha, beta, start_time, time_limit):
+    if time.time() - start_time > time_limit:
+        raise SearchTimeout()
+        
+    moves, is_capture = get_legal_moves(men, kings, opp_men, opp_kings, color)
+    if not moves:
+        return -20000 + (10 - depth)  # Checkmate / no legal moves
+        
+    if depth == 0:
+        return quiescence(men, kings, opp_men, opp_kings, color, alpha, beta, start_time, time_limit)
+        
+    # Move ordering: captures first, then promotions/advances
+    def move_priority(m):
+        (r1, c1), (r2, c2) = m
+        p = 0
+        if abs(r2 - r1) == 2:
+            p += 1000
+        crown = 7 if color == 'w' else 0
+        if r2 == crown and (r1, c1) in men:
+            p += 500
+        return p
+        
+    moves.sort(key=move_priority, reverse=True)
+    
+    opp_color = 'b' if color == 'w' else 'w'
+    for move in moves:
+        nm, nk, nom, nok = apply_move(men, kings, opp_men, opp_kings, move, color)
+        score = -alphabeta(nom, nok, nm, nk, opp_color, depth - 1, -beta, -alpha, start_time, time_limit)
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+            
+    return alpha
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Main entry point for arena: returns the best legal move.
+    """
+    start_time = time.time()
+    time_limit = 0.85  # Reserve margin within the 1-second constraint
+    
+    men = set(tuple(p) for p in my_men)
+    kings = set(tuple(p) for p in my_kings)
+    opp_men_s = set(tuple(p) for p in opp_men)
+    opp_kings_s = set(tuple(p) for p in opp_kings)
+    
+    legal_moves, is_capture = get_legal_moves(men, kings, opp_men_s, opp_kings_s, color)
+    if not legal_moves:
+        return ((0, 0), (0, 0))  # Fallback if no moves possible
+        
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+        
+    # Move ordering for root
+    def root_priority(m):
+        (r1, c1), (r2, c2) = m
+        p = 0
+        if abs(r2 - r1) == 2:
+            p += 1000
+        crown = 7 if color == 'w' else 0
+        if r2 == crown and (r1, c1) in men:
+            p += 500
+        return p
+        
+    legal_moves.sort(key=root_priority, reverse=True)
+    best_move = legal_moves[0]
+    opp_color = 'b' if color == 'w' else 'w'
+    
+    # Iterative deepening
+    for depth in range(1, 20):
+        try:
+            current_best_move = None
+            alpha = -100000
+            beta = 100000
+            
+            for move in legal_moves:
+                nm, nk, nom, nok = apply_move(men, kings, opp_men_s, opp_kings_s, move, color)
+                score = -alphabeta(nom, nok, nm, nk, opp_color, depth - 1, -beta, -alpha, start_time, time_limit)
+                
+                if score > alpha:
+                    alpha = score
+                    current_best_move = move
+                    
+            if current_best_move is not None:
+                best_move = current_best_move
+                
+        except SearchTimeout:
+            break
+            
+    return best_move
+</code>

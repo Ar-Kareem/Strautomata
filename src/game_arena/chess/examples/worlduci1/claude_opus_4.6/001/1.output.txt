@@ -1,0 +1,712 @@
+## Strategy
+
+I'll implement a chess engine with the following approach:
+
+1. **Full legal move generation** from scratch (no `chess` module) - including castling, en passant, and promotions
+2. **Minimax search with alpha-beta pruning** to look several moves ahead
+3. **Piece-square tables** for positional evaluation
+4. **Material evaluation** with standard piece values
+5. **Move ordering** to improve alpha-beta cutoffs (captures first, then checks, then positional moves)
+6. **Iterative deepening** to use available time effectively
+
+Since implementing a complete legal move generator from scratch is complex and error-prone, I'll take a pragmatic approach: build the move generator carefully, then use alpha-beta search with good evaluation.
+
+Given the 1-second time constraint, I'll aim for depth 3-4 with good move ordering.
+
+<code>
+import time
+import random
+
+def policy(pieces, to_play):
+    # Build a board representation and generate legal moves, then search
+    engine = ChessEngine(pieces, to_play)
+    legal_moves = engine.generate_legal_moves()
+    if not legal_moves:
+        return "0000"
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    best_move = engine.iterative_deepening(legal_moves, time_limit=0.85)
+    return best_move
+
+class ChessEngine:
+    PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    # Piece-square tables (from white's perspective, rank 0 = rank 1)
+    PST_PAWN = [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5, -5,-10,  0,  0,-10, -5,  5,
+        5, 10, 10,-20,-20, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0,
+    ]
+    
+    PST_KNIGHT = [
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50,
+    ]
+    
+    PST_BISHOP = [
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  5,  5, 10, 10,  5,  5,-10,
+        -10,  0, 10, 10, 10, 10,  0,-10,
+        -10, 10, 10, 10, 10, 10, 10,-10,
+        -10,  5,  0,  0,  0,  0,  5,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20,
+    ]
+    
+    PST_ROOK = [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        5, 10, 10, 10, 10, 10, 10,  5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        0,  0,  0,  5,  5,  0,  0,  0,
+    ]
+    
+    PST_QUEEN = [
+        -20,-10,-10, -5, -5,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5,  5,  5,  5,  0,-10,
+        -5,  0,  5,  5,  5,  5,  0, -5,
+        0,  0,  5,  5,  5,  5,  0, -5,
+        -10,  5,  5,  5,  5,  5,  0,-10,
+        -10,  0,  5,  0,  0,  0,  0,-10,
+        -20,-10,-10, -5, -5,-10,-10,-20,
+    ]
+    
+    PST_KING_MID = [
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -20,-30,-30,-40,-40,-30,-30,-20,
+        -10,-20,-20,-20,-20,-20,-20,-10,
+        20, 20,  0,  0,  0,  0, 20, 20,
+        20, 30, 10,  0,  0, 10, 30, 20,
+    ]
+    
+    PST_KING_END = [
+        -50,-40,-30,-20,-20,-30,-40,-50,
+        -30,-20,-10,  0,  0,-10,-20,-30,
+        -30,-10, 20, 30, 30, 20,-10,-30,
+        -30,-10, 30, 40, 40, 30,-10,-30,
+        -30,-10, 30, 40, 40, 30,-10,-30,
+        -30,-10, 20, 30, 30, 20,-10,-30,
+        -30,-30,  0,  0,  0,  0,-30,-30,
+        -50,-30,-30,-30,-30,-30,-30,-50,
+    ]
+    
+    PST = {
+        'P': PST_PAWN, 'N': PST_KNIGHT, 'B': PST_BISHOP,
+        'R': PST_ROOK, 'Q': PST_QUEEN, 'K': PST_KING_MID,
+    }
+    
+    def __init__(self, pieces, to_play):
+        self.to_play = 'w' if to_play == 'white' else 'b'
+        self.opp = 'b' if self.to_play == 'w' else 'w'
+        # Board: 8x8, board[rank][file] where rank 0 = rank 1
+        self.board = [[None]*8 for _ in range(8)]
+        self.pieces = pieces
+        for sq, piece in pieces.items():
+            f, r = self.sq_to_idx(sq)
+            self.board[r][f] = piece
+        
+        # Track king positions
+        self.white_king = None
+        self.black_king = None
+        for sq, piece in pieces.items():
+            if piece == 'wK':
+                self.white_king = sq
+            elif piece == 'bK':
+                self.black_king = sq
+        
+        # Castling rights - infer from piece positions
+        self.castling = {'wK': False, 'wQ': False, 'bK': False, 'bQ': False}
+        if self.white_king == 'e1' and self.board[0][4] == 'wK':
+            if self.board[0][7] == 'wR':
+                self.castling['wK'] = True
+            if self.board[0][0] == 'wR':
+                self.castling['wQ'] = True
+        if self.black_king == 'e8' and self.board[7][4] == 'bK':
+            if self.board[7][7] == 'bR':
+                self.castling['bK'] = True
+            if self.board[7][0] == 'bR':
+                self.castling['bQ'] = True
+        
+        self.start_time = time.time()
+    
+    def sq_to_idx(self, sq):
+        return ord(sq[0]) - ord('a'), int(sq[1]) - 1
+    
+    def idx_to_sq(self, f, r):
+        return chr(f + ord('a')) + str(r + 1)
+    
+    def in_bounds(self, f, r):
+        return 0 <= f < 8 and 0 <= r < 8
+    
+    def get_pst_value(self, piece_type, color, f, r):
+        """Get piece-square table value for a piece at (f, r)."""
+        if color == 'w':
+            idx = (7 - r) * 8 + f
+        else:
+            idx = r * 8 + f
+        return self.PST.get(piece_type, [0]*64)[idx]
+    
+    def is_square_attacked(self, board, f, r, by_color):
+        """Check if square (f,r) is attacked by any piece of by_color."""
+        # Pawn attacks
+        if by_color == 'w':
+            for df in [-1, 1]:
+                nf, nr = f + df, r - 1
+                if self.in_bounds(nf, nr) and board[nr][nf] == 'wP':
+                    return True
+        else:
+            for df in [-1, 1]:
+                nf, nr = f + df, r + 1
+                if self.in_bounds(nf, nr) and board[nr][nf] == 'bP':
+                    return True
+        
+        # Knight attacks
+        for df, dr in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+            nf, nr = f + df, r + dr
+            if self.in_bounds(nf, nr) and board[nr][nf] == by_color + 'N':
+                return True
+        
+        # King attacks
+        for df in [-1, 0, 1]:
+            for dr in [-1, 0, 1]:
+                if df == 0 and dr == 0:
+                    continue
+                nf, nr = f + df, r + dr
+                if self.in_bounds(nf, nr) and board[nr][nf] == by_color + 'K':
+                    return True
+        
+        # Rook/Queen (straight lines)
+        for df, dr in [(0,1),(0,-1),(1,0),(-1,0)]:
+            nf, nr = f + df, r + dr
+            while self.in_bounds(nf, nr):
+                piece = board[nr][nf]
+                if piece is not None:
+                    if piece == by_color + 'R' or piece == by_color + 'Q':
+                        return True
+                    break
+                nf += df
+                nr += dr
+        
+        # Bishop/Queen (diagonals)
+        for df, dr in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+            nf, nr = f + df, r + dr
+            while self.in_bounds(nf, nr):
+                piece = board[nr][nf]
+                if piece is not None:
+                    if piece == by_color + 'B' or piece == by_color + 'Q':
+                        return True
+                    break
+                nf += df
+                nr += dr
+        
+        return False
+    
+    def is_in_check(self, board, color):
+        """Check if the given color's king is in check."""
+        opp = 'b' if color == 'w' else 'w'
+        for r in range(8):
+            for f in range(8):
+                if board[r][f] == color + 'K':
+                    return self.is_square_attacked(board, f, r, opp)
+        return False
+    
+    def generate_pseudo_legal_moves(self, board, color, castling, en_passant_sq=None):
+        """Generate pseudo-legal moves (may leave king in check)."""
+        moves = []
+        opp = 'b' if color == 'w' else 'w'
+        direction = 1 if color == 'w' else -1
+        start_rank = 1 if color == 'w' else 6
+        promo_rank = 7 if color == 'w' else 0
+        
+        for r in range(8):
+            for f in range(8):
+                piece = board[r][f]
+                if piece is None or piece[0] != color:
+                    continue
+                pt = piece[1]
+                
+                if pt == 'P':
+                    # Forward
+                    nr = r + direction
+                    if self.in_bounds(f, nr) and board[nr][f] is None:
+                        if nr == promo_rank:
+                            for promo in ['q', 'r', 'b', 'n']:
+                                moves.append((f, r, f, nr, promo))
+                        else:
+                            moves.append((f, r, f, nr, None))
+                        # Double push
+                        if r == start_rank:
+                            nr2 = r + 2 * direction
+                            if board[nr2][f] is None:
+                                moves.append((f, r, f, nr2, None))
+                    
+                    # Captures
+                    for df in [-1, 1]:
+                        nf = f + df
+                        nr = r + direction
+                        if not self.in_bounds(nf, nr):
+                            continue
+                        target = board[nr][nf]
+                        if target is not None and target[0] == opp:
+                            if nr == promo_rank:
+                                for promo in ['q', 'r', 'b', 'n']:
+                                    moves.append((f, r, nf, nr, promo))
+                            else:
+                                moves.append((f, r, nf, nr, None))
+                        # En passant
+                        if en_passant_sq is not None:
+                            ef, er = en_passant_sq
+                            if nf == ef and nr == er:
+                                moves.append((f, r, nf, nr, 'ep'))
+                
+                elif pt == 'N':
+                    for df, dr in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+                        nf, nr = f + df, r + dr
+                        if self.in_bounds(nf, nr):
+                            target = board[nr][nf]
+                            if target is None or target[0] == opp:
+                                moves.append((f, r, nf, nr, None))
+                
+                elif pt == 'K':
+                    for df in [-1, 0, 1]:
+                        for dr in [-1, 0, 1]:
+                            if df == 0 and dr == 0:
+                                continue
+                            nf, nr = f + df, r + dr
+                            if self.in_bounds(nf, nr):
+                                target = board[nr][nf]
+                                if target is None or target[0] == opp:
+                                    moves.append((f, r, nf, nr, None))
+                    
+                    # Castling
+                    base_rank = 0 if color == 'w' else 7
+                    if r == base_rank and f == 4:
+                        # Kingside
+                        ck = color + 'K'
+                        if castling.get(ck, False):
+                            if (board[base_rank][5] is None and 
+                                board[base_rank][6] is None and
+                                not self.is_square_attacked(board, 4, base_rank, opp) and
+                                not self.is_square_attacked(board, 5, base_rank, opp) and
+                                not self.is_square_attacked(board, 6, base_rank, opp)):
+                                moves.append((4, base_rank, 6, base_rank, 'castle_k'))
+                        # Queenside
+                        cq = color + 'Q'
+                        if castling.get(cq, False):
+                            if (board[base_rank][3] is None and 
+                                board[base_rank][2] is None and 
+                                board[base_rank][1] is None and
+                                not self.is_square_attacked(board, 4, base_rank, opp) and
+                                not self.is_square_attacked(board, 3, base_rank, opp) and
+                                not self.is_square_attacked(board, 2, base_rank, opp)):
+                                moves.append((4, base_rank, 2, base_rank, 'castle_q'))
+                
+                elif pt == 'R':
+                    for df, dr in [(0,1),(0,-1),(1,0),(-1,0)]:
+                        nf, nr = f + df, r + dr
+                        while self.in_bounds(nf, nr):
+                            target = board[nr][nf]
+                            if target is None:
+                                moves.append((f, r, nf, nr, None))
+                            elif target[0] == opp:
+                                moves.append((f, r, nf, nr, None))
+                                break
+                            else:
+                                break
+                            nf += df
+                            nr += dr
+                
+                elif pt == 'B':
+                    for df, dr in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+                        nf, nr = f + df, r + dr
+                        while self.in_bounds(nf, nr):
+                            target = board[nr][nf]
+                            if target is None:
+                                moves.append((f, r, nf, nr, None))
+                            elif target[0] == opp:
+                                moves.append((f, r, nf, nr, None))
+                                break
+                            else:
+                                break
+                            nf += df
+                            nr += dr
+                
+                elif pt == 'Q':
+                    for df, dr in [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]:
+                        nf, nr = f + df, r + dr
+                        while self.in_bounds(nf, nr):
+                            target = board[nr][nf]
+                            if target is None:
+                                moves.append((f, r, nf, nr, None))
+                            elif target[0] == opp:
+                                moves.append((f, r, nf, nr, None))
+                                break
+                            else:
+                                break
+                            nf += df
+                            nr += dr
+        
+        return moves
+    
+    def make_move(self, board, move, color, castling):
+        """Make a move on the board, return new board and new castling rights."""
+        ff, fr, tf, tr, special = move
+        new_board = [row[:] for row in board]
+        new_castling = dict(castling)
+        en_passant = None
+        
+        piece = new_board[fr][ff]
+        captured = new_board[tr][tf]
+        
+        if special == 'ep':
+            # En passant
+            direction = 1 if color == 'w' else -1
+            new_board[fr][ff] = None
+            new_board[tr][tf] = piece
+            new_board[tr - direction][tf] = None  # Remove captured pawn
+        elif special == 'castle_k':
+            base_rank = 0 if color == 'w' else 7
+            new_board[base_rank][4] = None
+            new_board[base_rank][6] = color + 'K'
+            new_board[base_rank][7] = None
+            new_board[base_rank][5] = color + 'R'
+            new_castling[color + 'K'] = False
+            new_castling[color + 'Q'] = False
+        elif special == 'castle_q':
+            base_rank = 0 if color == 'w' else 7
+            new_board[base_rank][4] = None
+            new_board[base_rank][2] = color + 'K'
+            new_board[base_rank][0] = None
+            new_board[base_rank][3] = color + 'R'
+            new_castling[color + 'K'] = False
+            new_castling[color + 'Q'] = False
+        elif special in ['q', 'r', 'b', 'n']:
+            new_board[fr][ff] = None
+            new_board[tr][tf] = color + special.upper()
+        else:
+            new_board[fr][ff] = None
+            new_board[tr][tf] = piece
+            
+            # Double pawn push -> en passant square
+            if piece[1] == 'P' and abs(tr - fr) == 2:
+                direction = 1 if color == 'w' else -1
+                en_passant = (ff, fr + direction)
+        
+        # Update castling rights
+        if piece[1] == 'K':
+            new_castling[color + 'K'] = False
+            new_castling[color + 'Q'] = False
+        if piece[1] == 'R':
+            if ff == 0 and fr == (0 if color == 'w' else 7):
+                new_castling[color + 'Q'] = False
+            if ff == 7 and fr == (0 if color == 'w' else 7):
+                new_castling[color + 'K'] = False
+        
+        # If rook captured
+        if captured is not None and captured[1] == 'R':
+            opp = 'b' if color == 'w' else 'w'
+            opp_base = 7 if color == 'w' else 0
+            if tf == 0 and tr == opp_base:
+                new_castling[opp + 'Q'] = False
+            if tf == 7 and tr == opp_base:
+                new_castling[opp + 'K'] = False
+        
+        return new_board, new_castling, en_passant
+    
+    def generate_legal_moves(self, board=None, color=None, castling=None, en_passant_sq=None):
+        """Generate legal moves (filter out moves that leave king in check)."""
+        if board is None:
+            board = self.board
+        if color is None:
+            color = self.to_play
+        if castling is None:
+            castling = self.castling
+        
+        pseudo = self.generate_pseudo_legal_moves(board, color, castling, en_passant_sq)
+        legal = []
+        
+        for move in pseudo:
+            new_board, new_castling, _ = self.make_move(board, move, color, castling)
+            if not self.is_in_check(new_board, color):
+                legal.append(move)
+        
+        return legal
+    
+    def move_to_uci(self, move):
+        ff, fr, tf, tr, special = move
+        uci = self.idx_to_sq(ff, fr) + self.idx_to_sq(tf, tr)
+        if special in ['q', 'r', 'b', 'n']:
+            uci += special
+        return uci
+    
+    def evaluate(self, board):
+        """Evaluate board position from white's perspective."""
+        score = 0
+        total_material = 0
+        
+        for r in range(8):
+            for f in range(8):
+                piece = board[r][f]
+                if piece is None:
+                    continue
+                color = piece[0]
+                pt = piece[1]
+                val = self.PIECE_VALUES.get(pt, 0)
+                pst_val = 0
+                
+                if pt != 'K':
+                    total_material += val
+                
+                if color == 'w':
+                    idx = (7 - r) * 8 + f
+                else:
+                    idx = r * 8 + f
+                
+                pst_val = self.PST.get(pt, [0]*64)[idx]
+                
+                if color == 'w':
+                    score += val + pst_val
+                else:
+                    score -= val + pst_val
+        
+        # Endgame king table adjustment
+        is_endgame = total_material < 2600  # roughly when queens are off
+        if is_endgame:
+            for r in range(8):
+                for f in range(8):
+                    piece = board[r][f]
+                    if piece is not None and piece[1] == 'K':
+                        if piece[0] == 'w':
+                            idx = (7 - r) * 8 + f
+                            score += self.PST_KING_END[idx] - self.PST_KING_MID[idx]
+                        else:
+                            idx = r * 8 + f
+                            score -= self.PST_KING_END[idx] - self.PST_KING_MID[idx]
+        
+        return score
+    
+    def move_score_estimate(self, board, move, color):
+        """Estimate move quality for move ordering."""
+        ff, fr, tf, tr, special = move
+        score = 0
+        
+        target = board[tr][tf]
+        piece = board[fr][ff]
+        
+        # Captures: MVV-LVA
+        if target is not None:
+            score += 10 * self.PIECE_VALUES.get(target[1], 0) - self.PIECE_VALUES.get(piece[1], 0)
+        
+        if special in ['q', 'r', 'b', 'n']:
+            score += self.PIECE_VALUES.get(special.upper(), 0)
+        
+        if special == 'ep':
+            score += 100
+        
+        if special in ['castle_k', 'castle_q']:
+            score += 60
+        
+        # Penalize moving to attacked squares
+        opp = 'b' if color == 'w' else 'w'
+        if self.is_square_attacked(board, tf, tr, opp):
+            score -= self.PIECE_VALUES.get(piece[1], 0) // 2
+        
+        return score
+    
+    def alphabeta(self, board, color, castling, en_passant, depth, alpha, beta, maximizing):
+        """Alpha-beta search."""
+        if time.time() - self.start_time > self.time_limit:
+            self.timed_out = True
+            return self.evaluate(board)
+        
+        if depth == 0:
+            return self.quiesce(board, color, castling, en_passant, alpha, beta, 4)
+        
+        legal = self.generate_legal_moves(board, color, castling, en_passant)
+        
+        if not legal:
+            if self.is_in_check(board, color):
+                # Checkmate
+                return -30000 if maximizing else 30000
+            else:
+                return 0  # Stalemate
+        
+        # Move ordering
+        legal.sort(key=lambda m: self.move_score_estimate(board, m, color), reverse=True)
+        
+        opp = 'b' if color == 'w' else 'w'
+        
+        if maximizing:
+            max_eval = -100000
+            for move in legal:
+                if self.timed_out:
+                    break
+                new_board, new_castling, new_ep = self.make_move(board, move, color, castling)
+                val = self.alphabeta(new_board, opp, new_castling, new_ep, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, val)
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = 100000
+            for move in legal:
+                if self.timed_out:
+                    break
+                new_board, new_castling, new_ep = self.make_move(board, move, color, castling)
+                val = self.alphabeta(new_board, opp, new_castling, new_ep, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, val)
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    def quiesce(self, board, color, castling, en_passant, alpha, beta, depth):
+        """Quiescence search - only look at captures."""
+        if time.time() - self.start_time > self.time_limit:
+            self.timed_out = True
+            return self.evaluate(board)
+        
+        stand_pat = self.evaluate(board)
+        maximizing = (color == 'w')
+        
+        if maximizing:
+            if stand_pat >= beta:
+                return beta
+            if alpha < stand_pat:
+                alpha = stand_pat
+        else:
+            if stand_pat <= alpha:
+                return alpha
+            if beta > stand_pat:
+                beta = stand_pat
+        
+        if depth == 0:
+            return stand_pat
+        
+        # Generate only capture moves
+        pseudo = self.generate_pseudo_legal_moves(board, color, castling, en_passant)
+        captures = []
+        for move in pseudo:
+            ff, fr, tf, tr, special = move
+            if board[tr][tf] is not None or special == 'ep' or special in ['q', 'r', 'b', 'n']:
+                captures.append(move)
+        
+        # Filter to legal
+        legal_captures = []
+        for move in captures:
+            new_board, new_castling, _ = self.make_move(board, move, color, castling)
+            if not self.is_in_check(new_board, color):
+                legal_captures.append(move)
+        
+        legal_captures.sort(key=lambda m: self.move_score_estimate(board, m, color), reverse=True)
+        
+        opp = 'b' if color == 'w' else 'w'
+        
+        for move in legal_captures:
+            if self.timed_out:
+                break
+            new_board, new_castling, new_ep = self.make_move(board, move, color, castling)
+            val = self.quiesce(new_board, opp, new_castling, new_ep, alpha, beta, depth - 1)
+            
+            if maximizing:
+                if val >= beta:
+                    return beta
+                if val > alpha:
+                    alpha = val
+            else:
+                if val <= alpha:
+                    return alpha
+                if val < beta:
+                    beta = val
+        
+        return alpha if maximizing else beta
+    
+    def iterative_deepening(self, legal_moves, time_limit=0.85):
+        """Iterative deepening search."""
+        self.time_limit = time_limit
+        self.timed_out = False
+        self.start_time = time.time()
+        
+        maximizing = (self.to_play == 'w')
+        opp = 'b' if self.to_play == 'w' else 'w'
+        
+        # Convert UCI-like internal moves
+        internal_moves = self.generate_legal_moves()
+        
+        # Create mapping from UCI to internal move
+        uci_to_internal = {}
+        for m in internal_moves:
+            uci = self.move_to_uci(m)
+            uci_to_internal[uci] = m
+        
+        # Sort by estimate
+        internal_moves.sort(key=lambda m: self.move_score_estimate(self.board, m, self.to_play), reverse=True)
+        
+        best_move = internal_moves[0] if internal_moves else None
+        
+        for depth in range(1, 20):
+            if time.time() - self.start_time > time_limit * 0.7:
+                break
+            
+            best_val = -100001 if maximizing else 100001
+            best_at_depth = internal_moves[0]
+            move_scores = []
+            
+            for move in internal_moves:
+                if self.timed_out or time.time() - self.start_time > time_limit * 0.85:
+                    self.timed_out = True
+                    break
+                
+                new_board, new_castling, new_ep = self.make_move(self.board, move, self.to_play, self.castling)
+                val = self.alphabeta(new_board, opp, new_castling, new_ep, depth - 1,
+                                    -100001, 100001, not maximizing)
+                move_scores.append((move, val))
+                
+                if maximizing:
+                    if val > best_val:
+                        best_val = val
+                        best_at_depth = move
+                else:
+                    if val < best_val:
+                        best_val = val
+                        best_at_depth = move
+            
+            if not self.timed_out:
+                best_move = best_at_depth
+                # Reorder moves for next iteration
+                if move_scores:
+                    move_scores.sort(key=lambda x: x[1], reverse=maximizing)
+                    internal_moves = [m for m, v in move_scores]
+            else:
+                # Use partial results if we have them
+                if move_scores:
+                    move_scores.sort(key=lambda x: x[1], reverse=maximizing)
+                    best_move = move_scores[0][0]
+                break
+        
+        if best_move is None:
+            return self.move_to_uci(internal_moves[0])
+        
+        return self.move_to_uci(best_move)
+</code>

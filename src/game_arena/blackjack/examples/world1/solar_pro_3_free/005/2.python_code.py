@@ -1,0 +1,88 @@
+
+def policy(hand: list[str], target: int) -> str:
+    # Define face values: Ace is 1 for raw sum calculation
+    face_values = {
+        '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
+        '10': 10, 'J': 10, 'Q': 10, 'K': 10, 'A': 1
+    }
+    
+    # Compute current hand value (v) and raw sum (S)
+    total = sum(face_values[c] for c in hand)
+    aces = hand.count('A')
+    # Calculate hand value: start with all Aces as 1, upgrade as many as possible without exceeding target
+    v = total
+    k = 0
+    while k < aces and v + 10 <= target:
+        v += 10
+        k += 1
+    S = total  # raw sum with Aces as 1
+    
+    # If already busted (hand sum > target), stay
+    if v > target:
+        return "STAY"
+    
+    # Determine remaining cards (our deck has one copy of each rank)
+    all_ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+    remaining = [r for r in all_ranks if r not in hand]
+    
+    # No cards left? Must stay
+    if not remaining:
+        return "STAY"
+    
+    # Calculate minimum/maximum possible face values among remaining cards
+    min_val = min(face_values[r] for r in remaining)
+    max_val = max(face_values[r] for r in remaining)
+    
+    # If even the smallest card would exceed target immediately, stay
+    if S + min_val > target:
+        return "STAY"
+    
+    # If hitting the largest card leaves room for future hits (very conservative), hit
+    if S + max_val < target:
+        return "HIT"
+    
+    # Probability of immediate bust when hitting
+    bust_cards = [r for r in remaining if S + face_values[r] > target]
+    p_bust = len(bust_cards) / len(remaining) if remaining else 0
+    
+    # If all remaining cards cause bust, stay
+    if p_bust >= 1.0:
+        return "STAY"
+    
+    # Estimate average hand value if we hit and then stop
+    safe_cards = [r for r in remaining if not (S + face_values[r] > target)]
+    safe_hand_values = []
+    for c in safe_cards:
+        new_hand = hand + [c]
+        new_total = S + face_values[c]
+        new_aces = new_hand.count('A')
+        # Compute new hand value: maximize without exceeding target
+        v_new = new_total
+        k_new = 0
+        while k_new < new_aces and v_new + 10 <= target:
+            v_new += 10
+            k_new += 1
+        safe_hand_values.append(v_new)
+    
+    avg_v = sum(safe_hand_values) / len(safe_hand_values) if safe_hand_values else 0
+    
+    # Check if hand is very close to target (within 2)
+    close_to_target = v >= target - 2
+    
+    # Check if we have flexibility from an Ace in current hand
+    has_ace = any(card == 'A' for card in hand)
+    
+    # Heuristic decision logic
+    if close_to_target:
+        return "STAY"
+    if p_bust >= 0.9:
+        return "STAY"
+    if has_ace and (avg_v - v) > 1 and p_bust < 0.7:
+        return "HIT"
+    if not has_ace and (avg_v - v) > 2 and p_bust < 0.5:
+        return "HIT"
+    if v < target / 2 and (avg_v - v) > 1 and p_bust < 0.6:
+        return "HIT"
+    
+    # Default: stay when improvement is marginal or risky
+    return "STAY"

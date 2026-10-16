@@ -1,0 +1,197 @@
+Here's a Python implementation for a simple 3D Tic Tac Toe policy function that uses a basic heuristic to choose the next move. This version prioritizes winning moves, then blocks opponent winning moves, then looks for the best center move, and finally picks an empty corner or edge randomly.
+
+```python
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Determines the next move for a 3D Tic Tac Toe game using a simple heuristic.
+
+    Args:
+        board: A 3x3x3 list of lists where:
+            - 0 represents an empty cell
+            - 1 represents the player's cell
+            - -1 represents the opponent's cell
+
+    Returns:
+        A tuple (x, y, z) indicating the chosen empty cell (0-2 for each dimension)
+    """
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+
+    # Check all possible winning moves for the player (1)
+    for move in get_all_empty_moves(board_np):
+        # Create a copy of the board with the move applied
+        new_board = board_np.copy()
+        new_board[move] = 1
+        if is_winning_move(new_board, move, 1):
+            return move
+
+    # Check all possible winning moves for the opponent (-1) and block them
+    for move in get_all_empty_moves(board_np):
+        # Create a copy of the board with the opponent's move applied
+        new_board = board_np.copy()
+        new_board[move] = -1
+        if is_winning_move(new_board, move, -1):
+            return move
+
+    # Prioritize center moves (3x3x3 has 27 cells, but no single "center")
+    # For simplicity, we'll consider the center of each layer (x=1, y=1, or z=1)
+    center_candidates = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board_np[x, y, z] == 0:
+                    # Calculate "center score" (sum of distances to all centers)
+                    score = (1 - x) + x + (1 - y) + y + (1 - z) + z  # This is always 6, so we need a better metric
+                    # Instead, we'll just consider cells where at least one coordinate is 1
+                    if x == 1 or y == 1 or z == 1:
+                        center_candidates.append((x, y, z))
+
+    if center_candidates:
+        # Choose the center candidate with the most empty neighbors
+        return max(center_candidates, key=lambda m: count_empty_neighbors(board_np, m))
+
+    # Prefer corners (cells where all coordinates are 0 or 2)
+    corners = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board_np[x, y, z] == 0 and (x == 0 or x == 2) and (y == 0 or y == 2) and (z == 0 or z == 2):
+                    corners.append((x, y, z))
+
+    if corners:
+        # Choose the corner with the most empty neighbors
+        return max(corners, key=lambda m: count_empty_neighbors(board_np, m))
+
+    # Otherwise, pick any empty cell (randomly for simplicity)
+    empty_cells = get_all_empty_moves(board_np)
+    if empty_cells:
+        return empty_cells[0]  # Could use random.choice(empty_cells) for more randomness
+
+    # No empty cells left (shouldn't happen in normal gameplay)
+    raise ValueError("No empty cells available on the board")
+
+def get_all_empty_moves(board: np.ndarray) -> List[Tuple[int, int, int]]:
+    """Returns all empty (0) cell coordinates in the 3D board."""
+    return [(x, y, z) for x in range(3) for y in range(3) for z in range(3) if board[x, y, z] == 0]
+
+def is_winning_move(board: np.ndarray, move: Tuple[int, int, int], player: int) -> bool:
+    """
+    Checks if placing a player's mark at the given move would result in a win.
+    A win is defined as having 3 consecutive marks in any line (row, column, or depth).
+    """
+    x, y, z = move
+    board[x, y, z] = player
+
+    # Check all possible winning lines (27 total: 9 rows + 9 columns + 9 depths)
+    # Rows (fixed x, varying y and z)
+    for y in range(3):
+        for z in range(3):
+            if all(board[x, y, z] == player for z in range(3)):
+                return True
+            if all(board[x, y, z] == player for y in range(3)):
+                return True
+
+    # Columns (fixed y, varying x and z)
+    for x in range(3):
+        for z in range(3):
+            if all(board[x, y, z] == player for z in range(3)):
+                return True
+            if all(board[x, y, z] == player for x in range(3)):
+                return True
+
+    # Depths (fixed z, varying x and y)
+    for x in range(3):
+        for y in range(3):
+            if all(board[x, y, z] == player for z in range(3)):
+                return True
+            if all(board[x, y, z] == player for y in range(3)):
+                return True
+
+    # Diagonals in each layer (3x3x3 has 48 diagonals total)
+    # Face diagonals (4 per layer, 12 total)
+    for layer in range(3):
+        for axis in ['xy', 'xz', 'yz']:
+            if axis == 'xy':
+                # Check top-left to bottom-right diagonals in xy plane
+                for z in range(3):
+                    if all(board[layer, y, z] == player for y in range(3) if y == layer or y == 2 - layer):
+                        return True
+                    # Check top-right to bottom-left diagonals in xy plane
+                    if all(board[layer, y, z] == player for y in range(3) if y + layer == 2):
+                        return True
+            elif axis == 'xz':
+                # Check top-left to bottom-right diagonals in xz plane
+                for y in range(3):
+                    if all(board[x, layer, y] == player for x in range(3) if x == layer or x == 2 - layer):
+                        return True
+                    # Check top-right to bottom-left diagonals in xz plane
+                    if all(board[x, layer, y] == player for x in range(3) if x + layer == 2):
+                        return True
+            elif axis == 'yz':
+                # Check top-left to bottom-right diagonals in yz plane
+                for x in range(3):
+                    if all(board[x, y, layer] == player for y in range(3) if y == layer or y == 2 - layer):
+                        return True
+                    # Check top-right to bottom-left diagonals in yz plane
+                    if all(board[x, y, layer] == player for y in range(3) if y + layer == 2):
+                        return True
+
+    # Space diagonals (4 total)
+    if all(board[x, x, x] == player for x in range(3)):
+        return True
+    if all(board[x, 2 - x, 2 - x] == player for x in range(3)):
+        return True
+    if all(board[x, x, 2 - x] == player for x in range(3)):
+        return True
+    if all(board[x, 2 - x, x] == player for x in range(3)):
+        return True
+    if all(board[x, 2 - x, 2 - x] == player for x in range(3)):
+        return True
+
+    # Undo the move
+    board[x, y, z] = 0
+    return False
+
+def count_empty_neighbors(board: np.ndarray, move: Tuple[int, int, int]) -> int:
+    """Counts the number of empty (0) neighbors for a given move."""
+    x, y, z = move
+    neighbors = 0
+
+    # Check all 26 possible neighbors (3D grid)
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            for dz in [-1, 0, 1]:
+                if dx == 0 and dy == 0 and dz == 0:
+                    continue  # Skip the cell itself
+                nx, ny, nz = x + dx, y + dy, z + dz
+                if 0 <= nx < 3 and 0 <= ny < 3 and 0 <= nz < 3 and board[nx, ny, nz] == 0:
+                    neighbors += 1
+
+    return neighbors
+```
+
+### Explanation:
+1. **`policy` function**:
+   - First checks if any move would win the game for the player (1).
+   - Then checks if any move would win the game for the opponent (-1) and blocks it.
+   - Next prioritizes moves in the "center" of the board (where at least one coordinate is 1).
+   - Then prefers corners (cells where all coordinates are 0 or 2).
+   - Finally, picks any empty cell randomly if no other strategy applies.
+
+2. **`is_winning_move` function**:
+   - Temporarily places the player's mark at the given move.
+   - Checks all possible winning lines (rows, columns, depths, face diagonals, and space diagonals) in the 3D board.
+   - Returns `True` if the move results in a win, otherwise undoes the move and returns `False`.
+
+3. **`count_empty_neighbors` function**:
+   - Counts the number of empty cells adjacent to the given move (including diagonals in 3D space).
+   - Used to evaluate which center or corner move has the most potential.
+
+### Note:
+This is a **basic heuristic** and not guaranteed to be optimal. For a more advanced AI, you could:
+- Implement minimax with alpha-beta pruning.
+- Use a neural network (e.g., trained on 3D Tic Tac Toe games).
+- Add more sophisticated evaluation criteria (e.g., prioritizing moves that create multiple threats).

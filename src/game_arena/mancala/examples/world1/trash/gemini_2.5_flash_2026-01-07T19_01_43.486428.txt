@@ -1,0 +1,1284 @@
+<thinking>
+I'm competing in a Kalah game, and I need to write a Python function `policy(you, opponent)` that returns the best move (an integer from 0 to 5). The game state is given as two lists of 7 integers: `you` and `opponent`, where the last element is the store.
+
+Here's a breakdown of my strategy and considerations:
+
+1.  **Understand the Game Mechanics:**
+    *   **Sowing**: Seeds are distributed counter-clockwise, skipping the opponent's store.
+    *   **Extra Move**: Landing the last seed in my store (`you[6]`) grants another turn. This is a very strong advantage.
+    *   **Capture**: Landing the last seed in an empty *own house* (`you[i]`) and `opponent[5 - i]` has seeds, captures both `you[i]` (the one seed) and all seeds from `opponent[5 - i]` into `you[6]`. This is also a strong advantage.
+    *   **Game End**: When one player's houses are empty. The other player sweeps their remaining seeds into their store. Highest store total wins.
+
+2.  **Evaluation Function (Heuristic):**
+    Since I can't simulate the entire game to the end (too many states, limited time), I need a heuristic to evaluate the "goodness" of a game state. A simple heuristic could be:
+    `score = you.store - opponent.store`
+    However, this doesn't account for future potential. More sophisticated heuristics could include:
+    *   Number of seeds on my side of the board (excluding store).
+    *   Number of empty houses on my side that could lead to a capture.
+    *   Number of seeds in my houses that are positioned to reach my store for an extra turn.
+
+    For now, I'll start with a basic one and refine it. A good starting point would be:
+    `score = (your_store - opponent_store) * weight_store + (sum(your_houses) - sum(opponent_houses)) * weight_house`
+    The store is definitely more valuable, especially towards the end game, so `weight_store` should be higher.
+
+3.  **Search Algorithm:**
+    Given the time constraint (1 second), a simple minimax with alpha-beta pruning would be ideal.
+    *   **Depth**: How deep can I go? A depth of 4-6 might be feasible depending on branching factor.
+    *   **State Representation**: The `(you, opponent)` tuple is good.
+    *   **Move Generation**: Iterate through `you[0..5]` for non-empty houses.
+
+4.  **Handling Special Rules in Simulation:**
+    *   **Extra Move**: If the simulated move results in an extra move, *I get to move again*. This means the minimax algorithm needs to treat this as if the player just made another move in the *same* turn. This is crucial.
+    *   **Capture**: If a capture occurs, the seeds are moved to my store immediately during the simulation.
+
+5.  **Initial Strategy (Simplified):**
+    *   **Prioritize extra moves**: If a move leads to an extra turn, it's often the best move. I should look for these first.
+    *   **Prioritize captures**: If a move leads to a capture, it's also very good.
+    *   **Avoid giving opponent extra moves/captures**: This requires some opponent modeling, which is harder. For now, I'll focus on my own benefits.
+
+6.  **Refined Evaluation Function:**
+    Let's make the evaluation function more sophisticated.
+    `eval_fn(you_state, opponent_state)`:
+    *   `score = you_state[6] - opponent_state[6]` (store difference)
+    *   `score += (sum(you_state[0:6]) - sum(opponent_state[0:6])) * 0.5` (seeds on board, less weight than store)
+    *   Consider adding a term for potential captures:
+        *   If `you_state[i]` is empty and `opponent_state[5-i]` has seeds, that's a potential capture for me.
+        *   If `opponent_state[i]` is empty and `you_state[5-i]` has seeds, that's a potential capture for opponent (negative score).
+    *   Consider adding a term for potential extra moves:
+        *   If `k` seeds in `you[i]` would land in `you[6]`, giving `(6 - i) % 13 == k-1`. This is tricky without simulating. A simpler version is to favor moves that land seeds close to `you[6]`.
+
+    Let's go with a simpler one for now and focus on minimax implementation correctness first:
+    `evaluation = 2 * (you[6] - opponent[6]) + (sum(you[0:6]) - sum(opponent[0:6]))`
+    The store is weighted higher.
+
+7.  **Minimax Implementation Details:**
+
+    *   `simulate_move(you_state, opponent_state, move_idx)`: This function will take the current board state and a chosen move, and return the `(new_you, new_opponent, player_got_extra_turn, game_over, winner)` tuple. This function is crucial and needs to be correct.
+    *   `minimax(current_you, current_opponent, depth, is_maximizing_player)`:
+        *   Base case: `depth == 0` or `game_over`. Return `eval_fn(current_you, current_opponent)`.
+        *   If `is_maximizing_player`:
+            *   Initialize `max_eval = -infinity`.
+            *   For each valid move `i`:
+                *   `new_you, new_opponent, extra_turn, game_over_sim, winner_sim = simulate_move(current_you, current_opponent, i)`
+                *   If `game_over_sim`:
+                    *   Calculate final scores. If current player wins, it's a very high positive score. If current player loses, very low negative.
+                *   If `extra_turn`:
+                    *   `eval = minimax(new_you, new_opponent, depth - 1, True)` (still maximizing player). This is a key modification for Kalah.
+                *   Else:
+                    *   `eval = minimax(new_opponent, new_you, depth - 1, False)` (opponent turn, so `new_opponent` becomes `you`, `new_you` becomes `opponent`).
+                *   `max_eval = max(max_eval, eval)`.
+            *   Return `max_eval`.
+        *   If `is_minimizing_player`:
+            *   Initialize `min_eval = +infinity`.
+            *   For each valid move `i`:
+                *   `new_opp_you, new_opp_opponent, extra_turn_opp, game_over_sim, winner_sim = simulate_move(current_you, current_opponent, i)` (simulate opponent's move)
+                *   If `game_over_sim`:
+                    *   Calculate final scores. If current player (who is now opponent) wins, very low negative. If loses, very high positive.
+                *   If `extra_turn_opp`:
+                    *   `eval = minimax(new_opp_you, new_opp_opponent, depth - 1, False)` (still minimizing player).
+                *   Else:
+                    *   `eval = minimax(new_opp_opponent, new_opp_you, depth - 1, True)` (my turn).
+                *   `min_eval = min(min_eval, eval)`.
+            *   Return `min_eval`.
+
+    *   **Alpha-Beta Pruning**: Integrate alpha-beta parameters into the minimax function. `minimax(current_you, current_opponent, depth, alpha, beta, is_maximizing_player)`
+
+8.  **Game End Logic `is_game_over(you, opponent)` and `get_final_scores(you, opponent)`:**
+    *   A player's turn ends if all their houses (`0..5`) are empty.
+    *   When the game ends, sweep remaining seeds from the *other* player's houses into their store.
+    *   Compare `you[6]` vs `opponent[6]`.
+
+Let's refine the `simulate_move` function carefully. This is the most complex part.
+
+```python
+import copy
+
+def simulate_move(you_state, opponent_state, move_idx):
+    if you_state[move_idx] == 0:
+        # This should not happen if policy only gives legal moves.
+        # But for simulation robustness, we can handle it or assert.
+        # For now, let's assume valid move_idx.
+        pass
+
+    temp_you = list(you_state) # Create mutable copies
+    temp_opponent = list(opponent_state)
+
+    seeds = temp_you[move_idx]
+    temp_you[move_idx] = 0 # Empty the chosen house
+
+    current_pos = move_idx
+    current_player_side = 'you' # 'you' or 'opponent'
+
+    extra_turn = False
+    capture_occurred = False
+    last_landed_house = -1 # Keep track of where the last seed landed
+    last_landed_side = ''
+
+    while seeds > 0:
+        current_pos += 1
+
+        if current_player_side == 'you':
+            if current_pos <= 5: # Own houses
+                temp_you[current_pos] += 1
+                last_landed_house = current_pos
+                last_landed_side = 'you'
+            elif current_pos == 6: # Own store
+                temp_you[current_pos] += 1
+                seeds -= 1 # Decrement here because it's only one seed
+                last_landed_house = current_pos
+                last_landed_side = 'you'
+                if seeds == 0:
+                    extra_turn = True # Last seed landed in my store
+                    break # End while loop, seeds are 0
+                current_player_side = 'opponent' # Switch to opponent's side for next seed
+                current_pos = -1 # Reset for opponent's houses (next loop will make it 0)
+            # Else (seeds overflowed beyond own store - should not happen with proper logic,
+            # next turn it will be opponent's side and pos 0)
+
+        elif current_player_side == 'opponent':
+            if current_pos <= 5: # Opponent's houses
+                temp_opponent[current_pos] += 1
+                last_landed_house = current_pos
+                last_landed_side = 'opponent'
+            elif current_pos == 6: # Opponent's store - SKIP IT
+                # Skip opponent's store by immediately switching back to own side and resetting position
+                current_player_side = 'you'
+                current_pos = -1 # Reset for own houses (next loop will make it 0)
+                continue # Do not consume a seed for skipping
+            # Else (seeds overflowed beyond opponent's store):
+            # This means it loops back to player's side houses idx 0
+            # Next iteration, current_pos will be 6, then switch to 'you', reset current_pos to -1,
+            # then in next iteration it will be 0 on 'you' side.
+
+        seeds -= 1
+        if seeds == 0:
+            break
+
+        # Handle wrap-around
+        if current_player_side == 'you' and current_pos == 6:
+            # This handles the case where it just passed own store and next goes to opponent's side
+            current_player_side = 'opponent'
+            current_pos = -1 # Next iteration current_pos will be 0 for opponent's houses
+        elif current_player_side == 'opponent' and current_pos == 6:
+            # This handles the case where it just skipped opponent's store and next goes to own side
+            current_player_side = 'you'
+            current_pos = -1 # Next iteration current_pos will be 0 for own houses
+
+
+    # After all seeds are dropped, check for capture if last seed landed in one of my houses
+    if not extra_turn and last_landed_side == 'you' and 0 <= last_landed_house <= 5:
+        # Check if the house was empty *before* the current seed landed there via sowing
+        # To do this correctly, we need to know the state *before* the last seed landed.
+        # This is complicated if the house picked up from already had seeds.
+        # Kalah rules state: "If the last seed lands in one of your houses you[i] (0..5)
+        # and it was empty *before the drop*, and the opposite house opponent[5 - i] has seeds,
+        # then capture..."
+
+        # Let's re-think the 'empty before drop' part. It means `you_state_at_start_of_turn[last_landed_house]` was 0.
+        # NO, it means `temp_you[last_landed_house]` was 1 (the single seed just landed there) AND it was 0 *before* this move.
+        # The key is that `temp_you[last_landed_house]` _now_ contains only 1 seed because that's where the *last* seed landed.
+        # And before this move, `you_state[last_landed_house]` was 0 initially. This interpretation is simpler.
+        # Let's assume the state `temp_you` reflects the state *after* the last seed landed.
+
+        # The rule: " If the last seed lands in one of your houses you[i] (0..5) and it was empty before the drop"
+        # This means, after the distribution, the house `temp_you[last_landed_house]` should contain exactly 1 seed for a potential capture.
+        # And, the house must have been empty *before this current turn*. This is not quite right.
+        # The common rule interpretation is: the house `temp_you[last_landed_house]` must have been empty *before the last seed was placed in it*.
+        # Since we just placed the last seed there, it must now contain 1 seed if it was empty.
+
+        # Correct interpretation for capture:
+        # 1. Last seed landed in `temp_you[last_landed_house]` (my board, a house, not store).
+        # 2. `temp_you[last_landed_house]` must contain exactly 1 seed *after* this move (meaning it was empty before this last seed).
+        # 3. `temp_opponent[5 - last_landed_house]` must have seeds.
+
+        if (temp_you[last_landed_house] == 1 and
+            temp_opponent[5 - last_landed_house] > 0):
+            # Capture!
+            temp_you[6] += temp_you[last_landed_house] # Capture own seed
+            temp_you[last_landed_house] = 0
+            temp_you[6] += temp_opponent[5 - last_landed_house] # Capture opponent's seeds
+            temp_opponent[5 - last_landed_house] = 0
+            capture_occurred = True # Not strictly needed but good for debugging/tracking
+
+    # Check for game over condition
+    game_over = False
+    winner = None # 'you', 'opponent', or 'draw'
+    
+    if sum(temp_you[0:6]) == 0:
+        # My houses are empty, game ends. Opponent sweeps their seeds.
+        temp_opponent[6] += sum(temp_opponent[0:6])
+        for i in range(6):
+            temp_opponent[i] = 0
+        game_over = True
+    elif sum(temp_opponent[0:6]) == 0:
+        # Opponent's houses are empty, game ends. I sweep my seeds.
+        temp_you[6] += sum(temp_you[0:6])
+        for i in range(6):
+            temp_you[i] = 0
+        game_over = True
+    
+    if game_over:
+        if temp_you[6] > temp_opponent[6]:
+            winner = 'you'
+        elif temp_opponent[6] > temp_you[6]:
+            winner = 'opponent'
+        else:
+            winner = 'draw'
+
+    return temp_you, temp_opponent, extra_turn, game_over, winner
+
+
+# --- Minimax and Policy Implementation ---
+
+# Using a namedtuple or a simple dict for readability for game state
+# For my policy, the direct lists are fine.
+
+import math
+
+MAX_DEPTH = 6 # This might need tuning based on performance.
+# Lowering this for initial testing. 4-6 is typical.
+# Since extra moves don't count towards depth, it might "feel" deeper.
+
+# Heuristic evaluation function
+def evaluate_board(you, opponent):
+    # Base score: difference in seeds in stores
+    score = (you[6] - opponent[6]) * 10
+    
+    # Add difference in seeds on respective sides (houses)
+    # This encourages keeping more seeds on your side for later moves.
+    score += (sum(you[0:6]) - sum(opponent[0:6])) * 1 # Reduced weight for seeds not in store.
+
+    # Heuristic for potential captures (more speculative)
+    # If a house is empty on my side, and opposite has seeds, it's a potential capture
+    # but only if I can land a single seed there. This is hard to predict
+    # without full simulation for *all* moves directly.
+    # For now, let's keep it simple.
+
+    # Heuristic for potential extra moves (more speculative)
+    # If a house has k seeds such that it lands in your store.
+    # A house `i` needs `6 - i` steps to reach the store.
+    # If `you[i] == 6 - i`, then it lands exactly in the store.
+    # These are high-priority moves.
+    # Let's count how many such exact-move-to-store opportunities exist.
+    for i in range(6):
+        if you[i] > 0:
+            if you[i] == (6 - i):
+                score += 5 # Bonus for moves that land directly in store
+            # elif you[i] < (6 - i) and opponent[5-i] > 0 and (you[i] + i) % 13 == 6:
+            # This is hard to model accurately without full simulation.
+            # A simpler heuristic for capture potential might be to check if any of my houses are 1 and对面有子
+            if you[i] == 1 and opponent[5-i] > 0:
+                 # This isn't quite right. The house must be empty _before_ the last seed.
+                 # If `you[i]` is 1, it means it *already has* 1 seed.
+                 # The 'empty before drop' rule really means (total seeds distributed) % 13 == (i - start_house_idx) % 13
+                 # and house i has 0 seeds before the drop.
+                 # This is too complex for a simple heuristic pass. Remove for now.
+                 pass
+
+    # Give a small bonus for having more seeds overall in your houses
+    # score += sum(you[0:6]) * 0.1 # This is already covered by the difference term above.
+
+    return score
+
+
+def minimax(you, opponent, depth, alpha, beta, is_maximizing_player):
+    # Check for game over
+    my_houses_empty = sum(you[0:6]) == 0
+    opp_houses_empty = sum(opponent[0:6]) == 0
+
+    if my_houses_empty or opp_houses_empty:
+        # Game over, sweep remaining seeds
+        final_you = list(you)
+        final_opponent = list(opponent)
+        if my_houses_empty:
+            final_opponent[6] += sum(final_opponent[0:6])
+            for i in range(6): final_opponent[i] = 0
+        elif opp_houses_empty:
+            final_you[6] += sum(final_you[0:6])
+            for i in range(6): final_you[i] = 0
+        return evaluate_board(final_you, final_opponent) # Use final scores for evaluation
+
+
+    if depth == 0:
+        return evaluate_board(you, opponent)
+
+    if is_maximizing_player:
+        max_eval = -math.inf
+        # Iterate over possible moves (your houses 0-5)
+        for i in range(6):
+            if you[i] == 0:
+                continue # Cannot move from an empty house
+
+            new_you, new_opponent, extra_turn, game_over_sim, winner_sim = simulate_move(you, opponent, i)
+
+            if game_over_sim: # If move ends the game, return the final evaluation
+                if winner_sim == 'you':
+                    return math.inf # Win is infinity
+                elif winner_sim == 'opponent':
+                    return -math.inf # Loss is -infinity
+                else: # Draw
+                    return 0 # Or some reasonable neutral score
+
+            if extra_turn:
+                # If extra turn, we (maximizing player) move again, so still maximizing, same depth
+                eval = minimax(new_you, new_opponent, depth - 1, alpha, beta, True)
+            else:
+                # If no extra turn, opponent moves, so minimizing player
+                # Swap you and opponent for the next call to represent opponent's perspective
+                eval = minimax(new_opponent, new_you, depth - 1, alpha, beta, False)
+
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break # Alpha-beta pruning
+        return max_eval
+    else: # is_minimizing_player (opponent's turn)
+        min_eval = math.inf
+        # Iterate over possible moves (opponent's houses 0-5)
+        for i in range(6):
+            if you[i] == 0: # This is tricky. In minimax, the 'you' and 'opponent' roles are swapped.
+                            # So `you` here represents the actual opponent's current state.
+                continue
+
+            # Simulate opponent's move. Parameters are (opponent_you, opponent_opponent, move_idx)
+            # So, `you` here is `current_opponent_perspective_you`
+            # and `opponent` here is `current_opponent_perspective_opponent`
+            new_opp_you, new_opp_opponent, extra_turn, game_over_sim, winner_sim = simulate_move(you, opponent, i)
+
+            if game_over_sim:
+                if winner_sim == 'you': # Opponent just won
+                    return -math.inf
+                elif winner_sim == 'opponent': # Opponent just lost (I win)
+                    return math.inf
+                else: # Draw
+                    return 0
+
+            if extra_turn:
+                # Opponent gets an extra turn, so still minimizing, same depth
+                eval = minimax(new_opp_you, new_opp_opponent, depth - 1, alpha, beta, False)
+            else:
+                # Opponent's turn ends, it's my turn. Maximizing player.
+                # Swap back to my perspective: `new_opp_opponent` becomes my `you`, `new_opp_you` becomes my `opponent`
+                eval = minimax(new_opp_opponent, new_opp_you, depth - 1, alpha, beta, True)
+
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break # Alpha-beta pruning
+        return min_eval
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    best_move = -1
+    max_eval = -math.inf
+
+    # Try a shallower depth first to quickly get some good moves
+    # This might be useful for time management, but for simplicity let's stick to MAX_DEPTH as fixed.
+    # The current framework assumes `MAX_DEPTH` is the target depth.
+
+    for i in range(6):
+        if you[i] == 0:
+            continue # Cannot move from an empty house
+
+        # Simulate the move
+        new_you, new_opponent, extra_turn, game_over_sim, winner_sim = simulate_move(you, opponent, i)
+
+        current_eval = -math.inf # Initialize with a very low value
+
+        if game_over_sim:
+            if winner_sim == 'you':
+                return i # Winning move, take it immediately!
+            elif winner_sim == 'opponent':
+                current_eval = -math.inf # This move leads to immediate loss
+            else: # Draw
+                current_eval = 0 # This move leads to immediate draw
+        elif extra_turn:
+            # If I get an extra turn, I continue to maximize with the new state
+            current_eval = minimax(new_you, new_opponent, MAX_DEPTH - 1, -math.inf, math.inf, True)
+        else:
+            # If no extra turn, it's opponent's turn. Minimax will search from opponent's perspective.
+            # `new_opponent` becomes `you` for the minimax call, `new_you` becomes `opponent`.
+            current_eval = minimax(new_opponent, new_you, MAX_DEPTH - 1, -math.inf, math.inf, False)
+
+        if current_eval > max_eval:
+            max_eval = current_eval
+            best_move = i
+    
+    # If no move found (e.g., all lead to immediate loss and scores are -inf),
+    # just pick the first legal move. This case should not happen given the problem statement
+    # that policy is never called when no legal move exists.
+    if best_move == -1:
+        for i in range(6):
+            if you[i] > 0:
+                return i # Fallback: return the first legal move.
+
+    return best_move
+
+```
+
+**Self-Correction/Refinement of `simulate_move`:**
+
+The wrap-around logic in `simulate_move` seems complex. Let's simplify the sowing loop.
+A common way to do this is to have a single "board" representation of 14 holes, where `0..5` are my houses, `6` is my store, `7..12` are opponent houses, `13` is opponent's store.
+When sowing, skip hole `13`.
+
+Let's adjust `simulate_move` using a 14-slot internal board for easier sowing.
+
+```python
+import copy
+import math
+
+def _simulate_move_internal(board, move_idx, player_is_you):
+    # board: [h0, h1, h2, h3, h4, h5, store_you, h0_opp, h1_opp, h2_opp, h3_opp, h4_opp, h5_opp, store_opp]
+    # move_idx: 0-5 for current player's houses
+
+    # Create a copy so we don't modify the original state
+    temp_board = list(board)
+
+    # Determine actual index on the 14-slot board for player
+    start_sowing_idx = move_idx if player_is_you else (move_idx + 7)
+    
+    seeds = temp_board[start_sowing_idx]
+    temp_board[start_sowing_idx] = 0 # Empty the chosen house
+
+    current_pos_on_board = start_sowing_idx
+    
+    extra_turn = False
+    
+    while seeds > 0:
+        current_pos_on_board = (current_pos_on_board + 1) % 14 # Move to next hole, wrap around
+
+        # Skip opponent's store (hole 13 if player_is_you, hole 6 if not player_is_you)
+        if player_is_you and current_pos_on_board == 13: # Own move, skip opponent's store
+            continue
+        elif not player_is_you and current_pos_on_board == 6: # Opponent's move, skip own store
+            continue
+
+        temp_board[current_pos_on_board] += 1
+        seeds -= 1
+
+    # After loop, current_pos_on_board is where the LAST seed landed
+    last_landed_idx = current_pos_on_board
+
+    # Check for extra turn
+    if player_is_you and last_landed_idx == 6: # My store
+        extra_turn = True
+    elif not player_is_you and last_landed_idx == 13: # Opponent's store
+        extra_turn = True
+
+    # Check for capture
+    capture_occurred = False
+    if not extra_turn: # Captures only if not an extra turn
+        # If the last seed landed in one of *this player's* houses (not store)
+        # and it was empty before this last seed (meaning it now has 1 seed)
+        # and the opposite house has seeds.
+        
+        # Houses for current player: 0-5 if player_is_you, 7-12 if not player_is_you
+        is_current_player_house = False
+        if player_is_you and 0 <= last_landed_idx <= 5:
+            is_current_player_house = True
+            _house_idx = last_landed_idx
+            _opposite_house_idx = 12 - last_landed_idx # 12 is house 5 of opponent, 7 is house 0 of opponent
+        elif not player_is_you and 7 <= last_landed_idx <= 12:
+            is_current_player_house = True
+            _house_idx = last_landed_idx
+            _opposite_house_idx = 12 - (last_landed_idx - 7) # Example: opp h[0] is board[7]. Opp h[5] is board[12].
+                                                          # My h[5] is board[5]. My h[0] is board[0].
+                                                          # So `12 - (_house_idx - 7)` gives my house index.
+                                                          # My h[5] is opposite opp h[0] (7)
+                                                          # My h[0] is opposite opp h[5] (12)
+        
+        if is_current_player_house and temp_board[_house_idx] == 1 and temp_board[_opposite_house_idx] > 0:
+            # Capture!
+            if player_is_you:
+                temp_board[6] += temp_board[_house_idx] # Capture own seed
+                temp_board[_house_idx] = 0
+                temp_board[6] += temp_board[_opposite_house_idx] # Capture opponent's seeds
+                temp_board[_opposite_house_idx] = 0
+            else: # Opponent capturing
+                temp_board[13] += temp_board[_house_idx] # Capture own seed (opponent's perspective)
+                temp_board[_house_idx] = 0
+                temp_board[13] += temp_board[_opposite_house_idx] # Capture my seeds (opponent's perspective)
+                temp_board[_opposite_house_idx] = 0
+            capture_occurred = True
+
+    # Check for game over
+    game_over = False
+    winner = None
+
+    player_0_houses_empty = sum(temp_board[0:6]) == 0
+    player_1_houses_empty = sum(temp_board[7:13]) == 0
+
+    if player_0_houses_empty:
+        # Player 0's houses are empty. Player 1 sweeps their remaining seeds.
+        temp_board[13] += sum(temp_board[7:13])
+        for i in range(7, 13): temp_board[i] = 0
+        game_over = True
+    elif player_1_houses_empty:
+        # Player 1's houses are empty. Player 0 sweeps their remaining seeds.
+        temp_board[6] += sum(temp_board[0:6])
+        for i in range(6): temp_board[i] = 0
+        game_over = True
+    
+    if game_over:
+        if temp_board[6] > temp_board[13]:
+            winner = 'player_0' # Corresponds to 'you' if player_is_you was true
+        elif temp_board[13] > temp_board[6]:
+            winner = 'player_1' # Corresponds to 'opponent' if player_is_you was true
+        else:
+            winner = 'draw'
+
+    return temp_board, extra_turn, game_over, winner
+
+
+# Policy function takes `you, opponent` which are 7-element lists.
+# Need to convert them to the 14-element board for internal simulation.
+
+def _convert_to_14_slot_board(you_list, opponent_list):
+    board = [0] * 14
+    for i in range(7):
+        board[i] = you_list[i]
+    for i in range(6): # Houses 0-5 of opponent become 7-12
+        board[7 + i] = opponent_list[i]
+    board[13] = opponent_list[6] # Opponent's store is 13
+    return board
+
+def _convert_from_14_slot_board(board, player_is_you):
+    # Returns (you_list, opponent_list) from the perspective of _player_is_you
+    if player_is_you:
+        you_list = board[0:7]
+        opponent_list = board[7:13] + [board[13]] # Houses and store
+    else: # If the board perspective is opponent's you
+        you_list = board[7:13] + [board[13]]
+        opponent_list = board[0:7]
+    return you_list, opponent_list
+
+# Update `simulate_move` to use the internal 14-slot representation
+def simulate_move(you_state, opponent_state, move_idx, player_is_you=True):
+    # This original function receives (you, opponent) lists
+    # and needs to return (new_you, new_opponent, extra_turn, game_over, winner_str)
+
+    board_14 = _convert_to_14_slot_board(you_state, opponent_state)
+    
+    # move_idx is 0-5. For player_is_you, it's just move_idx.
+    # For opponent, it's move_idx for their houses.
+    
+    temp_board, extra_turn, game_over, winner_internal = _simulate_move_internal(board_14, move_idx, player_is_you)
+
+    new_you, new_opponent = _convert_from_14_slot_board(temp_board, True) # Always return from 'you' perspective
+
+    winner_str = None
+    if game_over:
+        if winner_internal == 'player_0': # Player 0 is 'you'
+            winner_str = 'you'
+        elif winner_internal == 'player_1': # Player 1 is 'opponent'
+            winner_str = 'opponent'
+        else:
+            winner_str = 'draw'
+
+    return new_you, new_opponent, extra_turn, game_over, winner_str
+
+```
+The `_simulate_move_internal` and its wrappers are much cleaner.
+
+Let's test `_simulate_move_internal` for capture logic once more.
+`board = [0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0]`
+Player is `you`. `you = [0, 0, 0, 0, 0, 1, 0]`, `opponent = [1, 0, 0, 0, 0, 0, 0]`
+Move slot 5 (1 seed).
+`start_sowing_idx = 5`. `seeds = 1`. `temp_board[5] = 0`.
+`current_pos_on_board = 5`.
+`seeds = 1`:
+    `current_pos_on_board = (5+1)%14 = 6`.
+    `temp_board[6] += 1`. `seeds = 0`. Loop ends.
+`last_landed_idx = 6`.
+`extra_turn` is true. No capture check. Correct.
+
+`board = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]`
+Player is `you`. `you = [1, 0, 0, 0, 0, 0, 0]`, `opponent = [0, 0, 0, 0, 0, 1, 0]`
+Move slot 0 (1 seed).
+`start_sowing_idx = 0`. `seeds = 1`. `temp_board[0] = 0`.
+`current_pos_on_board = 0`.
+`seeds = 1`:
+    `current_pos_on_board = (0+1)%14 = 1`.
+    `temp_board[1] += 1`. `seeds = 0`. Loop ends.
+`last_landed_idx = 1`.
+`extra_turn` is false.
+Capture check: `player_is_you` is true, `0 <= last_landed_idx (1) <= 5` is true. `is_current_player_house` is true.
+`_house_idx = 1`.
+`_opposite_house_idx = 12 - 1 = 11`. (This is opponent's house `opponent[4]` because `7+4=11`).
+Current `temp_board[1]` is 1. Original `opponent[4]` (board[11]) is 0. So no capture.
+My `opponent[5-i]` (`opponent[5-0] = opponent[5]`) should be checked. This is `board[12]`.
+So, `_opposite_house_idx` logic for capture is off.
+
+When `player_is_you`:
+`_house_idx` is `last_landed_idx`.
+The opponent's opposite house is `partner_board_idx = 7 + (5 - last_landed_idx)`.
+Example: `last_landed_idx = 0` (you[0]). Opposite is `opponent[5]`. `opponent[5]` is `board[7+5] = board[12]`. Correct.
+Example: `last_landed_idx = 5` (you[5]). Opposite is `opponent[0]`. `opponent[0]` is `board[7+0] = board[7]`. Correct.
+
+When `not player_is_you`:
+`_house_idx` is `last_landed_idx`.
+The opponent's (my) opposite house is `partner_board_idx = (5 - (last_landed_idx - 7))`.
+Example: `last_landed_idx = 7` (opponent[0]). Opposite is `you[5]`. `you[5]` is `board[5]`. Correct.
+Example: `last_landed_idx = 12` (opponent[5]). Opposite is `you[0]`. `you[0]` is `board[0]`. Correct.
+
+So the `_opposite_house_idx` logic in `_simulate_move_internal` needs correction:
+
+```python
+    # Check for capture
+    capture_occurred = False
+    if not extra_turn:
+        is_current_player_house = False
+        _house_idx = -1
+        _opposite_house_idx = -1
+
+        if player_is_you and 0 <= last_landed_idx <= 5: # Landed in my house
+            is_current_player_house = True
+            _house_idx = last_landed_idx
+            _opposite_house_idx = 7 + (5 - last_landed_idx) # Opponent's corresponding house on 14-slot board
+        elif not player_is_you and 7 <= last_landed_idx <= 12: # Landed in opponent's (my opponent's) house
+            is_current_player_house = True
+            _house_idx = last_landed_idx
+            _opposite_house_idx = (5 - (last_landed_idx - 7)) # My corresponding house on 14-slot board (0..5)
+        
+        if is_current_player_house and temp_board[_house_idx] == 1 and temp_board[_opposite_house_idx] > 0:
+            # Capture!
+            if player_is_you:
+                temp_board[6] += temp_board[_house_idx] # Capture own seed
+                temp_board[_house_idx] = 0
+                temp_board[6] += temp_board[_opposite_house_idx] # Capture opponent's seeds
+                temp_board[_opposite_house_idx] = 0
+            else: # Opponent capturing (from their perspective)
+                temp_board[13] += temp_board[_house_idx] # Capture own seed
+                temp_board[_house_idx] = 0
+                temp_board[13] += temp_board[_opposite_house_idx] # Capture opponent's (my) seeds
+                temp_board[_opposite_house_idx] = 0
+            capture_occurred = True
+```
+
+This corrected `_simulate_move_internal` looks more solid.
+
+Now, how about the maximum depth? `MAX_DEPTH = 6` seems relatively high for a Kalah game with many possible moves (up to 6 per turn, sometimes multiple turns). Each move doubles the branching factor.
+A depth of 4 might be more realistic. Let's aim for 4 and if it's too slow, reduce it.
+The problem statement execution time of 1 second is important.
+
+**Final checks:**
+*   Minimax `is_maximizing_player` and argument swapping `minimax(new_opponent, new_you, ...)`:
+    *   When `is_maximizing_player` (my turn), I call `simulate_move(you, opponent, i, player_is_you=True)`. This returns `(new_you, new_opponent, ...)`.
+    *   If `extra_turn`, I call `minimax(new_you, new_opponent, ..., True)`. Correct.
+    *   If not `extra_turn`, opponent moves. `minimax(new_opponent, new_you, ..., False)`. Here, `new_opponent` is `you` from the opponent's perspective, and `new_you` is `opponent` from their perspective. Correct.
+*   When `is_minimizing_player` (opponent's turn), `you` and `opponent` args *are already from the opponent's perspective*.
+    *   So, `simulate_move(you, opponent, i, player_is_you=True)` should *actually* be `simulate_move(you, opponent, i, player_is_you=False)` to simulate the opponent's move where `you` refers to the player *whose turn it is* (the opponent in this case).
+    *   Let's clarify `simulate_move` parameters. It should always take `(player_to_move_houses_list, other_player_houses_list, move_idx, player_to_move_is_me_boolean)`.
+
+Modified `simulate_move` function signature:
+`simulate_move(current_player_you, current_player_opponent, move_idx, current_player_is_me)`:
+    *   `current_player_you`: The list `[h0..h5, store]` for the player whose turn it is.
+    *   `current_player_opponent`: The list `[h0..h5, store]` for the *other* player.
+    *   `move_idx`: The house index `0-5` for `current_player_you` to move.
+    *   `current_player_is_me`: `True` if `current_player_you` is *my* `you` (the original caller of `policy`), `False` if `current_player_you` is the *opponent's* `you`.
+
+```python
+# Re-writing simulate_move signature and internal calls to be robust.
+
+def simulate_move(player_to_move_state, other_player_state, move_idx, player_to_move_is_original_player):
+    # player_to_move_state: the `you` list for the current player whose turn it is
+    # other_player_state: the `opponent` list based on `player_to_move_state`
+    # player_to_move_is_original_player: True if `player_to_move_state` refers to YOUR original `you`
+    #                                    False if `player_to_move_state` refers to original `opponent`
+
+    # Construct the 14-slot board based on whose turn it is
+    if player_to_move_is_original_player:
+        board_14 = _convert_to_14_slot_board(player_to_move_state, other_player_state)
+    else:
+        # If the player to move is the *opponent*, then their houses are 0-6 in their perspective
+        # and my houses are 7-13 in their perspective.
+        # _convert_to_14_slot_board(you, opponent) always puts `you` in 0-6 and `opponent` in 7-13.
+        # So we call it with (opponent_state_as_you, my_state_as_opponent)
+        board_14 = _convert_to_14_slot_board(player_to_move_state, other_player_state)
+
+    # Call the internal simulation function. The `player_is_you` argument to `_simulate_move_internal`
+    # refers to if the player _currently moving_ is player 0 (the first 7 slots of the 14-slot board).
+    # This remains `player_to_move_is_original_player` in context of this simulation.
+    temp_board, extra_turn, game_over, winner_internal = _simulate_move_internal(board_14, move_idx, player_to_move_is_original_player) # The `player_is_you` in internal refers to `player_0`
+
+    # Now, convert the `temp_board` back to `(my_you_list, my_opponent_list)`
+    final_my_you, final_my_opponent = _convert_from_14_slot_board(temp_board, True) # Always from my original perspective
+
+    winner_str = None
+    if game_over:
+        if winner_internal == 'player_0': # Player 0 is original 'you'
+            winner_str = 'you'
+        elif winner_internal == 'player_1': # Player 1 is original 'opponent'
+            winner_str = 'opponent'
+        else:
+            winner_str = 'draw'
+
+    return final_my_you, final_my_opponent, extra_turn, game_over, winner_str
+
+# The minimax and policy logic will need slight adjustments due to new simulate_move signature.
+
+# minimax function:
+# `you` and `opponent` in this minimax represent the current state from the `is_maximizing_player`'s perspective
+# i.e., if `is_maximizing_player` is True, `you` is my `you`, `opponent` is my `opponent`.
+# if `is_maximizing_player` is False, `you` is opponent's `you`, `opponent` is opponent's `opponent` (my `you`).
+
+def minimax(current_player_you_state, current_player_opponent_state, depth, alpha, beta, is_maximizing_player):
+    # Handle game over check and base case correctly as before.
+    # The evaluation function `evaluate_board` needs to take (you_for_evaluation, opponent_for_evaluation)
+    # where these are always from the *original player's* perspective.
+
+    # When depth == 0 or game over:
+    # Need to normalize current_player_you_state and current_player_opponent_state to 'my' perspective for evaluation.
+    if is_maximizing_player:
+        eval_you = current_player_you_state
+        eval_opponent = current_player_opponent_state
+    else: # This means `current_player_you_state` belongs to the opponent, `current_player_opponent_state` belongs to me.
+        eval_you = current_player_opponent_state
+        eval_opponent = current_player_you_state
+    
+    my_houses_empty = sum(eval_you[0:6]) == 0
+    opp_houses_empty = sum(eval_opponent[0:6]) == 0
+
+    if my_houses_empty or opp_houses_empty:
+        final_my_you = list(eval_you)
+        final_my_opponent = list(eval_opponent)
+        if my_houses_empty:
+            final_my_opponent[6] += sum(final_my_opponent[0:6])
+            for i in range(6): final_my_opponent[i] = 0
+        elif opp_houses_empty:
+            final_my_you[6] += sum(final_my_you[0:6])
+            for i in range(6): final_my_you[i] = 0
+        return evaluate_board(final_my_you, final_my_opponent) # Evaluate always from my perspective
+
+    if depth == 0:
+        return evaluate_board(eval_you, eval_opponent)
+
+    # Max player (My turn)
+    if is_maximizing_player:
+        max_eval = -math.inf
+        for i in range(6):
+            if current_player_you_state[i] == 0: continue
+
+            new_my_you, new_my_opponent, extra_turn, game_over_sim, winner_sim = \
+                simulate_move(current_player_you_state, current_player_opponent_state, i, True)
+
+            if game_over_sim:
+                if winner_sim == 'you': return math.inf
+                elif winner_sim == 'opponent': return -math.inf
+                else: current_eval = 0 # Draw case. Assign 0.
+            elif extra_turn:
+                current_eval = minimax(new_my_you, new_my_opponent, depth - 1, alpha, beta, True)
+            else:
+                current_eval = minimax(new_my_opponent, new_my_you, depth - 1, alpha, beta, False) # Swap roles for opponent
+
+            max_eval = max(max_eval, current_eval)
+            alpha = max(alpha, current_eval)
+            if beta <= alpha: break
+        return max_eval
+
+    # Min player (Opponent's turn)
+    else:
+        min_eval = math.inf
+        for i in range(6):
+            if current_player_you_state[i] == 0: continue # The `current_player_you_state` here is the opponent's `you`
+
+            # Simulate opponent's move. `current_player_you_state` is opponent's `you`, `current_player_opponent_state` is my `you`.
+            new_my_you, new_my_opponent, extra_turn, game_over_sim, winner_sim = \
+                simulate_move(current_player_you_state, current_player_opponent_state, i, False)
+
+            if game_over_sim:
+                if winner_sim == 'you': return math.inf # If my policy's `simulate_move` returns `you` as winner, it means original 'you' won. For min-player, this is a loss.
+                elif winner_sim == 'opponent': return -math.inf # Original 'opponent' won, which is current `min_player_you`. So good for min player.
+                else: current_eval = 0 # Draw
+                
+                # Careful here, the `winner_sim` is from original perspective.
+                # If `winner_sim == 'you'`, means I (original you) win. This is bad for minimizing player.
+                if winner_sim == 'you': current_eval = math.inf # Max wins, bad for min
+                elif winner_sim == 'opponent': current_eval = -math.inf # Max loses, good for min
+                else: current_eval = 0
+
+            elif extra_turn:
+                current_eval = minimax(new_my_opponent, new_my_you, depth - 1, alpha, beta, False) # Opponent gets extra turn, still minimizing
+            else:
+                current_eval = minimax(new_my_you, new_my_opponent, depth - 1, alpha, beta, True) # It's my turn, back to maximizing
+
+            min_eval = min(min_eval, current_eval)
+            beta = min(beta, current_eval)
+            if beta <= alpha: break
+        return min_eval
+
+# The winner_sim check in minimizing player logic needs to be flipped for a consistent score.
+# When `simulate_move` returns `winner_sim == 'you'`, that means my original `you` won.
+# If `is_maximizing_player` is true and `winner_sim == 'you'`, great, math.inf.
+# If `is_minimizing_player` is true and `winner_sim == 'you'`, that's bad for the minimizing player, so give a large positive for myself (i.e. math.inf from maximizing player's perspective).
+# My `minimax` function should always return values from the perspective of the *initial maximizing player*.
+
+Re-checking `min_player` `winner_sim` processing:
+My minimax always returns `min_eval` from the *initial maximizer's perspective*.
+If `winner_sim == 'you'` (initial maximizer wins): return `math.inf`
+If `winner_sim == 'opponent'` (initial minimizer wins): return `-math.inf`
+So, this part of the `min_player` logic is correct in its current state.
+
+```python
+# Policy function itself
+def policy(you: list[int], opponent: list[int]) -> int:
+    best_move = -1
+    max_eval = -math.inf
+
+    # Initial call to minimax is always as the maximizing player (myself)
+    for i in range(6):
+        if you[i] == 0:
+            continue
+
+        # Simulate the move. We are the 'player_to_move_state'.
+        new_my_you, new_my_opponent, extra_turn, game_over_sim, winner_sim = \
+            simulate_move(you, opponent, i, True)
+
+        current_eval = -math.inf # Default for immediate loss or bad path
+
+        if game_over_sim:
+            if winner_sim == 'you':
+                return i # Immediate win, take it!
+            elif winner_sim == 'opponent':
+                current_eval = -math.inf # Immediate loss
+            else: # Draw
+                current_eval = 0
+        elif extra_turn:
+            current_eval = minimax(new_my_you, new_my_opponent, MAX_DEPTH - 1, -math.inf, math.inf, True)
+        else:
+            # It's opponent's turn. The minimax call needs to treat `new_my_opponent` as 'you'
+            # (from the opponent's perspective) and `new_my_you` as 'opponent'.
+            current_eval = minimax(new_my_opponent, new_my_you, MAX_DEPTH - 1, -math.inf, math.inf, False)
+
+        if current_eval > max_eval:
+            max_eval = current_eval
+            best_move = i
+        
+        # If any move immediately wins, we terminate early
+        if max_eval == math.inf:
+            return best_move
+
+    # Fallback in case no move found or all moves are very bad.
+    # The problem statement guarantees a legal move exists.
+    if best_move == -1:
+        for i in range(6):
+            if you[i] > 0:
+                best_move = i
+                break # Return the first legal move
+
+    return best_move
+
+```
+The depth calculation: if `extra_turn`, it's not a new `turn` in the game for alternating players, but still part of the *same* overall game turn, but it does consume an "opportunity" to think, so reducing depth by one makes sense. My current minimax implementation does `depth-1` even for extra turns which is typical for games like chess, but for Kalah, perhaps it should be `depth` for `extra_turn` to signify it doesn't spend a tree layer. Wait, if it means I get to go again, it's like a whole new move choice at the same "depth" of planning -- if I can chain extra turns, those should ideally be very deep in the same "turn".
+
+A common way to handle extra turns: if `extra_turn` is true, the recursive call keeps the same `depth`. This implies that a sequence of extra turns are all considered within the same depth level. I'll modify `minimax` for this.
+
+```python
+# Change in minimax calls for extra_turn:
+# In `is_maximizing_player` block:
+            if extra_turn:
+                # Same depth, as it's still our turn.
+                eval = minimax(new_my_you, new_my_opponent, depth, alpha, beta, True) # Keep depth
+            else:
+                eval = minimax(new_my_opponent, new_my_you, depth - 1, alpha, beta, False)
+
+# In `is_minimizing_player` block:
+            if extra_turn:
+                # Opponent gets an extra turn. Still same depth for them.
+                eval = minimax(new_my_opponent, new_my_you, depth, alpha, beta, False) # Still evaluating opponent's turn.
+            else:
+                eval = minimax(new_my_you, new_my_opponent, depth - 1, alpha, beta, True)
+
+# And similarly in the `policy` function's initial loop:
+        elif extra_turn:
+            current_eval = minimax(new_my_you, new_my_opponent, MAX_DEPTH, -math.inf, math.inf, True)
+        else:
+            current_eval = minimax(new_my_opponent, new_my_you, MAX_DEPTH - 1, -math.inf, math.inf, False)
+
+```
+This is a standard way to handle extra turns in minimax within Kalah. The actual search depth might be higher if many extra turns are chained, but from an "alternating turns" perspective, it's consistent.
+
+One small thing in `evaluate_board` for game over:
+If `my_houses_empty` or `opp_houses_empty`, I calculate final scores *within* `minimax` and then call `evaluate_board` with those final scores. `evaluate_board` itself doesn't need to re-sweep or handle game over.
+The current `evaluate_board` definition simply does `2 * (you[6] - opponent[6]) + (sum(you[0:6]) - sum(opponent[0:6]))`. This is fine after the sweeping logic has been applied in minimax.
+
+A depth of 6 might be too much. Let's start with `MAX_DEPTH = 4`. If the code runs fast enough, I can try `5` or `6`. Given 1 second, it's better to be safe.
+Typically Kalah has a fanout of 6 (houses). If there are extra turns, this continues.
+`6^4 = 1296` states.
+`6^5 = 7776` states.
+`6^6 = 46656` states.
+Plus the extra turns. So depth 4 or 5 is safer. Let's go with 4 as a reasonable starting point.
+
+Final small detail of `_simulate_move_internal`:
+The `player_is_you` argument to `_simulate_move_internal` decides which player's store to skip.
+`if player_is_you and current_pos_on_board == 13: # Own move, skip opponent's store`
+`elif not player_is_you and current_pos_on_board == 6: # Opponent's move, skip own store`
+This is correct. `player_is_you` literally indicates if the `player_0` (`board[0..6]`) is the one making the `_simulate_move_internal` call.
+
+Looks good.
+</thinking>
+```python
+import copy
+import math
+
+# Using a namedtuple or a simple dict for readability for game state
+# For my policy, the direct lists are fine.
+
+MAX_DEPTH = 4 # This might need tuning based on performance.
+# A depth of 4 for Kalah with potential extra moves is a reasonable starting point
+# for a 1-second time limit.
+
+
+# --- Internal Board Representation Helpers ---
+# We use a 14-slot board internally for easier sowing logic.
+# [h0, h1, h2, h3, h4, h5, store_you, h0_opp, h1_opp, h2_opp, h3_opp, h4_opp, h5_opp, store_opp]
+# 'you' refers to the original player perspective (player 0 / my side)
+
+
+def _convert_to_14_slot_board(you_list, opponent_list):
+    """Converts (you, opponent) lists to a 14-slot internal board."""
+    board = [0] * 14
+    for i in range(7):
+        board[i] = you_list[i]
+    for i in range(6):  # Houses 0-5 of opponent become 7-12
+        board[7 + i] = opponent_list[i]
+    board[13] = opponent_list[6]  # Opponent's store is 13
+    return board
+
+
+def _convert_from_14_slot_board(board):
+    """
+    Converts a 14-slot internal board back to (you, opponent) lists,
+    always from the perspective of the original 'you' (player 0).
+    """
+    you_list = list(board[0:7])
+    opponent_list = list(board[7:13]) + [board[13]]
+    return you_list, opponent_list
+
+
+def _simulate_move_internal(board_14, move_idx_0_5, current_player_is_player_0):
+    """
+    Simulates a single move on the 14-slot internal board.
+
+    Args:
+        board_14 (list[int]): The 14-slot board state.
+        move_idx_0_5 (int): The 0-5 index of the house the current player chooses.
+        current_player_is_player_0 (bool): True if the current player (making the move)
+                                           is the one occupying board slots 0-6.
+                                           False if they occupy slots 7-13.
+
+    Returns:
+        tuple: (new_board_14, extra_turn, game_over, winner_internal_str)
+        winner_internal_str can be 'player_0', 'player_1', 'draw', or None.
+    """
+    temp_board = list(board_14) # Create a mutable copy
+
+    # Determine actual index on the 14-slot board for the current player's chosen house
+    start_sowing_idx = move_idx_0_5 if current_player_is_player_0 else (move_idx_0_5 + 7)
+    
+    seeds = temp_board[start_sowing_idx]
+    temp_board[start_sowing_idx] = 0 # Empty the chosen house
+
+    current_hole_idx = start_sowing_idx
+    
+    extra_turn = False
+    
+    while seeds > 0:
+        current_hole_idx = (current_hole_idx + 1) % 14 # Move to next hole, wrap around
+
+        # Skip opponent's store
+        if current_player_is_player_0 and current_hole_idx == 13: # P0 (you) skips P1's store
+            continue
+        elif not current_player_is_player_0 and current_hole_idx == 6: # P1 (opponent) skips P0's store
+            continue
+
+        temp_board[current_hole_idx] += 1
+        seeds -= 1
+
+    # After seeds are dropped, current_hole_idx is where the LAST seed landed.
+    last_landed_idx = current_hole_idx
+
+    # Check for extra turn
+    if current_player_is_player_0 and last_landed_idx == 6: # Last seed landed in player 0's store
+        extra_turn = True
+    elif not current_player_is_player_0 and last_landed_idx == 13: # Last seed landed in player 1's store
+        extra_turn = True
+
+    # Check for capture (only if it's not an extra turn)
+    if not extra_turn:
+        is_current_player_house = False
+        _final_landed_house_idx = -1
+        _opposite_house_on_board_idx = -1
+
+        # Determine if the last seed landed in one of the current player's *houses* (0-5)
+        if current_player_is_player_0 and 0 <= last_landed_idx <= 5: # P0 landed in their own house
+            is_current_player_house = True
+            _final_landed_house_idx = last_landed_idx
+            _opposite_house_on_board_idx = 7 + (5 - last_landed_idx) # P1's corresponding house
+        elif not current_player_is_player_0 and 7 <= last_landed_idx <= 12: # P1 landed in their own house
+            is_current_player_house = True
+            _final_landed_house_idx = last_landed_idx
+            _opposite_house_on_board_idx = (5 - (last_landed_idx - 7)) # P0's corresponding house
+        
+        if is_current_player_house and temp_board[_final_landed_house_idx] == 1 and temp_board[_opposite_house_on_board_idx] > 0:
+            # Capture!
+            if current_player_is_player_0:
+                temp_board[6] += temp_board[_final_landed_house_idx] # Capture own seed
+                temp_board[_final_landed_house_idx] = 0
+                temp_board[6] += temp_board[_opposite_house_on_board_idx] # Capture opponent's seeds
+                temp_board[_opposite_house_on_board_idx] = 0
+            else: # Player 1 (opponent) performing capture
+                temp_board[13] += temp_board[_final_landed_house_idx] # Capture own seed
+                temp_board[_final_landed_house_idx] = 0
+                temp_board[13] += temp_board[_opposite_house_on_board_idx] # Capture opponent's (P0's) seeds
+                temp_board[_opposite_house_on_board_idx] = 0
+
+    # Check for game over
+    game_over = False
+    winner_internal_str = None
+
+    player_0_houses_empty = sum(temp_board[0:6]) == 0
+    player_1_houses_empty = sum(temp_board[7:13]) == 0
+
+    if player_0_houses_empty:
+        # Player 0's houses are empty. Player 1 sweeps their remaining seeds.
+        temp_board[13] += sum(temp_board[7:13])
+        for i in range(7, 13): temp_board[i] = 0
+        game_over = True
+    elif player_1_houses_empty:
+        # Player 1's houses are empty. Player 0 sweeps their remaining seeds.
+        temp_board[6] += sum(temp_board[0:6])
+        for i in range(6): temp_board[i] = 0
+        game_over = True
+    
+    if game_over:
+        if temp_board[6] > temp_board[13]:
+            winner_internal_str = 'player_0'
+        elif temp_board[13] > temp_board[6]:
+            winner_internal_str = 'player_1'
+        else:
+            winner_internal_str = 'draw'
+
+    return temp_board, extra_turn, game_over, winner_internal_str
+
+
+def simulate_move(player_to_move_state, other_player_state, move_idx, player_to_move_is_original_player: bool):
+    """
+    Simulates a Kalah move and returns the resulting board state from the ORIGINAL player's perspective.
+
+    Args:
+        player_to_move_state (list[int]): The list of houses/store for the player whose turn it is.
+        other_player_state (list[int]): The list for the other player.
+        move_idx (int): The house index (0-5) the current player chooses.
+        player_to_move_is_original_player (bool): True if 'player_to_move_state' corresponds to
+                                                  the `you` that initialized the policy call.
+
+    Returns:
+        tuple: (new_you, new_opponent, extra_turn, game_over, winner_str)
+        `new_you` and `new_opponent` are always from the original `you`'s perspective.
+        `winner_str` can be 'you', 'opponent', 'draw', or None.
+    """
+    # Convert to 14-slot board assuming player_to_move_state is 'you' (slots 0-6)
+    # and other_player_state is 'opponent' (slots 7-13) for _simulate_move_internal.
+    board_14 = _convert_to_14_slot_board(player_to_move_state, other_player_state)
+    
+    # Simulate the move
+    temp_board_14, extra_turn, game_over, winner_internal = \
+        _simulate_move_internal(board_14, move_idx, player_to_move_is_original_player)
+
+    # Convert the resulting 14-slot board back to (you, opponent) from the ORIGINAL player's perspective
+    final_my_you, final_my_opponent = _convert_from_14_slot_board(temp_board_14)
+
+    winner_str = None
+    if game_over:
+        if winner_internal == 'player_0': # Player 0 is the 'you' in _convert_to_14_slot_board
+            winner_str = 'you'
+        elif winner_internal == 'player_1': # Player 1 is the 'opponent' in _convert_to_14_slot_board
+            winner_str = 'opponent'
+        else:
+            winner_str = 'draw'
+
+    return final_my_you, final_my_opponent, extra_turn, game_over, winner_str
+
+
+# Heuristic evaluation function - always evaluates from the ORIGINAL player's perspective
+def evaluate_board(you_state, opponent_state):
+    """
+    Evaluates a board state from the perspective of 'you' (the original player).
+    Positive scores are good for 'you', negative for 'opponent'.
+    """
+    # Weight store difference much higher
+    score = (you_state[6] - opponent_state[6]) * 20
+    
+    # Add difference in seeds on respective sides (houses) with less weight
+    score += (sum(you_state[0:6]) - sum(opponent_state[0:6])) * 1
+
+    # Small bonus for houses that if moved, land exactly in player's store
+    for i in range(6):
+        if you_state[i] > 0:
+            if you_state[i] == (6 - i): # Exactly lands in store
+                score += 5 # This is a good opportunity, a form of extra turn
+    
+    return score
+
+
+def minimax(current_player_you_state, current_player_opponent_state, depth, alpha, beta, is_maximizing_player):
+    """
+    Minimax with Alpha-Beta Pruning.
+    All scores are evaluated from the perspective of the initial maximizing player (original 'you').
+    
+    Args:
+        current_player_you_state (list[int]): houses/store for the player whose turn it is in this minimax step.
+        current_player_opponent_state (list[int]): houses/store for the other player in this minimax step.
+        depth (int): Current search depth.
+        alpha (float): Alpha value for alpha-beta pruning.
+        beta (float): Beta value for alpha-beta pruning.
+        is_maximizing_player (bool): True if this is the maximizing player's turn (original 'you').
+                                     False if it's the minimizing player's turn (original 'opponent').
+    """
+
+    # Determine real 'you' and 'opponent' for this evaluation/game over check
+    evaluating_you = current_player_you_state if is_maximizing_player else current_player_opponent_state
+    evaluating_opponent = current_player_opponent_state if is_maximizing_player else current_player_you_state
+
+    # Check for game over (no seeds in houses)
+    player_to_move_houses_empty = sum(current_player_you_state[0:6]) == 0
+    other_player_houses_empty = sum(current_player_opponent_state[0:6]) == 0
+
+    if player_to_move_houses_empty or other_player_houses_empty:
+        # Game over, simulate sweeps for final evaluation
+        final_you, final_opponent = list(evaluating_you), list(evaluating_opponent)
+        
+        # Whichever player had empty houses, the other player sweeps.
+        if sum(final_you[0:6]) == 0:
+            final_opponent[6] += sum(final_opponent[0:6])
+            for i in range(6): final_opponent[i] = 0
+        elif sum(final_opponent[0:6]) == 0:
+            final_you[6] += sum(final_you[0:6])
+            for i in range(6): final_you[i] = 0
+        
+        return evaluate_board(final_you, final_opponent)
+
+    if depth == 0:
+        return evaluate_board(evaluating_you, evaluating_opponent)
+
+    if is_maximizing_player:
+        max_eval = -math.inf
+        for i in range(6):
+            if current_player_you_state[i] == 0: # Can't move from empty house
+                continue
+
+            new_my_you, new_my_opponent, extra_turn, game_over_sim, winner_sim = \
+                simulate_move(current_player_you_state, current_player_opponent_state, i, True)
+
+            current_eval = -math.inf # Initialize for this path
+
+            if game_over_sim:
+                if winner_sim == 'you': return math.inf # Immediate win
+                elif winner_sim == 'opponent': return -math.inf # Immediate loss
+                else: current_eval = 0 # Immediate draw
+            elif extra_turn:
+                # Still maximizing player, same depth (extra move)
+                current_eval = minimax(new_my_you, new_my_opponent, depth, alpha, beta, True)
+            else:
+                # Opponent's turn. Swap roles.
+                # `new_my_opponent` becomes the 'you' for the minimizing player's perspective.
+                # `new_my_you` becomes the 'opponent' for the minimizing player's perspective.
+                current_eval = minimax(new_my_opponent, new_my_you, depth - 1, alpha, beta, False)
+
+            max_eval = max(max_eval, current_eval)
+            alpha = max(alpha, current_eval)
+            if beta <= alpha:
+                break # Alpha-beta pruning
+        return max_eval
+    else: # Minimizing player's turn (original 'opponent')
+        min_eval = math.inf
+        for i in range(6):
+            if current_player_you_state[i] == 0: # Opponent cannot move from empty house
+                continue
+
+            # Simulate opponent's move. `current_player_you_state` is opponent's 'you'.
+            new_my_you, new_my_opponent, extra_turn, game_over_sim, winner_sim = \
+                simulate_move(current_player_you_state, current_player_opponent_state, i, False)
+
+            current_eval = math.inf # Initialize for this path
+
+            if game_over_sim:
+                if winner_sim == 'you': current_eval = math.inf # Max player wins (bad for min player)
+                elif winner_sim == 'opponent': current_eval = -math.inf # Min player wins (good for min player)
+                else: current_eval = 0 # Draw
+            elif extra_turn:
+                # Opponent gets extra turn, still minimizing player, same depth
+                current_eval = minimax(new_my_opponent, new_my_you, depth, alpha, beta, False)
+            else:
+                # Opponent's turn ends, it's original 'you's turn (maximizing player)
+                current_eval = minimax(new_my_you, new_my_opponent, depth - 1, alpha, beta, True)
+
+            min_eval = min(min_eval, current_eval)
+            beta = min(beta, current_eval)
+            if beta <= alpha:
+                break # Alpha-beta pruning
+        return min_eval
+
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Selects the best move for the current player using Minimax with Alpha-Beta Pruning.
+
+    Args:
+        you (list[int]): Your current board state ([h0..h5, store]).
+        opponent (list[int]): Opponent's current board state ([h0..h5, store]).
+
+    Returns:
+        int: The index (0-5) of the house to move from.
+    """
+    best_move = -1
+    max_eval = -math.inf
+
+    # Iterate through all possible moves (your houses 0-5)
+    for i in range(6):
+        if you[i] == 0:
+            continue # Cannot move from an empty house
+
+        # Simulate the chosen move
+        new_my_you, new_my_opponent, extra_turn, game_over_sim, winner_sim = \
+            simulate_move(you, opponent, i, True) # Simulating as the original 'you'
+
+        current_eval = -math.inf # Default for paths leading to immediate loss or very bad states
+
+        if game_over_sim:
+            if winner_sim == 'you':
+                return i # Found an immediate winning move, take it!
+            elif winner_sim == 'opponent':
+                current_eval = -math.inf # This move leads to an immediate loss
+            else: # Draw
+                current_eval = 0 # This move leads to an immediate draw
+        elif extra_turn:
+            # If I get an extra turn, I continue to maximize from the new state, same depth
+            current_eval = minimax(new_my_you, new_my_opponent, MAX_DEPTH, -math.inf, math.inf, True)
+        else:
+            # My turn ends, it's opponent's turn. Call minimax from opponent's perspective.
+            # `new_my_opponent` becomes the 'you' for minimax, `new_my_you` becomes the 'opponent'.
+            current_eval = minimax(new_my_opponent, new_my_you, MAX_DEPTH - 1, -math.inf, math.inf, False)
+
+        if current_eval > max_eval:
+            max_eval = current_eval
+            best_move = i
+        
+        # Early exit if possible to win immediately
+        if max_eval == math.inf:
+            return best_move
+
+    # Fallback: if somehow no best move is determined (e.g., all moves lead to negative infinity
+    # and max_eval remains -inf, though theoretically a non-losing move should exist).
+    # The problem statement guarantees a legal move exists.
+    if best_move == -1:
+        # This branch should ideally not be reached if evaluation and game rules are correct
+        # and a legal move is always guaranteed. Pick the first legal move as a safeguard.
+        for i in range(6):
+            if you[i] > 0:
+                return i
+
+    return best_move
+
+```

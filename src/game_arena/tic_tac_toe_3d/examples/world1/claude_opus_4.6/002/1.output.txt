@@ -1,0 +1,146 @@
+## Strategy
+
+For 3D Tic Tac Toe on a 3×3×3 board, I'll implement a minimax search with alpha-beta pruning and several optimizations:
+
+1. **Win/Loss Detection**: Check all 49 possible winning lines (rows, columns, pillars, and diagonals across all dimensions).
+
+2. **Iterative Deepening with Alpha-Beta Pruning**: Search as deep as possible within time constraints. The branching factor starts at 27 and decreases, so we can search quite deep.
+
+3. **Heuristic Evaluation**: When we can't search to terminal states, evaluate based on:
+   - Number of lines where we have 2-in-a-row with the third empty (threats)
+   - Number of lines where opponent has 2-in-a-row (opponent threats)
+   - Control of the center (1,1,1) and strategic positions
+   - Number of open lines available to each player
+
+4. **Move Ordering**: Prioritize center, then corners, then edges, and moves that create/block threats — this dramatically improves alpha-beta pruning efficiency.
+
+5. **Immediate win/block detection**: Before deep search, check for immediate winning moves and blocking moves.
+
+<code>
+import time
+
+def policy(board):
+    # All 49 winning lines
+    LINES = []
+    for i in range(3):
+        for j in range(3):
+            LINES.append([(i, j, 0), (i, j, 1), (i, j, 2)])
+            LINES.append([(i, 0, j), (i, 1, j), (i, 2, j)])
+            LINES.append([(0, i, j), (1, i, j), (2, i, j)])
+    for i in range(3):
+        LINES.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+        LINES.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+        LINES.append([(0, i, 0), (1, i, 1), (2, i, 2)])
+        LINES.append([(0, i, 2), (1, i, 1), (2, i, 0)])
+        LINES.append([(0, 0, i), (1, 1, i), (2, 2, i)])
+        LINES.append([(0, 2, i), (1, 1, i), (2, 0, i)])
+    LINES.append([(0,0,0),(1,1,1),(2,2,2)])
+    LINES.append([(0,0,2),(1,1,1),(2,2,0)])
+    LINES.append([(0,2,0),(1,1,1),(2,0,2)])
+    LINES.append([(0,2,2),(1,1,1),(2,0,0)])
+
+    b = [[[board[i][j][k] for k in range(3)] for j in range(3)] for i in range(3)]
+
+    empty = [(i,j,k) for i in range(3) for j in range(3) for k in range(3) if b[i][j][k]==0]
+
+    def check_win(b, player):
+        for line in LINES:
+            if all(b[x][y][z]==player for x,y,z in line):
+                return True
+        return False
+
+    def evaluate(b):
+        score = 0
+        for line in LINES:
+            vals = [b[x][y][z] for x,y,z in line]
+            s = sum(vals)
+            zeros = vals.count(0)
+            if s == 3: return 10000
+            if s == -3: return -10000
+            if s == 2 and zeros == 1: score += 50
+            elif s == -2 and zeros == 1: score -= 50
+            elif s == 1 and zeros == 2: score += 5
+            elif s == -1 and zeros == 2: score -= 5
+        if b[1][1][1] == 1: score += 20
+        elif b[1][1][1] == -1: score -= 20
+        return score
+
+    def order_moves(b, moves, maximizing):
+        scored = []
+        for m in moves:
+            i,j,k = m
+            s = 0
+            if (i,j,k)==(1,1,1): s += 10
+            for line in LINES:
+                if m in line:
+                    vals = [b[x][y][z] for x,y,z in line]
+                    sv = sum(vals)
+                    if maximizing and sv == 2: s += 1000
+                    elif not maximizing and sv == -2: s += 1000
+                    elif maximizing and sv == -2: s += 500
+                    elif not maximizing and sv == 2: s += 500
+            scored.append((-s, m))
+        scored.sort()
+        return [m for _,m in scored]
+
+    start = time.time()
+
+    def minimax(b, depth, alpha, beta, maximizing, empties):
+        if check_win(b, 1): return 10000 + depth
+        if check_win(b, -1): return -10000 - depth
+        if not empties or depth == 0:
+            return evaluate(b)
+        moves = order_moves(b, empties, maximizing)
+        if maximizing:
+            val = -100000
+            for m in moves:
+                if time.time()-start > 0.85: break
+                i,j,k = m
+                b[i][j][k] = 1
+                ne = [e for e in empties if e != m]
+                val = max(val, minimax(b, depth-1, alpha, beta, False, ne))
+                b[i][j][k] = 0
+                alpha = max(alpha, val)
+                if alpha >= beta: break
+            return val
+        else:
+            val = 100000
+            for m in moves:
+                if time.time()-start > 0.85: break
+                i,j,k = m
+                b[i][j][k] = -1
+                ne = [e for e in empties if e != m]
+                val = min(val, minimax(b, depth-1, alpha, beta, True, ne))
+                b[i][j][k] = 0
+                beta = min(beta, val)
+                if alpha >= beta: break
+            return val
+
+    best_move = empty[0]
+    best_val = -200000
+
+    moves = order_moves(b, empty, True)
+
+    # Iterative deepening
+    for depth in range(1, len(empty)+1):
+        if time.time()-start > 0.7: break
+        current_best = moves[0]
+        current_val = -200000
+        for m in moves:
+            if time.time()-start > 0.7: break
+            i,j,k = m
+            b[i][j][k] = 1
+            ne = [e for e in empty if e != m]
+            val = minimax(b, depth-1, -200000, 200000, False, ne)
+            b[i][j][k] = 0
+            if val > current_val:
+                current_val = val
+                current_best = m
+            if current_val >= 10000: break
+        best_move = current_best
+        best_val = current_val
+        if best_val >= 10000 or best_val <= -10000:
+            break
+
+    return best_move
+</code>

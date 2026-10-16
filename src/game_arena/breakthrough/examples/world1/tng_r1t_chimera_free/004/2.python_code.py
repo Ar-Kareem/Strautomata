@@ -1,0 +1,76 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    opp_set = set(opp)
+    me_set = set(me)
+    moves = []
+    home_row = 7 if color == 'w' else 0
+
+    for (row, col) in me:
+        if color == 'w':
+            straight = (row + 1, col)
+            diag_left = (row + 1, col - 1)
+            diag_right = (row + 1, col + 1)
+        else:
+            straight = (row - 1, col)
+            diag_left = (row - 1, col - 1)
+            diag_right = (row - 1, col + 1)
+
+        # Straight move
+        if 0 <= straight[0] < 8 and 0 <= straight[1] < 8:
+            if straight not in me_set and straight not in opp_set:
+                moves.append(((row, col), straight))
+        # Diagonal left
+        if 0 <= diag_left[0] < 8 and 0 <= diag_left[1] < 8:
+            if diag_left not in me_set:
+                moves.append(((row, col), diag_left))
+        # Diagonal right
+        if 0 <= diag_right[0] < 8 and 0 <= diag_right[1] < 8:
+            if diag_right not in me_set:
+                moves.append(((row, col), diag_right))
+
+    # Check for immediate wins
+    winning_moves = [move for move in moves if move[1][0] == home_row]
+    if winning_moves:
+        return winning_moves[0]
+
+    # Evaluate moves
+    best_score = -float('inf')
+    best_move = moves[0] if moves else None
+
+    for move in moves:
+        (from_row, from_col), (to_row, to_col) = move
+        is_capture = (to_row, to_col) in opp_set
+
+        # Advancement
+        if color == 'w':
+            progress = to_row - from_row
+        else:
+            progress = from_row - to_row
+        advance_score = progress * 5
+
+        # Capture
+        capture_score = 3 if is_capture else 0
+
+        # Safety
+        if color == 'w':
+            threat1 = (to_row + 1, to_col - 1) in opp_set
+            threat2 = (to_row + 1, to_col + 1) in opp_set
+        else:
+            threat1 = (to_row - 1, to_col - 1) in opp_set
+            threat2 = (to_row - 1, to_col + 1) in opp_set
+        safety_score = - (threat1 + threat2)
+
+        # Centrality
+        centrality = (3.5 - abs(to_col - 3.5)) * 0.5
+
+        total = advance_score + capture_score + safety_score + centrality
+
+        # Select best move
+        if total > best_score or (total == best_score and (
+            (color == 'w' and to_row > best_move[1][0]) or
+            (color == 'b' and to_row < best_move[1][0])
+        )):
+            best_score = total
+            best_move = move
+
+    return best_move

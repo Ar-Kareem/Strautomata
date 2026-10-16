@@ -1,0 +1,129 @@
+
+from collections import deque
+
+def policy(board) -> str:
+    legal_moves = generate_legal_moves(board)
+    if not legal_moves:
+        return ""
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        from_r, from_c, to_r, to_c, is_capture = move
+        new_board = [[cell for cell in row] for row in board]
+        new_board[to_r][to_c] = 1
+        new_board[from_r][from_c] = 0
+        
+        current_cc = count_connected_components(new_board, 1)
+        opponent_cc = count_connected_components(new_board, -1)
+        
+        # Heuristic: encourage fewer current connected components and more opponent's
+        score = -current_cc + opponent_cc + (100 if is_capture else 0)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (from_r, from_c, to_r, to_c)
+    
+    if best_move is None:
+        return ""
+    
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"
+
+
+def generate_legal_moves(board):
+    directions = [(0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1)]
+    legal_moves = []
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != 1:
+                continue
+            
+            for dr, dc in directions:
+                # Calculate the line of movement
+                line = []
+                nr, nc = r, c
+                
+                # Expand in reverse direction
+                while True:
+                    nr -= dr
+                    nc -= dc
+                    if 0 <= nr < 8 and 0 <= nc < 8:
+                        line.append((nr, nc))
+                    else:
+                        break
+                
+                # Add original position
+                line.append((r, c))
+                
+                # Expand in forward direction
+                nr, nc = r, c
+                while True:
+                    nr += dr
+                    nc += dc
+                    if 0 <= nr < 8 and 0 <= nc < 8:
+                        line.append((nr, nc))
+                    else:
+                        break
+                
+                # Count pieces in the line
+                move_count = 0
+                for x, y in line:
+                    if board[x][y] != 0:
+                        move_count += 1
+                
+                # Compute destination
+                dest_r = r + dr * move_count
+                dest_c = c + dc * move_count
+                
+                if not (0 <= dest_r < 8 and 0 <= dest_c < 8):
+                    continue
+                
+                # Check path validity
+                valid_path = True
+                for step in range(1, move_count):
+                    x = r + dr * step
+                    y = c + dc * step
+                    if board[x][y] == -1:
+                        valid_path = False
+                        break
+                if not valid_path:
+                    continue
+                
+                # Check destination
+                dest_val = board[dest_r][dest_c]
+                is_capture = (dest_val == -1)
+                
+                legal_moves.append((r, c, dest_r, dest_c, is_capture))
+    
+    return legal_moves
+
+
+def count_connected_components(board, player):
+    visited = [[False] * 8 for _ in range(8)]
+    count = 0
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player and not visited[r][c]:
+                # BFS
+                queue = deque()
+                queue.append((r, c))
+                visited[r][c] = True
+                
+                while queue:
+                    x, y = queue.popleft()
+                    for dx in (-1, 0, 1):
+                        for dy in (-1, 0, 1):
+                            if dx == 0 and dy == 0:
+                                continue
+                            nx = x + dx
+                            ny = y + dy
+                            if 0 <= nx < 8 and 0 <= ny < 8:
+                                if board[nx][ny] == player and not visited[nx][ny]:
+                                    visited[nx][ny] = True
+                                    queue.append((nx, ny))
+                count += 1
+    
+    return count

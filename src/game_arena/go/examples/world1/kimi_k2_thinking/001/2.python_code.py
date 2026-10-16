@@ -1,0 +1,149 @@
+
+import numpy as np
+import random
+
+def policy(me, opponent):
+    # board representation: 0 empty, 1 our stones, -1 opponent stones
+    board = np.zeros((19, 19), dtype=int)
+    for (r, c) in me:
+        board[r-1, c-1] = 1
+    for (r, c) in opponent:
+        board[r-1, c-1] = -1
+
+    # neighbour offsets
+    neigh = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    # pre‑compute groups and liberties for the current position
+    our_groups, our_libs, our_gid = get_groups_and_liberties(board, 1, neigh)
+    opp_groups, opp_libs, opp_gid = get_groups_and_liberties(board, -1, neigh)
+
+    # urgent moves: capture (single liberty of opponent group) and defense (single liberty of our group)
+    capture_moves = set()
+    for lib_set in opp_libs:
+        if len(lib_set) == 1:
+            capture_moves.add(next(iter(lib_set)))
+    defense_moves = set()
+    for lib_set in our_libs:
+        if len(lib_set) == 1:
+            defense_moves.add(next(iter(lib_set)))
+
+    best_move = (0, 0)   # pass by default
+    best_score = -1e9
+
+    # evaluate every empty intersection
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r-1, c-1] != 0:
+                continue
+            move = (r, c)
+
+            # place our stone
+            B = board.copy()
+            B[r-1, c-1] = 1
+
+            # identify opponent groups that become captured
+            captured = set()
+            for dr, dc in neigh:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19 and B[nr-1, nc-1] == -1:
+                    group = get_group(B, -1, (nr, nc), neigh)
+                    libs = get_liberties(B, group)
+                    if len(libs) == 0:
+                        captured.update(group)
+
+            # remove captured stones
+            for (cr, cc) in captured:
+                B[cr-1, cc-1] = 0
+
+            # check suicide rule: after all captures our group must have a liberty
+            our_group = get_group(B, 1, move, neigh)
+            our_liberties = get_liberties(B, our_group)
+            if len(our_liberties) == 0:
+                continue   # illegal move, skip
+
+            # heuristic score
+            score = 0
+            score += len(captured) * 1000          # captives are valuable
+            if move in defense_moves:
+                score += 500                       # saving a group is important
+            score += len(our_liberties)            # prefer more liberties
+            score += random.random()               # tie‑break
+
+            if score > best_score:
+                best_score = score
+                best_move = move
+
+    return best_move
+
+
+def get_groups_and_liberties(board, player, neigh):
+    """Return list of groups, list of liberty sets, and a position→group‑id map."""
+    visited = np.zeros_like(board, dtype=bool)
+    groups = []
+    liberties = []
+    gid_from_pos = {}
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] == player and not visited[r, c]:
+                # BFS to collect the whole group
+                group = set()
+                q = [(r, c)]
+                visited[r, c] = True
+                while q:
+                    cr, cc = q.pop()
+                    group.add((cr + 1, cc + 1))
+                    gid_from_pos[(cr + 1, cc + 1)] = len(groups)
+                    for dr, dc in neigh:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < 19 and 0 <= nc < 19:
+                            if board[nr, nc] == player and not visited[nr, nc]:
+                                visited[nr, nc] = True
+                                q.append((nr, nc))
+                groups.append(group)
+
+                # compute liberties of this group
+                lib_set = set()
+                for (gr, gc) in group:
+                    gr0 = gr - 1
+                    gc0 = gc - 1
+                    for dr, dc in neigh:
+                        nr, nc = gr0 + dr, gc0 + dc
+                        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                            lib_set.add((nr + 1, nc + 1))
+                liberties.append(lib_set)
+    return groups, liberties, gid_from_pos
+
+
+def get_group(board, player, pos, neigh):
+    """Return the set of coordinates (1‑based) belonging to the group that contains pos."""
+    r0 = pos[0] - 1
+    c0 = pos[1] - 1
+    if board[r0, c0] != player:
+        return set()
+    visited = set()
+    group = set()
+    stack = [(r0, c0)]
+    visited.add((r0, c0))
+    while stack:
+        cr, cc = stack.pop()
+        group.add((cr + 1, cc + 1))
+        for dr, dc in neigh:
+            nr, nc = cr + dr, cc + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                if board[nr, nc] == player and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    stack.append((nr, nc))
+    return group
+
+
+def get_liberties(board, group):
+    """Return the set of empty intersections adjacent to any stone in group."""
+    lib_set = set()
+    for (gr, gc) in group:
+        gr0 = gr - 1
+        gc0 = gc - 1
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = gr0 + dr, gc0 + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                lib_set.add((nr + 1, nc + 1))
+    return lib_set

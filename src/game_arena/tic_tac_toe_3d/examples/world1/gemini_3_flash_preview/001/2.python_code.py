@@ -1,0 +1,77 @@
+
+import random
+
+def get_winning_lines():
+    lines = []
+    # 1D lines (rows, columns, depths)
+    for i in range(3):
+        for j in range(3):
+            lines.append([(i, j, 0), (i, j, 1), (i, j, 2)])
+            lines.append([(i, 0, j), (i, 1, j), (i, 2, j)])
+            lines.append([(0, i, j), (1, i, j), (2, i, j)])
+    
+    # 2D diagonals
+    for i in range(3):
+        # Plane i,x,y
+        lines.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+        lines.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+        # Plane x,i,y
+        lines.append([(0, i, 0), (1, i, 1), (2, i, 2)])
+        lines.append([(0, i, 2), (1, i, 1), (2, i, 0)])
+        # Plane x,y,i
+        lines.append([(0, 0, i), (1, 1, i), (2, 2, i)])
+        lines.append([(0, 2, i), (1, 1, i), (2, 0, i)])
+        
+    # 3D diagonals
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    lines.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+    
+    return lines
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    lines = get_winning_lines()
+    
+    # 1. Check for immediate win
+    for line in lines:
+        vals = [board[coords[0]][coords[1]][coords[2]] for coords in line]
+        if vals.count(1) == 2 and vals.count(0) == 1:
+            idx = vals.index(0)
+            return line[idx]
+            
+    # 2. Check for immediate block
+    for line in lines:
+        vals = [board[coords[0]][coords[1]][coords[2]] for coords in line]
+        if vals.count(-1) == 2 and vals.count(0) == 1:
+            idx = vals.index(0)
+            return line[idx]
+            
+    # 3. Preferred moves (Center is highest value in 3x3x3)
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+        
+    # 4. Heuristic: Pick a spot that is part of the most potential winning lines
+    best_move = None
+    max_potential = -1
+    
+    empty_cells = []
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                if board[z][y][x] == 0:
+                    empty_cells.append((z, y, x))
+    
+    for cell in empty_cells:
+        potential = 0
+        for line in lines:
+            if cell in line:
+                vals = [board[c[0]][c[1]][c[2]] for c in line]
+                if vals.count(-1) == 0: # Line still winnable by us
+                    potential += 1
+        
+        if potential > max_potential:
+            max_potential = potential
+            best_move = cell
+            
+    return best_move if best_move else empty_cells[0]

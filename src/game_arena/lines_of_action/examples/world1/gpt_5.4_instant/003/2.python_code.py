@@ -1,0 +1,344 @@
+
+import time
+import math
+
+DIRS8 = [(-1, -1), (-1, 0), (-1, 1),
+         (0, -1),           (0, 1),
+         (1, -1),  (1, 0),  (1, 1)]
+
+ORTHO_DIAG_DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+                   (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+INF = 10**18
+
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def board_copy(board):
+    return [row[:] for row in board]
+
+
+def format_move(mv):
+    fr, fc, tr, tc = mv
+    return f"{fr},{fc}:{tr},{tc}"
+
+
+def count_components(board, side):
+    visited = [[False] * 8 for _ in range(8)]
+    comps = 0
+    largest = 0
+
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == side and not visited[r][c]:
+                comps += 1
+                stack = [(r, c)]
+                visited[r][c] = True
+                sz = 0
+                while stack:
+                    x, y = stack.pop()
+                    sz += 1
+                    for dx, dy in DIRS8:
+                        nx, ny = x + dx, y + dy
+                        if in_bounds(nx, ny) and not visited[nx][ny] and board[nx][ny] == side:
+                            visited[nx][ny] = True
+                            stack.append((nx, ny))
+                if sz > largest:
+                    largest = sz
+    return comps, largest
+
+
+def connected(board, side):
+    count = 0
+    start = None
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == side:
+                count += 1
+                if start is None:
+                    start = (r, c)
+    if count <= 1:
+        return True
+
+    stack = [start]
+    vis = {start}
+    while stack:
+        x, y = stack.pop()
+        for dx, dy in DIRS8:
+            nx, ny = x + dx, y + dy
+            if in_bounds(nx, ny) and board[nx][ny] == side and (nx, ny) not in vis:
+                vis.add((nx, ny))
+                stack.append((nx, ny))
+    return len(vis) == count
+
+
+def winner(board):
+    my_conn = connected(board, 1)
+    opp_conn = connected(board, -1)
+    if my_conn and opp_conn:
+        return 1
+    if my_conn:
+        return 1
+    if opp_conn:
+        return -1
+    return 0
+
+
+def line_count(board, r, c, dr, dc):
+    cnt = 1
+    x, y = r + dr, c + dc
+    while in_bounds(x, y):
+        if board[x][y] != 0:
+            cnt += 1
+        x += dr
+        y += dc
+    x, y = r - dr, c - dc
+    while in_bounds(x, y):
+        if board[x][y] != 0:
+            cnt += 1
+        x -= dr
+        y -= dc
+    return cnt
+
+
+def legal_moves(board, side=1):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != side:
+                continue
+            for dr, dc in ORTHO_DIAG_DIRS:
+                dist = line_count(board, r, c, dr, dc)
+                tr, tc = r + dr * dist, c + dc * dist
+                if not in_bounds(tr, tc):
+                    continue
+                if board[tr][tc] == side:
+                    continue
+
+                legal = True
+                x, y = r + dr, c + dc
+                while (x, y) != (tr, tc):
+                    if board[x][y] == -side:
+                        legal = False
+                        break
+                    x += dr
+                    y += dc
+                if not legal:
+                    continue
+
+                moves.append((r, c, tr, tc))
+    return moves
+
+
+def apply_move(board, mv, side=1):
+    fr, fc, tr, tc = mv
+    nb = board_copy(board)
+    nb[tr][tc] = side
+    nb[fr][fc] = 0
+    return nb
+
+
+def piece_positions(board, side):
+    out = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == side:
+                out.append((r, c))
+    return out
+
+
+def centralization(board, side):
+    s = 0.0
+    n = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == side:
+                n += 1
+                s += abs(r - 3.5) + abs(c - 3.5)
+    if n == 0:
+        return 0.0
+    return -s / n
+
+
+def compactness(board, side):
+    pts = piece_positions(board, side)
+    n = len(pts)
+    if n <= 1:
+        return 0.0
+    cr = sum(r for r, _ in pts) / n
+    cc = sum(c for _, c in pts) / n
+    s = 0.0
+    for r, c in pts:
+        s += (r - cr) * (r - cr) + (c - cc) * (c - cc)
+    return -s / n
+
+
+def adjacency_score(board, side):
+    score = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == side:
+                local = 0
+                for dr, dc in DIRS8:
+                    nr, nc = r + dr, c + dc
+                    if in_bounds(nr, nc) and board[nr][nc] == side:
+                        local += 1
+                score += local
+    return score
+
+
+def mobility(board, side):
+    return len(legal_moves(board, side))
+
+
+def evaluate(board):
+    w = winner(board)
+    if w == 1:
+        return 10**12
+    if w == -1:
+        return -10**12
+
+    my_comps, my_largest = count_components(board, 1)
+    op_comps, op_largest = count_components(board, -1)
+    my_n = len(piece_positions(board, 1))
+    op_n = len(piece_positions(board, -1))
+
+    score = 0.0
+    score += 3000 * (op_comps - my_comps)
+    score += 250 * (my_largest - op_largest)
+    score += 120 * (adjacency_score(board, 1) - adjacency_score(board, -1))
+    score += 60 * (centralization(board, 1) - centralization(board, -1))
+    score += 35 * (compactness(board, 1) - compactness(board, -1))
+    score += 8 * (mobility(board, 1) - mobility(board, -1))
+    score += 150 * (op_n - my_n)
+
+    return int(score)
+
+
+def move_order_key(board, mv, side):
+    nb = apply_move(board, mv, side)
+    opp = -side
+    w = winner(nb)
+    if w == side:
+        return 10**15
+
+    capture = 1 if board[mv[2]][mv[3]] == opp else 0
+
+    my_comps, my_largest = count_components(nb, side)
+    op_comps, op_largest = count_components(nb, opp)
+
+    key = 0
+    key += capture * 1000000
+    key += (10 - my_comps) * 100000
+    key += my_largest * 1000
+    key += (10 - op_comps) * 100
+    key += int(10 * centralization(nb, side))
+    return key
+
+
+def negamax(board, depth, alpha, beta, side, end_time):
+    if time.time() >= end_time:
+        raise TimeoutError
+
+    w = winner(board)
+    if w != 0 or depth == 0:
+        return side * evaluate(board), None
+
+    moves = legal_moves(board, side)
+    if not moves:
+        return side * evaluate(board), None
+
+    moves.sort(key=lambda mv: move_order_key(board, mv, side), reverse=True)
+
+    best_move = moves[0]
+    best_score = -INF
+
+    for mv in moves:
+        nb = apply_move(board, mv, side)
+        score, _ = negamax(nb, depth - 1, -beta, -alpha, -side, end_time)
+        score = -score
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+        if best_score > alpha:
+            alpha = best_score
+        if alpha >= beta:
+            break
+
+    return best_score, best_move
+
+
+def safe_best_move(board, moves):
+    if not moves:
+        return None
+
+    wins = []
+    safe = []
+    scored = []
+
+    for mv in moves:
+        nb = apply_move(board, mv, 1)
+        if winner(nb) == 1:
+            wins.append(mv)
+            continue
+
+        opp_moves = legal_moves(nb, -1)
+        opp_can_win = False
+        for omv in opp_moves:
+            nnb = apply_move(nb, omv, -1)
+            if winner(nnb) == -1:
+                opp_can_win = True
+                break
+
+        val = evaluate(nb)
+        scored.append((val, mv))
+        if not opp_can_win:
+            safe.append((val, mv))
+
+    if wins:
+        wins.sort(key=lambda m: move_order_key(board, m, 1), reverse=True)
+        return wins[0]
+
+    if safe:
+        safe.sort(reverse=True, key=lambda x: x[0])
+        return safe[0][1]
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return scored[0][1]
+
+
+def policy(board) -> str:
+    moves = legal_moves(board, 1)
+    if not moves:
+        # Should not normally happen in LOA, but must always return a legal string format.
+        # Fallback to a syntactically valid placeholder.
+        return "0,0:0,0"
+
+    start = time.time()
+    end_time = start + 0.92
+
+    best_move = safe_best_move(board, moves)
+    if best_move is None:
+        best_move = moves[0]
+
+    depth = 2
+    try:
+        while True:
+            if time.time() >= end_time:
+                break
+            score, mv = negamax(board, depth, -INF, INF, 1, end_time)
+            if mv is not None:
+                best_move = mv
+            depth += 1
+            if depth > 6:
+                break
+    except TimeoutError:
+        pass
+    except Exception:
+        pass
+
+    return format_move(best_move)

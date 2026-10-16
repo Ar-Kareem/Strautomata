@@ -1,0 +1,203 @@
+
+import numpy as np
+from typing import List, Tuple, Dict
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    """
+    A smart Go policy for 19x19 board using heuristic evaluation.
+    Returns a legal move (row, col) or (0,0) to pass.
+    """
+    
+    # Convert lists to sets for faster lookup
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    all_stones = my_stones | opp_stones
+    
+    # If first move, play center (10,10) as optimal starting point
+    if len(all_stones) == 0:
+        return (10, 10), memory
+    
+    # If only one stone played and it's center, play diagonal
+    if len(all_stones) == 1 and (10,10) in opp_stones:
+        return (9, 9), memory
+
+    # Helper: Check if (r,c) is on the board
+    def is_valid(r, c):
+        return 1 <= r <= 19 and 1 <= c <= 19
+
+    # Helper: Get all adjacent positions
+    def get_neighbors(r, c):
+        return [(r+dr, c+dc) for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)] if is_valid(r+dr, c+dc)]
+
+    # Helper: Count liberties for a group of stones
+    def count_liberties(group):
+        liberties = set()
+        for r, c in group:
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) not in all_stones:
+                    liberties.add((nr, nc))
+        return len(liberties), liberties
+
+    # Helper: Get connected group including (r,c)
+    def get_group(start_r, start_c, player_stones):
+        group = set()
+        stack = [(start_r, start_c)]
+        visited = set()
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            group.add((r, c))
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in player_stones and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+        return group
+
+    # Check for immediate captures
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) in all_stones:
+                continue
+            
+            # Try placing a stone here
+            test_stone = (r, c)
+            test_all = all_stones | {test_stone}
+            
+            # Check if this move captures any opponent group
+            captured = []
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opp_stones:
+                    opp_group = get_group(nr, nc, opp_stones)
+                    lib_count, _ = count_liberties(opp_group)
+                    # If the group would have 0 liberties after our move
+                    if lib_count == 1:
+                        # Check if all liberties are just the current position
+                        lib_set = set()
+                        for gr, gc in opp_group:
+                            for lr, lc in get_neighbors(gr, gc):
+                                if (lr, lc) not in test_all:
+                                    lib_set.add((lr, lc))
+                        if len(lib_set) == 1 and lib_set.pop() == test_stone:
+                            # This is a capture!
+                            return (r, c), memory
+
+    # Check for moves that reduce opponent liberties to 1 (threat)
+    moves_by_score = []
+    
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) in all_stones:
+                continue
+
+            # Calculate score for move (r,c)
+            score = 0
+
+            # 1. Check if move captures (already handled above, but check for multi-group captures)
+            # 2. Reduce opponent liberties to 1
+            opponent_threats = 0
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opp_stones:
+                    opp_group = get_group(nr, nc, opp_stones)
+                    lib_count, lib_set = count_liberties(opp_group)
+                    if lib_count == 2 and (r, c) in lib_set:
+                        opponent_threats += 1
+
+            score += opponent_threats * 25  # High priority for reducing to 1 liberty
+
+            # 3. Increase own group liberties
+            own_neighbors = [(nr, nc) for nr, nc in get_neighbors(r, c) if (nr, nc) in my_stones]
+            if own_neighbors:
+                # Join with one of our groups
+                my_group = get_group(own_neighbors[0][0], own_neighbors[0][1], my_stones)
+                # Calculate new liberties after adding (r,c)
+                new_group = my_group | {(r, c)}
+                new_lib_count, _ = count_liberties(new_group)
+                old_lib_count, _ = count_liberties(my_group)
+                score += max(0, new_lib_count - old_lib_count) * 10  # Bonus for increasing liberties
+
+            # 4. Center influence
+            center_dist = abs(r - 10) + abs(c - 10)
+            score += max(0, 10 - center_dist) * 2  # Closer to center = higher score
+            
+            # 5. Corners and sides are valuable
+            if (r, c) in [(1,1), (1,19), (19,1), (19,19)]:
+                score += 15
+            elif r in [1, 19] or c in [1, 19]:
+                score += 5
+            else:
+                # Avoid center if game is early and not useful
+                if len(all_stones) < 10 and center_dist == 0:
+                    score -= 10  # Avoid playing center too early if opponent already surrounded?
+
+            # 6. Avoid self-atari unless intentional
+            # Check if playing here puts our group in atari
+            own_neighbors = [(nr, nc) for nr, nc in get_neighbors(r, c) if (nr, nc) in my_stones]
+            if own_neighbors:
+                my_group = get_group(own_neighbors[0][0], own_neighbors[0][1], my_stones)
+                new_group = my_group | {(r, c)}
+                new_lib_count, _ = count_liberties(new_group)
+                if new_lib_count == 0:
+                    # This is suicidal - unless it captures something
+                    # We already check captures above, so if we get here, it's suicide
+                    score = -1000  # Very bad
+
+            # 7. Check if move is in opponent's potential eye space (avoid)
+            # Simple heuristic: if surrounded by 3+ opponent stones, avoid
+            opp_adjacent = 0
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opp_stones:
+                    opp_adjacent += 1
+            if opp_adjacent >= 3 and (r, c) not in [(1,1), (1,19), (19,1), (19,19)]:
+                score -= 10
+
+            # 8. Add bonus if move creates potential eye in own group
+            if own_neighbors:
+                my_group = get_group(own_neighbors[0][0], own_neighbors[0][1], my_stones)
+                group_size = len(my_group)
+                if group_size >= 3:  # Large groups can form eyes
+                    new_group = my_group | {(r, c)}
+                    # Simple eye potential: if group has at least 4 liberties and we're in the middle
+                    lib_count, lib_set = count_liberties(new_group)
+                    if lib_count >= 4:
+                        # Check if (r, c) is in a position that helps form a real eye
+                        # This is a very simplified version
+                        if len([p for p in get_neighbors(r, c) if p in my_stones]) >= 3:
+                            score += 15
+
+            # Add move to candidates
+            if score > -1000:  # Only legal moves that aren't suicidal
+                moves_by_score.append((score, (r, c)))
+
+    # Sort by score descending
+    moves_by_score.sort(key=lambda x: x[0], reverse=True)
+    
+    # If no good moves, try to pass (but only if we're ahead?).
+    # But we must return a legal move. If nothing seems good, pick any legal move.
+    if moves_by_score:
+        best_score, best_move = moves_by_score[0]
+        return best_move, memory
+    else:
+        # Fallback: find any legal move (not on occupied spot)
+        for r in range(1, 20):
+            for c in range(1, 20):
+                if (r, c) not in all_stones:
+                    # Check if it's not suicidal
+                    own_neighbors = [(nr, nc) for nr, nc in get_neighbors(r, c) if (nr, nc) in my_stones]
+                    if not own_neighbors:
+                        # No own neighbors, check opponent surroundings
+                        opp_neighbors = [(nr, nc) for nr, nc in get_neighbors(r, c) if (nr, nc) in opp_stones]
+                        if len(opp_neighbors) < 4:
+                            # Not surrounded on all sides, might be safe
+                            return (r, c), memory
+                    
+                    # Check if playing here causes suicide
+                    if own_neighbors:
+                        my_group = get_group(own_neighbors[0][0], own_neighbors[0][1], my_stones)
+                        new_group = my_group | {(r, c)}
+                        new_lib_count, _ = count_liberties(new_group)
+                        if new_lib_count > 0:
+                            return (r, c), memory
+
+        # If we still haven't found one, pass (0,0)
+        return (0, 0), memory

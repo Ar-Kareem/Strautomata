@@ -1,0 +1,102 @@
+
+import math
+
+def policy(hand, target):
+    # Calculate current hand value
+    hand_value = 0
+    aces = 0
+    
+    for card in hand:
+        if card == "A":
+            aces += 1
+        elif card in ["J", "Q", "K"]:
+            hand_value += 10
+        else:
+            hand_value += int(card)
+    
+    # Handle aces - use 11 when possible, otherwise 1
+    for _ in range(aces):
+        if hand_value + 11 <= target:
+            hand_value += 11
+        else:
+            hand_value += 1
+    
+    # If we're bust, we should stay (though this shouldn't happen in a real game)
+    if hand_value > target:
+        return "STAY"
+    
+    # If we have exactly the target, stay
+    if hand_value == target:
+        return "STAY"
+    
+    # Calculate cards we've already used to know what's left in deck
+    used_cards = set(hand)
+    
+    # Determine cards remaining in our deck
+    all_cards = {"A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"}
+    remaining_cards = all_cards - used_cards
+    
+    # Calculate expected value of next card if we hit
+    total_value = 0
+    card_count = 0
+    
+    for card in remaining_cards:
+        if card == "A":
+            # Ace can be 1 or 11 - we'll assume optimal play (11 if possible, else 1)
+            if hand_value + 11 <= target:
+                total_value += 11
+            else:
+                total_value += 1
+        elif card in ["J", "Q", "K"]:
+            total_value += 10
+        else:
+            total_value += int(card)
+        card_count += 1
+    
+    if card_count == 0:
+        # No cards left - should not happen in normal gameplay
+        return "STAY"
+    
+    expected_value = total_value / card_count
+    
+    # Calculate probability of busting on next card
+    bust_count = 0
+    for card in remaining_cards:
+        if card == "A":
+            # Check if ace as 11 would bust, and if ace as 1 would also bust
+            if hand_value + 1 > target:
+                bust_count += 1
+        elif card in ["J", "Q", "K"]:
+            if hand_value + 10 > target:
+                bust_count += 1
+        else:
+            if hand_value + int(card) > target:
+                bust_count += 1
+    
+    bust_probability = bust_count / card_count
+    
+    # Decision logic
+    current_distance = target - hand_value
+    
+    # If we're very close to target (within 2), be conservative
+    if current_distance <= 2:
+        return "STAY"
+    
+    # If high chance of busting, stay
+    if bust_probability >= 0.5:
+        return "STAY"
+    
+    # If expected value of next card would get us very close to target, hit
+    if expected_value >= current_distance * 0.7 and bust_probability < 0.4:
+        return "HIT"
+    
+    # If we're more than 6 away and bust probability is low, hit
+    if current_distance > 6 and bust_probability < 0.3:
+        return "HIT"
+    
+    # If we're within 6 but not too risky, consider hitting
+    if current_distance <= 6 and current_distance > 2 and bust_probability < 0.35:
+        return "HIT"
+    
+    # Default to staying if we're unsure
+    return "STAY"

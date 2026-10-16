@@ -1,0 +1,125 @@
+The strategy for this policy is to prioritize winning moves (immediate bridge, ring, or fork) and blocking opponent wins. If no immediate win or block is available, it selects moves based on:
+1. Corner moves (high priority for bridge)
+2. Edge moves (good for fork)
+3. Moves adjacent to own stones (connectivity)
+4. Moves blocking opponent stones
+5. Center moves (flexibility)
+6. Avoiding isolated moves
+
+The policy uses a hexagonal adjacency model and precomputes board features like corners and edges for efficient evaluation.
+
+```python
+def policy(me, opp, valid_mask):
+    # Precompute neighbors for each valid cell in the hexagonal grid
+    neighbors = {}
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c]:
+                nbrs = []
+                for dr, dc in [(-1,0), (-1,-1), (0,-1), (0,1), (1,0), (1,1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 15 and 0 <= nc < 15 and valid_mask[nr][nc]:
+                        nbrs.append((nr, nc))
+                neighbors[(r, c)] = nbrs
+
+    # Predefined corners of the hexagon-shaped board
+    corners = [(0,7), (0,14), (7,14), (14,14), (14,7), (7,0)]
+    
+    # Predefined edges (excluding corners) for fork evaluation
+    edges = [
+        [(0, j) for j in range(8, 14)],
+        [(i, 14) for i in range(1, 7)],
+        [(i, 14) for i in range(8, 14)],
+        [(14, j) for j in range(8, 14)],
+        [(13,6), (12,5), (11,4), (10,3), (9,2), (8,1)],
+        [(6,1), (5,2), (4,3), (3,4), (2,5), (1,6)]
+    ]
+    edge_cells = set()
+    for edge in edges:
+        for cell in edge:
+            edge_cells.add(cell)
+    
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Check for bridge win condition
+    def check_bridge_win(player_set):
+        visited = set()
+        for c in corners:
+            if c in player_set and c not in visited:
+                queue = [c]
+                component = {c}
+                visited.add(c)
+                while queue:
+                    current = queue.pop(0)
+                    for nbr in neighbors.get(current, []):
+                        if nbr in player_set and nbr not in visited:
+                            visited.add(nbr)
+                            queue.append(nbr)
+                            component.add(nbr)
+                if len([x for x in component if x in corners]) >= 2:
+                    return True
+        return False
+    
+    # Check if we have an immediate winning move
+    if check_bridge_win(me_set):
+        for r in range(15):
+            for c in range(15):
+                if valid_mask[r][c] and (r,c) not in me_set and (r,c) not in opp_set:
+                    return (r,c)
+    
+    # Check if opponent has an immediate winning move and block it
+    if check_bridge_win(opp_set):
+        for r in range(15):
+            for c in range(15):
+                if valid_mask[r][c] and (r,c) not in me_set and (r,c) not in opp_set:
+                    for nbr in neighbors.get((r,c), []):
+                        if nbr in opp_set:
+                            return (r,c)
+    
+    # Evaluate all valid moves and select the best one
+    best_move = None
+    best_score = -100000
+    
+    for r in range(15):
+        for c in range(15):
+            if not valid_mask[r][c] or (r,c) in me_set or (r,c) in opp_set:
+                continue
+                
+            score = 0
+            
+            # Corner moves are valuable for bridge
+            if (r,c) in corners:
+                score += 100
+            
+            # Edge moves are valuable for fork
+            if (r,c) in edge_cells:
+                score += 10
+            
+            # Adjacent to own stones (connectivity)
+            count_adj = sum(1 for nbr in neighbors.get((r,c), []) if nbr in me_set)
+            score += count_adj * 2
+            
+            # Adjacent to opponent stones (blocking)
+            count_opp_adj = sum(1 for nbr in neighbors.get((r,c), []) if nbr in opp_set)
+            score += count_opp_adj * 1
+            
+            # Penalize moves surrounded by opponent stones
+            if count_opp_adj >= 4:
+                score -= 100
+            
+            # Prefer center moves (flexibility)
+            center = (7,7)
+            dist = abs(r-7) + abs(c-7)
+            score += max(0, 10 - dist)
+            
+            # Penalize isolated moves
+            if count_adj == 0:
+                score -= 5
+            
+            if score > best_score:
+                best_score = score
+                best_move = (r,c)
+    
+    return best_move if best_move is not None else (0,0)
+```

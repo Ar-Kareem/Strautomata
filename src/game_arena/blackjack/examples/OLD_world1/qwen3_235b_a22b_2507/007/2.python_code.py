@@ -1,0 +1,121 @@
+
+import numpy as np
+
+def calculate_hand_value(hand: list[str], target: int) -> int:
+    """Calculate the current value of the hand, with Aces counted optimally."""
+    if not hand:
+        return 0
+    
+    value = 0
+    aces = 0
+    
+    # First, count all non-ace cards and count aces
+    for card in hand:
+        if card == "A":
+            aces += 1
+        elif card in ["J", "Q", "K"]:
+            value += 10
+        else:
+            value += int(card)
+    
+    # Add aces: initially count them as 11 if it doesn't bust
+    for _ in range(aces):
+        if value + 11 <= target:
+            value += 11
+        else:
+            value += 1
+    
+    return value
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Blackjack policy that aims to maximize win probability.
+    
+    Strategy:
+    - Calculate current hand value
+    - If we're at or very close to target, stay
+    - Otherwise use probabilistic assessment of risk vs reward
+    - Consider the diminishing returns of getting closer to target
+    """
+    
+    if not hand:
+        return "HIT"  # Always hit with empty hand
+    
+    current_value = calculate_hand_value(hand, target)
+    
+    # If we've busted, we should stay (though already lost)
+    if current_value > target:
+        return "STAY"
+    
+    # If we've reached the target exactly, stay
+    if current_value == target:
+        return "STAY"
+    
+    # Calculate how much we need to reach target
+    deficit = target - current_value
+    
+    # If we're very close, stay to avoid busting
+    if deficit <= 2:
+        return "STAY"
+    
+    # Count remaining cards in deck (all unseen cards are potentially drawable)
+    full_deck = {"A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"}
+    seen_cards = set(hand)
+    remaining_cards = full_deck - seen_cards
+    n_remaining = len(remaining_cards)
+    
+    # If no cards left, we must stay
+    if n_remaining == 0:
+        return "STAY"
+    
+    # Calculate probability of safe draw
+    safe_cards = 0
+    beneficial_cards = 0  # Cards that help us get closer without busting
+    best_card_value = 0  # Best possible card value we could draw
+    
+    for card in remaining_cards:
+        if card in ["J", "Q", "K"]:
+            card_value = 10
+        elif card == "A":
+            # Ace value depends on resulting total
+            if current_value + 11 <= target:
+                card_value = 11
+            else:
+                card_value = 1
+        else:
+            card_value = int(card)
+        
+        # Check if drawing this card would bust us
+        if current_value + card_value <= target:
+            safe_cards += 1
+            beneficial_cards += 1
+        
+        best_card_value = max(best_card_value, card_value)
+    
+    safety_prob = safe_cards / n_remaining
+    
+    # Conservative approach: stay if high risk of busting
+    if safety_prob < 0.5:
+        return "STAY"
+    
+    # If the best possible card won't get us much closer, consider staying
+    if best_card_value < max(3, deficit / 2) and deficit > 4:
+        return "STAY"
+    
+    # Risk adjustment based on deficit
+    # The closer we are, the more conservative we should be
+    if deficit <= 4:
+        # Very close - only hit if high chance of safe and beneficial draw
+        if safety_prob > 0.8 and beneficial_cards > 0:
+            return "HIT"
+        else:
+            return "STAY"
+    
+    # For larger deficits, be more willing to take risk
+    # But avoid busting unnecessarily
+    if deficit > 8:
+        # Need a significant boost - only hit if reasonable chance of success
+        return "HIT" if safety_prob > 0.6 else "STAY"
+    else:
+        # Moderate deficit - balanced approach
+        return "HIT" if safety_prob > 0.7 else "STAY"

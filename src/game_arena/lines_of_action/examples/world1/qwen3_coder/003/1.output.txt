@@ -1,0 +1,275 @@
+<thinking>
+I need to implement a smart policy for Lines of Action. Let me break this down:
+
+1. **Understanding the game**: 
+   - Goal is to connect all your pieces into one contiguous group
+   - Pieces move exactly as many squares as there are pieces in the line of movement
+   - Can capture opponent pieces
+   - Connectivity is 8-directional
+
+2. **Strategy considerations**:
+   - Prioritize moves that help connect pieces
+   - Avoid moves that isolate pieces further
+   - Consider capturing when advantageous
+   - Try to move toward the center of the board or toward other pieces
+   - Evaluate the board state after each potential move
+
+3. **Implementation approach**:
+   - Generate all legal moves
+   - For each move, evaluate the resulting position
+   - Choose the move with the highest evaluation score
+   - Evaluation should consider:
+     - How connected the pieces are
+     - Distance between pieces
+     - Number of separate groups
+     - Potential to capture
+     - Safety of own pieces
+
+4. **Key functions needed**:
+   - Generate all legal moves from a position
+   - Evaluate board state after a move
+   - Check if pieces form connected groups
+   - Count pieces in lines for movement distance
+
+Let me implement this step by step:
+</thinking>
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(board) -> str:
+    # Convert board to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(board_array, 1)
+    
+    if not legal_moves:
+        # Should not happen in a valid game state
+        return "0,0:0,1"
+    
+    # If only one move, return it
+    if len(legal_moves) == 1:
+        return move_to_string(legal_moves[0])
+    
+    # Evaluate each move and select the best one
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        # Simulate the move
+        new_board = simulate_move(board_array, move)
+        
+        # Evaluate the resulting position
+        score = evaluate_position(new_board, 1)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return move_to_string(best_move)
+
+def move_to_string(move):
+    """Convert move tuple to string format"""
+    from_row, from_col, to_row, to_col = move
+    return f"{from_row},{from_col}:{to_row},{to_col}"
+
+def generate_legal_moves(board, player):
+    """Generate all legal moves for the player"""
+    moves = []
+    
+    # Find all player pieces
+    pieces = []
+    for row in range(8):
+        for col in range(8):
+            if board[row][col] == player:
+                pieces.append((row, col))
+    
+    # For each piece, check all 8 directions
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    for piece_row, piece_col in pieces:
+        # Count pieces in each direction
+        for dr, dc in directions:
+            # Count total pieces in this line
+            count = count_pieces_in_line(board, piece_row, piece_col, dr, dc)
+            
+            # Calculate destination
+            to_row = piece_row + dr * count
+            to_col = piece_col + dc * count
+            
+            # Check if destination is valid
+            if 0 <= to_row < 8 and 0 <= to_col < 8:
+                # Check if landing on empty square or opponent piece
+                if board[to_row][to_col] != player:
+                    # Check if path is clear (can jump over own pieces but not opponent)
+                    if is_path_clear(board, piece_row, piece_col, to_row, to_col, dr, dc):
+                        moves.append((piece_row, piece_col, to_row, to_col))
+    
+    return moves
+
+def count_pieces_in_line(board, row, col, dr, dc):
+    """Count total pieces in a line in the given direction"""
+    count = 0
+    
+    # Count in positive direction
+    r, c = row, col
+    while 0 <= r < 8 and 0 <= c < 8:
+        if board[r][c] != 0:
+            count += 1
+        r += dr
+        c += dc
+    
+    # Count in negative direction (excluding starting position)
+    r, c = row - dr, col - dc
+    while 0 <= r < 8 and 0 <= c < 8:
+        if board[r][c] != 0:
+            count += 1
+        r -= dr
+        c -= dc
+    
+    return count
+
+def is_path_clear(board, from_row, from_col, to_row, to_col, dr, dc):
+    """Check if path is clear for movement (can jump over own pieces)"""
+    # Determine number of steps
+    if dr == 0 and dc == 0:
+        return True
+    
+    # Normalize direction
+    steps = max(abs(to_row - from_row), abs(to_col - from_col))
+    
+    # Check each square along the path (excluding start and end)
+    for i in range(1, steps):
+        r = from_row + (to_row - from_row) * i // steps
+        c = from_col + (to_col - from_col) * i // steps
+        
+        # Can't jump over opponent pieces
+        if board[r][c] == -1:  # Opponent piece in path
+            return False
+    
+    return True
+
+def simulate_move(board, move):
+    """Simulate a move and return new board state"""
+    from_row, from_col, to_row, to_col = move
+    new_board = board.copy()
+    
+    # Move piece
+    piece = new_board[from_row][from_col]
+    new_board[from_row][from_col] = 0
+    new_board[to_row][to_col] = piece
+    
+    return new_board
+
+def evaluate_position(board, player):
+    """Evaluate board position for the player"""
+    score = 0
+    
+    # Get player pieces
+    player_pieces = []
+    opponent_pieces = []
+    
+    for row in range(8):
+        for col in range(8):
+            if board[row][col] == player:
+                player_pieces.append((row, col))
+            elif board[row][col] == -player:
+                opponent_pieces.append((row, col))
+    
+    if not player_pieces:
+        return -10000
+    
+    if not opponent_pieces:
+        return 10000
+    
+    # Factor 1: Number of connected components (fewer is better)
+    player_groups = count_connected_groups(board, player)
+    opponent_groups = count_connected_groups(board, -player)
+    score += (opponent_groups - player_groups) * 50
+    
+    # Factor 2: Average distance between own pieces (smaller is better)
+    if len(player_pieces) > 1:
+        avg_distance = calculate_average_distance(player_pieces)
+        score -= avg_distance * 5
+    
+    # Factor 3: Center control (pieces closer to center are better)
+    center_bonus = 0
+    for row, col in player_pieces:
+        # Distance from center (3.5, 3.5)
+        dist_from_center = abs(row - 3.5) + abs(col - 3.5)
+        center_bonus += (7 - dist_from_center)  # Higher for closer to center
+    score += center_bonus * 2
+    
+    # Factor 4: Mobility (more legal moves is better)
+    mobility = len(generate_legal_moves(board, player))
+    score += mobility * 3
+    
+    # Factor 5: Threat to opponent pieces
+    threats = count_threats(board, player)
+    score += threats * 10
+    
+    return score
+
+def count_connected_groups(board, player):
+    """Count number of connected groups of player pieces"""
+    visited = set()
+    groups = 0
+    
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    for row in range(8):
+        for col in range(8):
+            if board[row][col] == player and (row, col) not in visited:
+                # BFS to find all connected pieces
+                queue = deque([(row, col)])
+                visited.add((row, col))
+                
+                while queue:
+                    r, c = queue.popleft()
+                    
+                    for dr, dc in directions:
+                        nr, nc = r + dr, c + dc
+                        if (0 <= nr < 8 and 0 <= nc < 8 and 
+                            board[nr][nc] == player and 
+                            (nr, nc) not in visited):
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+                
+                groups += 1
+    
+    return groups
+
+def calculate_average_distance(pieces):
+    """Calculate average Manhattan distance between all pairs of pieces"""
+    if len(pieces) < 2:
+        return 0
+    
+    total_distance = 0
+    count = 0
+    
+    for i in range(len(pieces)):
+        for j in range(i + 1, len(pieces)):
+            r1, c1 = pieces[i]
+            r2, c2 = pieces[j]
+            distance = abs(r1 - r2) + abs(c1 - c2)
+            total_distance += distance
+            count += 1
+    
+    return total_distance / count if count > 0 else 0
+
+def count_threats(board, player):
+    """Count how many opponent pieces are threatened"""
+    threats = 0
+    opponent = -player
+    
+    # Generate moves and see which ones capture opponent pieces
+    moves = generate_legal_moves(board, player)
+    
+    for _, _, to_row, to_col in moves:
+        if board[to_row][to_col] == opponent:
+            threats += 1
+    
+    return threats
+</code>

@@ -1,0 +1,137 @@
+
+from copy import deepcopy
+
+ROWS = 6
+COLS = 7
+ME = 1
+OPP = -1
+
+# Preference order: center first, then columns moving outward
+PREF_ORDER = [3, 2, 4, 1, 5, 0, 6]
+
+
+def get_next_row(board, col):
+    """Return the row index where a disc would land in column col, or None if column is full."""
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return None
+
+
+def winning_after_move(board, col, player):
+    """Return True if dropping `player` into `col` results in a win for that player."""
+    row = get_next_row(board, col)
+    if row is None:
+        return False
+    # check from (row, col)
+    # directions: horizontal, vertical, diag down-right, diag up-right
+    directions = [(0, 1), (1, 0), (1, 1), (-1, 1)]
+    for dr, dc in directions:
+        count = 1  # the placed disc
+        # count in positive direction
+        r, c = row + dr, col + dc
+        while 0 <= r < ROWS and 0 <= c < COLS and board[r][c] == player:
+            count += 1
+            r += dr
+            c += dc
+        # count in negative direction
+        r, c = row - dr, col - dc
+        while 0 <= r < ROWS and 0 <= c < COLS and board[r][c] == player:
+            count += 1
+            r -= dr
+            c -= dc
+        if count >= 4:
+            return True
+    return False
+
+
+def apply_move(board, col, player):
+    """Return a new board with player dropped in col. Assumes column not full."""
+    new_board = [list(r) for r in board]  # shallow copy of rows
+    row = get_next_row(new_board, col)
+    if row is None:
+        return new_board
+    new_board[row][col] = player
+    return new_board
+
+
+def count_immediate_wins(board, player):
+    """Count how many columns if played now would win immediately for player."""
+    cnt = 0
+    for c in range(COLS):
+        if board[0][c] != 0:
+            continue
+        if winning_after_move(board, c, player):
+            cnt += 1
+    return cnt
+
+
+def allows_opponent_win_after_move(board, my_col):
+    """Return True if after I play in my_col, opponent has any immediate winning move."""
+    tmp = apply_move(board, my_col, ME)
+    for c in range(COLS):
+        if tmp[0][c] != 0:
+            continue
+        if winning_after_move(tmp, c, OPP):
+            return True
+    return False
+
+
+def policy(board):
+    """
+    Choose a column to drop a disc for the current player (1).
+    Strategy:
+      1. If any move wins immediately, play it.
+      2. If opponent has any immediate winning move:
+           - If only one such column, block it.
+           - If multiple, cannot block all; fall through to choose a safe/preferred move.
+      3. If any move creates a fork (gives us >=2 immediate wins next turn), play it.
+      4. Choose a move that does not allow opponent an immediate win (safe moves), preferring center-out order.
+      5. If no safe moves exist, pick a preferred legal column (center-out).
+    """
+    # List legal columns
+    legal_cols = [c for c in range(COLS) if board[0][c] == 0]
+    if not legal_cols:
+        # Shouldn't happen per spec, but return 0 if all full
+        return 0
+
+    # 1) Immediate winning move
+    for c in legal_cols:
+        if winning_after_move(board, c, ME):
+            return c
+
+    # 2) Opponent immediate wins
+    opp_wins = [c for c in legal_cols if winning_after_move(board, c, OPP)]
+    if opp_wins:
+        # If exactly one immediate threat, block it
+        if len(opp_wins) == 1:
+            return opp_wins[0]
+        # If multiple, cannot block both; continue to choose a move that maybe reduces damage
+
+    # 3) Create a fork (two or more immediate wins next move)
+    for c in legal_cols:
+        tmp = apply_move(board, c, ME)
+        # count our immediate wins next
+        wins_next = 0
+        for cc in range(COLS):
+            if tmp[0][cc] != 0:
+                continue
+            if winning_after_move(tmp, cc, ME):
+                wins_next += 1
+        if wins_next >= 2:
+            return c
+
+    # 4) Choose safe moves (don't allow opponent immediate win), prefer center-out
+    safe_cols = [c for c in legal_cols if not allows_opponent_win_after_move(board, c)]
+    if safe_cols:
+        for c in PREF_ORDER:
+            if c in safe_cols:
+                return c
+
+    # 5) No safe moves: pick preferred legal column
+    for c in PREF_ORDER:
+        if c in legal_cols:
+            return c
+
+    # Fallback
+    return legal_cols[0]

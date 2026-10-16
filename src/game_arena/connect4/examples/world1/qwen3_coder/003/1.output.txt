@@ -1,0 +1,205 @@
+<thinking>
+I'll implement a Connect 4 AI using a minimax algorithm with alpha-beta pruning. Here's my approach:
+
+1. **Evaluation Function**: I'll create a function that evaluates the current board state from my perspective, considering:
+   - Immediate wins/losses
+   - Patterns of 2s and 3s in a row that could lead to wins
+   - Center column preference (more strategic positions)
+   - Blocking opponent's potential wins
+
+2. **Minimax with Alpha-Beta Pruning**: I'll implement a recursive search that:
+   - Looks ahead several moves
+   - Maximizes my score while minimizing opponent's score
+   - Prunes branches that won't affect the final decision
+
+3. **Move Selection**: The policy function will use the minimax to select the best move.
+
+Let me think about the evaluation function in more detail:
+- Check for immediate win (4 in a row) = very high score
+- Check for 3 in a row with space = high score
+- Check for 2 in a row with space = medium score
+- Center column preference = small bonus
+- Blocking opponent's threats = bonus based on threat level
+
+I'll also need helper functions to:
+- Check if a move is valid
+- Make a move on a board copy
+- Check for wins
+- Evaluate board positions
+</thinking>
+
+<code>
+import numpy as np
+from typing import List
+
+def policy(board: List[List[int]]) -> int:
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # Use minimax with depth 5 (can be adjusted based on performance)
+    _, best_move = minimax(board_np, 5, -np.inf, np.inf, True)
+    
+    return best_move
+
+def is_valid_move(board: np.ndarray, col: int) -> bool:
+    """Check if a move is valid (column not full)"""
+    return board[0][col] == 0
+
+def get_valid_moves(board: np.ndarray) -> List[int]:
+    """Get all valid column moves"""
+    return [col for col in range(7) if is_valid_move(board, col)]
+
+def make_move(board: np.ndarray, col: int, player: int) -> np.ndarray:
+    """Make a move and return new board"""
+    new_board = board.copy()
+    for row in range(5, -1, -1):
+        if new_board[row][col] == 0:
+            new_board[row][col] = player
+            break
+    return new_board
+
+def check_winner(board: np.ndarray) -> int:
+    """Check if there's a winner. Returns 1 for player 1, -1 for player -1, 0 for no winner"""
+    # Check horizontal
+    for row in range(6):
+        for col in range(4):
+            if board[row][col] != 0 and \
+               board[row][col] == board[row][col+1] == board[row][col+2] == board[row][col+3]:
+                return board[row][col]
+    
+    # Check vertical
+    for row in range(3):
+        for col in range(7):
+            if board[row][col] != 0 and \
+               board[row][col] == board[row+1][col] == board[row+2][col] == board[row+3][col]:
+                return board[row][col]
+    
+    # Check diagonal (positive slope)
+    for row in range(3):
+        for col in range(4):
+            if board[row][col] != 0 and \
+               board[row][col] == board[row+1][col+1] == board[row+2][col+2] == board[row+3][col+3]:
+                return board[row][col]
+    
+    # Check diagonal (negative slope)
+    for row in range(3, 6):
+        for col in range(4):
+            if board[row][col] != 0 and \
+               board[row][col] == board[row-1][col+1] == board[row-2][col+2] == board[row-3][col+3]:
+                return board[row][col]
+    
+    return 0
+
+def evaluate_window(window: np.ndarray) -> int:
+    """Evaluate a window of 4 positions"""
+    score = 0
+    player_count = np.count_nonzero(window == 1)
+    opponent_count = np.count_nonzero(window == -1)
+    empty_count = np.count_nonzero(window == 0)
+    
+    if player_count == 4:
+        score += 1000
+    elif player_count == 3 and empty_count == 1:
+        score += 100
+    elif player_count == 2 and empty_count == 2:
+        score += 10
+    
+    if opponent_count == 3 and empty_count == 1:
+        score -= 200  # Block opponent's potential win
+        
+    return score
+
+def evaluate_board(board: np.ndarray) -> int:
+    """Evaluate the entire board"""
+    score = 0
+    
+    # Score center column preference
+    center_array = board[:, 3]
+    center_count = np.count_nonzero(center_array == 1)
+    score += center_count * 3
+    
+    # Score horizontal windows
+    for row in range(6):
+        for col in range(4):
+            window = board[row, col:col+4]
+            score += evaluate_window(window)
+    
+    # Score vertical windows
+    for row in range(3):
+        for col in range(7):
+            window = board[row:row+4, col]
+            score += evaluate_window(window)
+    
+    # Score positive diagonal windows
+    for row in range(3):
+        for col in range(4):
+            window = np.array([board[row+i][col+i] for i in range(4)])
+            score += evaluate_window(window)
+    
+    # Score negative diagonal windows
+    for row in range(3, 6):
+        for col in range(4):
+            window = np.array([board[row-i][col+i] for i in range(4)])
+            score += evaluate_window(window)
+    
+    return score
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool) -> tuple:
+    """Minimax with alpha-beta pruning"""
+    valid_moves = get_valid_moves(board)
+    winner = check_winner(board)
+    
+    # Terminal conditions
+    if depth == 0 or winner != 0 or len(valid_moves) == 0:
+        if winner == 1:
+            return (1000000, None)
+        elif winner == -1:
+            return (-1000000, None)
+        elif len(valid_moves) == 0:  # Tie
+            return (0, None)
+        else:  # Depth reached
+            return (evaluate_board(board), None)
+    
+    if maximizing:
+        max_score = -np.inf
+        best_col = valid_moves[0]
+        
+        # Try moves in center-first order for better alpha-beta pruning
+        move_order = [3, 2, 4, 1, 5, 0, 6]
+        ordered_moves = [col for col in move_order if col in valid_moves]
+        
+        for col in ordered_moves:
+            new_board = make_move(board, col, 1)
+            score, _ = minimax(new_board, depth-1, alpha, beta, False)
+            
+            if score > max_score:
+                max_score = score
+                best_col = col
+                
+            alpha = max(alpha, score)
+            if alpha >= beta:
+                break  # Alpha-beta pruning
+                
+        return (max_score, best_col)
+    else:
+        min_score = np.inf
+        best_col = valid_moves[0]
+        
+        # Try moves in center-first order for better alpha-beta pruning
+        move_order = [3, 2, 4, 1, 5, 0, 6]
+        ordered_moves = [col for col in move_order if col in valid_moves]
+        
+        for col in ordered_moves:
+            new_board = make_move(board, col, -1)
+            score, _ = minimax(new_board, depth-1, alpha, beta, True)
+            
+            if score < min_score:
+                min_score = score
+                best_col = col
+                
+            beta = min(beta, score)
+            if alpha >= beta:
+                break  # Alpha-beta pruning
+                
+        return (min_score, best_col)
+</code>

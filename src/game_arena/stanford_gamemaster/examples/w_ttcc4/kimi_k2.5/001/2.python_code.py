@@ -1,0 +1,167 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse state
+    board = {}  # (x,y) -> piece_string
+    for fact in state:
+        if fact[0] == "cell":
+            x, y, piece = int(fact[1]), int(fact[2]), fact[3]
+            board[(x, y)] = piece
+    
+    opponent = "black" if role == "white" else "white"
+    center_cells = [(x, y) for x in [3, 4, 5] for y in [3, 4, 5]]
+    
+    # Winning lines in center 3x3
+    lines = [
+        [(3, 3), (4, 3), (5, 3)], [(3, 4), (4, 4), (5, 4)], [(3, 5), (4, 5), (5, 5)],  # rows
+        [(3, 3), (3, 4), (3, 5)], [(4, 3), (4, 4), (4, 5)], [(5, 3), (5, 4), (5, 5)],  # cols
+        [(3, 3), (4, 4), (5, 5)], [(3, 5), (4, 4), (5, 3)]  # diagonals
+    ]
+    
+    def is_mine(piece, color=role):
+        return piece and piece.startswith(color)
+    
+    def is_opponent(piece, color=role):
+        opp = "black" if color == "white" else "white"
+        return piece and piece.startswith(opp)
+    
+    def check_win(board_state, color):
+        for line in lines:
+            if all(is_mine(board_state.get(c), color) for c in line):
+                return True
+        return False
+    
+    def count_threats(board_state, color):
+        """Count lines with 2 of color and 1 empty"""
+        threats = 0
+        for line in lines:
+            my_count = 0
+            empty_count = 0
+            for c in line:
+                p = board_state.get(c)
+                if is_mine(p, color):
+                    my_count += 1
+                elif p is None:
+                    empty_count += 1
+            if my_count == 2 and empty_count == 1:
+                threats += 1
+        return threats
+    
+    # Generate legal moves
+    moves = []
+    
+    # Drops: columns 3,4,5 (central chutes)
+    for col in [3, 4, 5]:
+        for row in range(7, 0, -1):  # From bottom (7) to top (1)
+            if (row, col) not in board:
+                moves.append(('drop', col, row))
+                break
+    
+    # Piece moves
+    knight_dirs = [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)]
+    diagonal_dirs = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+    
+    for (x, y), piece in list(board.items()):
+        if not is_mine(piece):
+            continue
+        
+        ptype = piece[len(role):]  # knight, checker, pawn, disk
+        
+        if ptype == 'knight':
+            for dx, dy in knight_dirs:
+                nx, ny = x + dx, y + dy
+                if 1 <= nx <= 7 and 1 <= ny <= 7:
+                    target = board.get((nx, ny))
+                    if target is None or is_opponent(target):
+                        moves.append(('knightmove', x, y, nx, ny))
+        
+        elif ptype == 'checker':
+            # Diagonal slides (like bishop)
+            for dx, dy in diagonal_dirs:
+                for dist in range(1, 8):
+                    nx, ny = x + dx * dist, y + dy * dist
+                    if not (1 <= nx <= 7 and 1 <= ny <= 7):
+                        break
+                    target = board.get((nx, ny))
+                    if target is None:
+                        moves.append(('checkermove', x, y, nx, ny))
+                    elif is_opponent(target):
+                        moves.append(('checkermove', x, y, nx, ny))
+                        break
+                    else:
+                        break
+        
+        elif ptype == 'pawn':
+            direction = 1 if role == 'white' else -1
+            # Forward move
+            nx, ny = x, y + direction
+            if 1 <= nx <= 7 and 1 <= ny <= 7 and (nx, ny) not in board:
+                moves.append(('pawnmove', x, y, nx, ny))
+            # Captures
+            for dx in [-1, 1]:
+                nx, ny = x + dx, y + direction
+                if 1 <= nx <= 7 and 1 <= ny <= 7:
+                    target = board.get((nx, ny))
+                    if target and is_opponent(target):
+                        moves.append(('pawnmove', x, y, nx, ny))
+    
+    if not moves:
+        return "noop"
+    
+    # Evaluate moves
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in moves:
+        # Simulate move
+        new_board = dict(board)
+        if move[0] == 'drop':
+            _, col, row = move
+            new_board[(row, col)] = role + 'disk'
+        else:
+            _, x1, y1, x2, y2 = move
+            p = new_board.pop((x1, y1))
+            new_board[(x2, y2)] = p
+        
+        # Scoring
+        score = 0
+        
+        # Immediate win
+        if check_win(new_board, role):
+            score = 1000000
+        else:
+            # Block opponent immediate win (if they had a threat we removed)
+            opp_threats_before = count_threats(board, opponent)
+            opp_threats_after = count_threats(new_board, opponent)
+            
+            if opp_threats_after < opp_threats_before:
+                score += 50000 * (opp_threats_before - opp_threats_after)
+            
+            # Don't allow opponent to win immediately on their turn (they have 3 in a row)
+            # This shouldn't happen if we check_win, but as safety
+            if check_win(new_board, opponent):
+                score -= 100000
+            
+            # Create threats
+            my_threats = count_threats(new_board, role)
+            score += my_threats * 100
+            
+            # Center control bonus
+            for c in center_cells:
+                if is_mine(new_board.get(c), role):
+                    score += 10
+            
+            # Development bonus (moving toward center)
+            if move[0] != 'drop':
+                x2, y2 = move[3], move[4]
+                if (x2, y2) in center_cells:
+                    score += 20
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Format output
+    if best_move[0] == 'drop':
+        return f"drop({best_move[1]})"
+    else:
+        return f"{best_move[0]}({best_move[1]},{best_move[2]},{best_move[3]},{best_move[4]})"

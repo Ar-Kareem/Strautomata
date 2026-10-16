@@ -1,0 +1,155 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    4x4 Tic Tac Toe Policy using Minimax with Alpha-Beta Pruning.
+    The goal is to get 4 in a row.
+    """
+    
+    # Helper to check if a specific player has won
+    def check_win(b, player):
+        # Rows and Cols
+        for i in range(4):
+            if all(b[i][j] == player for j in range(4)): return True
+            if all(b[j][i] == player for j in range(4)): return True
+        # Diagonals
+        if all(b[i][i] == player for i in range(4)): return True
+        if all(b[i][3-i] == player for i in range(4)): return True
+        return False
+
+    # Heuristic evaluation function
+    def evaluate(b, player):
+        opponent = -1 if player == 1 else 1
+        
+        # Check for terminal states
+        if check_win(b, player): return 1000
+        if check_win(b, opponent): return -1000
+        
+        score = 0
+        
+        # Analyze lines (rows, cols, diags)
+        lines = []
+        # Rows
+        for r in range(4): lines.append([b[r][c] for c in range(4)])
+        # Cols
+        for c in range(4): lines.append([b[r][c] for r in range(4)])
+        # Diagonals
+        lines.append([b[i][i] for i in range(4)])
+        lines.append([b[i][3-i] for i in range(4)])
+        
+        for line in lines:
+            p_count = line.count(player)
+            o_count = line.count(opponent)
+            empty = line.count(0)
+            
+            # Scoring logic for 4-in-a-row game
+            if p_count == 3 and empty == 1: score += 50  # One away from winning
+            elif p_count == 2 and empty == 2: score += 10 # Potential
+            elif o_count == 3 and empty == 1: score -= 40 # Must block
+            elif o_count == 2 and empty == 2: score -= 5  # Opponent potential
+            
+        return score
+
+    # Get all valid moves
+    def get_moves(b):
+        moves = []
+        for r in range(4):
+            for c in range(4):
+                if b[r][c] == 0:
+                    moves.append((r, c))
+        return moves
+
+    # Minimax with Alpha-Beta Pruning
+    def minimax(b, depth, alpha, beta, maximizing):
+        # Terminal conditions
+        if check_win(b, 1): return 1000 + depth
+        if check_win(b, -1): return -1000 - depth
+        
+        moves = get_moves(b)
+        if not moves or depth == 0:
+            return evaluate(b, 1)
+            
+        if maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                r, c = move
+                b[r][c] = 1
+                eval = minimax(b, depth - 1, alpha, beta, False)
+                b[r][c] = 0
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                r, c = move
+                b[r][c] = -1
+                eval = minimax(b, depth - 1, alpha, beta, True)
+                b[r][c] = 0
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # Main Logic
+    best_move = None
+    best_value = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # First, check for immediate win to save time
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                # Check if this move wins
+                board[r][c] = 1
+                if check_win(board, 1):
+                    board[r][c] = 0
+                    return (r, c)
+                board[r][c] = 0
+                
+                # Check if we need to block opponent (immediate threat)
+                board[r][c] = -1
+                if check_win(board, -1):
+                    board[r][c] = 0
+                    # We will return this block later if no better move found, 
+                    # but usually blocking is critical. We'll prioritize it in search.
+                board[r][c] = 0
+
+    # Look ahead strategy (Depth 6 is a good balance for 4x4)
+    # Lower depth if board is very empty, increase if game progresses
+    moves = get_moves(board)
+    depth = 6
+    if len(moves) < 12:
+        depth = 8 # More time for endgame
+        
+    for r, c in moves:
+        board[r][c] = 1
+        # We simulate opponent turn (minimizing) starting from here
+        move_val = minimax(board, depth - 1, alpha, beta, False)
+        board[r][c] = 0
+        
+        if move_val > best_value:
+            best_value = move_val
+            best_move = (r, c)
+        
+        alpha = max(alpha, move_val)
+        
+    # Fallback if minimax fails (e.g., very first move)
+    if best_move is None:
+        # Try center or corners
+        centers = [(1,1), (1,2), (2,1), (2,2)]
+        corners = [(0,0), (0,3), (3,0), (3,3)]
+        for r, c in centers + corners:
+            if board[r][c] == 0:
+                return (r, c)
+                
+        # Just pick first empty
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == 0:
+                    return (r, c)
+                    
+    return best_move

@@ -1,0 +1,219 @@
+
+import numpy as np
+from typing import List, Tuple, Optional
+
+# Board: 4x4 boxes => boxes indexed (0..3, 0..3)
+# horizontal edges: valid at rows 0..4, cols 0..3  (5x4 = 20)
+# vertical edges:   valid at rows 0..3, cols 0..4  (4x5 = 20)
+#
+# Arrays are given as 5x5; we restrict to valid edge coordinates to avoid selecting unused cells.
+
+
+Move = Tuple[int, int, str]  # (row, col, 'H' or 'V')
+
+
+def _legal_moves(horizontal: np.ndarray, vertical: np.ndarray) -> List[Move]:
+    moves: List[Move] = []
+    # Horizontal: r in 0..4, c in 0..3
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                moves.append((r, c, "H"))
+    # Vertical: r in 0..3, c in 0..4
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                moves.append((r, c, "V"))
+    return moves
+
+
+def _box_sides_count(horizontal: np.ndarray, vertical: np.ndarray, br: int, bc: int) -> int:
+    # br, bc in 0..3
+    cnt = 0
+    cnt += 1 if horizontal[br, bc] != 0 else 0
+    cnt += 1 if horizontal[br + 1, bc] != 0 else 0
+    cnt += 1 if vertical[br, bc] != 0 else 0
+    cnt += 1 if vertical[br, bc + 1] != 0 else 0
+    return cnt
+
+
+def _adjacent_boxes(move: Move) -> List[Tuple[int, int]]:
+    r, c, d = move
+    adj: List[Tuple[int, int]] = []
+    if d == "H":
+        # Horizontal edge at (r,c) borders box (r-1,c) above and (r,c) below
+        if r > 0 and r - 1 <= 3 and c <= 3:
+            adj.append((r - 1, c))
+        if r < 4 and r <= 3 and c <= 3:
+            adj.append((r, c))
+    else:  # 'V'
+        # Vertical edge at (r,c) borders box (r,c-1) left and (r,c) right
+        if c > 0 and r <= 3 and c - 1 <= 3:
+            adj.append((r, c - 1))
+        if c < 4 and r <= 3 and c <= 3:
+            adj.append((r, c))
+    return adj
+
+
+def _capture_count_if_play(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray, move: Move) -> int:
+    # Count how many *currently unclaimed* boxes would be completed by playing this edge.
+    adj = _adjacent_boxes(move)
+    cap = 0
+    for br, bc in adj:
+        if capture[br, bc] != 0:
+            continue
+        if _box_sides_count(horizontal, vertical, br, bc) == 3:
+            cap += 1
+    return cap
+
+
+def _is_safe_move(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray, move: Move) -> bool:
+    # Safe = does not create any unclaimed 3-sided box adjacent to the played edge.
+    # Since the move adds exactly 1 side to adjacent boxes, it creates a 3-side
+    # iff a neighboring unclaimed box currently has exactly 2 sides.
+    for br, bc in _adjacent_boxes(move):
+        if capture[br, bc] != 0:
+            continue
+        if _box_sides_count(horizontal, vertical, br, bc) == 2:
+            return False
+    return True
+
+
+def _apply_move_inplace(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray, move: Move, player: int) -> int:
+    r, c, d = move
+    if d == "H":
+        horizontal[r, c] = player
+    else:
+        vertical[r, c] = player
+
+    gained = 0
+    for br, bc in _adjacent_boxes(move):
+        if capture[br, bc] != 0:
+            continue
+        if _box_sides_count(horizontal, vertical, br, bc) == 4:
+            capture[br, bc] = player
+            gained += 1
+    return gained
+
+
+def _greedy_capture_run(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray, player: int) -> int:
+    # Simulate "forced capture phase" for a player: keep taking captures until none exist.
+    # We choose captures greedily by (capture_count desc, then stable ordering).
+    total = 0
+    while True:
+        moves = _legal_moves(horizontal, vertical)
+        best: Optional[Move] = None
+        best_cap = 0
+        for mv in moves:
+            cap = _capture_count_if_play(horizontal, vertical, capture, mv)
+            if cap > best_cap:
+                best_cap = cap
+                best = mv
+            elif cap == best_cap and cap > 0 and best is not None:
+                # deterministic tiebreak
+                if mv < best:
+                    best = mv
+
+        if best is None or best_cap == 0:
+            break
+
+        total += _apply_move_inplace(horizontal, vertical, capture, best, player)
+    return total
+
+
+def _safe_move_heuristic(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray, move: Move) -> Tuple[int, int, int, int, int, str]:
+    # Lower is better (lexicographic).
+    # Prefer:
+    # 1) edges adjacent to fewer unclaimed boxes (border edges)
+    # 2) resulting side-counts as small as possible (avoid building 2-siders)
+    # 3) deterministic coordinates
+    adj = _adjacent_boxes(move)
+    unclaimed_adj = [(br, bc) for (br, bc) in adj if capture[br, bc] == 0]
+    k = len(unclaimed_adj)
+
+    # side counts after move for adjacent unclaimed boxes
+    # (since this move is safe, counts are <=2)
+    after_counts = []
+    for br, bc in unclaimed_adj:
+        after_counts.append(_box_sides_count(horizontal, vertical, br, bc) + 1)
+
+    max_after = max(after_counts) if after_counts else 0
+    sum_after = sum(after_counts)
+
+    # Prefer outer edges slightly (simple positional bias)
+    r, c, d = move
+    border_bias = 0
+    if d == "H":
+        if r == 0 or r == 4:
+            border_bias = -1
+    else:
+        if c == 0 or c == 4:
+            border_bias = -1
+
+    return (k, max_after, sum_after, -border_bias, r, c, d)  # note -border_bias: border gets smaller
+
+
+def _move_to_str(move: Move) -> str:
+    r, c, d = move
+    return f"{int(r)},{int(c)},{d}"
+
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Generate all legal moves (restricted to valid edge coordinates).
+    moves = _legal_moves(horizontal, vertical)
+
+    # If somehow no moves exist, fall back (arena should not call in terminal states).
+    if not moves:
+        return "0,0,H"
+
+    # 1) Take any capture if available; prefer max capture (2-box) captures.
+    best_cap_move: Optional[Move] = None
+    best_cap = 0
+    for mv in moves:
+        cap = _capture_count_if_play(horizontal, vertical, capture, mv)
+        if cap > best_cap:
+            best_cap = cap
+            best_cap_move = mv
+        elif cap == best_cap and cap > 0 and best_cap_move is not None:
+            if mv < best_cap_move:
+                best_cap_move = mv
+
+    if best_cap_move is not None and best_cap > 0:
+        return _move_to_str(best_cap_move)
+
+    # 2) No captures: choose a safe move if possible.
+    safe_moves = [mv for mv in moves if _is_safe_move(horizontal, vertical, capture, mv)]
+    if safe_moves:
+        safe_moves.sort(key=lambda mv: _safe_move_heuristic(horizontal, vertical, capture, mv))
+        return _move_to_str(safe_moves[0])
+
+    # 3) No safe moves: forced sacrifice. Minimize opponent's greedy capture run.
+    #    We simulate: play mv (no capture), then opponent captures greedily.
+    best_move = moves[0]
+    best_score = None  # lower opponent run is better; tie-break by deterministic ordering
+    for mv in moves:
+        h2 = horizontal.copy()
+        v2 = vertical.copy()
+        c2 = capture.copy()
+
+        gained = _apply_move_inplace(h2, v2, c2, mv, player=1)
+        # No captures should be possible here by construction, but handle anyway:
+        if gained > 0:
+            # If it unexpectedly captures (shouldn't), it's actually good: take it.
+            # Return immediately since captures dominate.
+            return _move_to_str(mv)
+
+        opp_run = _greedy_capture_run(h2, v2, c2, player=-1)
+
+        # Secondary: after opponent run, estimate our immediate capture run.
+        our_run = _greedy_capture_run(h2, v2, c2, player=1)
+
+        # Also include current box score (small weight) as tertiary tie-break.
+        cur_diff = int(np.sum(c2 == 1) - np.sum(c2 == -1))
+
+        score = (opp_run, -our_run, -cur_diff, mv)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_move = mv
+
+    return _move_to_str(best_move)

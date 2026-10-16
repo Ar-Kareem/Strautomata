@@ -1,0 +1,72 @@
+
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Define all 8 possible directions for flipping discs
+    directions = [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]
+    
+    # Helper function to check if a move is legal in a given direction
+    def is_legal_direction(r, c, dr, dc):
+        current_r, current_c = r + dr, c + dc
+        while 0 <= current_r < 8 and 0 <= current_c < 8:
+            if you[current_r][current_c] == 1:
+                return True
+            elif opponent[current_r][current_c] == 1:
+                current_r += dr
+                current_c += dc
+            else:
+                return False
+        return False
+
+    # Generate all legal moves
+    legal_moves = []
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                for dr, dc in directions:
+                    if is_legal_direction(r, c, dr, dc):
+                        legal_moves.append((r, c))
+                        break
+    
+    # If no legal moves, return "pass"
+    if not legal_moves:
+        return "pass"
+    
+    # Evaluate each move using a heuristic
+    best_move = None
+    best_score = -1
+    for r, c in legal_moves:
+        # Calculate immediate disc gain (number of opponent discs flipped)
+        flipped = 0
+        for dr, dc in directions:
+            current_r, current_c = r + dr, c + dc
+            while 0 <= current_r < 8 and 0 <= current_c < 8:
+                if you[current_r][current_c] == 1:
+                    flipped += 1
+                    break
+                elif opponent[current_r][current_c] == 1:
+                    current_r += dr
+                    current_c += dc
+                else:
+                    break
+        
+        # Position value (corner > edge > center)
+        if (r, c) in [(0,0), (0,7), (7,0), (7,7)]:
+            pos_val = 3
+        elif r in [0,7] or c in [0,7]:
+            pos_val = 2
+        else:
+            pos_val = 1
+        
+        # Total score = disc gain + position value
+        score = flipped + pos_val
+        
+        # Prefer moves with higher scores
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    # Convert move to algebraic notation
+    col = chr(ord('a') + best_move[1])
+    row = str(best_move[0] + 1)
+    return col + row

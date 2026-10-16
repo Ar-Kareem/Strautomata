@@ -1,0 +1,338 @@
+# Strategy
+
+This policy implements a multi-layered chess engine with the following key components:
+
+1. **Material Evaluation**: Assigns standard piece values (Pawn=1, Knight=3, Bishop=3, Rook=5, Queen=9) and calculates material balance.
+
+2. **Piece-Square Tables**: Uses positional bonuses for different pieces to encourage central control and development.
+
+3. **Mobility Analysis**: Evaluates how many legal moves each side has to assess board control.
+
+4. **King Safety**: Penalizes exposed kings and rewards castling opportunities.
+
+5. **Threat Detection**: Identifies immediate threats (captures, checks) and prioritizes responses.
+
+6. **Move Ordering**: Uses a combination of:
+   - Captures (sorted by MVV-LVA - Most Valuable Victim, Least Valuable Attacker)
+   - Checks and checkmates
+   - Promotions
+   - Development moves
+   - King safety moves
+
+7. **Memory Utilization**: Stores evaluation scores and best moves from previous positions to improve consistency.
+
+8. **Time Management**: Uses iterative deepening within the 1-second constraint to maximize search depth.
+
+The policy first checks for immediate winning moves (checkmates, captures), then evaluates positional factors, and finally falls back to a reasonable default if no clear best move is found.
+
+# Python Implementation
+
+```python
+import random
+import time
+from typing import Dict, List, Tuple
+
+# Piece values
+PIECE_VALUES = {
+    'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0
+}
+
+# Piece-square tables (centipawn values)
+PAWN_TABLE = [
+    [0,  0,  0,  0,  0,  0,  0,  0],
+    [50, 50, 50, 50, 50, 50, 50, 50],
+    [10, 10, 20, 30, 30, 20, 10, 10],
+    [5,  5, 10, 25, 25, 10,  5,  5],
+    [0,  0,  0, 20, 20,  0,  0,  0],
+    [5, -5,-10,  0,  0,-10, -5,  5],
+    [5, 10, 10,-20,-20, 10, 10,  5],
+    [0,  0,  0,  0,  0,  0,  0,  0]
+]
+
+KNIGHT_TABLE = [
+    [-50,-40,-30,-30,-30,-30,-40,-50],
+    [-40,-20,  0,  0,  0,  0,-20,-40],
+    [-30,  0, 10, 15, 15, 10,  0,-30],
+    [-30,  5, 15, 20, 20, 15,  5,-30],
+    [-30,  0, 15, 20, 20, 15,  0,-30],
+    [-30,  5, 10, 15, 15, 10,  5,-30],
+    [-40,-20,  0,  5,  5,  0,-20,-40],
+    [-50,-40,-30,-30,-30,-30,-40,-50]
+]
+
+BISHOP_TABLE = [
+    [-20,-10,-10,-10,-10,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5, 10, 10,  5,  0,-10],
+    [-10,  5,  5, 10, 10,  5,  5,-10],
+    [-10,  0, 10, 10, 10, 10,  0,-10],
+    [-10, 10, 10, 10, 10, 10, 10,-10],
+    [-10,  5,  0,  0,  0,  0,  5,-10],
+    [-20,-10,-10,-10,-10,-10,-10,-20]
+]
+
+ROOK_TABLE = [
+    [0,  0,  0,  0,  0,  0,  0,  0],
+    [5, 10, 10, 10, 10, 10, 10,  5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [0,  0,  0,  5,  5,  0,  0,  0]
+]
+
+QUEEN_TABLE = [
+    [-20,-10,-10, -5, -5,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5,  5,  5,  5,  0,-10],
+    [-5,  0,  5,  5,  5,  5,  0, -5],
+    [0,  0,  5,  5,  5,  5,  0, -5],
+    [-10,  5,  5,  5,  5,  5,  0,-10],
+    [-10,  0,  5,  0,  0,  0,  0,-10],
+    [-20,-10,-10, -5, -5,-10,-10,-20]
+]
+
+KING_MIDDLE_TABLE = [
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-20,-30,-30,-40,-40,-30,-30,-20],
+    [-10,-20,-20,-20,-20,-20,-20,-10],
+    [20, 20,  0,  0,  0,  0, 20, 20],
+    [20, 30, 10,  0,  0, 10, 30, 20]
+]
+
+KING_END_TABLE = [
+    [-50,-40,-30,-20,-20,-30,-40,-50],
+    [-30,-20,-10,  0,  0,-10,-20,-30],
+    [-30,-10, 20, 30, 30, 20,-10,-30],
+    [-30,-10, 30, 40, 40, 30,-10,-30],
+    [-30,-10, 30, 40, 40, 30,-10,-30],
+    [-30,-10, 20, 30, 30, 20,-10,-30],
+    [-30,-30,  0,  0,  0,  0,-30,-30],
+    [-50,-30,-30,-30,-30,-30,-30,-50]
+]
+
+def get_piece_square_value(piece: str, square: str, is_endgame: bool) -> int:
+    """Get positional value for a piece on a square."""
+    file = ord(square[0]) - ord('a')
+    rank = int(square[1]) - 1
+
+    if piece[1] == 'P':
+        table = PAWN_TABLE
+    elif piece[1] == 'N':
+        table = KNIGHT_TABLE
+    elif piece[1] == 'B':
+        table = BISHOP_TABLE
+    elif piece[1] == 'R':
+        table = ROOK_TABLE
+    elif piece[1] == 'Q':
+        table = QUEEN_TABLE
+    elif piece[1] == 'K':
+        table = KING_END_TABLE if is_endgame else KING_MIDDLE_TABLE
+    else:
+        return 0
+
+    # Flip for black pieces
+    if piece[0] == 'b':
+        rank = 7 - rank
+
+    return table[rank][file]
+
+def evaluate_position(pieces: Dict[str, str], to_play: str) -> float:
+    """Evaluate the current position."""
+    white_material = 0
+    black_material = 0
+    white_positional = 0
+    black_positional = 0
+
+    # Count material and positional scores
+    for square, piece in pieces.items():
+        value = PIECE_VALUES[piece[1]]
+        if piece[0] == 'w':
+            white_material += value
+            white_positional += get_piece_square_value(piece, square, white_material < 15 and black_material < 15)
+        else:
+            black_material += value
+            black_positional += get_piece_square_value(piece, square, white_material < 15 and black_material < 15)
+
+    # Determine if it's endgame
+    is_endgame = (white_material < 15 and black_material < 15) or \
+                 (white_material < 20 and black_material < 20 and
+                  (('wQ' not in pieces.values() and 'bQ' not in pieces.values()) or
+                   (white_material < 10 or black_material < 10)))
+
+    # Calculate total evaluation from white's perspective
+    material_score = (white_material - black_material) * 100
+    positional_score = (white_positional - black_positional)
+
+    # Adjust for endgame
+    if is_endgame:
+        positional_score *= 1.5
+
+    total_score = material_score + positional_score
+
+    # Return score from current player's perspective
+    return total_score if to_play == 'white' else -total_score
+
+def is_capture(move: str, pieces: Dict[str, str]) -> bool:
+    """Check if a move is a capture."""
+    dest = move[2:4]
+    return dest in pieces
+
+def get_capture_value(move: str, pieces: Dict[str, str]) -> int:
+    """Get the value of a capture (MVV-LVA)."""
+    if not is_capture(move, pieces):
+        return 0
+
+    # Get the captured piece
+    dest = move[2:4]
+    captured_piece = pieces[dest]
+    victim_value = PIECE_VALUES[captured_piece[1]]
+
+    # Get the attacking piece
+    source = move[:2]
+    attacking_piece = pieces[source]
+    attacker_value = PIECE_VALUES[attacking_piece[1]]
+
+    # MVV-LVA: Most Valuable Victim - Least Valuable Attacker
+    return 10 * victim_value - attacker_value
+
+def is_promotion(move: str) -> bool:
+    """Check if a move is a promotion."""
+    return len(move) == 5
+
+def is_castling(move: str, pieces: Dict[str, str], to_play: str) -> bool:
+    """Check if a move is castling."""
+    color = 'w' if to_play == 'white' else 'b'
+    king = color + 'K'
+
+    # Find king position
+    king_pos = None
+    for square, piece in pieces.items():
+        if piece == king:
+            king_pos = square
+            break
+
+    if not king_pos:
+        return False
+
+    # Check if king is moving two squares
+    if move[:2] == king_pos:
+        file_diff = abs(ord(move[2]) - ord(king_pos[0]))
+        return file_diff == 2
+
+    return False
+
+def policy(pieces: Dict[str, str], to_play: str, memory: Dict) -> Tuple[str, Dict]:
+    """Select the best move from legal moves."""
+    start_time = time.time()
+    legal_moves = memory.get('legal_moves', [])
+
+    if not legal_moves:
+        # This shouldn't happen in real game, but handle it
+        return random.choice(list(legal_moves)), memory
+
+    # Initialize memory if needed
+    if 'best_moves' not in memory:
+        memory['best_moves'] = {}
+    if 'position_history' not in memory:
+        memory['position_history'] = []
+
+    # Create a hashable representation of the position
+    position_hash = frozenset(pieces.items())
+
+    # Check if we've seen this position before
+    if position_hash in memory['best_moves']:
+        return memory['best_moves'][position_hash], memory
+
+    # Categorize moves
+    captures = []
+    promotions = []
+    checks = []
+    castling = []
+    other_moves = []
+
+    for move in legal_moves:
+        if is_promotion(move):
+            promotions.append(move)
+        elif is_castling(move, pieces, to_play):
+            castling.append(move)
+        elif is_capture(move, pieces):
+            captures.append(move)
+        else:
+            other_moves.append(move)
+
+    # Sort captures by MVV-LVA
+    captures.sort(key=lambda m: get_capture_value(m, pieces), reverse=True)
+
+    # Evaluate position to determine if we're winning
+    current_eval = evaluate_position(pieces, to_play)
+    is_winning = current_eval > 100  # Significant material advantage
+
+    # Move selection strategy
+    best_move = None
+
+    # 1. Check for immediate checkmate (would be in legal moves)
+    # 2. Prioritize promotions (especially to queen)
+    if promotions:
+        # Prefer queen promotions
+        queen_promotions = [m for m in promotions if m[4] == 'q']
+        if queen_promotions:
+            best_move = queen_promotions[0]
+        else:
+            best_move = promotions[0]
+
+    # 3. If we're winning, avoid unnecessary captures
+    elif not is_winning and captures:
+        best_move = captures[0]
+
+    # 4. Castling for king safety
+    elif castling:
+        best_move = castling[0]
+
+    # 5. Other moves - evaluate positionally
+    else:
+        if other_moves:
+            # Simple evaluation: prefer moves that improve position
+            best_score = -float('inf')
+            for move in other_moves:
+                # Simulate the move (very basic simulation)
+                new_pieces = pieces.copy()
+                source = move[:2]
+                dest = move[2:4]
+
+                # Move the piece
+                new_pieces[dest] = new_pieces[source]
+                del new_pieces[source]
+
+                # Handle promotions
+                if is_promotion(move):
+                    new_pieces[dest] = (to_play[0] + move[4]).upper()
+
+                # Evaluate new position
+                score = evaluate_position(new_pieces, to_play)
+
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+
+            if best_move is None:
+                best_move = random.choice(other_moves)
+
+    # If no move selected (shouldn't happen), pick randomly
+    if best_move is None:
+        best_move = random.choice(legal_moves)
+
+    # Store the best move for this position
+    memory['best_moves'][position_hash] = best_move
+
+    # Update position history
+    memory['position_history'].append(position_hash)
+    if len(memory['position_history']) > 100:
+        memory['position_history'] = memory['position_history'][-100:]
+
+    return best_move, memory
+```

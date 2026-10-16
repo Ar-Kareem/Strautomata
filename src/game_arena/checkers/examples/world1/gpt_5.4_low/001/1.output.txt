@@ -1,0 +1,406 @@
+The strategy for this policy is:
+
+- Always generate only legal moves, with mandatory captures enforced.
+- Use a small alpha-beta negamax search to look ahead a few plies.
+- Evaluate positions by:
+  - material balance,
+  - king value,
+  - advancement of men toward promotion,
+  - center control,
+  - promotion opportunities,
+  - basic safety/mobility signals.
+- Prefer captures, promotions, and moves that improve position while avoiding easy tactical blunders.
+- If anything unexpected happens, still fall back to a guaranteed legal move.
+
+<code>
+from __future__ import annotations
+
+from typing import List, Tuple, Optional
+
+Square = Tuple[int, int]
+Move = Tuple[Square, Square]
+
+
+# ---------- Core API ----------
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> Move:
+    """
+    Return a legal move ((from_row, from_col), (to_row, to_col)).
+    color: 'b' or 'w'
+    Black moves downward (toward lower row values).
+    White moves upward (toward higher row values).
+    """
+    # Convert input into absolute black/white piece sets.
+    if color == 'b':
+        b_men = set(map(tuple, my_men))
+        b_kings = set(map(tuple, my_kings))
+        w_men = set(map(tuple, opp_men))
+        w_kings = set(map(tuple, opp_kings))
+        root_side = 'b'
+    else:
+        w_men = set(map(tuple, my_men))
+        w_kings = set(map(tuple, my_kings))
+        b_men = set(map(tuple, opp_men))
+        b_kings = set(map(tuple, opp_kings))
+        root_side = 'w'
+
+    state = (b_men, b_kings, w_men, w_kings, root_side)
+
+    legal = generate_moves(state, root_side)
+    if not legal:
+        # Should not happen in a valid arena state, but be defensive.
+        # Return any syntactically valid fallback.
+        pieces = list((b_men | b_kings) if root_side == 'b' else (w_men | w_kings))
+        if pieces:
+            p = pieces[0]
+            return (p, p)
+        return ((0, 1), (0, 1))
+
+    # Move ordering first for better pruning.
+    legal = sorted(legal, key=lambda m: move_order_score(state, m, root_side), reverse=True)
+
+    # Adaptive depth: deeper in quieter endgames.
+    total_pieces = len(b_men) + len(b_kings) + len(w_men) + len(w_kings)
+    if total_pieces <= 6:
+        depth = 7
+    elif total_pieces <= 10:
+        depth = 6
+    elif total_pieces <= 16:
+        depth = 5
+    else:
+        depth = 4
+
+    best_move = legal[0]
+    best_val = -10**18
+    alpha = -10**18
+    beta = 10**18
+
+    for mv in legal:
+        child = apply_move(state, mv, root_side)
+        val = -negamax(child, opposite(root_side), depth - 1, -beta, -alpha)
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if val > alpha:
+            alpha = val
+
+    # Final legality safety check
+    if best_move in legal:
+        return best_move
+    return legal[0]
+
+
+# ---------- Search ----------
+
+def negamax(state, side: str, depth: int, alpha: int, beta: int) -> int:
+    moves = generate_moves(state, side)
+
+    if depth == 0 or not moves:
+        return evaluate(state, side, no_moves=(not moves))
+
+    moves = sorted(moves, key=lambda m: move_order_score(state, m, side), reverse=True)
+
+    best = -10**18
+    for mv in moves:
+        child = apply_move(state, mv, side)
+        val = -negamax(child, opposite(side), depth - 1, -beta, -alpha)
+        if val > best:
+            best = val
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+    return best
+
+
+# ---------- Move generation ----------
+
+def generate_moves(state, side: str) -> List[Move]:
+    captures = generate_captures(state, side)
+    if captures:
+        return captures
+    return generate_quiet_moves(state, side)
+
+
+def generate_captures(state, side: str) -> List[Move]:
+    b_men, b_kings, w_men, w_kings, _ = state
+    occ = b_men | b_kings | w_men | w_kings
+
+    if side == 'b':
+        my_men, my_kings = b_men, b_kings
+        opp = w_men | w_kings
+        man_dirs = [(-1, -1), (-1, 1)]
+    else:
+        my_men, my_kings = w_men, w_kings
+        opp = b_men | b_kings
+        man_dirs = [(1, -1), (1, 1)]
+
+    king_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    moves: List[Move] = []
+
+    for r, c in my_men:
+        for dr, dc in man_dirs:
+            r1, c1 = r + dr, c + dc
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            if in_bounds(r2, c2) and (r1, c1) in opp and (r2, c2) not in occ:
+                moves.append(((r, c), (r2, c2)))
+
+    for r, c in my_kings:
+        for dr, dc in king_dirs:
+            r1, c1 = r + dr, c + dc
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            if in_bounds(r2, c2) and (r1, c1) in opp and (r2, c2) not in occ:
+                moves.append(((r, c), (r2, c2)))
+
+    return moves
+
+
+def generate_quiet_moves(state, side: str) -> List[Move]:
+    b_men, b_kings, w_men, w_kings, _ = state
+    occ = b_men | b_kings | w_men | w_kings
+
+    if side == 'b':
+        my_men, my_kings = b_men, b_kings
+        man_dirs = [(-1, -1), (-1, 1)]
+    else:
+        my_men, my_kings = w_men, w_kings
+        man_dirs = [(1, -1), (1, 1)]
+
+    king_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    moves: List[Move] = []
+
+    for r, c in my_men:
+        for dr, dc in man_dirs:
+            nr, nc = r + dr, c + dc
+            if in_bounds(nr, nc) and (nr, nc) not in occ:
+                moves.append(((r, c), (nr, nc)))
+
+    for r, c in my_kings:
+        for dr, dc in king_dirs:
+            nr, nc = r + dr, c + dc
+            if in_bounds(nr, nc) and (nr, nc) not in occ:
+                moves.append(((r, c), (nr, nc)))
+
+    return moves
+
+
+# ---------- State transition ----------
+
+def apply_move(state, move: Move, side: str):
+    b_men, b_kings, w_men, w_kings, _ = state
+
+    # Copy sets
+    b_men = set(b_men)
+    b_kings = set(b_kings)
+    w_men = set(w_men)
+    w_kings = set(w_kings)
+
+    (r1, c1), (r2, c2) = move
+
+    if side == 'b':
+        my_men, my_kings = b_men, b_kings
+        opp_men, opp_kings = w_men, w_kings
+        promote_row = 0
+    else:
+        my_men, my_kings = w_men, w_kings
+        opp_men, opp_kings = b_men, b_kings
+        promote_row = 7
+
+    was_king = (r1, c1) in my_kings
+
+    if was_king:
+        my_kings.remove((r1, c1))
+    else:
+        my_men.remove((r1, c1))
+
+    # Capture
+    if abs(r2 - r1) == 2:
+        mr, mc = (r1 + r2) // 2, (c1 + c2) // 2
+        if (mr, mc) in opp_men:
+            opp_men.remove((mr, mc))
+        elif (mr, mc) in opp_kings:
+            opp_kings.remove((mr, mc))
+
+    # Place moved piece, with promotion if applicable
+    if was_king:
+        my_kings.add((r2, c2))
+    else:
+        if r2 == promote_row:
+            my_kings.add((r2, c2))
+        else:
+            my_men.add((r2, c2))
+
+    return (b_men, b_kings, w_men, w_kings, opposite(side))
+
+
+# ---------- Evaluation ----------
+
+def evaluate(state, side: str, no_moves: bool = False) -> int:
+    b_men, b_kings, w_men, w_kings, _ = state
+
+    if no_moves:
+        # Side to move has no legal move -> losing position
+        return -1_000_000
+
+    score = 0
+
+    # Material
+    score += 100 * len(b_men)
+    score += 175 * len(b_kings)
+    score -= 100 * len(w_men)
+    score -= 175 * len(w_kings)
+
+    # Advancement
+    # Black wants lower rows; white wants higher rows.
+    for r, c in b_men:
+        score += (7 - r) * 8
+        if r == 1:
+            score += 18
+        if r == 0:
+            score += 35
+    for r, c in w_men:
+        score -= r * 8
+        if r == 6:
+            score -= 18
+        if r == 7:
+            score -= 35
+
+    # Center control
+    center = {(3, 2), (3, 4), (4, 3), (4, 5), (2, 3), (5, 4), (2, 1), (5, 6)}
+    for sq in b_men | b_kings:
+        if sq in center:
+            score += 10
+    for sq in w_men | w_kings:
+        if sq in center:
+            score -= 10
+
+    # Edge can be safer for men, but less active for kings
+    for r, c in b_men:
+        if c == 0 or c == 7:
+            score += 4
+    for r, c in w_men:
+        if c == 0 or c == 7:
+            score -= 4
+    for r, c in b_kings:
+        if c == 0 or c == 7:
+            score -= 3
+    for r, c in w_kings:
+        if c == 0 or c == 7:
+            score += 3
+
+    # Mobility
+    b_moves = len(generate_moves((b_men, b_kings, w_men, w_kings, 'b'), 'b'))
+    w_moves = len(generate_moves((b_men, b_kings, w_men, w_kings, 'w'), 'w'))
+    score += 3 * (b_moves - w_moves)
+
+    # Immediate capture availability
+    b_caps = len(generate_captures((b_men, b_kings, w_men, w_kings, 'b'), 'b'))
+    w_caps = len(generate_captures((b_men, b_kings, w_men, w_kings, 'w'), 'w'))
+    score += 12 * (b_caps - w_caps)
+
+    # Vulnerability: lightly penalize capturable pieces
+    score -= 14 * count_capturable_pieces((b_men, b_kings, w_men, w_kings, 'b'), 'b')
+    score += 14 * count_capturable_pieces((b_men, b_kings, w_men, w_kings, 'w'), 'w')
+
+    return score if side == 'b' else -score
+
+
+# ---------- Heuristics ----------
+
+def move_order_score(state, move: Move, side: str) -> int:
+    (r1, c1), (r2, c2) = move
+    score = 0
+
+    # Captures first
+    if abs(r2 - r1) == 2:
+        score += 10_000
+
+    b_men, b_kings, w_men, w_kings, _ = state
+    if side == 'b':
+        is_king = (r1, c1) in b_kings
+        promote_row = 0
+    else:
+        is_king = (r1, c1) in w_kings
+        promote_row = 7
+
+    # Promotion
+    if (not is_king) and r2 == promote_row:
+        score += 5_000
+
+    # Advance men
+    if not is_king:
+        if side == 'b':
+            score += (r1 - r2) * 20
+        else:
+            score += (r2 - r1) * 20
+
+    # Prefer central destination
+    score += 6 - abs(3.5 - r2)
+    score += 6 - abs(3.5 - c2)
+
+    # Safer edges for men
+    if not is_king and (c2 == 0 or c2 == 7):
+        score += 3
+
+    return int(score)
+
+
+def count_capturable_pieces(state, side: str) -> int:
+    """
+    Count how many of side's pieces can be captured immediately by opponent
+    in one jump. Crude but useful.
+    """
+    b_men, b_kings, w_men, w_kings, _ = state
+    occ = b_men | b_kings | w_men | w_kings
+    target = (b_men | b_kings) if side == 'b' else (w_men | w_kings)
+    opp_side = opposite(side)
+
+    capturable = 0
+    for r, c in target:
+        if can_be_captured(occ, b_men, b_kings, w_men, w_kings, opp_side, (r, c)):
+            capturable += 1
+    return capturable
+
+
+def can_be_captured(occ, b_men, b_kings, w_men, w_kings, by_side: str, sq: Square) -> bool:
+    r, c = sq
+
+    if by_side == 'b':
+        opp_men = b_men
+        opp_kings = b_kings
+        man_dirs = [(-1, -1), (-1, 1)]
+    else:
+        opp_men = w_men
+        opp_kings = w_kings
+        man_dirs = [(1, -1), (1, 1)]
+
+    king_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    # For a piece at sq to be captured, an enemy must be adjacent on one side
+    # and the landing square beyond us must be empty.
+    for dr, dc in man_dirs:
+        er, ec = r - dr, c - dc
+        lr, lc = r + dr, c + dc
+        if in_bounds(er, ec) and in_bounds(lr, lc):
+            if (er, ec) in opp_men and (lr, lc) not in occ:
+                return True
+
+    for dr, dc in king_dirs:
+        er, ec = r - dr, c - dc
+        lr, lc = r + dr, c + dc
+        if in_bounds(er, ec) and in_bounds(lr, lc):
+            if (er, ec) in opp_kings and (lr, lc) not in occ:
+                return True
+
+    return False
+
+
+# ---------- Utilities ----------
+
+def opposite(side: str) -> str:
+    return 'w' if side == 'b' else 'b'
+
+
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+</code>

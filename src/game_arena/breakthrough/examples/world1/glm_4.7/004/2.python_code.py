@@ -1,0 +1,246 @@
+
+import sys
+
+# Increase recursion limit just in case, though depth 3 is shallow
+sys.setrecursionlimit(10000)
+
+# Directions for movement: (row_delta, col_delta)
+# White moves 'up' (row index increases), Black moves 'down' (row index decreases)
+DIRECTIONS = {
+    'w': [(1, 0), (1, -1), (1, 1)],
+    'b': [(-1, 0), (-1, -1), (-1, 1)]
+}
+
+def evaluate_board(board, color):
+    """
+    Evaluates the board state from the perspective of 'color'.
+    Returns a numerical score (higher is better for 'color').
+    """
+    score = 0
+    for r in range(8):
+        for c in range(8):
+            piece = board[r][c]
+            if piece == 0:
+                continue
+            
+            # Base value for a piece
+            val = 10
+            
+            # Advancement bonus
+            # White wants high row index (7), Black wants low row index (0)
+            if piece == 1: # My piece
+                if color == 'w':
+                    val += r * 2
+                else:
+                    val += (7 - r) * 2
+                # Centrality bonus (encourage occupying center columns)
+                val += (3.5 - abs(c - 3.5))
+                score += val
+            else: # Opponent piece
+                if color == 'w':
+                    val += r * 2
+                else:
+                    val += (7 - r) * 2
+                val += (3.5 - abs(c - 3.5))
+                score -= val
+    return score
+
+def get_all_moves(board, for_color):
+    """
+    Returns a list of legal moves ((fr, fc), (tr, tc)) for the player 'for_color'.
+    Assumes internal board representation: 1=Me, -1=Opp.
+    """
+    moves = []
+    marker = 1
+    opp_marker = -1
+    
+    # Identify pieces
+    pieces = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == marker:
+                pieces.append((r, c))
+                
+    for r, c in pieces:
+        for dr, dc in DIRECTIONS[for_color]:
+            nr, nc = r + dr, c + dc
+            
+            # Check bounds
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                target = board[nr][nc]
+                
+                # Straight move: must be empty
+                if dc == 0:
+                    if target == 0:
+                        moves.append(((r, c), (nr, nc)))
+                # Diagonal move: can be empty or opponent (capture)
+                else:
+                    if target == 0 or target == opp_marker:
+                        moves.append(((r, c), (nr, nc)))
+    return moves
+
+def minimax(board, depth, is_maximizing, alpha, beta, color):
+    """
+    Minimax algorithm with Alpha-Beta pruning.
+    """
+    # Terminal depth or game over state check
+    if depth == 0:
+        return evaluate_board(board, color)
+    
+    # Determine markers based on whose turn it is
+    # Note: 'color' is always the policy's color. 
+    # 'is_maximizing' is True if it's Policy's turn.
+    me_marker = 1 if is_maximizing else -1
+    opp_marker = -1 if is_maximizing else 1
+    current_player_color = color if is_maximizing else ('b' if color == 'w' else 'w')
+
+    # Find pieces for the current player
+    pieces = []
+    has_pieces = False
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == me_marker:
+                pieces.append((r, c))
+                has_pieces = True
+    
+    # If no pieces left, the game is over
+    if not has_pieces:
+        # If I have no pieces, I lose (Negative score)
+        # If Opponent has no pieces, I win (Positive score)
+        return -100000 if is_maximizing else 100000
+
+    # Generate moves
+    moves = []
+    for r, c in pieces:
+        for dr, dc in DIRECTIONS[current_player_color]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                target = board[nr][nc]
+                if dc == 0:
+                    if target == 0:
+                        moves.append(((r, c), (nr, nc)))
+                else:
+                    if target == 0 or target == opp_marker:
+                        moves.append(((r, c), (nr, nc)))
+    
+    # If no moves available, current player loses (stalemate/block)
+    if not moves:
+        return -100000 if is_maximizing else 100000
+
+    # Move ordering: Prioritize captures and advancement to improve pruning
+    def move_key(m):
+        fr, fc = m[0]
+        tr, tc = m[1]
+        score = 0
+        if board[tr][tc] == opp_marker:
+            score = 50 # Capture priority
+        # Advancement priority
+        if color == 'w':
+            score += tr
+        else:
+            score += (7 - tr)
+        return score
+
+    moves.sort(key=move_key, reverse=True)
+
+    if is_maximizing:
+        max_eval = float('-inf')
+        for move in moves:
+            # Apply move (create new board state)
+            new_board = [row[:] for row in board]
+            fr, fc = move[0]
+            tr, tc = move[1]
+            new_board[tr][tc] = new_board[fr][fc]
+            new_board[fr][fc] = 0
+            
+            eval_val = minimax(new_board, depth - 1, False, alpha, beta, color)
+            max_eval = max(max_eval, eval_val)
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            new_board = [row[:] for row in board]
+            fr, fc = move[0]
+            tr, tc = move[1]
+            new_board[tr][tc] = new_board[fr][fc]
+            new_board[fr][fc] = 0
+            
+            eval_val = minimax(new_board, depth - 1, True, alpha, beta, color)
+            min_eval = min(min_eval, eval_val)
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Main policy function.
+    """
+    # Initialize internal board representation
+    # 0: empty, 1: me, -1: opp
+    board = [[0] * 8 for _ in range(8)]
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opp:
+        board[r][c] = -1
+
+    # Get all legal moves
+    moves = get_all_moves(board, color)
+    
+    # Edge case: If no moves, return a dummy move (should not happen in normal play)
+    if not moves:
+        return ((0,0), (0,0))
+
+    # 1. Immediate Win Check
+    # If any piece can reach the opponent's home row, take it immediately.
+    target_row = 7 if color == 'w' else 0
+    for move in moves:
+        if move[1][0] == target_row:
+            return move
+
+    # 2. Minimax Search
+    best_move = None
+    best_val = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    search_depth = 3
+
+    # Sort root moves similarly
+    def move_priority(m):
+        fr, fc = m[0]
+        tr, tc = m[1]
+        score = 0
+        if board[tr][tc] == -1:
+            score = 50
+        if color == 'w':
+            score += tr
+        else:
+            score += (7 - tr)
+        return score
+    
+    moves.sort(key=move_priority, reverse=True)
+
+    for move in moves:
+        # Create new board state
+        new_board = [row[:] for row in board]
+        fr, fc = move[0]
+        tr, tc = move[1]
+        new_board[tr][tc] = new_board[fr][fc]
+        new_board[fr][fc] = 0
+        
+        # Search
+        val = minimax(new_board, search_depth - 1, False, alpha, beta, color)
+        
+        if val > best_val:
+            best_val = val
+            best_move = move
+        alpha = max(alpha, val)
+        
+    # Fallback
+    if best_move is None:
+        return moves[0]
+        
+    return best_move

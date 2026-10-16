@@ -1,0 +1,246 @@
+
+import copy
+
+def policy(state):
+    """Main policy function - selects best backgammon move."""
+    dice = sorted(state['dice'])
+    
+    if len(dice) == 0:
+        return "H:P,P"
+    
+    if len(dice) == 1:
+        moves = generate_single_die_moves(state, dice[0])
+    else:
+        moves = generate_two_dice_moves(state, dice[0], dice[1])
+    
+    if not moves:
+        return "H:P,P"
+    
+    best = max(moves, key=lambda m: evaluate_state(m[3]))
+    return f"{best[0]}:{best[1]},{best[2]}"
+
+def generate_single_die_moves(state, die):
+    """Generate all legal moves for a single die."""
+    moves = []
+    
+    # Bar checkers must be moved first
+    if state['my_bar'] > 0:
+        entry = 24 - die
+        if state['opp_pts'][entry] < 2:
+            s = copy.deepcopy(state)
+            s['my_bar'] -= 1
+            s['my_pts'][entry] += 1
+            if s['opp_pts'][entry] == 1:
+                s['opp_pts'][entry] = 0
+                s['opp_bar'] += 1
+            moves.append(('H', 'B', 'P', s))
+        return moves
+    
+    all_home = all(state['my_pts'][i] == 0 for i in range(6, 24))
+    
+    for p in range(24):
+        if state['my_pts'][p] == 0:
+            continue
+        
+        s = copy.deepcopy(state)
+        if apply_move(s, p, die, all_home):
+            moves.append(('H', f'A{p}', 'P', s))
+    
+    return moves
+
+def generate_two_dice_moves(state, d1, d2):
+    """Generate all legal moves for two dice."""
+    moves = []
+    
+    if state['my_bar'] > 0:
+        return generate_bar_moves(state, d1, d2)
+    
+    all_home = all(state['my_pts'][i] == 0 for i in range(6, 24))
+    
+    # Generate H-order (higher die first)
+    for p1 in range(24):
+        if state['my_pts'][p1] == 0 or not can_move(state, p1, d2, all_home):
+            continue
+        
+        s1 = copy.deepcopy(state)
+        if not apply_move(s1, p1, d2, all_home):
+            continue
+        
+        all_home2 = all(s1['my_pts'][i] == 0 for i in range(6, 24))
+        for p2 in range(24):
+            if s1['my_pts'][p2] == 0 or not can_move(s1, p2, d1, all_home2):
+                continue
+            
+            s2 = copy.deepcopy(s1)
+            if apply_move(s2, p2, d1, all_home2):
+                moves.append(('H', f'A{p1}', f'A{p2}', s2))
+    
+    # Generate L-order (lower die first)
+    for p1 in range(24):
+        if state['my_pts'][p1] == 0 or not can_move(state, p1, d1, all_home):
+            continue
+        
+        s1 = copy.deepcopy(state)
+        if not apply_move(s1, p1, d1, all_home):
+            continue
+        
+        all_home2 = all(s1['my_pts'][i] == 0 for i in range(6, 24))
+        for p2 in range(24):
+            if s1['my_pts'][p2] == 0 or not can_move(s1, p2, d2, all_home2):
+                continue
+            
+            s2 = copy.deepcopy(s1)
+            if apply_move(s2, p2, d2, all_home2):
+                moves.append(('L', f'A{p1}', f'A{p2}', s2))
+    
+    # Fallback to single die moves if no double moves found
+    if not moves:
+        m_high = generate_single_die_moves(state, d2)
+        if m_high:
+            moves = [('H', m[1], m[2], m[3]) for m in m_high]
+        else:
+            m_low = generate_single_die_moves(state, d1)
+            moves = [('L', m[1], m[2], m[3]) for m in m_low]
+    
+    return moves
+
+def generate_bar_moves(state, d1, d2):
+    """Generate moves when checkers are on the bar."""
+    moves = []
+    
+    entry1, entry2 = 24 - d1, 24 - d2
+    can1, can2 = state['opp_pts'][entry1] < 2, state['opp_pts'][entry2] < 2
+    
+    # Try d1 then d2 (L-order)
+    if can1:
+        s1 = copy.deepcopy(state)
+        s1['my_bar'] -= 1
+        s1['my_pts'][entry1] += 1
+        if s1['opp_pts'][entry1] == 1:
+            s1['opp_pts'][entry1] = 0
+            s1['opp_bar'] += 1
+        
+        if can2 and s1['my_bar'] > 0:
+            s2 = copy.deepcopy(s1)
+            s2['my_bar'] -= 1
+            s2['my_pts'][entry2] += 1
+            if s2['opp_pts'][entry2] == 1:
+                s2['opp_pts'][entry2] = 0
+                s2['opp_bar'] += 1
+            moves.append(('L', 'B', 'B', s2))
+        else:
+            moves.append(('L', 'B', 'P', s1))
+    
+    # Try d2 then d1 (H-order)
+    if can2:
+        s1 = copy.deepcopy(state)
+        s1['my_bar'] -= 1
+        s1['my_pts'][entry2] += 1
+        if s1['opp_pts'][entry2] == 1:
+            s1['opp_pts'][entry2] = 0
+            s1['opp_bar'] += 1
+        
+        if can1 and s1['my_bar'] > 0:
+            s2 = copy.deepcopy(s1)
+            s2['my_bar'] -= 1
+            s2['my_pts'][entry1] += 1
+            if s2['opp_pts'][entry1] == 1:
+                s2['opp_pts'][entry1] = 0
+                s2['opp_bar'] += 1
+            moves.append(('H', 'B', 'B', s2))
+        else:
+            moves.append(('H', 'B', 'P', s1))
+    
+    return moves
+
+def can_move(state, p, die, all_home):
+    """Check if moving from point p with die is legal."""
+    if state['my_pts'][p] == 0:
+        return False
+    
+    to = p - die
+    
+    if all_home and to < 0:
+        return p < 6
+    
+    if to < 0:
+        return False
+    
+    return state['opp_pts'][to] < 2
+
+def apply_move(state, p, die, all_home):
+    """Apply move from point p, return True if successful."""
+    to = p - die
+    
+    if all_home and to < 0:
+        if p >= 6:
+            return False
+        state['my_pts'][p] -= 1
+        state['my_off'] += 1
+        return True
+    
+    if to < 0 or state['opp_pts'][to] >= 2:
+        return False
+    
+    state['my_pts'][p] -= 1
+    if state['opp_pts'][to] == 1:
+        state['opp_pts'][to] = 0
+        state['opp_bar'] += 1
+    state['my_pts'][to] += 1
+    return True
+
+def evaluate_state(state):
+    """Heuristic evaluation of board state."""
+    score = 0.0
+    
+    # 1. Pip count - being ahead in the race is good
+    my_pips = sum((i + 1) * state['my_pts'][i] for i in range(24))
+    my_pips += state['my_bar'] * 25
+    opp_pips = sum((i + 1) * state['opp_pts'][i] for i in range(24))
+    opp_pips += state['opp_bar'] * 25
+    
+    score += (opp_pips - my_pips) * 0.05
+    
+    # 2. Made points and primes
+    for i in range(24):
+        if state['my_pts'][i] >= 2:
+            score += 2.0
+            # Bonus for consecutive made points (primes)
+            if i > 0 and state['my_pts'][i-1] >= 2:
+                score += 1.0
+        if state['opp_pts'][i] >= 2:
+            score -= 1.5
+    
+    # 3. Blot vulnerability - single checkers are dangerous
+    for i in range(6, 24):
+        if state['my_pts'][i] == 1:
+            score -= (i - 5) / 18.0 * 2.0
+    
+    # 4. Hitting opportunities
+    for i in range(24):
+        if state['my_pts'][i] >= 1 and state['opp_pts'][i] == 1:
+            score += (24 - i) / 24.0 * 2.5
+    
+    # 5. Bar status
+    score -= state['my_bar'] * 6.0
+    score += state['opp_bar'] * 5.0
+    
+    # 6. Home board readiness
+    home_checkers = sum(state['my_pts'][:6])
+    if home_checkers == 15 - state['my_off']:
+        score += 12.0
+    elif home_checkers >= 10:
+        score += 4.0
+    
+    # 7. Anchors (defensive points in opponent's home board)
+    for p in [18, 19, 20, 21, 22, 23]:
+        if state['my_pts'][p] >= 2:
+            score += 2.0
+    
+    # 8. Distribution penalty for overstacking
+    for i in range(24):
+        c = state['my_pts'][i]
+        if c > 5:
+            score -= (c - 5) * 0.4
+    
+    return score

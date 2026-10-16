@@ -1,0 +1,150 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    import random
+    
+    BOARD_SIZE = 19
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+    
+    # Star points and key positions for opening
+    star_points = [(4, 4), (4, 10), (4, 16), (10, 4), (10, 10), (10, 16), (16, 4), (16, 10), (16, 16)]
+    
+    def get_neighbors(pos):
+        """Get valid neighboring positions."""
+        row, col = pos
+        neighbors = []
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            r, c = row + dr, col + dc
+            if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+                neighbors.append((r, c))
+        return neighbors
+    
+    def count_liberties(pos, group_stones):
+        """Count liberties of a group containing pos."""
+        visited = set()
+        to_visit = [pos]
+        group = set()
+        
+        while to_visit:
+            current = to_visit.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            group.add(current)
+            
+            for neighbor in get_neighbors(current):
+                if neighbor in group_stones and neighbor not in visited:
+                    to_visit.append(neighbor)
+        
+        liberties = set()
+        for stone in group:
+            for neighbor in get_neighbors(stone):
+                if neighbor not in occupied:
+                    liberties.add(neighbor)
+        
+        return len(liberties), group
+    
+    def is_legal_move(pos):
+        """Check if a move is legal."""
+        if pos in occupied:
+            return False
+        
+        # Check if move has liberties or captures something
+        has_liberty = False
+        captures_opponent = False
+        
+        for neighbor in get_neighbors(pos):
+            if neighbor not in occupied:
+                has_liberty = True
+            elif neighbor in opp_set:
+                # Check if this opponent group would be captured
+                libs, _ = count_liberties(neighbor, opp_set)
+                if libs == 1:
+                    captures_opponent = True
+        
+        if has_liberty or captures_opponent:
+            return True
+        
+        # Check if connecting to friendly group with liberties > 1
+        temp_me = me_set | {pos}
+        for neighbor in get_neighbors(pos):
+            if neighbor in me_set:
+                libs, _ = count_liberties(neighbor, temp_me)
+                if libs > 0:
+                    return True
+        
+        return False
+    
+    def evaluate_move(pos):
+        """Evaluate the quality of a move."""
+        score = 0
+        
+        # Check for capturing opponent stones
+        for neighbor in get_neighbors(pos):
+            if neighbor in opp_set:
+                libs, group = count_liberties(neighbor, opp_set)
+                if libs == 1:
+                    score += 100 * len(group)  # Capture!
+                elif libs == 2:
+                    score += 20  # Threaten capture
+        
+        # Check for saving our stones
+        for neighbor in get_neighbors(pos):
+            if neighbor in me_set:
+                libs, group = count_liberties(neighbor, me_set)
+                if libs == 1:
+                    score += 80 * len(group)  # Save from atari!
+                elif libs == 2:
+                    score += 15  # Improve safety
+        
+        # Count liberties after placing stone
+        temp_me = me_set | {pos}
+        libs, _ = count_liberties(pos, temp_me)
+        score += libs * 2
+        
+        # Strategic positions
+        if pos in star_points:
+            score += 30
+        
+        # Corner and edge preference (early game)
+        row, col = pos
+        dist_from_edge = min(row - 1, col - 1, BOARD_SIZE - row, BOARD_SIZE - col)
+        if len(occupied) < 50:
+            if dist_from_edge <= 3:
+                score += 15 - dist_from_edge * 3
+        
+        # Proximity to existing stones
+        friendly_nearby = sum(1 for n in get_neighbors(pos) if n in me_set)
+        opponent_nearby = sum(1 for n in get_neighbors(pos) if n in opp_set)
+        score += friendly_nearby * 5
+        score += opponent_nearby * 3
+        
+        # Avoid overcrowding
+        if friendly_nearby > 2:
+            score -= 10
+        
+        return score
+    
+    # Generate all possible moves
+    possible_moves = []
+    for row in range(1, BOARD_SIZE + 1):
+        for col in range(1, BOARD_SIZE + 1):
+            pos = (row, col)
+            if pos not in occupied and is_legal_move(pos):
+                possible_moves.append(pos)
+    
+    # If no legal moves, pass
+    if not possible_moves:
+        return ((0, 0), memory)
+    
+    # Opening: prioritize star points
+    if len(occupied) < 10:
+        available_star_points = [p for p in star_points if p in possible_moves]
+        if available_star_points:
+            return (random.choice(available_star_points), memory)
+    
+    # Evaluate and choose best move
+    best_move = max(possible_moves, key=evaluate_move)
+    
+    return (best_move, memory)

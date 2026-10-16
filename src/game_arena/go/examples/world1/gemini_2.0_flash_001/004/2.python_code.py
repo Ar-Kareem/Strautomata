@@ -1,0 +1,170 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    """
+    A Go playing policy that combines heuristics for territory control,
+    vital point occupation, and some defense.
+    """
+
+    board_size = 19
+    board = [[0 for _ in range(board_size)] for _ in range(board_size)]
+
+    # Mark player stones
+    for r, c in me:
+        board[r-1][c-1] = 1  # 1 for me
+
+    # Mark opponent stones
+    for r, c in opponent:
+        board[r-1][c-1] = 2  # 2 for opponent
+
+    def is_valid_move(row: int, col: int) -> bool:
+        """Check for valid move (within bounds and on empty cell)."""
+        return 0 <= row < board_size and 0 <= col < board_size and board[row][col] == 0
+
+    def get_neighbors(row: int, col: int) -> list[tuple[int, int]]:
+        """Returns neighboring coordinates."""
+        neighbors = []
+        if row > 0:
+            neighbors.append((row - 1, col))
+        if row < board_size - 1:
+            neighbors.append((row + 1, col))
+        if col > 0:
+            neighbors.append((row, col - 1))
+        if col < board_size - 1:
+            neighbors.append((row, col + 1))
+        return neighbors
+
+    def get_liberties(row: int, col: int, player: int, visited: set[tuple[int, int]] = None) -> int:
+        """Counts liberties for a group of connected stones."""
+        if visited is None:
+            visited = set()  # Use a set to keep track of visited stones
+        if (row, col) in visited:
+            return 0
+        visited.add((row, col))
+
+        liberties = 0
+        for r_neighbor, c_neighbor in get_neighbors(row, col):
+            if board[r_neighbor][c_neighbor] == 0:
+                liberties += 1  # Found a liberty!
+            elif board[r_neighbor][c_neighbor] == player:  # Same color, explore further
+                liberties += get_liberties(r_neighbor, c_neighbor, player, visited)
+
+        return liberties
+
+    def find_group(row: int, col: int, player: int, visited:set[tuple[int, int]] = None, group = None):
+        """Finds the stones that are connected with the given location."""
+        if visited is None:
+            visited = set()
+        if group is None:
+            group = []
+
+        if (row, col) in visited:
+            return group
+
+        visited.add((row, col))
+        group.append((row, col))
+
+        for r_neighbor, c_neighbor in get_neighbors(row, col):
+            if board[r_neighbor][c_neighbor] == player:
+                find_group(r_neighbor, c_neighbor, player, visited, group)
+        return group
+
+
+    def will_be_captured(row: int, col: int, player: int) -> bool:
+        """Checks if playing at (row, col) results in self-capture."""
+        temp_board = [row[:] for row in board]  # Create a copy of the board
+        temp_board[row][col] = player  # Temporarily place the stone
+
+        group = find_group(row, col, player)
+        liberties = 0
+        visited = set()
+        for r, c in group:
+            liberties += len([n for n in get_neighbors(r, c) if temp_board[n[0]][n[1]] == 0])
+            
+        if liberties > 0:
+            return False
+
+        # Remove the added stone to restore the original board
+        return True
+
+    def check_capture(row: int, col: int, player: int) -> tuple[int, int]:
+        """Check if playing at (row, col) captures opponent stones."""
+        opponent_stones_to_remove = []
+        for r_neighbor, c_neighbor in get_neighbors(row, col):
+            if board[r_neighbor][c_neighbor] == (3 - player):  # Opponent's stone
+                opponent_group = find_group(r_neighbor, c_neighbor, 3-player)
+                liberties = 0
+                for orow, ocol in opponent_group:
+                    liberties+= len([n for n in get_neighbors(orow, ocol) if board[n[0]][n[1]] == 0 or (n[0] == row and n[1] == col)])
+                if liberties == 0: # No liberties, it's a capture!
+                    opponent_stones_to_remove.extend(opponent_group)
+        return opponent_stones_to_remove
+
+    # 1. Check for immediate captures
+    for row in range(board_size):
+        for col in range(board_size):
+            if is_valid_move(row, col):
+                captured_stones = check_capture(row, col, 1)  # Assuming "me" is player 1
+
+                if captured_stones:
+                    return (row + 1, col + 1)
+
+    # 2. Play to maximize liberties (of existing groups) or prevent opponent captures
+    best_move = None
+    max_liberties = -1
+    for row in range(board_size):
+        for col in range(board_size):
+            if is_valid_move(row, col):
+                # Before we calculate the number of liberties if we place the stone,
+                # we need to check whether the potential move is a self-capture or not.
+                if will_be_captured(row, col, 1):  # isSelfCapture?
+                    continue
+
+                # Calculate the total liberty if we put the stone there.
+                liberties = 0
+                for my_row, my_col in me:
+                    my_group = find_group(my_row -1, my_col - 1, 1)
+                    for r, c in my_group:
+                        liberties+= len([n for n in get_neighbors(r, c) if board[n[0]][n[1]] == 0])
+
+                # Add extra points for making an adjacency to existing stones.
+                score = liberties
+
+                if board[row][col] == 0:
+                    score += len([n for n in get_neighbors(row, col) if board[n[0]][n[1]] == 1])
+
+
+                if score > max_liberties:
+                    max_liberties = score
+                    best_move = (row + 1, col + 1)
+
+    if best_move:
+        return best_move
+
+    # 3. Opening moves: corners and edges (can improve this)
+    corners = [(1, 1), (1, board_size), (board_size, 1), (board_size, board_size)]
+    for row, col in corners:
+        if is_valid_move(row - 1, col - 1):
+            return (row, col)
+
+    edges = []
+    for i in range(2, board_size):
+        edges.append((1, i))
+        edges.append((board_size, i))
+        edges.append((i, 1))
+        edges.append((i, board_size))
+
+    random.shuffle(edges)
+    for row, col in edges:
+      if is_valid_move(row - 1, col - 1):
+        return (row, col)
+
+    # 4. If all else fails, play a random legal move
+    possible_moves = [(r+1, c+1) for r in range(board_size) for c in range(board_size) if is_valid_move(r, c)]
+
+    if possible_moves:
+        return random.choice(possible_moves)
+
+    # 5. If no legal moves, pass
+    return (0, 0)

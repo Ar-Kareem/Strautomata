@@ -1,0 +1,342 @@
+
+import copy
+from typing import Dict, List, Tuple, Optional
+
+# Piece values
+PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+
+# Direction vectors
+KNIGHT_DIRS = [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)]
+BISHOP_DIRS = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+ROOK_DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+QUEEN_DIRS = BISHOP_DIRS + ROOK_DIRS
+KING_DIRS = QUEEN_DIRS
+
+def square_to_idx(sq: str) -> Tuple[int, int]:
+    """Convert 'e4' to (4, 3) -> (file, rank) 0-indexed"""
+    file = ord(sq[0]) - ord('a')
+    rank = int(sq[1]) - 1
+    return (file, rank)
+
+def idx_to_square(file: int, rank: int) -> str:
+    """Convert (4, 3) to 'e4'"""
+    return chr(ord('a') + file) + str(rank + 1)
+
+def parse_board(pieces: Dict[str, str]) -> List[List[Optional[str]]]:
+    """Convert pieces dict to 8x8 board (rank x file)"""
+    board = [[None for _ in range(8)] for _ in range(8)]
+    for sq, piece in pieces.items():
+        f, r = square_to_idx(sq)
+        board[r][f] = piece
+    return board
+
+def is_attacked(board: List[List[Optional[str]]], target_f: int, target_r: int, by_color: str) -> bool:
+    """Check if square is attacked by by_color ('w' or 'b')"""
+    opp = 'b' if by_color == 'w' else 'w'
+    
+    # Check pawn attacks
+    if by_color == 'w':
+        # White pawns attack up-left and up-right (r+1)
+        for df in [-1, 1]:
+            f, r = target_f + df, target_r - 1
+            if 0 <= f < 8 and 0 <= r < 8 and board[r][f] == 'wP':
+                return True
+    else:
+        # Black pawns attack down-left and down-right (r-1)
+        for df in [-1, 1]:
+            f, r = target_f + df, target_r + 1
+            if 0 <= f < 8 and 0 <= r < 8 and board[r][f] == 'bP':
+                return True
+    
+    # Check knight attacks
+    for dr, df in KNIGHT_DIRS:
+        f, r = target_f + df, target_r + dr
+        if 0 <= f < 8 and 0 <= r < 8 and board[r][f] == by_color + 'N':
+            return True
+    
+    # Check king attacks
+    for dr, df in KING_DIRS:
+        f, r = target_f + df, target_r + dr
+        if 0 <= f < 8 and 0 <= r < 8 and board[r][f] == by_color + 'K':
+            return True
+    
+    # Check sliding pieces (Bishop, Rook, Queen)
+    for dr, df in BISHOP_DIRS:
+        f, r = target_f + df, target_r + dr
+        while 0 <= f < 8 and 0 <= r < 8:
+            p = board[r][f]
+            if p:
+                if p[0] == by_color and p[1] in ['B', 'Q']:
+                    return True
+                break
+            f += df
+            r += dr
+    
+    for dr, df in ROOK_DIRS:
+        f, r = target_f + df, target_r + dr
+        while 0 <= f < 8 and 0 <= r < 8:
+            p = board[r][f]
+            if p:
+                if p[0] == by_color and p[1] in ['R', 'Q']:
+                    return True
+                break
+            f += df
+            r += dr
+    
+    return False
+
+def find_king(board: List[List[Optional[str]]], color: str) -> Optional[Tuple[int, int]]:
+    for r in range(8):
+        for f in range(8):
+            if board[r][f] == color + 'K':
+                return (f, r)
+    return None
+
+def generate_pseudo_legal_moves(board: List[List[Optional[str]]], color: str) -> List[Tuple]:
+    """Generate all pseudo-legal moves as (f, r, nf, nr, promo?)"""
+    moves = []
+    opp = 'b' if color == 'w' else 'w'
+    
+    for r in range(8):
+        for f in range(8):
+            piece = board[r][f]
+            if not piece or piece[0] != color:
+                continue
+            
+            ptype = piece[1]
+            
+            if ptype == 'P':
+                direction = 1 if color == 'w' else -1
+                start_rank = 1 if color == 'w' else 6
+                
+                # Forward 1
+                nr = r + direction
+                if 0 <= nr < 8 and board[nr][f] is None:
+                    if nr == 7 or nr == 0:
+                        for promo in ['q', 'r', 'b', 'n']:
+                            moves.append((f, r, f, nr, promo))
+                    else:
+                        moves.append((f, r, f, nr))
+                    
+                    # Forward 2
+                    if r == start_rank:
+                        nr2 = r + 2 * direction
+                        if board[nr2][f] is None:
+                            moves.append((f, r, f, nr2))
+                
+                # Captures
+                for df in [-1, 1]:
+                    nf = f + df
+                    if 0 <= nf < 8:
+                        target = board[nr][nf] if 0 <= nr < 8 else None
+                        if target and target[0] == opp:
+                            if nr == 7 or nr == 0:
+                                for promo in ['q', 'r', 'b', 'n']:
+                                    moves.append((f, r, nf, nr, promo))
+                            else:
+                                moves.append((f, r, nf, nr))
+            
+            elif ptype == 'N':
+                for dr, df in KNIGHT_DIRS:
+                    nr, nf = r + dr, f + df
+                    if 0 <= nr < 8 and 0 <= nf < 8:
+                        target = board[nr][nf]
+                        if target is None or target[0] == opp:
+                            moves.append((f, r, nf, nr))
+            
+            elif ptype == 'K':
+                for dr, df in KING_DIRS:
+                    nr, nf = r + dr, f + df
+                    if 0 <= nr < 8 and 0 <= nf < 8:
+                        target = board[nr][nf]
+                        if target is None or target[0] == opp:
+                            moves.append((f, r, nf, nr))
+                
+                # Castling - simplified: allowed if king/rook on starting squares and path clear
+                # King-side
+                if color == 'w' and r == 0 and f == 4:
+                    if board[0][7] == 'wR' and board[0][5] is None and board[0][6] is None:
+                        if not is_attacked(board, 4, 0, 'b') and not is_attacked(board, 5, 0, 'b'):
+                            moves.append((f, r, 6, 0))
+                elif color == 'b' and r == 7 and f == 4:
+                    if board[7][7] == 'bR' and board[7][5] is None and board[7][6] is None:
+                        if not is_attacked(board, 4, 7, 'w') and not is_attacked(board, 5, 7, 'w'):
+                            moves.append((f, r, 6, 7))
+                
+                # Queen-side
+                if color == 'w' and r == 0 and f == 4:
+                    if board[0][0] == 'wR' and board[0][1] is None and board[0][2] is None and board[0][3] is None:
+                        if not is_attacked(board, 4, 0, 'b') and not is_attacked(board, 3, 0, 'b'):
+                            moves.append((f, r, 2, 0))
+                elif color == 'b' and r == 7 and f == 4:
+                    if board[7][0] == 'bR' and board[7][1] is None and board[7][2] is None and board[7][3] is None:
+                        if not is_attacked(board, 4, 7, 'w') and not is_attacked(board, 3, 7, 'w'):
+                            moves.append((f, r, 2, 7))
+            
+            elif ptype in ['B', 'R', 'Q']:
+                dirs = BISHOP_DIRS if ptype == 'B' else ROOK_DIRS if ptype == 'R' else QUEEN_DIRS
+                for dr, df in dirs:
+                    nr, nf = r + dr, f + df
+                    while 0 <= nr < 8 and 0 <= nf < 8:
+                        target = board[nr][nf]
+                        if target is None:
+                            moves.append((f, r, nf, nr))
+                        elif target[0] == opp:
+                            moves.append((f, r, nf, nr))
+                            break
+                        else:
+                            break
+                        nr += dr
+                        nf += df
+    
+    return moves
+
+def make_move(board: List[List[Optional[str]]], move: Tuple) -> List[List[Optional[str]]]:
+    """Return new board after making move"""
+    new_board = copy.deepcopy(board)
+    f, r, nf, nr = move[0], move[1], move[2], move[3]
+    piece = new_board[r][f]
+    new_board[r][f] = None
+    
+    if len(move) > 4:  # Promotion
+        new_board[nr][nf] = piece[0] + move[4].upper()
+    else:
+        new_board[nr][nf] = piece
+    
+    return new_board
+
+def is_check(board: List[List[Optional[str]]], color: str) -> bool:
+    king_pos = find_king(board, color)
+    if not king_pos:
+        return True
+    opp = 'b' if color == 'w' else 'w'
+    return is_attacked(board, king_pos[0], king_pos[1], opp)
+
+def get_legal_moves(board: List[List[Optional[str]]], color: str) -> List[Tuple]:
+    """Filter pseudo-legal moves to legal moves"""
+    pseudo = generate_pseudo_legal_moves(board, color)
+    legal = []
+    for move in pseudo:
+        new_board = make_move(board, move)
+        if not is_check(new_board, color):
+            legal.append(move)
+    return legal
+
+def evaluate(board: List[List[Optional[str]]]) -> int:
+    """Evaluate board from white's perspective"""
+    score = 0
+    
+    # Simple piece-square bonuses (center control)
+    center_bonus = [[0, 0, 0, 0, 0, 0, 0, 0],
+                    [0, 0, 0, 0, 0, 0, 0, 0],
+                    [0, 0, 5, 10, 10, 5, 0, 0],
+                    [0, 0, 10, 20, 20, 10, 0, 0],
+                    [0, 0, 10, 20, 20, 10, 0, 0],
+                    [0, 0, 5, 10, 10, 5, 0, 0],
+                    [0, 0, 0, 0, 0, 0, 0, 0],
+                    [0, 0, 0, 0, 0, 0, 0, 0]]
+    
+    for r in range(8):
+        for f in range(8):
+            piece = board[r][f]
+            if piece:
+                val = PIECE_VALUES[piece[1]]
+                is_white = piece[0] == 'w'
+                sign = 1 if is_white else -1
+                
+                # Position bonus (flip for black)
+                if is_white:
+                    pos_bonus = center_bonus[r][f]
+                else:
+                    pos_bonus = center_bonus[7-r][f]
+                
+                score += sign * (val + pos_bonus)
+    
+    return score
+
+def move_to_uci(move: Tuple) -> str:
+    f, r, nf, nr = move[0], move[1], move[2], move[3]
+    uci = idx_to_square(f, r) + idx_to_square(nf, nr)
+    if len(move) > 4:
+        uci += move[4]
+    return uci
+
+def minimax(board: List[List[Optional[str]]], depth: int, alpha: float, beta: float, 
+            maximizing: bool, color: str) -> Tuple[float, Optional[Tuple]]:
+    """Minimax with alpha-beta pruning"""
+    opp = 'b' if color == 'w' else 'w'
+    current_color = color if maximizing else opp
+    
+    legal_moves = get_legal_moves(board, current_color)
+    
+    # Terminal conditions
+    if not legal_moves:
+        if is_check(board, current_color):
+            return (-100000 if maximizing else 100000, None)
+        return (0, None)
+    
+    if depth == 0:
+        return (evaluate(board), None)
+    
+    best_move = None
+    
+    # Move ordering: captures first
+    def move_priority(m):
+        target = board[m[3]][m[2]]
+        if target:
+            return PIECE_VALUES[target[1]]
+        return 0
+    
+    legal_moves.sort(key=move_priority, reverse=True)
+    
+    if maximizing:
+        max_eval = -float('inf')
+        for move in legal_moves:
+            new_board = make_move(board, move)
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False, color)
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            new_board = make_move(board, move)
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True, color)
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(pieces: Dict[str, str], to_play: str) -> str:
+    color = 'w' if to_play == 'white' else 'b'
+    board = parse_board(pieces)
+    
+    legal_moves = get_legal_moves(board, color)
+    
+    if not legal_moves:
+        return "0000"  # Null move (should not happen in valid game)
+    
+    # Check for immediate checkmates at depth 1
+    opp = 'b' if color == 'w' else 'w'
+    for move in legal_moves:
+        new_board = make_move(board, move)
+        if is_check(new_board, opp):
+            # Check if opponent has any legal moves (checkmate)
+            opp_moves = get_legal_moves(new_board, opp)
+            if not opp_moves:
+                return move_to_uci(move)
+    
+    # Search depth 2
+    _, best_move = minimax(board, 2, -float('inf'), float('inf'), True, color)
+    
+    if best_move is None:
+        best_move = legal_moves[0]
+    
+    return move_to_uci(best_move)

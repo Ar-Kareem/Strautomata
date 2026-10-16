@@ -1,0 +1,116 @@
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    import numpy as np
+    
+    you = np.array(you)
+    opponent = np.array(opponent)
+    
+    rows, cols = you.shape
+    directions = [(-1, 0, 'U'), (1, 0, 'D'), (0, -1, 'L'), (0, 1, 'R')]
+    
+    def get_legal_moves(player_board, opp_board):
+        """Get all legal moves for a player."""
+        moves = []
+        for r in range(rows):
+            for c in range(cols):
+                if player_board[r, c] == 1:
+                    for dr, dc, direction in directions:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < rows and 0 <= nc < cols and opp_board[nr, nc] == 1:
+                            moves.append((r, c, direction, nr, nc))
+        return moves
+    
+    def apply_move(you_board, opp_board, move):
+        """Apply a move and return new board states."""
+        r, c, _, nr, nc = move
+        new_you = you_board.copy()
+        new_opp = opp_board.copy()
+        new_you[r, c] = 0
+        new_you[nr, nc] = 1
+        new_opp[nr, nc] = 0
+        return new_you, new_opp
+    
+    def count_mobility(player_board, opp_board):
+        """Count number of legal moves available."""
+        return len(get_legal_moves(player_board, opp_board))
+    
+    def evaluate_position(you_board, opp_board):
+        """Evaluate a board position."""
+        you_mobility = count_mobility(you_board, opp_board)
+        opp_mobility = count_mobility(opp_board, you_board)
+        
+        # If we have no moves, we lose (very bad)
+        if you_mobility == 0:
+            return -10000
+        
+        # If opponent has no moves, we win (very good)
+        if opp_mobility == 0:
+            return 10000
+        
+        # Mobility difference is key
+        score = (you_mobility - opp_mobility) * 100
+        
+        # Bonus for piece count (more pieces = more options)
+        piece_diff = np.sum(you_board) - np.sum(opp_board)
+        score += piece_diff * 50
+        
+        # Bonus for centrality (central pieces have more potential)
+        center_weight = 0
+        for r in range(rows):
+            for c in range(cols):
+                if you_board[r, c] == 1:
+                    # Distance from center
+                    center_r, center_c = rows / 2, cols / 2
+                    dist = abs(r - center_r) + abs(c - center_c)
+                    center_weight += (rows + cols - dist)
+        score += center_weight * 2
+        
+        # Bonus for adjacency (pieces supporting each other)
+        adjacency = 0
+        for r in range(rows):
+            for c in range(cols):
+                if you_board[r, c] == 1:
+                    for dr, dc, _ in directions:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < rows and 0 <= nc < cols and you_board[nr, nc] == 1:
+                            adjacency += 1
+        score += adjacency * 10
+        
+        return score
+    
+    # Get all legal moves
+    legal_moves = get_legal_moves(you, opponent)
+    
+    # If no legal moves, return a dummy move (shouldn't happen if game state is valid)
+    if not legal_moves:
+        return "0,0,R"
+    
+    # Evaluate each move
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        # Apply the move
+        new_you, new_opp = apply_move(you, opponent, move)
+        
+        # Evaluate the resulting position
+        score = evaluate_position(new_you, new_opp)
+        
+        # Look ahead one move for opponent's best response
+        opp_moves = get_legal_moves(new_opp, new_you)
+        if opp_moves:
+            worst_counter_score = float('inf')
+            for opp_move in opp_moves:
+                counter_you, counter_opp = apply_move(new_opp, new_you, opp_move)
+                counter_score = evaluate_position(counter_you, counter_opp)
+                worst_counter_score = min(worst_counter_score, counter_score)
+            # Minimax: assume opponent plays optimally
+            score = worst_counter_score
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Return the best move in required format
+    r, c, direction, _, _ = best_move
+    return f"{r},{c},{direction}"

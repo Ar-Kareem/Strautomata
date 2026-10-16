@@ -1,0 +1,294 @@
+I need to design a smart backgammon policy that can make good decisions given the current board state and dice roll.
+
+**High-level reasoning:**
+
+1. **Understanding the constraints**: I need to return a legal move string in the format `<ORDER>:<FROM1>,<FROM2>` where ORDER is H or L (which die is used first), and FROM1/FROM2 are starting positions (A0-A23, B for bar, P for pass).
+
+2. **Key strategic considerations for backgammon**:
+   - **Safety**: Avoid leaving single checkers (blots) that can be hit
+   - **Building points**: Create made points (2+ checkers) for safety
+   - **Running game**: When ahead, move checkers toward home
+   - **Hitting**: Opportunistically hit opponent blots
+   - **Bearing off**: Get checkers home when possible
+   - **Entering from bar**: Must enter before anything else
+   - **Efficiency**: Use both dice when possible
+
+3. **Implementation strategy**:
+   - First, check if we need to enter from bar
+   - If bearing off is possible, do it
+   - Otherwise, evaluate all legal move combinations
+   - Score each option based on:
+     - Safety (avoiding blots, especially in opponent's home)
+     - Building points
+     - Hitting opportunities
+     - Progress toward home
+     - Contact with opponent
+   - Handle special cases: double dice, single legal move, etc.
+
+4. **Move generation**: I need to generate all legal moves for the given dice roll, then pick the best one based on a heuristic evaluation function.
+
+Let me implement a robust policy with good heuristics:
+
+```python
+def policy(state: dict) -> str:
+    # Extract state
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    # Helper function to check if a point is safe (not hit by opponent)
+    def is_safe_point(pt_idx):
+        return opp_pts[pt_idx] < 2
+    
+    # Helper function to check if bearing off is legal
+    def can_bear_off():
+        if my_bar > 0:
+            return False
+        # All checkers must be in home board (points 18-23)
+        for i in range(18):
+            if my_pts[i] > 0:
+                return False
+        return True
+    
+    # Helper function to evaluate a board position
+    def evaluate_position(temp_my_pts, temp_opp_pts, temp_my_bar, temp_opp_bar, temp_my_off):
+        score = 0
+        
+        # 1. Safety: penalize single checkers (blots)
+        for i, count in enumerate(temp_my_pts):
+            if count == 1:
+                # Penalty depends on location (blots in opponent's home are very dangerous)
+                if i < 6:  # Opponent's home board (they bear off from here)
+                    score -= 50
+                elif i < 12:  # Opponent's outer board
+                    score -= 20
+                else:  # Our home board or outer
+                    score -= 10
+        
+        # 2. Building points: reward made points (2+ checkers)
+        for i, count in enumerate(temp_my_pts):
+            if count >= 2:
+                score += 15
+        
+        # 3. Hitting: if we can hit opponent blots
+        for i, count in enumerate(temp_opp_pts):
+            if count == 1:  # Opponent has a blot
+                # Check if we have a checker that could land here
+                # This is handled in move generation, but we can add forward bonus
+        
+        # 4. Progress: reward checkers moving toward home (higher indices)
+        progress_score = 0
+        for i, count in enumerate(temp_my_pts):
+            if i < 12:  # Still in opponent's half
+                progress_score += count * (i - 12) * 0.5  # Negative but penalizes staying far
+            else:
+                progress_score += count * (i - 18) * 1  # Positive for being in home board
+        score += progress_score
+        
+        # 5. Bar entry: penalize if still on bar
+        score -= temp_my_bar * 30
+        
+        # 6. Off checkers: big reward for bearing off
+        score += temp_my_off * 50
+        
+        # 7. Anchor preservation: keep anchors in opponent's home
+        for i in range(6):
+            if temp_my_pts[i] >= 2:
+                score += 25  # Strong anchor
+        
+        return score
+    
+    # Helper to generate all possible moves
+    def generate_moves():
+        moves = []
+        
+        # Handle dice - need to consider both orders
+        if len(dice) == 0:
+            return [("P", "P", "L")]  # No dice, pass
+        
+        d1, d2 = dice[0], dice[1] if len(dice) > 1 else (dice[0], None)
+        
+        # Try both orders if dice are different
+        orders_to_try = []
+        if d2 is None:
+            orders_to_try = [(d1, None, 'H')]
+        elif d1 == d2:
+            orders_to_try = [(d1, d2, 'H')]  # Same dice, order doesn't matter
+        else:
+            # Try both orders
+            if d1 > d2:
+                orders_to_try = [(d1, d2, 'H'), (d2, d1, 'L')]
+            else:
+                orders_to_try = [(d1, d2, 'L'), (d2, d1, 'H')]
+        
+        for first_die, second_die, order_char in orders_to_try:
+            # Generate all valid move combinations for this order
+            
+            # First move possibilities
+            first_moves = []
+            
+            if my_bar > 0:
+                # Must enter from bar
+                dest = first_die - 1  # Entering to point first_die-1 (0-indexed)
+                if dest < 24 and opp_pts[dest] < 2:
+                    first_moves.append(('B', dest))
+            else:
+                # Can move from any point
+                for src in range(24):
+                    if my_pts[src] > 0:
+                        dest = src + first_die
+                        if dest < 24 and opp_pts[dest] < 2:
+                            first_moves.append((src, dest))
+                        elif dest >= 24 and can_bear_off():
+                            # Bearing off
+                            # Check if this is legal (highest point at or above src)
+                            if can_bear_off():
+                                # Find highest occupied point
+                                highest = -1
+                                for p in range(24):
+                                    if my_pts[p] > 0:
+                                        highest = p
+                                if highest <= src:
+                                    first_moves.append((src, -1))  # -1 means bear off
+            
+            # For each first move, try second moves
+            for src1, dest1 in first_moves:
+                # Apply first move temporarily
+                temp_my_pts = my_pts[:]
+                temp_opp_pts = opp_pts[:]
+                temp_my_bar = my_bar
+                temp_opp_bar = opp_bar
+                temp_my_off = my_off
+                
+                # Apply first move
+                if src1 == 'B':
+                    temp_my_bar -= 1
+                    temp_my_pts[dest1] += 1
+                elif dest1 == -1:  # Bear off
+                    temp_my_pts[src1] -= 1
+                    temp_my_off += 1
+                else:
+                    temp_my_pts[src1] -= 1
+                    # Check for hit
+                    if temp_opp_pts[dest1] == 1:
+                        temp_opp_pts[dest1] = 0
+                        temp_opp_bar += 1
+                    temp_my_pts[dest1] += 1
+                
+                # Now try second move
+                if second_die is None:
+                    moves.append((src1, 'P', order_char))
+                    continue
+                
+                second_moves = []
+                
+                if temp_my_bar > 0:
+                    # Must enter from bar
+                    dest2 = second_die - 1
+                    if dest2 < 24 and temp_opp_pts[dest2] < 2:
+                        second_moves.append(('B', dest2))
+                else:
+                    for src2 in range(24):
+                        if temp_my_pts[src2] > 0:
+                            dest2 = src2 + second_die
+                            if dest2 < 24 and temp_opp_pts[dest2] < 2:
+                                second_moves.append((src2, dest2))
+                            elif dest2 >= 24 and can_bear_off():
+                                highest = -1
+                                for p in range(24):
+                                    if temp_my_pts[p] > 0:
+                                        highest = p
+                                if highest <= src2:
+                                    second_moves.append((src2, -1))
+                
+                if not second_moves:
+                    moves.append((src1, 'P', order_char))
+                else:
+                    for src2, dest2 in second_moves:
+                        moves.append((src1, src2, order_char))
+        
+        if not moves:
+            return [('P', 'P', 'L')]
+        
+        return moves
+    
+    # Generate all legal moves
+    legal_moves = generate_moves()
+    
+    if not legal_moves:
+        return 'L:P,P'
+    
+    # Evaluate each move
+    best_score = float('-inf')
+    best_move = None
+    
+    for src1, src2, order_char in legal_moves:
+        # Apply move to evaluate resulting position
+        temp_my_pts = my_pts[:]
+        temp_opp_pts = opp_pts[:]
+        temp_my_bar = my_bar
+        temp_opp_bar = opp_bar
+        temp_my_off = my_off
+        
+        # Apply first move
+        if src1 == 'B':
+            temp_my_bar -= 1
+            # Need to compute destination for first die
+            first_die = dice[0] if order_char == 'H' else dice[1]
+            dest1 = first_die - 1
+            temp_my_pts[dest1] += 1
+        elif src1 != 'P':
+            first_die = dice[0] if order_char == 'H' else dice[1]
+            dest1 = src1 + first_die
+            temp_my_pts[src1] -= 1
+            if dest1 >= 24:  # Bear off
+                temp_my_off += 1
+            else:
+                if temp_opp_pts[dest1] == 1:
+                    temp_opp_pts[dest1] = 0
+                    temp_opp_bar += 1
+                temp_my_pts[dest1] += 1
+        
+        # Apply second move
+        if src2 == 'B':
+            temp_my_bar -= 1
+            second_die = dice[1] if order_char == 'H' else dice[0]
+            dest2 = second_die - 1
+            temp_my_pts[dest2] += 1
+        elif src2 != 'P':
+            second_die = dice[1] if order_char == 'H' else dice[0]
+            dest2 = src2 + second_die
+            temp_my_pts[src2] -= 1
+            if dest2 >= 24:
+                temp_my_off += 1
+            else:
+                if temp_opp_pts[dest2] == 1:
+                    temp_opp_pts[dest2] = 0
+                    temp_opp_bar += 1
+                temp_my_pts[dest2] += 1
+        
+        score = evaluate_position(temp_my_pts, temp_opp_pts, temp_my_bar, temp_opp_bar, temp_my_off)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (src1, src2, order_char)
+    
+    # Convert move to string
+    def format_point(p):
+        if p == 'B':
+            return 'B'
+        elif p == 'P':
+            return 'P'
+        else:
+            return f'A{p}'
+    
+    if best_move is None:
+        return 'L:P,P'
+    
+    src1, src2, order_char = best_move
+    return f"{order_char}:{format_point(src1)},{format_point(src2)}"
+```

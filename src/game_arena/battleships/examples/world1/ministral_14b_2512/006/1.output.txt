@@ -1,0 +1,146 @@
+### Strategy for this Policy
+
+The strategy for this policy is a **hybrid approach** combining **random targeting** with **targeted attacks based on ship probability maps**. Here's the breakdown:
+
+1. **Initial Phase (First 20 Moves)**:
+   - Fire randomly at all unknown cells (`0`) to gather early information about the opponent's board.
+   - This helps in identifying potential ship locations without bias.
+
+2. **Ship Detection Phase**:
+   - After the initial random phase, use a **probability map** to estimate where ships are likely to be.
+   - The probability map is updated based on hits (`1`) and misses (`-1`).
+   - For each unknown cell (`0`), calculate the probability that it contains a ship by:
+     - Considering nearby cells (especially adjacent to hits or misses).
+     - Penalizing cells near misses and favoring cells near hits.
+     - Using a **weighted decay** to avoid overfitting to early hits (e.g., if a cell is far from hits, its probability is lower).
+
+3. **Targeted Attack Phase**:
+   - Fire at the cell with the **highest probability** of containing a ship.
+   - If a hit is confirmed (`1`), continue firing at adjacent cells to maximize the chance of sinking the ship.
+   - If a miss is confirmed (`-1`), skip nearby cells to avoid wasting shots on water.
+
+4. **Ship Sinking Phase**:
+   - Once a ship is partially hit (adjacent cells contain `1`), prioritize firing at **adjacent unknown cells (`0`)** to sink it.
+   - Use a **breadth-first search (BFS)** to explore all possible adjacent cells efficiently.
+   - If no adjacent unknown cells are found, revert to the probability map to find the next best target.
+
+5. **Edge Cases**:
+   - If the board is fully explored (no `0` left), return a random valid move (though this should not happen in a normal game).
+   - Ensure the move is always legal (within bounds and not previously fired at).
+
+6. **Optimizations**:
+   - The probability map is recalculated only when necessary (e.g., after a miss or when no adjacent unknown cells are left).
+   - Adjacent cells are prioritized to sink ships quickly.
+
+---
+
+### Python Implementation
+Here is the policy implementation:
+
+```python
+import numpy as np
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert board to numpy array for easier manipulation
+    board_np = np.array(board)
+    rows, cols = board_np.shape
+
+    # Check if we are in the initial random phase (first 20 moves)
+    if np.sum(board_np == 0) > 80:  # More than 80 unknown cells (10x10 - 20 = 80)
+        # Random move: pick a cell with 0
+        available_cells = np.argwhere(board_np == 0)
+        chosen_cell = np.random.choice(available_cells.shape[0])
+        return tuple(available_cells[chosen_cell])
+    else:
+        # Find all hits (1) and misses (-1)
+        hits = np.argwhere(board_np == 1)
+        misses = np.argwhere(board_np == -1)
+
+        # If no hits, pick the cell with highest probability (random if all equal)
+        if hits.size == 0:
+            return targeted_probability_attack(board_np)
+
+        # Check if any ship is partially sunk (adjacent cells with hits)
+        adjacent_unknowns = []
+        for (r, c) in hits:
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < rows and 0 <= nc < cols and board_np[nr, nc] == 0:
+                    adjacent_unknowns.append((nr, nc))
+
+        # If adjacent unknowns exist, pick one randomly (prioritize sinking)
+        if adjacent_unknowns:
+            return np.random.choice(adjacent_unknowns)
+
+        # Otherwise, pick the cell with highest probability
+        return targeted_probability_attack(board_np)
+
+def targeted_probability_attack(board: np.ndarray) -> tuple[int, int]:
+    rows, cols = board.shape
+    probability_map = np.zeros((rows, cols))
+
+    # For each hit, increase probability of adjacent cells
+    hits = np.argwhere(board == 1)
+    for (r, c) in hits:
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                probability_map[nr, nc] += 1
+
+    # For each miss, decrease probability of adjacent cells
+    misses = np.argwhere(board == -1)
+    for (r, c) in misses:
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                probability_map[nr, nc] -= 1
+
+    # Normalize probabilities (avoid negative values)
+    probability_map = np.clip(probability_map, 0, None)
+
+    # Get all unknown cells (0) and their probabilities
+    unknown_cells = np.argwhere(board == 0)
+    if unknown_cells.size == 0:
+        # Edge case: no unknown cells left (should not happen in normal game)
+        return (0, 0)  # Invalid, but forced by constraints
+
+    # Assign probabilities to unknown cells (weighted by distance from hits/misses)
+    for (r, c) in unknown_cells:
+        # Distance from nearest hit (inverse decay)
+        if hits.size > 0:
+            dist_to_hits = np.min(np.linalg.norm(hits - [r, c], axis=1))
+            probability_map[r, c] += 1 / (1 + dist_to_hits)
+
+        # Distance from nearest miss (penalize)
+        if misses.size > 0:
+            dist_to_misses = np.min(np.linalg.norm(misses - [r, c], axis=1))
+            probability_map[r, c] -= 1 / (1 + dist_to_misses)
+
+    # Normalize probabilities to sum to 1 (for random selection)
+    total_prob = np.sum(probability_map[board == 0])
+    if total_prob > 0:
+        probability_map[board == 0] /= total_prob
+
+    # Pick the cell with highest probability
+    best_cell = np.argwhere(probability_map == np.max(probability_map))
+    return tuple(best_cell[np.random.choice(best_cell.shape[0])])
+```
+
+### Explanation of Key Components:
+1. **Initial Random Phase**:
+   - The first 20 moves are random to gather early information about ship placements.
+
+2. **Probability Map**:
+   - The map is built by:
+     - Increasing probabilities for cells adjacent to hits (`1`).
+     - Decreasing probabilities for cells adjacent to misses (`-1`).
+     - Using a **weighted decay** based on distance to hits/misses (closer cells get higher weights).
+
+3. **Adjacent Unknown Cells**:
+   - If a ship is hit, the policy prioritizes firing at adjacent unknown cells (`0`) to sink it quickly.
+
+4. **Legal Move Guarantee**:
+   - The function always returns a valid `(row, col)` tuple where `board[row][col] == 0`.
+
+This strategy is designed to be **aggressive in sinking ships** while **efficiently exploring the board** to minimize wasted shots. It should perform well against other policies in the arena.

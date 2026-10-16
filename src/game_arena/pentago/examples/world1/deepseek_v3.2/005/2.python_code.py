@@ -1,0 +1,332 @@
+
+import numpy as np
+import time
+from collections import defaultdict
+from copy import deepcopy
+
+def policy(you, opponent):
+    """Return next move as 'row,col,quad,dir' string."""
+    
+    # Convert inputs to numpy arrays for easier manipulation
+    board_you = np.array(you, dtype=int)
+    board_opp = np.array(opponent, dtype=int)
+    
+    # Initialize game state
+    state = {
+        'you': board_you,
+        'opp': board_opp,
+        'empty': 1 - (board_you | board_opp)
+    }
+    
+    # Start iterative deepening with time limit
+    start_time = time.time()
+    time_limit = 0.95  # Leave 50ms margin
+    max_depth = 4  # Start depth
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # Generate all legal moves once
+    legal_moves = get_all_legal_moves(state)
+    
+    # If only one move, return it immediately
+    if len(legal_moves) == 1:
+        return format_move(legal_moves[0])
+    
+    # Order moves by heuristic for better pruning
+    ordered_moves = order_moves(legal_moves, state)
+    
+    # Iterative deepening
+    current_depth = 2
+    while time.time() - start_time < time_limit and current_depth <= 6:
+        depth = current_depth
+        
+        for move in ordered_moves:
+            # Check time
+            if time.time() - start_time >= time_limit:
+                break
+                
+            # Apply move
+            new_state = apply_move(state, move)
+            
+            # Alpha-beta search
+            score = alphabeta(new_state, depth-1, -float('inf'), float('inf'), False, start_time, time_limit)
+            
+            # Update best move
+            if score > best_score:
+                best_score = score
+                best_move = move
+        
+        current_depth += 1
+    
+    # If no move found (shouldn't happen), use first legal move
+    if best_move is None:
+        best_move = legal_moves[0]
+    
+    return format_move(best_move)
+
+def get_all_legal_moves(state):
+    """Return list of all legal moves as (row, col, quad, dir) tuples."""
+    moves = []
+    empty_cells = np.argwhere(state['empty'] == 1)
+    
+    for row, col in empty_cells:
+        # Convert to 1-indexed
+        r, c = row + 1, col + 1
+        
+        # Try all quadrants and rotations
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                moves.append((r, c, quad, dir))
+    
+    return moves
+
+def order_moves(moves, state):
+    """Order moves by heuristic quality for better alpha-beta pruning."""
+    scored_moves = []
+    
+    for move in moves:
+        score = move_heuristic(move, state)
+        scored_moves.append((score, move))
+    
+    # Sort descending by score
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+    return [move for _, move in scored_moves]
+
+def move_heuristic(move, state):
+    """Quick heuristic to evaluate move quality for ordering."""
+    r, c, quad, dir = move
+    
+    # Prefer center positions
+    row_score = 3 - abs(r - 3.5)  # Center is rows 3-4
+    col_score = 3 - abs(c - 3.5)  # Center is cols 3-4
+    
+    # Prefer moves that create immediate threats
+    threat_score = 0
+    temp_state = apply_move(state, move)
+    
+    # Check if move creates a winning line
+    if check_win(temp_state['you']):
+        threat_score += 1000
+    # Check if move blocks opponent threat
+    if check_threat(temp_state['opp']):
+        threat_score += 500
+    
+    return row_score + col_score + threat_score
+
+def apply_move(state, move):
+    """Apply move and return new state."""
+    r, c, quad, dir = move
+    
+    # Deep copy the state
+    new_state = {
+        'you': state['you'].copy(),
+        'opp': state['opp'].copy(),
+        'empty': state['empty'].copy()
+    }
+    
+    # Place marble (convert to 0-indexed)
+    row_idx, col_idx = r - 1, c - 1
+    new_state['you'][row_idx, col_idx] = 1
+    new_state['empty'][row_idx, col_idx] = 0
+    
+    # Apply rotation
+    rotate_quadrant(new_state, quad, dir)
+    
+    return new_state
+
+def rotate_quadrant(state, quad, direction):
+    """Rotate a quadrant 90 degrees."""
+    # Define quadrant boundaries
+    if quad == 0:  # Top-left
+        rows, cols = slice(0, 3), slice(0, 3)
+    elif quad == 1:  # Top-right
+        rows, cols = slice(0, 3), slice(3, 6)
+    elif quad == 2:  # Bottom-left
+        rows, cols = slice(3, 6), slice(0, 3)
+    else:  # Bottom-right
+        rows, cols = slice(3, 6), slice(3, 6)
+    
+    # Extract quadrant for both players
+    quad_you = state['you'][rows, cols].copy()
+    quad_opp = state['opp'][rows, cols].copy()
+    quad_empty = state['empty'][rows, cols].copy()
+    
+    # Rotate 90 degrees
+    if direction == 'L':  # Anti-clockwise
+        quad_you = np.rot90(quad_you, 1)
+        quad_opp = np.rot90(quad_opp, 1)
+        quad_empty = np.rot90(quad_empty, 1)
+    else:  # Clockwise
+        quad_you = np.rot90(quad_you, -1)
+        quad_opp = np.rot90(quad_opp, -1)
+        quad_empty = np.rot90(quad_empty, -1)
+    
+    # Update state
+    state['you'][rows, cols] = quad_you
+    state['opp'][rows, cols] = quad_opp
+    state['empty'][rows, cols] = quad_empty
+
+def alphabeta(state, depth, alpha, beta, maximizing, start_time, time_limit):
+    """Alpha-beta search with time limit."""
+    # Check time limit
+    if time.time() - start_time >= time_limit:
+        return evaluate_board(state)
+    
+    # Terminal conditions
+    if depth == 0:
+        return evaluate_board(state)
+    
+    # Check for immediate win/loss
+    if check_win(state['you']):
+        return 10000 + depth  # Prefer quicker wins
+    if check_win(state['opp']):
+        return -10000 - depth  # Avoid quicker losses
+    
+    # Generate moves for current player
+    if maximizing:
+        value = -float('inf')
+        moves = get_all_legal_moves(state)
+        
+        # Quick move ordering
+        for move in order_moves(moves, state)[:10]:  # Limit branching
+            new_state = apply_move(state, move)
+            value = max(value, alphabeta(new_state, depth-1, alpha, beta, False, start_time, time_limit))
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                break
+        return value
+    else:
+        value = float('inf')
+        moves = get_all_legal_moves(state)
+        
+        # Quick move ordering
+        for move in order_moves(moves, state)[:10]:  # Limit branching
+            new_state = apply_move(state, move)
+            value = min(value, alphabeta(new_state, depth-1, alpha, beta, True, start_time, time_limit))
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+def evaluate_board(state):
+    """Evaluate board position from perspective of current player."""
+    score = 0
+    
+    # Check for winning positions
+    you_lines = count_potential_lines(state['you'], state['empty'])
+    opp_lines = count_potential_lines(state['opp'], state['empty'])
+    
+    # Material difference (weighted by potential)
+    score += you_lines * 10
+    score -= opp_lines * 10
+    
+    # Center control
+    center_mask = np.zeros((6, 6), dtype=int)
+    center_mask[2:4, 2:4] = 1  # Center 2x2
+    score += np.sum(state['you'] * center_mask) * 3
+    score -= np.sum(state['opp'] * center_mask) * 3
+    
+    # Mobility (number of legal moves)
+    you_moves = len(get_all_legal_moves(state))
+    score += you_moves * 0.5
+    
+    # Connectedness
+    you_connected = count_connected(state['you'])
+    opp_connected = count_connected(state['opp'])
+    score += you_connected * 2
+    score -= opp_connected * 2
+    
+    return score
+
+def count_potential_lines(board, empty):
+    """Count number of potential 5-in-a-row lines."""
+    count = 0
+    directions = [
+        (0, 1),   # horizontal
+        (1, 0),   # vertical
+        (1, 1),   # diagonal down-right
+        (1, -1)   # diagonal down-left
+    ]
+    
+    for i in range(6):
+        for j in range(6):
+            for dx, dy in directions:
+                # Check if this starting point can form a line
+                if 0 <= i + 4*dx < 6 and 0 <= j + 4*dy < 6:
+                    line_you = 0
+                    line_empty = 0
+                    
+                    for k in range(5):
+                        x, y = i + k*dx, j + k*dy
+                        if board[x, y]:
+                            line_you += 1
+                        elif empty[x, y]:
+                            line_empty += 1
+                    
+                    # If line has 4+ marbles or potential for 5
+                    if line_you >= 3 and line_you + line_empty == 5:
+                        count += 1
+    
+    return count
+
+def count_connected(board):
+    """Count connected marbles (adjacent in 8 directions)."""
+    connected = 0
+    for i in range(6):
+        for j in range(6):
+            if board[i, j]:
+                # Check all 8 neighbors
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        if dx == 0 and dy == 0:
+                            continue
+                        x, y = i + dx, j + dy
+                        if 0 <= x < 6 and 0 <= y < 6 and board[x, y]:
+                            connected += 1
+    return connected // 2  # Each connection counted twice
+
+def check_win(board):
+    """Check if board has 5 or more in a row."""
+    # Check horizontal
+    for i in range(6):
+        for j in range(2):  # Only need to check starting columns 0-1 for 5-in-a-row
+            if np.sum(board[i, j:j+5]) >= 5:
+                return True
+    
+    # Check vertical
+    for i in range(2):
+        for j in range(6):
+            if np.sum(board[i:i+5, j]) >= 5:
+                return True
+    
+    # Check diagonals
+    for i in range(2):
+        for j in range(2):
+            # Down-right diagonal
+            if sum(board[i+k, j+k] for k in range(5)) >= 5:
+                return True
+            # Down-left diagonal (starting from right side)
+            if sum(board[i+k, j+4-k] for k in range(5)) >= 5:
+                return True
+    
+    return False
+
+def check_threat(board):
+    """Check if board has a threat (4 in a row with empty next to it)."""
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    
+    for i in range(6):
+        for j in range(6):
+            for dx, dy in directions:
+                if 0 <= i + 4*dx < 6 and 0 <= j + 4*dy < 6:
+                    line = [board[i + k*dx, j + k*dy] for k in range(5)]
+                    if sum(line) >= 4:
+                        return True
+    
+    return False
+
+def format_move(move):
+    """Format move as required string."""
+    r, c, quad, dir = move
+    return f"{r},{c},{quad},{dir}"

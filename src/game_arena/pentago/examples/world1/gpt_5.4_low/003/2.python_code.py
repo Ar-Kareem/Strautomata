@@ -1,0 +1,370 @@
+
+from typing import List, Tuple
+
+WIN_SCORE = 10**9
+INF = 10**18
+
+# ---------- Precomputed geometry ----------
+
+def _build_lines():
+    lines = []
+
+    # Rows
+    for r in range(6):
+        lines.append([(r, c) for c in range(6)])
+
+    # Cols
+    for c in range(6):
+        lines.append([(r, c) for r in range(6)])
+
+    # Diagonals NW-SE with length >= 5
+    for start_c in range(6):
+        line = []
+        r, c = 0, start_c
+        while r < 6 and c < 6:
+            line.append((r, c))
+            r += 1
+            c += 1
+        if len(line) >= 5:
+            lines.append(line)
+    for start_r in range(1, 6):
+        line = []
+        r, c = start_r, 0
+        while r < 6 and c < 6:
+            line.append((r, c))
+            r += 1
+            c += 1
+        if len(line) >= 5:
+            lines.append(line)
+
+    # Diagonals NE-SW with length >= 5
+    for start_c in range(6):
+        line = []
+        r, c = 0, start_c
+        while r < 6 and c >= 0:
+            line.append((r, c))
+            r += 1
+            c -= 1
+        if len(line) >= 5:
+            lines.append(line)
+    for start_r in range(1, 6):
+        line = []
+        r, c = start_r, 5
+        while r < 6 and c >= 0:
+            line.append((r, c))
+            r += 1
+            c -= 1
+        if len(line) >= 5:
+            lines.append(line)
+
+    return lines
+
+LINES = _build_lines()
+
+# For evaluation, use contiguous windows of length 5
+WINDOWS = []
+for line in LINES:
+    for i in range(len(line) - 4):
+        WINDOWS.append(line[i:i+5])
+
+CENTER_WEIGHTS = [
+    [0, 1, 1, 1, 1, 0],
+    [1, 2, 3, 3, 2, 1],
+    [1, 3, 4, 4, 3, 1],
+    [1, 3, 4, 4, 3, 1],
+    [1, 2, 3, 3, 2, 1],
+    [0, 1, 1, 1, 1, 0],
+]
+
+ROTATIONS = [(0, 'L'), (0, 'R'), (1, 'L'), (1, 'R'),
+             (2, 'L'), (2, 'R'), (3, 'L'), (3, 'R')]
+
+
+# ---------- Board utilities ----------
+
+def clone_board(b):
+    return [row[:] for row in b]
+
+def normalize(board_like):
+    return [list(map(int, row)) for row in board_like]
+
+def rotate_quadrant_inplace(board, quad: int, direction: str):
+    r0 = 0 if quad < 2 else 3
+    c0 = 0 if quad % 2 == 0 else 3
+
+    sub = [row[c0:c0+3] for row in board[r0:r0+3]]
+
+    if direction == 'R':
+        rot = [[sub[2-c][r] for c in range(3)] for r in range(3)]
+    else:  # 'L'
+        rot = [[sub[c][2-r] for c in range(3)] for r in range(3)]
+
+    for r in range(3):
+        for c in range(3):
+            board[r0+r][c0+c] = rot[r][c]
+
+def apply_move(you, opp, r: int, c: int, quad: int, direction: str):
+    ny = clone_board(you)
+    no = clone_board(opp)
+    ny[r][c] = 1
+    rotate_quadrant_inplace(ny, quad, direction)
+    rotate_quadrant_inplace(no, quad, direction)
+    return ny, no
+
+def count_pieces(you, opp):
+    s = 0
+    for r in range(6):
+        for c in range(6):
+            s += you[r][c] + opp[r][c]
+    return s
+
+def board_full(you, opp):
+    return count_pieces(you, opp) == 36
+
+def check_win(board) -> bool:
+    for line in LINES:
+        run = 0
+        for r, c in line:
+            if board[r][c]:
+                run += 1
+                if run >= 5:
+                    return True
+            else:
+                run = 0
+    return False
+
+def terminal_value_after_move(cur_board, opp_board):
+    cur_win = check_win(cur_board)
+    opp_win = check_win(opp_board)
+    full = board_full(cur_board, opp_board)
+    if cur_win and opp_win:
+        return 0, True
+    if cur_win:
+        return WIN_SCORE, True
+    if opp_win:
+        return -WIN_SCORE, True
+    if full:
+        return 0, True
+    return 0, False
+
+def legal_moves(you, opp):
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opp[r][c] == 0:
+                for q, d in ROTATIONS:
+                    moves.append((r, c, q, d))
+    return moves
+
+
+# ---------- Evaluation ----------
+
+def evaluate(you, opp) -> int:
+    # Strong pattern scoring on 5-cell windows.
+    score = 0
+
+    for window in WINDOWS:
+        yc = 0
+        oc = 0
+        for r, c in window:
+            yc += you[r][c]
+            oc += opp[r][c]
+
+        if yc and oc:
+            continue
+        if yc:
+            if yc == 5:
+                score += 500000
+            elif yc == 4:
+                score += 5000
+            elif yc == 3:
+                score += 300
+            elif yc == 2:
+                score += 25
+            else:
+                score += 3
+        elif oc:
+            if oc == 5:
+                score -= 600000
+            elif oc == 4:
+                score -= 7000
+            elif oc == 3:
+                score -= 350
+            elif oc == 2:
+                score -= 30
+            else:
+                score -= 3
+
+    # Centrality bonus
+    center = 0
+    for r in range(6):
+        for c in range(6):
+            w = CENTER_WEIGHTS[r][c]
+            if you[r][c]:
+                center += w
+            elif opp[r][c]:
+                center -= w
+    score += 4 * center
+
+    return score
+
+
+# ---------- Move ordering ----------
+
+def static_move_score(you, opp, move):
+    r, c, q, d = move
+    ny, no = apply_move(you, opp, r, c, q, d)
+
+    val, terminal = terminal_value_after_move(ny, no)
+    if terminal:
+        return val
+
+    # Prefer stronger evaluated positions
+    s = evaluate(ny, no)
+
+    # Small preference for center placements before rotation
+    s += 6 * CENTER_WEIGHTS[r][c]
+
+    # Slight preference for rotating central pressure quadrants if relevant
+    if q in (0, 1, 2, 3):
+        s += 1
+
+    return s
+
+def ordered_moves(you, opp, cap=None):
+    moves = legal_moves(you, opp)
+    scored = []
+    for mv in moves:
+        scored.append((static_move_score(you, opp, mv), mv))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    if cap is not None:
+        scored = scored[:cap]
+    return [mv for _, mv in scored]
+
+
+# ---------- Search ----------
+
+def candidate_cap(empty_count: int, depth: int) -> int:
+    # Conservative caps to stay fast.
+    if depth >= 3:
+        return 10 if empty_count > 10 else 18
+    if depth == 2:
+        return 12 if empty_count > 12 else 20
+    return 16 if empty_count > 14 else 32
+
+def negamax(you, opp, depth: int, alpha: int, beta: int, empty_count: int) -> int:
+    # No terminal check before move needed; game states passed here are assumed nonterminal
+    if depth == 0:
+        return evaluate(you, opp)
+
+    cap = candidate_cap(empty_count, depth)
+    moves = ordered_moves(you, opp, cap=cap)
+    if not moves:
+        return 0
+
+    best = -INF
+
+    for mv in moves:
+        r, c, q, d = mv
+        ny, no = apply_move(you, opp, r, c, q, d)
+        val, terminal = terminal_value_after_move(ny, no)
+
+        if terminal:
+            score = val
+        else:
+            score = -negamax(no, ny, depth - 1, -beta, -alpha, empty_count - 1)
+
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best
+
+
+# ---------- Policy ----------
+
+def policy(you, opponent) -> str:
+    you = normalize(you)
+    opponent = normalize(opponent)
+
+    # Fallback: first legal move
+    fallback = None
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                fallback = (r, c, 0, 'L')
+                break
+        if fallback is not None:
+            break
+
+    if fallback is None:
+        # Should not happen per prompt, but keep something syntactically valid.
+        return "1,1,0,L"
+
+    empties = 36 - count_pieces(you, opponent)
+
+    # 1) Tactical scan over all legal moves:
+    #    prefer immediate win, else remember immediate draw.
+    all_moves = legal_moves(you, opponent)
+    immediate_draw = None
+    safe_nonlosing = []
+
+    for mv in all_moves:
+        r, c, q, d = mv
+        ny, no = apply_move(you, opponent, r, c, q, d)
+        val, terminal = terminal_value_after_move(ny, no)
+        if terminal:
+            if val == WIN_SCORE:
+                return f"{r+1},{c+1},{q},{d}"
+            elif val == 0 and immediate_draw is None:
+                immediate_draw = mv
+        else:
+            safe_nonlosing.append(mv)
+
+    # 2) If no win, do a shallow search among ordered candidates.
+    #    Depth depends mildly on game phase.
+    if empties <= 8:
+        depth = 3
+        root_cap = None  # endgames: search all legal moves
+    elif empties <= 16:
+        depth = 2
+        root_cap = 24
+    else:
+        depth = 2
+        root_cap = 16
+
+    root_moves = ordered_moves(you, opponent, cap=root_cap)
+
+    best_move = None
+    best_score = -INF
+
+    for mv in root_moves:
+        r, c, q, d = mv
+        ny, no = apply_move(you, opponent, r, c, q, d)
+        val, terminal = terminal_value_after_move(ny, no)
+
+        if terminal:
+            score = val
+        else:
+            score = -negamax(no, ny, depth - 1, -INF, INF, empties - 1)
+
+        if score > best_score or best_move is None:
+            best_score = score
+            best_move = mv
+
+    # 3) If search found something, use it.
+    if best_move is not None:
+        r, c, q, d = best_move
+        return f"{r+1},{c+1},{q},{d}"
+
+    # 4) Otherwise prefer any immediate draw found.
+    if immediate_draw is not None:
+        r, c, q, d = immediate_draw
+        return f"{r+1},{c+1},{q},{d}"
+
+    # 5) Final guaranteed legal fallback.
+    r, c, q, d = fallback
+    return f"{r+1},{c+1},{q},{d}"

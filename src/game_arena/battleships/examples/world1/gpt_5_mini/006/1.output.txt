@@ -1,0 +1,222 @@
+<thinking>
+I will implement a robust hunt-and-target Battleship policy using a probability/placement-counting approach.
+
+Key parts:
+- Identify connected hit clusters.
+- Detect and remove sunk ships when a hit cluster matches a ship length and is blocked at both ends.
+- Target mode: for each hit cluster, enumerate all ship placements (for remaining ship lengths) that include the cluster and do not conflict with known misses or other hits; accumulate a heatmap for candidate cells to finish that ship.
+- Hunt mode: if there are no hits (or target yields nothing), enumerate all placements for remaining ships that don't overlap misses; build a heatmap over unknown cells.
+- Choose an unknown cell with maximal score; break ties randomly.
+
+This is efficient on 10x10 and uses numpy and random. The function returns a valid (row, col) with board[row][col] == 0.
+</thinking>
+<code>
+import numpy as np
+import random
+from typing import List, Tuple, Set
+
+FLEET = [5, 4, 3, 3, 2]
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Selects a cell (row, col) to fire at next given the current knowledge board.
+    board is a 10x10 list of lists with values:
+     0 -> unknown, -1 -> miss, 1 -> hit
+    """
+    A = np.array(board)
+    n = 10
+
+    # Helper: get hit coordinates set
+    hits = [(r, c) for r in range(n) for c in range(n) if A[r, c] == 1]
+    hits_set = set(hits)
+
+    # Find connected components (4-neighbor) among hits
+    def get_components(hits_set: Set[Tuple[int, int]]):
+        comps = []
+        remaining = set(hits_set)
+        while remaining:
+            start = next(iter(remaining))
+            stack = [start]
+            comp = set()
+            while stack:
+                cell = stack.pop()
+                if cell in comp:
+                    continue
+                comp.add(cell)
+                r, c = cell
+                for dr, dc in ((1,0),(-1,0),(0,1),(0,-1)):
+                    nb = (r+dr, c+dc)
+                    if nb in remaining and nb not in comp:
+                        stack.append(nb)
+            remaining -= comp
+            comps.append(sorted(comp))
+        return comps
+
+    components = get_components(hits_set)
+
+    # Copy remaining ships and remove sunk ones when possible
+    remaining_ships = list(FLEET)
+
+    def try_remove_sunk(components, remaining_ships):
+        # For each component, check if it's straight-line and both ends blocked and length matches a remaining ship
+        removed_any = False
+        for comp in components:
+            coords = comp
+            k = len(coords)
+            if k == 0:
+                continue
+            rows = {r for r, _ in coords}
+            cols = {c for _, c in coords}
+            if len(rows) == 1:
+                # horizontal
+                r = next(iter(rows))
+                cs = sorted([c for _, c in coords])
+                left = cs[0] - 1
+                right = cs[-1] + 1
+                left_blocked = (left < 0) or (A[r, left] == -1)
+                right_blocked = (right >= n) or (A[r, right] == -1)
+                if left_blocked and right_blocked and k in remaining_ships:
+                    remaining_ships.remove(k)
+                    removed_any = True
+            elif len(cols) == 1:
+                # vertical
+                c = next(iter(cols))
+                rs = sorted([r for r, _ in coords])
+                top = rs[0] - 1
+                bottom = rs[-1] + 1
+                top_blocked = (top < 0) or (A[top, c] == -1)
+                bottom_blocked = (bottom >= n) or (A[bottom, c] == -1)
+                if top_blocked and bottom_blocked and k in remaining_ships:
+                    remaining_ships.remove(k)
+                    removed_any = True
+            else:
+                # Not straight, cannot be a single sunk ship
+                continue
+        return removed_any
+
+    # Try removing sunk ships; repeating not necessary but do once
+    try_remove_sunk(components, remaining_ships)
+
+    # Heatmap accumulators
+    target_heat = np.zeros((n, n), dtype=float)
+    hunt_heat = np.zeros((n, n), dtype=float)
+
+    # Helper to check placement validity in target mode (placement must include all hits of this component,
+    # must not overlap misses, must not overlap other hits that are not in this component)
+    def valid_placement_for_component(cells, comp_set):
+        for (r, c) in cells:
+            if A[r, c] == -1:
+                return False
+            if A[r, c] == 1 and (r, c) not in comp_set:
+                return False
+        # ensure comp_set is subset of cells
+        if not comp_set.issubset(set(cells)):
+            return False
+        return True
+
+    # Build target heatmap if there are hits
+    if components:
+        for comp in components:
+            comp_set = set(comp)
+            comp_size = len(comp)
+            # For each remaining ship length that can host this component
+            for L in remaining_ships:
+                if L < comp_size:
+                    continue
+                # Horizontal placements
+                for r in range(n):
+                    for c0 in range(n - L + 1):
+                        cells = [(r, c0 + i) for i in range(L)]
+                        if not valid_placement_for_component(cells, comp_set):
+                            continue
+                        # placement valid: increment unknown cells in it
+                        for (r2, c2) in cells:
+                            if A[r2, c2] == 0:
+                                target_heat[r2, c2] += 1.0
+                # Vertical placements
+                for c in range(n):
+                    for r0 in range(n - L + 1):
+                        cells = [(r0 + i, c) for i in range(L)]
+                        if not valid_placement_for_component(cells, comp_set):
+                            continue
+                        for (r2, c2) in cells:
+                            if A[r2, c2] == 0:
+                                target_heat[r2, c2] += 1.0
+
+    # If no hits or target produced empty, produce hunt heatmap using remaining ships
+    def build_hunt_heat(remaining_ships_list):
+        H = np.zeros((n, n), dtype=float)
+        for L in remaining_ships_list:
+            # horizontal
+            for r in range(n):
+                for c0 in range(n - L + 1):
+                    cells = [(r, c0 + i) for i in range(L)]
+                    invalid = False
+                    for (r2, c2) in cells:
+                        if A[r2, c2] == -1:
+                            invalid = True
+                            break
+                        if A[r2, c2] == 1:
+                            # in hunt mode, if there are hits we typically handle target mode.
+                            # However, placements that overlap hits might represent that ship; but to keep hunt generic,
+                            # allow overlaps with hits (they will be counted) since those hits may belong to that ship.
+                            pass
+                    if invalid:
+                        continue
+                    for (r2, c2) in cells:
+                        if A[r2, c2] == 0:
+                            H[r2, c2] += 1.0
+            # vertical
+            for c in range(n):
+                for r0 in range(n - L + 1):
+                    cells = [(r0 + i, c) for i in range(L)]
+                    invalid = False
+                    for (r2, c2) in cells:
+                        if A[r2, c2] == -1:
+                            invalid = True
+                            break
+                        if A[r2, c2] == 1:
+                            pass
+                    if invalid:
+                        continue
+                    for (r2, c2) in cells:
+                        if A[r2, c2] == 0:
+                            H[r2, c2] += 1.0
+        return H
+
+    # Choose which heatmap to use
+    # Prefer target heat if any positive entries exist
+    choice_heat = None
+    if np.any(target_heat > 0):
+        choice_heat = target_heat
+    else:
+        # build hunt heat
+        hunt_heat = build_hunt_heat(remaining_ships)
+        if np.any(hunt_heat > 0):
+            choice_heat = hunt_heat
+        else:
+            # fallback: if all zeros (rare), pick a random unknown
+            zeros = [(r, c) for r in range(n) for c in range(n) if A[r, c] == 0]
+            if zeros:
+                return random.choice(zeros)
+            else:
+                # no unknowns, return something valid
+                return (0, 0)
+
+    # Mask out already fired cells
+    mask = (A == 0)
+    masked_heat = np.where(mask, choice_heat, -1.0)
+
+    # If all masked_heat <= 0 (possible if all entries are zero), pick random unknown
+    max_val = masked_heat.max()
+    if max_val <= 0:
+        zeros = [(r, c) for r in range(n) for c in range(n) if A[r, c] == 0]
+        if zeros:
+            return random.choice(zeros)
+        else:
+            return (0, 0)
+
+    # Collect candidate cells with maximal score
+    candidates = [(r, c) for r in range(n) for c in range(n) if masked_heat[r, c] == max_val]
+    return random.choice(candidates)
+</code>

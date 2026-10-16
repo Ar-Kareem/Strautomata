@@ -1,0 +1,498 @@
+**Strategy for my Go AI policy:**
+
+I'll implement a Monte Carlo Tree Search (MCTS) based policy with the following key features:
+
+1. **MCTS Framework**: Use UCB1 selection with rapid rollouts
+2. **Heuristic Improvements**:
+   - Pattern matching for local tactical situations
+   - Prioritize moves that reduce opponent liberties
+   - Favor moves in center and influence areas
+   - Consider capturing opportunities immediately
+3. **Efficiency Optimizations**:
+   - Precompute board representation as bitboard for fast operations
+   - Cache legal moves between calls
+   - Limit simulations based on time constraints
+   - Use early termination in simulations
+4. **Opening Book**: Include basic joseki patterns for early game
+5. **Endgame Awareness**: Recognize when to pass based on territory
+
+The policy will balance between exploration and exploitation, with adaptive parameters based on game phase.
+
+<code>
+import random
+import math
+import time
+from collections import defaultdict
+
+class GoBoard:
+    """Efficient board representation using sets for quick operations."""
+    def __init__(self, me, opponent):
+        self.me = set(me)
+        self.opponent = set(opponent)
+        self.size = 19
+        self.komi = 7.5
+        
+    def is_occupied(self, pos):
+        return pos in self.me or pos in self.opponent
+    
+    def is_within_board(self, pos):
+        r, c = pos
+        return 1 <= r <= self.size and 1 <= c <= self.size
+    
+    def get_neighbors(self, pos):
+        r, c = pos
+        neighbors = [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
+        return [n for n in neighbors if self.is_within_board(n)]
+    
+    def get_group_liberties(self, group, player):
+        """Get liberties of a connected group."""
+        liberties = set()
+        for stone in group:
+            for neighbor in self.get_neighbors(stone):
+                if neighbor not in self.me and neighbor not in self.opponent:
+                    liberties.add(neighbor)
+        return liberties
+    
+    def get_connected_group(self, pos, player):
+        """Get all stones in the connected group."""
+        if player == 'me':
+            stones = self.me
+        else:
+            stones = self.opponent
+            
+        if pos not in stones:
+            return set()
+            
+        group = set()
+        stack = [pos]
+        visited = set()
+        
+        while stack:
+            current = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            group.add(current)
+            
+            for neighbor in self.get_neighbors(current):
+                if neighbor in stones and neighbor not in visited:
+                    stack.append(neighbor)
+        
+        return group
+    
+    def count_liberties(self, pos, player):
+        """Count liberties for the group containing pos."""
+        group = self.get_connected_group(pos, player)
+        return len(self.get_group_liberties(group, player))
+    
+    def would_capture(self, move, player):
+        """Check if a move would capture opponent stones."""
+        if self.is_occupied(move):
+            return False
+            
+        # Make a temporary board
+        temp_me = set(self.me)
+        temp_opponent = set(self.opponent)
+        
+        if player == 'me':
+            temp_me.add(move)
+        else:
+            temp_opponent.add(move)
+        
+        # Check opponent neighbors for captures
+        for neighbor in self.get_neighbors(move):
+            if neighbor in temp_opponent:
+                group = self.get_connected_group(neighbor, 'opponent')
+                liberties = self.get_group_liberties(group, 'opponent')
+                if len(liberties) == 0:
+                    return True
+        
+        return False
+    
+    def get_captures(self, move, player):
+        """Get opponent stones that would be captured by this move."""
+        if self.is_occupied(move):
+            return set()
+        
+        temp_board = GoBoard(list(self.me), list(self.opponent))
+        if player == 'me':
+            temp_board.me.add(move)
+        else:
+            temp_board.opponent.add(move)
+        
+        captures = set()
+        for neighbor in self.get_neighbors(move):
+            if neighbor in temp_board.opponent:
+                group = temp_board.get_connected_group(neighbor, 'opponent')
+                if len(temp_board.get_group_liberties(group, 'opponent')) == 0:
+                    captures.update(group)
+        
+        return captures
+    
+    def get_legal_moves(self, player):
+        """Get all legal moves for current player."""
+        moves = []
+        for r in range(1, self.size + 1):
+            for c in range(1, self.size + 1):
+                pos = (r, c)
+                if not self.is_occupied(pos):
+                    # Check for suicide
+                    temp_board = GoBoard(list(self.me), list(self.opponent))
+                    if player == 'me':
+                        temp_board.me.add(pos)
+                    else:
+                        temp_board.opponent.add(pos)
+                    
+                    # Move is legal if it captures or has liberties
+                    would_capture = temp_board.would_capture(pos, player)
+                    if player == 'me':
+                        group = temp_board.get_connected_group(pos, 'me')
+                        has_liberties = len(temp_board.get_group_liberties(group, 'me')) > 0
+                    else:
+                        group = temp_board.get_connected_group(pos, 'opponent')
+                        has_liberties = len(temp_board.get_group_liberties(group, 'opponent')) > 0
+                    
+                    if would_capture or has_liberties:
+                        moves.append(pos)
+        
+        moves.append((0, 0))  # Pass move
+        return moves
+    
+    def apply_move(self, move, player):
+        """Apply a move and return new board state."""
+        new_me = set(self.me)
+        new_opponent = set(self.opponent)
+        
+        if move == (0, 0):
+            return GoBoard(list(new_me), list(new_opponent))
+        
+        if player == 'me':
+            new_me.add(move)
+            # Remove captured opponent stones
+            captures = self.get_captures(move, player)
+            new_opponent -= captures
+        else:
+            new_opponent.add(move)
+            # Remove captured my stones
+            captures = self.get_captures(move, player)
+            new_me -= captures
+        
+        return GoBoard(list(new_me), list(new_opponent))
+
+class MCTSNode:
+    """Node for Monte Carlo Tree Search."""
+    def __init__(self, board, move=None, parent=None, player='me'):
+        self.board = board
+        self.move = move
+        self.parent = parent
+        self.player = player
+        self.children = []
+        self.visits = 0
+        self.wins = 0
+        self.untried_moves = board.get_legal_moves(player)
+        
+    def ucb_score(self, exploration=1.414):
+        """Calculate UCB1 score for node selection."""
+        if self.visits == 0:
+            return float('inf')
+        
+        exploitation = self.wins / self.visits
+        exploration_term = exploration * math.sqrt(math.log(self.parent.visits) / self.visits)
+        
+        return exploitation + exploration_term
+    
+    def select_child(self):
+        """Select child with highest UCB score."""
+        return max(self.children, key=lambda child: child.ucb_score())
+    
+    def expand(self):
+        """Expand one untried move."""
+        if not self.untried_moves:
+            return None
+        
+        move = random.choice(self.untried_moves)
+        self.untried_moves.remove(move)
+        
+        next_player = 'opponent' if self.player == 'me' else 'me'
+        child_board = self.board.apply_move(move, self.player)
+        child_node = MCTSNode(child_board, move, self, next_player)
+        self.children.append(child_node)
+        
+        return child_node
+    
+    def update(self, result):
+        """Update node statistics."""
+        self.visits += 1
+        self.wins += result
+    
+    def is_terminal(self):
+        """Check if node is terminal (game over)."""
+        # Simplified: consider position if both players pass
+        if len(self.board.get_legal_moves(self.player)) == 1:  # Only pass
+            return True
+        return False
+    
+    def is_fully_expanded(self):
+        """Check if all moves have been tried."""
+        return len(self.untried_moves) == 0
+
+def simulate_game(board, player):
+    """Simulate a random game from current position."""
+    current_board = board
+    current_player = player
+    passes = 0
+    
+    for _ in range(200):  # Max moves in simulation
+        legal_moves = current_board.get_legal_moves(current_player)
+        
+        if not legal_moves:
+            break
+            
+        # Biased random move selection
+        move_scores = []
+        for move in legal_moves:
+            score = 0
+            
+            # Prefer moves near existing stones
+            if move != (0, 0):
+                for r in range(max(1, move[0]-2), min(20, move[0]+3)):
+                    for c in range(max(1, move[1]-2), min(20, move[1]+3)):
+                        if (r, c) in current_board.me or (r, c) in current_board.opponent:
+                            score += 1
+            
+            # Strong preference for capturing moves
+            if current_board.would_capture(move, current_player):
+                score += 10
+            
+            # Center preference for opening
+            center_distance = abs(move[0] - 10) + abs(move[1] - 10)
+            if center_distance < 5:
+                score += 2
+            
+            move_scores.append(score)
+        
+        # Softmax selection
+        max_score = max(move_scores)
+        if max_score > 0:
+            exp_scores = [math.exp(score - max_score) for score in move_scores]
+            total = sum(exp_scores)
+            probs = [s/total for s in exp_scores]
+            
+            # Random selection based on probabilities
+            move = random.choices(legal_moves, weights=probs, k=1)[0]
+        else:
+            move = random.choice(legal_moves)
+        
+        if move == (0, 0):
+            passes += 1
+            if passes >= 2:
+                break
+        else:
+            passes = 0
+        
+        current_board = current_board.apply_move(move, current_player)
+        current_player = 'opponent' if current_player == 'me' else 'me'
+    
+    # Evaluate final position
+    return evaluate_position(current_board)
+
+def evaluate_position(board):
+    """Evaluate board position from my perspective."""
+    # Simple evaluation: stone count + area influence
+    my_stones = len(board.me)
+    opp_stones = len(board.opponent)
+    
+    # Count influence
+    my_influence = 0
+    opp_influence = 0
+    
+    for r in range(1, 20):
+        for c in range(1, 20):
+            pos = (r, c)
+            if pos in board.me:
+                my_influence += 3
+                # Spread influence
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        nr, nc = r + dr, c + dc
+                        if 1 <= nr <= 19 and 1 <= nc <= 19:
+                            npos = (nr, nc)
+                            if npos not in board.me and npos not in board.opponent:
+                                my_influence += 0.5
+            elif pos in board.opponent:
+                opp_influence += 3
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        nr, nc = r + dr, c + dc
+                        if 1 <= nr <= 19 and 1 <= nc <= 19:
+                            npos = (nr, nc)
+                            if npos not in board.me and npos not in board.opponent:
+                                opp_influence += 0.5
+    
+    # Territory estimation
+    score = (my_stones - opp_stones) + (my_influence - opp_influence) / 10
+    score += board.komi  # Komi advantage
+    
+    # Normalize to [0, 1] range
+    normalized = 1 / (1 + math.exp(-score / 10))
+    return normalized
+
+def mcts_search(board, time_limit=0.95):
+    """Perform MCTS search within time limit."""
+    root = MCTSNode(board, player='me')
+    
+    start_time = time.time()
+    iterations = 0
+    
+    while time.time() - start_time < time_limit:
+        node = root
+        
+        # Selection
+        while node.is_fully_expanded() and node.children:
+            node = node.select_child()
+        
+        # Expansion
+        if not node.is_terminal() and not node.is_fully_expanded():
+            node = node.expand()
+            if node is None:
+                continue
+        
+        # Simulation
+        if node is not None:
+            result = simulate_game(node.board, node.player)
+        else:
+            result = simulate_game(root.board, 'me')
+        
+        # Backpropagation
+        while node is not None:
+            node.update(result)
+            node = node.parent
+            result = 1 - result  # Switch perspective
+        
+        iterations += 1
+        if iterations > 1000:  # Safety limit
+            break
+    
+    # Select best move
+    if not root.children:
+        return (0, 0)  # Pass if no moves
+    
+    # Choose move with highest win rate
+    best_child = max(root.children, key=lambda child: child.wins / child.visits if child.visits > 0 else 0)
+    return best_child.move
+
+def opening_move(board, memory):
+    """Special opening moves for early game."""
+    # Record opening moves in memory
+    if 'move_count' not in memory:
+        memory['move_count'] = 0
+    
+    move_count = memory['move_count']
+    memory['move_count'] += 1
+    
+    # Basic opening patterns
+    if move_count == 0:
+        return (4, 4), memory  # Star point
+    elif move_count == 1:
+        # Respond to opponent's first move
+        if board.opponent:
+            # Play approach or pincer
+            opp_first = list(board.opponent)[0]
+            if opp_first[0] <= 10:
+                return (opp_first[0] + 3, opp_first[1]), memory
+            else:
+                return (opp_first[0] - 3, opp_first[1]), memory
+    elif move_count == 2:
+        # Third move - extend or approach
+        if len(board.me) == 1:
+            my_first = list(board.me)[0]
+            return (my_first[0], my_first[1] + 3), memory
+    
+    return None
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    try:
+        # Initialize memory if needed
+        if 'game_phase' not in memory:
+            memory['game_phase'] = 'opening'
+            memory['last_move'] = None
+            memory['move_count'] = 0
+            memory['consecutive_passes'] = 0
+        
+        board = GoBoard(me, opponent)
+        
+        # Check for immediate captures (urgent moves)
+        legal_moves = board.get_legal_moves('me')
+        if (0, 0) in legal_moves:
+            legal_moves.remove((0, 0))  # Remove pass for now
+        
+        # Look for capturing moves
+        capturing_moves = []
+        for move in legal_moves:
+            if board.would_capture(move, 'me'):
+                captures = board.get_captures(move, 'me')
+                if len(captures) > 0:
+                    capturing_moves.append((move, len(captures)))
+        
+        if capturing_moves:
+            # Choose the capture with most stones
+            best_capture = max(capturing_moves, key=lambda x: x[1])[0]
+            memory['last_move'] = best_capture
+            memory['consecutive_passes'] = 0
+            return best_capture, memory
+        
+        # Check if opponent just captured - consider recapture
+        if memory['last_move'] and memory['last_move'] in opponent:
+            # Check if we can recapture
+            for move in legal_moves:
+                if board.would_capture(move, 'me'):
+                    captures = board.get_captures(move, 'me')
+                    if memory['last_move'] in captures:
+                        memory['last_move'] = move
+                        memory['consecutive_passes'] = 0
+                        return move, memory
+        
+        # Opening moves
+        if len(me) + len(opponent) < 6:
+            opening = opening_move(board, memory)
+            if opening is not None:
+                return opening
+        
+        # Use MCTS for main search
+        move = mcts_search(board, time_limit=0.8)
+        
+        # Update memory
+        memory['last_move'] = move
+        if move == (0, 0):
+            memory['consecutive_passes'] += 1
+        else:
+            memory['consecutive_passes'] = 0
+        
+        # Update game phase
+        total_moves = len(me) + len(opponent)
+        if total_moves < 30:
+            memory['game_phase'] = 'opening'
+        elif total_moves < 150:
+            memory['game_phase'] = 'middlegame'
+        else:
+            memory['game_phase'] = 'endgame'
+        
+        # If both passed recently, continue passing
+        if memory['consecutive_passes'] >= 2:
+            move = (0, 0)
+        
+        return move, memory
+        
+    except Exception as e:
+        # Fallback: return a legal move
+        board = GoBoard(me, opponent)
+        legal_moves = board.get_legal_moves('me')
+        if not legal_moves:
+            return (0, 0), memory
+        
+        # Prefer center moves as fallback
+        center_moves = [(r, c) for (r, c) in legal_moves if 5 <= r <= 15 and 5 <= c <= 15]
+        if center_moves:
+            return center_moves[0], memory
+        return legal_moves[0], memory
+</code>

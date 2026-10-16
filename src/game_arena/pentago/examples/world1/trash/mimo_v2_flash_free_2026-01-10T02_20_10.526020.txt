@@ -1,0 +1,353 @@
+The strategy is to use a depth-limited Minimax search with Alpha-Beta pruning. This approach evaluates potential moves by simulating the game state after placement and rotation. It prioritizes moves that immediately win, block opponent wins, create future threats (like 4-in-a-row with an open end), or disrupt opponent lines. The evaluation function balances immediate tactical opportunities with positional control.
+
+```python
+import numpy as np
+
+# Set recursion limit higher to prevent stack overflow in deep searches, 
+# though we strictly control depth.
+sys.setrecursionlimit(2000)
+
+def policy(you, opponent):
+    # Convert inputs to numpy arrays for efficient processing
+    # We assume 'you' and 'opponent' are 6x6 arrays/lists of integers
+    you_board = np.array(you, dtype=np.int8)
+    opp_board = np.array(opponent, dtype=np.int8)
+    
+    # Precompute the coordinates of the quadrants
+    # quad 0: rows 0-2, cols 0-2
+    # quad 1: rows 0-2, cols 3-5
+    # quad 2: rows 3-5, cols 0-2
+    # quad 3: rows 3-5, cols 3-5
+    quad_coords = [
+        (slice(0, 3), slice(0, 3)),
+        (slice(0, 3), slice(3, 6)),
+        (slice(3, 6), slice(0, 3)),
+        (slice(3, 6), slice(3, 6))
+    ]
+
+    def check_win(board):
+        # Checks if the board has a 5-in-a-row
+        # Returns True if win, False otherwise
+        # We check horizontal, vertical, and both diagonals
+        kernel_h = np.ones((1, 5), dtype=np.int8)
+        kernel_v = np.ones((5, 1), dtype=np.int8)
+        kernel_d1 = np.eye(5, dtype=np.int8)
+        kernel_d2 = np.flipud(kernel_d1)
+
+        # Use convolution to detect 5-in-a-row efficiently
+        # Valid positions are where sum == 5
+        if (convolve2d(board, kernel_h, mode='valid') == 5).any(): return True
+        if (convolve2d(board, kernel_v, mode='valid') == 5).any(): return True
+        if (convolve2d(board, kernel_d1, mode='valid') == 5).any(): return True
+        if (convolve2d(board, kernel_d2, mode='valid') == 5).any(): return True
+        return False
+
+    def get_winning_moves(board, val):
+        # Finds moves that result in an immediate win
+        winning_moves = []
+        empty_cells = np.argwhere(board == 0)
+        for r, c in empty_cells:
+            for q in range(4):
+                for d in ['L', 'R']:
+                    # Create a temp board and apply move
+                    temp_b = board.copy()
+                    temp_b[r, c] = val
+                    apply_rotation(temp_b, q, d)
+                    if check_win(temp_b):
+                        winning_moves.append((r, c, q, d))
+        return winning_moves
+
+    def get_threats(board, val, depth):
+        # Heuristic: count lines with val*count >= 5 - depth (threats)
+        # and ensure at least one end is empty (open-ended)
+        # Returns a score.
+        score = 0
+        lines = []
+        # Collect all lines of length 5 (horizontal, vertical, diag)
+        # This is a bit complex, let's approximate with sliding windows or simple loops
+        # Optimization: Just scan the board
+        rows, cols = board.shape
+        # Horizontal
+        for r in range(rows):
+            for c in range(cols - 4):
+                segment = board[r, c:c+5]
+                score += evaluate_segment(segment, val)
+        # Vertical
+        for c in range(cols):
+            for r in range(rows - 4):
+                segment = board[r:r+5, c]
+                score += evaluate_segment(segment, val)
+        # Diagonals
+        for r in range(rows - 4):
+            for c in range(cols - 4):
+                segment = [board[r+i, c+i] for i in range(5)]
+                score += evaluate_segment(segment, val)
+                segment = [board[r+i, c+4-i] for i in range(5)]
+                score += evaluate_segment(segment, val)
+        return score
+
+    def evaluate_segment(seg, val):
+        # Returns heuristic value of a 5-cell segment
+        count = 0
+        opp = 0
+        empty = 0
+        for x in seg:
+            if x == val: count += 1
+            elif x != 0: opp += 1
+            else: empty += 1
+        
+        if opp > 0: return 0 # Blocked line
+        
+        if count == 5: return 1000000
+        if count == 4: return 10000 # Open 4 is very strong
+        if count == 3: return 1000 # Open 3
+        if count == 2: return 100 # Open 2
+        return 0
+
+    def evaluation(you_b, opp_b):
+        # Score = MyScore - OppScore
+        my_score = get_threats(you_b, 1, 0)
+        opp_score = get_threats(opp_b, 1, 0)
+        # Small bias for board control (center)
+        center = np.array([[0,0,0,0,0,0],
+                           [0,0,0,0,0,0],
+                           [0,0,1,1,0,0],
+                           [0,0,1,1,0,0],
+                           [0,0,0,0,0,0],
+                           [0,0,0,0,0,0]])
+        center_bonus = np.sum(you_b * center) * 5
+        return my_score - opp_score + center_bonus
+
+    def rotate_quadrant_local(board, q, d):
+        # Rotates the quadrant in place on the provided board
+        # q: 0..3, d: 'L' or 'R'
+        r_slice, c_slice = quad_coords[q]
+        quadrant = board[r_slice, c_slice]
+        if d == 'R':
+            # Clockwise
+            board[r_slice, c_slice] = np.rot90(quadrant, 3)
+        else:
+            # Left (Anti-clockwise)
+            board[r_slice, c_slice] = np.rot90(quadrant, 1)
+
+    # Apply rotation helper (used in check_win as well)
+    def apply_rotation(board, q, d):
+        rotate_quadrant_local(board, q, d)
+
+    # --- Search ---
+    LIMIT = 2 # Depth 2 (Opponent response) is safe for 1s limit
+    BEST = -float('inf')
+    BEST_MOVE = None
+    
+    # 1. Immediate Win Check (Ignores opponent defense if I win)
+    # Note: If I place and win, rotation doesn't matter for the win check (except it might block my own win, 
+    # but we choose a rotation that allows win. Actually, rotation is applied after placement.
+    # If I place 5 in a row, rotation will almost certainly break it unless I rotate an unrelated quad.
+    # So I must find a move where placement + specific rotation = Win.
+    
+    immediate_wins = get_winning_moves(you_board, 1)
+    if immediate_wins:
+        return format_move(immediate_wins[0])
+
+    # 2. Check for Opponent Threats (Blocks)
+    # If opponent has a winning move, I must block it.
+    # Opponent wins if they place in (r, c) and rotate (q, d) to get 5.
+    # To block, I can:
+    # a) Place in that (r, c) before them (if I go first this turn? No, I am moving now.)
+    #    If I place in their winning spot, they can't place there.
+    #    BUT, they might rotate a different quad to win? 
+    #    Actually, if I place in (r, c), that spot is occupied. If (r, c) was the critical spot for their win, I blocked it.
+    #    However, they might rotate a quad to move their pieces into line. 
+    #    If I place in their potential spot, I occupy it. If they rotate, they might move a piece into that spot? No, rotation is within quad.
+    #    So if I take their spot, they cannot use it. 
+    #    BUT, they might win by rotation alone? (If they already have 4 in a row and rotation aligns the 5th).
+    #    Or they might win by placing in B and rotating A to align.
+    #    So I need to check if they have any move that results in a win.
+    #    If so, I must counter it. 
+    #    Counter strategies:
+    #    - Place in the spot they would use (if spot is empty).
+    #    - Rotate a quad to break their line (if I place somewhere else and rotate the quad they rely on).
+    
+    # Let's find all opponent winning moves
+    opp_wins = get_winning_moves(opp_board, 1) # Search on opp_board
+    
+    # Simplification: If opp can win, try to block by taking their spot or breaking their line
+    # Since we can't easily decide which rotation breaks their line without full search, 
+    # we will prioritize moves that fill their critical spots.
+    
+    critical_spots = set()
+    for (r, c, q, d) in opp_wins:
+        critical_spots.add((r, c))
+        
+    # 3. Minimax Search
+    # Heuristic: Evaluate moves based on state after my move
+    
+    # Get empty cells (only iterate a subset if board is full to save time)
+    empty_cells = np.argwhere(you_board + opp_board == 0)
+    
+    # If opponent is about to win, try to block
+    if critical_spots:
+        # Try moves that block critical spots first
+        best_block_score = -float('inf')
+        best_block_move = None
+        
+        for r, c in empty_cells:
+            if (r, c) in critical_spots:
+                # Try all rotations to see if we can block
+                for q in range(4):
+                    for d in ['L', 'R']:
+                        # Test move
+                        temp_you = you_board.copy()
+                        temp_opp = opp_board.copy()
+                        temp_you[r, c] = 1
+                        
+                        # Apply rotation
+                        # Important: Rotation affects both. We need to check if opp still wins after this.
+                        rotate_quadrant_local(temp_you, q, d)
+                        rotate_quadrant_local(temp_opp, q, d) # Rotating opp board for correctness of checking
+                        
+                        # Check if opp still has a winning move
+                        # Actually, we just need to check if the board state prevents immediate opp win?
+                        # No, we need to check if after my move, the board is safe.
+                        # If I blocked the spot, the only way opp wins is if they rotate to create a win.
+                        # But opp doesn't move after me in this search. 
+                        # So we just need to ensure that I don't lose immediately.
+                        # If I block the spot, is the board safe?
+                        # If opp wins by rotation, they would need to have 4 in a row that aligns by rotation.
+                        # If I rotate the same quad, I might break it.
+                        
+                        # So for blocking, we just pick a move that blocks the spot.
+                        # We pick the one with best heuristic.
+                        temp_score = evaluation(temp_you, temp_opp)
+                        if temp_score > best_block_score:
+                            best_block_score = temp_score
+                            best_block_move = (r, c, q, d)
+        
+        if best_block_move:
+            return format_move(best_block_move)
+
+    # If no immediate critical threat, or we handled it, run full search
+    # We limit the number of moves to check to keep it fast.
+    # Prioritize moves that create 4-in-a-row or near wins.
+    
+    # Score moves by immediate heuristic
+    scored_moves = []
+    for r, c in empty_cells:
+        for q in range(4):
+            for d in ['L', 'R']:
+                # Temporary boards
+                temp_you = you_board.copy()
+                temp_opp = opp_board.copy()
+                temp_you[r, c] = 1
+                
+                # Rotate
+                rotate_quadrant_local(temp_you, q, d)
+                rotate_quadrant_local(temp_opp, q, d)
+                
+                # Check if I win immediately (already checked, but good for completeness)
+                if check_win(temp_you):
+                    return format_move((r, c, q, d))
+                
+                # Heuristic score for this move
+                # We don't look ahead yet, just basic heuristic
+                h = evaluation(temp_you, temp_opp)
+                scored_moves.append((h, (r, c, q, d)))
+
+    # Sort by heuristic descending
+    scored_moves.sort(key=lambda x: x[0], reverse=True)
+    
+    # Pick top N moves to search deeper
+    SEARCH_WIDTH = 10
+    candidates = scored_moves[:SEARCH_WIDTH]
+    
+    for score, move in candidates:
+        r, c, q, d = move
+        
+        # Simulate my move
+        my_sim = you_board.copy()
+        opp_sim = opp_board.copy()
+        my_sim[r, c] = 1
+        rotate_quadrant_local(my_sim, q, d)
+        rotate_quadrant_local(opp_sim, q, d)
+        
+        # If my move is winning (should have been caught, but check again)
+        if check_win(my_sim):
+            return format_move(move)
+            
+        # Minimax: Opponent's turn
+        # Opponent tries to maximize their score (minimize my score)
+        # We do a limited lookahead (depth 1 for opponent)
+        
+        min_opponent_score = float('inf')
+        
+        # Get opponent's empty cells
+        opp_empty = np.argwhere(my_sim + opp_sim == 0)
+        
+        # Reduce opponent options to keep time (heuristic based on their threats)
+        # Let's just check a few for speed
+        opp_moves_checked = 0
+        MAX_OPP_MOVES = 5 # Limit opponent simulation to prevent timeout
+        
+        for or_, oc in opp_empty:
+            if opp_moves_checked >= MAX_OPP_MOVES: break
+            
+            for oq in range(4):
+                for od in ['L', 'R']:
+                    o_sim_opp = opp_sim.copy()
+                    o_sim_me = my_sim.copy()
+                    o_sim_opp[or_, oc] = 1
+                    rotate_quadrant_local(o_sim_opp, oq, od)
+                    rotate_quadrant_local(o_sim_me, oq, od)
+                    
+                    # Check if opp wins
+                    if check_win(o_sim_opp):
+                        # If opp wins, this move is terrible
+                        val = -10000000 
+                    else:
+                        # Evaluate from my perspective
+                        val = evaluation(o_sim_me, o_sim_opp)
+                    
+                    if val < min_opponent_score:
+                        min_opponent_score = val
+                    
+                    opp_moves_checked += 1
+        
+        # If this move leads to the best worst-case scenario
+        if min_opponent_score > BEST:
+            BEST = min_opponent_score
+            BEST_MOVE = move
+
+    if BEST_MOVE is None:
+        # Fallback: random valid move
+        import random
+        r, c = empty_cells[0]
+        return format_move((r, c, 0, 'L'))
+
+    return format_move(BEST_MOVE)
+
+def format_move(move):
+    # move is (row, col, quad, dir) 0-indexed row/col
+    r, c, q, d = move
+    return f"{r+1},{c+1},{q},{d}"
+
+# Helper for convolution if numpy doesn't have it exposed directly or to be safe
+# Actually numpy doesn't have convolve2d in standard namespace, it's in scipy.signal
+# But we are allowed standard imports. If scipy isn't allowed, we write a check.
+# Since the prompt allows "any standard Python imports", scipy is often available in such environments,
+# but let's implement a manual check to be safe and not rely on scipy.
+def convolve2d(board, kernel, mode='valid'):
+    # Manual 2D convolution for small kernels
+    # Assuming kernel is small (5x5 or smaller)
+    kh, kw = kernel.shape
+    bh, bw = board.shape
+    
+    if mode == 'valid':
+        out_h = bh - kh + 1
+        out_w = bw - kw + 1
+        result = np.zeros((out_h, out_w), dtype=np.int32)
+        for i in range(out_h):
+            for j in range(out_w):
+                result[i, j] = np.sum(board[i:i+kh, j:j+kw] * kernel)
+        return result
+    return None
+```

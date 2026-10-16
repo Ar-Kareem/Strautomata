@@ -1,0 +1,141 @@
+<thinking>
+To create a high-performing Kalah AI within the 1-second time limit, I will implement a Minimax algorithm with Alpha-Beta pruning.
+
+Key considerations:
+1.  **State Representation**: The game state consists of two lists: `you` and `opponent`.
+2.  **Move Simulation**: The `move` function accurately simulates the Kalah rules:
+    -   Sowing seeds counter-clockwise.
+    -   Skipping the opponent's store.
+    -   Extra move if the last seed lands in your store.
+    -   Capturing if the last seed lands in your own empty house.
+3.  **Heuristic Function**: Since we cannot search to the end of the game in most cases, the evaluation function considers:
+    -   Difference in store counts (main objective).
+    -   Seeds remaining in houses (near-endgame potential).
+    -   Potential for extra moves.
+4.  **Search Depth**: A depth of 6-8 is usually achievable within 1 second in Python for Kalah, depending on branching. I will implement a depth-limited search.
+5.  **Game End Logic**: Detects when one side is empty and tallies the final scores.
+
+The AI will prioritize moves that result in extra turns, as these provide immediate tactical advantages.
+</thinking>
+
+<code>
+import copy
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Kalah move-selection policy using Minimax with Alpha-Beta pruning.
+    Returns the index (0-5) of the chosen move.
+    """
+
+    def get_moves(state_you):
+        return [i for i in range(6) if state_you[i] > 0]
+
+    def simulate_move(state_you, state_opp, move_idx):
+        new_you = list(state_you)
+        new_opp = list(state_opp)
+        
+        seeds = new_you[move_idx]
+        new_you[move_idx] = 0
+        
+        curr_side = 0 # 0 for you, 1 for opponent
+        curr_idx = move_idx + 1
+        repeat_turn = False
+        
+        while seeds > 0:
+            if curr_side == 0:
+                if curr_idx < 7:
+                    new_you[curr_idx] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        if curr_idx == 6:
+                            repeat_turn = True
+                        elif new_you[curr_idx] == 1 and new_opp[5 - curr_idx] > 0:
+                            # Capture
+                            new_you[6] += new_you[curr_idx] + new_opp[5 - curr_idx]
+                            new_you[curr_idx] = 0
+                            new_opp[5 - curr_idx] = 0
+                    curr_idx += 1
+                else:
+                    curr_side = 1
+                    curr_idx = 0
+            else: # Opponent side
+                if curr_idx < 6:
+                    new_opp[curr_idx] += 1
+                    seeds -= 1
+                    curr_idx += 1
+                else:
+                    curr_side = 0
+                    curr_idx = 0
+                    
+        # Check if game ended
+        if sum(new_you[:6]) == 0 or sum(new_opp[:6]) == 0:
+            new_you[6] += sum(new_you[:6])
+            new_opp[6] += sum(new_opp[:6])
+            for i in range(6):
+                new_you[i] = 0
+                new_opp[i] = 0
+            return new_you, new_opp, False
+            
+        return new_you, new_opp, repeat_turn
+
+    def evaluate(state_you, state_opp):
+        # Primary objective: store difference
+        # Secondary objective: total seeds on your side
+        return (state_you[6] - state_opp[6]) * 10 + sum(state_you[:6])
+
+    def minimax(state_you, state_opp, depth, alpha, beta, is_maximizing):
+        moves = get_moves(state_you if is_maximizing else state_opp)
+        
+        if depth == 0 or not moves:
+            return evaluate(state_you, state_opp)
+
+        if is_maximizing:
+            max_eval = float('-inf')
+            for m in moves:
+                ny, no, repeat = simulate_move(state_you, state_opp, m)
+                if repeat:
+                    eval = minimax(ny, no, depth - 1, alpha, beta, True)
+                else:
+                    eval = minimax(ny, no, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            # Opponent's perspective: swap roles for simulation
+            for m in moves:
+                no, ny, repeat = simulate_move(state_opp, state_you, m)
+                if repeat:
+                    eval = minimax(ny, no, depth - 1, alpha, beta, False)
+                else:
+                    eval = minimax(ny, no, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # Move Selection Logic
+    best_move = -1
+    best_val = float('-inf')
+    legal_moves = get_moves(you)
+    
+    # Simple depth management
+    search_depth = 8
+    
+    # Priority: Extra turn moves are often better
+    for m in legal_moves:
+        ny, no, repeat = simulate_move(you, opponent, m)
+        if repeat:
+            val = minimax(ny, no, search_depth - 1, float('-inf'), float('inf'), True)
+        else:
+            val = minimax(ny, no, search_depth - 1, float('-inf'), float('inf'), False)
+            
+        if val > best_val:
+            best_val = val
+            best_move = m
+            
+    return best_move if best_move != -1 else legal_moves[0]
+</code>

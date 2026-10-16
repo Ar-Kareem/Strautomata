@@ -1,0 +1,108 @@
+To solve this problem, we need to implement a targeting policy for a Battleship-like game on a 10x10 grid. The goal is to efficiently sink all opponent ships by intelligently selecting which cell to fire at next based on previous shots. The policy should switch between "hunt" mode (when no hits are known) and "target" mode (when hits are known) to optimize the search process.
+
+### Approach
+1. **Hunt Mode**: When no hits are known, the strategy uses a checkerboard pattern to cover the grid efficiently. This pattern ensures that all cells are covered in the fewest shots possible, as ships of different lengths are equally likely to occupy cells of both parities.
+2. **Target Mode**: When hits are known, the strategy forms clusters of connected hits. Each cluster is analyzed to determine the orientation (horizontal or vertical) of the ship. The policy then targets the endpoints of the ship's potential location to sink it efficiently.
+3. **Cluster Formation**: Using BFS (Breadth-First Search), connected hits (adjacent horizontally or vertically) are grouped into clusters. These clusters help in determining the ship's orientation and extent.
+4. **Candidate Generation**: For each cluster, candidate shots are generated. For a single hit, all four adjacent cells are considered. For a cluster of hits in the same row or column, the endpoints (left/right for horizontal, up/down for vertical) are targeted. If the cluster is not aligned, adjacent cells of each hit are considered.
+5. **Hunt Mode Fallback**: If no candidates are generated from clusters, the policy reverts to hunt mode to cover remaining unknown cells.
+
+### Solution Code
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    known_hits = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                known_hits.append((r, c))
+    
+    if not known_hits:
+        for r in range(10):
+            for c in range(10):
+                if ((r % 2 == 0 and c % 2 == 0) or (r % 2 == 1 and c % 2 == 1)) and board[r][c] == 0:
+                    return (r, c)
+        for r in range(10):
+            for c in range(10):
+                if board[r][c] == 0:
+                    return (r, c)
+        return (0, 0)
+    
+    visited = set()
+    clusters = []
+    for hit in known_hits:
+        if hit in visited:
+            continue
+        cluster = [hit]
+        visited.add(hit)
+        queue = [hit]
+        while queue:
+            node = queue.pop()
+            for next_hit in known_hits:
+                if next_hit in visited:
+                    continue
+                if (node[0] == next_hit[0] and abs(node[1] - next_hit[1]) == 1) or (node[1] == next_hit[1] and abs(node[0] - next_hit[0]) == 1):
+                    cluster.append(next_hit)
+                    visited.add(next_hit)
+                    queue.append(next_hit)
+        clusters.append(cluster)
+    
+    clusters.sort(key=len, reverse=True)
+    
+    for cluster in clusters:
+        if len(cluster) == 1:
+            r, c = cluster[0]
+            for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    return (nr, nc)
+        else:
+            rows = set(r0 for r0, c0 in cluster)
+            cols = set(c0 for r0, c0 in cluster)
+            if len(rows) == 1:
+                r = list(rows)[0]
+                cols_list = sorted([c0 for r0, c0 in cluster if r0 == r])
+                min_c = cols_list[0]
+                max_c = cols_list[-1]
+                if min_c - 1 >= 0 and board[r][min_c-1] == 0:
+                    return (r, min_c-1)
+                if max_c + 1 < 10 and board[r][max_c+1] == 0:
+                    return (r, max_c+1)
+            elif len(cols) == 1:
+                c = list(cols)[0]
+                rows_list = sorted([r0 for r0, c0 in cluster if c0 == c])
+                min_r = rows_list[0]
+                max_r = rows_list[-1]
+                if min_r - 1 >= 0 and board[min_r-1][c] == 0:
+                    return (min_r-1, c)
+                if max_r + 1 < 10 and board[max_r+1][c] == 0:
+                    return (max_r+1, c)
+            else:
+                for (r, c) in cluster:
+                    for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                        nr, nc = r+dr, c+dc
+                        if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                            return (nr, nc)
+    
+    for r in range(10):
+        for c in range(10):
+            if ((r % 2 == 0 and c % 2 == 0) or (r % 2 == 1 and c % 2 == 1)) and board[r][c] == 0:
+                return (r, c)
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    return (0, 0)
+```
+
+### Explanation
+1. **Initial Check**: The function first scans the board to collect all known hits (cells where a ship was hit).
+2. **Hunt Mode**: If there are no hits, the policy uses a checkerboard pattern to cover all cells. This pattern ensures efficient coverage by targeting cells where the sum of row and column indices is even or odd alternately.
+3. **Cluster Formation**: For hits, the policy uses BFS to form clusters of adjacent hits. Clusters help in determining the ship orientation and potential endpoints.
+4. **Target Mode**: For each cluster, the policy generates candidate shots:
+   - Single hits: All four adjacent cells are considered.
+   - Aligned clusters (horizontal or vertical): Endpoints of the cluster are targeted (e.g., left/right for horizontal, up/down for vertical).
+   - Non-aligned clusters: Adjacent cells of each hit are considered.
+5. **Hunt Mode Fallback**: If no candidates are found from clusters, the policy reverts to the checkerboard pattern to cover remaining cells.
+6. **Return**: The first valid candidate shot (unfired cell) is returned. If no candidates are found, it defaults to the first available cell. 
+
+This approach efficiently balances exploration and exploitation, leveraging known hits to target ships while using patterns to explore the grid when no hits are available. The solution optimally reduces the number of shots needed to sink all ships.

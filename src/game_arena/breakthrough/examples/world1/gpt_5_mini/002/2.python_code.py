@@ -1,0 +1,275 @@
+
+import time
+import random
+from functools import lru_cache
+
+# Breakthrough policy for 8x8 board
+# API:
+# def policy(me: list[tuple[int,int]], opp: list[tuple[int,int]], color: str) -> tuple[tuple[int,int], tuple[int,int]]
+
+# Constants
+MAX_TIME = 0.90  # seconds (keep under 1s)
+MAX_DEPTH = 5    # max search depth (iterative deepening)
+INF = 10**9
+
+def policy(me, opp, color):
+    """
+    Choose a move for Breakthrough.
+    me, opp: lists of (row, col)
+    color: 'b' (black, moves downwards to lower row values) or 'w' (white, moves upwards to higher row values)
+    Returns: ((r_from, c_from), (r_to, c_to))
+    """
+    start_time = time.time()
+
+    # Convert to sets for fast lookup
+    my_pieces = set(me)
+    opp_pieces = set(opp)
+
+    dr = 1 if color == 'w' else -1
+    goal_row = 7 if color == 'w' else 0
+
+    # Generate legal moves
+    def gen_moves(my_set, opp_set, cdr):
+        moves = []
+        occ = my_set | opp_set
+        for (r, c) in my_set:
+            for dc in (-1, 0, 1):
+                nr, nc = r + cdr, c + dc
+                if 0 <= nr <= 7 and 0 <= nc <= 7:
+                    if dc == 0:
+                        # straight forward: only if empty
+                        if (nr, nc) not in occ:
+                            moves.append(((r, c), (nr, nc)))
+                    else:
+                        # diagonal: can move into empty or capture opponent
+                        if (nr, nc) in opp_set:
+                            moves.append(((r, c), (nr, nc)))
+                        elif (nr, nc) not in occ:
+                            moves.append(((r, c), (nr, nc)))
+        return moves
+
+    # Quick terminal checks
+    if not my_pieces:
+        # no pieces -> no move; should rarely happen. Return something legal if possible.
+        # Try to move any opponent piece (nonsense) but we must return legal move: pick any diagonal forward of an opponent piece that's empty
+        # As a fallback, return arbitrary legal move made-up from board edges (but must be legal). We'll attempt to find any single-step legal move for any potential piece on board.
+        for r in range(8):
+            for c in range(8):
+                # assume a dummy piece at (r,c) moving forward
+                pass
+    # Build initial move list
+    root_moves = gen_moves(my_pieces, opp_pieces, dr)
+    if not root_moves:
+        # No legal moves found (very rare). Try to find any capture by scanning opp pieces as if they'd move backwards.
+        # As last-resort, pick a random legal-looking move that is inside the board: try to move the first piece if possible.
+        for (r, c) in my_pieces:
+            for dc in (-1, 0, 1):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr <= 7 and 0 <= nc <= 7:
+                    # if target occupied by opponent and dc != 0 it's capture, else if empty and allowed
+                    if (nr, nc) not in (my_pieces | opp_pieces) or ((nr, nc) in opp_pieces and dc != 0):
+                        return ((r, c), (nr, nc))
+        # If truly nothing, return the first piece staying (illegal but fallback). Should not happen.
+        first = next(iter(my_pieces))
+        return (first, first)
+
+    # Immediate winning or capturing heuristics
+    for mv in root_moves:
+        (_, _), (tr, tc) = mv
+        if tr == goal_row:
+            return mv  # immediate promotion/win
+
+    # Evaluation function
+    def evaluate(my_set, opp_set):
+        # Terminal checks
+        if not opp_set:
+            return INF
+        if not my_set:
+            return -INF
+
+        # Material
+        material = 100 * (len(my_set) - len(opp_set))
+
+        # Advancement: sum of progress towards goal. Normalize so larger is better.
+        if color == 'w':
+            progress = sum(r for (r, _) in my_set) - sum(r for (r, _) in opp_set)
+        else:
+            progress = sum(7 - r for (r, _) in my_set) - sum(7 - r for (r, _) in opp_set)
+        progress_score = 5 * progress
+
+        # Mobility
+        my_moves = len(gen_moves(my_set, opp_set, dr))
+        opp_moves = len(gen_moves(opp_set, my_set, -dr))
+        mobility = 2 * (my_moves - opp_moves)
+
+        # Threatened pieces: pieces that can be captured by opponent next move
+        threatened = 0
+        opp_dr = -dr
+        opp_positions = opp_set
+        my_positions = my_set
+        # For each opponent piece, see squares it could capture into; count my pieces on those squares
+        threats = 0
+        for (orow, oc) in opp_positions:
+            for odc in (-1, 1):
+                tr = orow + opp_dr
+                tc = oc + odc
+                if 0 <= tr <= 7 and 0 <= tc <= 7:
+                    if (tr, tc) in my_positions:
+                        threats += 1
+        # Threats value negative
+        threats_score = -10 * threats
+
+        # Central control: pieces closer to centre get slight bonus
+        center_score = 0
+        for (r, c) in my_set:
+            center_score += 1 - (abs(3.5 - r) + abs(3.5 - c)) * 0.05
+
+        score = material + progress_score + mobility + threats_score + center_score
+        return score
+
+    # Make / unmake moves
+    def apply_move(my_set, opp_set, mv):
+        (r, c), (nr, nc) = mv
+        new_my = set(my_set)
+        new_opp = set(opp_set)
+        new_my.remove((r, c))
+        # capture?
+        if (nr, nc) in new_opp:
+            new_opp.remove((nr, nc))
+        new_my.add((nr, nc))
+        return new_my, new_opp
+
+    # Move ordering: prefer captures and promotions
+    def move_score(mv, my_set, opp_set):
+        (_, _), (nr, nc) = mv
+        s = 0
+        if (nr, nc) in opp_set:
+            s += 1000
+        if nr == goal_row:
+            s += 2000
+        # advancement
+        if color == 'w':
+            s += nr
+        else:
+            s += (7 - nr)
+        return s
+
+    # Transposition table
+    tt = {}
+
+    time_limit = start_time + MAX_TIME
+
+    def hash_key(my_set, opp_set, turn_color):
+        # sort positions to make key
+        return (tuple(sorted(my_set)), tuple(sorted(opp_set)), turn_color)
+
+    # Alpha-beta with negamax style
+    def alphabeta(my_set, opp_set, depth, alpha, beta, maximizing_color, start_depth):
+        # maximizing_color is True when evaluating from original player's point of view
+        # here we always evaluate from original player's perspective, so when we flip sides, multiply by -1
+        # But for simplicity we will return score from original player's perspective.
+        now = time.time()
+        if now > time_limit:
+            raise TimeoutError
+
+        key = hash_key(my_set, opp_set, 1 if maximizing_color else 0)
+        if key in tt and tt[key][0] >= depth:
+            return tt[key][1]
+
+        # Terminal
+        if not opp_set:
+            return INF
+        if not my_set:
+            return -INF
+        if depth == 0:
+            val = evaluate(my_set, opp_set)
+            tt[key] = (0, val)
+            return val
+
+        moves = gen_moves(my_set, opp_set, dr if maximizing_color else -dr)
+        if not moves:
+            # no moves: losing state for the side to move
+            return -INF if maximizing_color else INF
+
+        # Order moves
+        moves.sort(key=lambda m: move_score(m, my_set, opp_set), reverse=True)
+
+        best = -INF
+        for mv in moves:
+            # Apply move for side to move. If maximizing_color True, side to move is original player
+            if maximizing_color:
+                n_my, n_opp = apply_move(my_set, opp_set, mv)
+                val = alphabeta(n_my, n_opp, depth - 1, alpha, beta, False, start_depth)
+            else:
+                # Now it's opponent turn; we flip perspective: opponent moves with -dr relative to original
+                # When maximizing_color is False, my_set and opp_set are opponent pieces relative to original.
+                # So apply_move uses my_set as opponent's set. To keep evaluation consistent, we swap roles when recursing.
+                n_opp, n_my = apply_move(opp_set, my_set, mv)
+                # After applying opponent's move, call alphabeta where it's original player's turn again
+                val = alphabeta(n_my, n_opp, depth - 1, alpha, beta, True, start_depth)
+
+            if val is None:
+                continue
+            if val > best:
+                best = val
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+
+        tt[key] = (depth, best)
+        return best
+
+    best_move = None
+    best_score = -INF
+
+    # Iterative deepening
+    try:
+        for depth in range(1, MAX_DEPTH + 1):
+            # early stop if time almost up
+            if time.time() > time_limit:
+                break
+
+            moves = root_moves[:]
+            # order root moves: promotions and captures first
+            moves.sort(key=lambda m: move_score(m, my_pieces, opp_pieces), reverse=True)
+
+            current_best = None
+            current_best_score = -INF
+
+            for mv in moves:
+                if time.time() > time_limit:
+                    break
+                # Apply move
+                new_my, new_opp = apply_move(my_pieces, opp_pieces, mv)
+                # Check immediate goal
+                (_, _), (nr, nc) = mv
+                if nr == goal_row:
+                    return mv
+                # Evaluate by searching opponent response
+                try:
+                    val = alphabeta(new_opp, new_my, depth - 1, -INF, INF, False, depth)
+                    # note: alphabeta returns score from original player's perspective
+                except TimeoutError:
+                    # time up during deeper search; break to use best so far
+                    raise TimeoutError
+
+                # val is score from original player's perspective
+                if val > current_best_score:
+                    current_best_score = val
+                    current_best = mv
+
+            if current_best is not None:
+                best_move = current_best
+                best_score = current_best_score
+
+    except TimeoutError:
+        # fall through and use best_move found so far
+        pass
+
+    # If no best_move found from search, fall back on heuristics: prefer captures, then advancement, then random legal
+    if best_move is None:
+        # prefer immediate captures or promotion
+        root_moves.sort(key=lambda m: move_score(m, my_pieces, opp_pieces), reverse=True)
+        best_move = root_moves[0]
+
+    return best_move

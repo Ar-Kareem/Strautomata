@@ -1,0 +1,87 @@
+
+import numpy as np
+import random
+
+# Policy for Amazons on a 6x6 board.
+# board: 6x6 numpy array with values 0 (empty), 1 (our amazon), 2 (opponent), -1 (arrow)
+# Returns a move string "r1,c1:r2,c2:ra,ca" (0-indexed)
+def policy(board) -> str:
+    board = np.asarray(board)
+    H, W = board.shape
+    assert H == 6 and W == 6, "Expected 6x6 board"
+
+    # 8 queen-like directions
+    dirs = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    def in_bounds(r, c):
+        return 0 <= r < H and 0 <= c < W
+
+    # find our amazons
+    my_amazons = list(map(tuple, np.argwhere(board == 1)))
+    # shuffle to add some variety
+    random.shuffle(my_amazons)
+
+    for fr, fc in my_amazons:
+        # For each direction, step out to find possible landing squares
+        for dr, dc in dirs:
+            r, c = fr + dr, fc + dc
+            while in_bounds(r, c) and board[r, c] == 0:
+                # (fr,fc) -> (r,c) is a legal move (path unobstructed by construction)
+                # Make a temporary board reflecting the move (vacate from, occupy to)
+                b2 = board.copy()
+                b2[fr, fc] = 0
+                b2[r, c] = 1
+
+                # From landing square, generate arrow shots
+                # iterate through all directions and distances
+                # We'll also shuffle directions to vary moves
+                dirs_shot = dirs.copy()
+                random.shuffle(dirs_shot)
+                shot_found = False
+                for sdr, sdc in dirs_shot:
+                    sr, sc = r + sdr, c + sdc
+                    while in_bounds(sr, sc) and b2[sr, sc] == 0:
+                        # (sr,sc) is a legal arrow landing square
+                        move_str = f"{fr},{fc}:{r},{c}:{sr},{sc}"
+                        return move_str
+                        # continue searching if we wanted alternative; but return first
+                        sr += sdr
+                        sc += sdc
+                # proceed to next possible landing square along this direction
+                r += dr
+                c += dc
+
+    # If we reach here, no legal move was found. According to problem statement,
+    # environment will not call policy if we have no legal move. Still, be robust:
+    # As a fallback, try systematic search without shuffling (should not be needed).
+    my_amazons = list(map(tuple, np.argwhere(board == 1)))
+    for fr, fc in my_amazons:
+        for dr, dc in dirs:
+            r, c = fr + dr, fc + dc
+            while in_bounds(r, c) and board[r, c] == 0:
+                b2 = board.copy()
+                b2[fr, fc] = 0
+                b2[r, c] = 1
+                for sdr, sdc in dirs:
+                    sr, sc = r + sdr, c + sdc
+                    while in_bounds(sr, sc) and b2[sr, sc] == 0:
+                        return f"{fr},{fc}:{r},{c}:{sr},{sc}"
+                        sr += sdr
+                        sc += sdc
+                r += dr
+                c += dc
+
+    # As a last-ditch fallback (shouldn't happen): return a syntactically valid move
+    # even though it may be illegal in a terminal position. Choose first amazon and
+    # move zero steps (invalid but syntactically correct). Environment guarantees this won't be used.
+    if my_amazons:
+        fr, fc = my_amazons[0]
+        # find any empty cell to use as to and arrow (may be illegal)
+        empties = list(map(tuple, np.argwhere(board == 0)))
+        if empties:
+            to_r, to_c = empties[0]
+            arrow_r, arrow_c = empties[0]
+            return f"{fr},{fc}:{to_r},{to_c}:{arrow_r},{arrow_c}"
+
+    # If absolutely nothing, raise (should not occur)
+    raise RuntimeError("No legal move found")

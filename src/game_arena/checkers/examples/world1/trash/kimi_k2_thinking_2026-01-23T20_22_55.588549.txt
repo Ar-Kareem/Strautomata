@@ -1,0 +1,315 @@
+**Strategy**
+
+The policy uses a classic depth‑first search with alpha‑beta pruning and iterative deepening.
+
+* **Move generation** – All legal moves are generated.  If a capture is possible any regular move is illegal, so only capture moves are returned.  Capture sequences are generated recursively so that a piece must continue jumping while any jump is possible (the “maximum‑capture” rule).  
+* **Heuristic evaluation** – A position is scored by material (man = 1, king = 3) plus a tiny positional bonus: men are encouraged to advance toward the promotion row, kings are given a slight reward for occupying central columns.  
+* **Search** – Minimax with alpha‑beta pruning explores the game tree.  Moves are ordered by a simple heuristic (value of captured pieces for captures, advancement for regular moves) to improve pruning.  
+* **Iterative deepening** – The search is repeated for increasing depths until a 0.9 s time limit is reached; the best move found at the deepest completed depth is returned.  This guarantees a move is always available while using the remaining time for deeper search when possible.  
+
+The code below follows exactly the required API and runs within the 1 s limit on a modern CPU.
+
+```python
+import time
+from collections import namedtuple
+
+# ----------------------------------------------------------------------
+# Constants
+# ----------------------------------------------------------------------
+BOARD_SIZE = 8
+
+# forward directions for men (depends on colour)
+DIRS = {
+    'w': [(1, -1), (1, 1)],   # white moves upward (increasing row)
+    'b': [(-1, -1), (-1, 1)]  # black moves downward (decreasing row)
+}
+# kings can move in any diagonal direction
+KING_DIRS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def on_board(pos):
+    r, c = pos
+    return 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE
+
+def is_empty(board, pos):
+    my_men, my_kings, opp_men, opp_kings = board
+    return (pos not in my_men and pos not in my_kings and
+            pos not in opp_men and pos not in opp_kings)
+
+def is_opp_piece(board, pos):
+    my_men, my_kings, opp_men, opp_kings = board
+    return pos in opp_men or pos in opp_kings
+
+# ----------------------------------------------------------------------
+# Capture testing and generation
+# ----------------------------------------------------------------------
+def check_capture(board, pos, piece_type, colour):
+    """Return True if a one‑step capture is possible from *pos*."""
+    dirs = DIRS[colour] if piece_type == 'man' else KING_DIRS
+    for dr, dc in dirs:
+        inter = (pos[0] + dr, pos[1] + dc)
+        if not on_board(inter):
+            continue
+        if not is_opp_piece(board, inter):
+            continue
+        landing = (pos[0] + 2 * dr, pos[1] + 2 * dc)
+        if not on_board(landing) or not is_empty(board, landing):
+            continue
+        return True
+    return False
+
+def any_capture_available(board, colour):
+    """Is there at least one capture move on the board?"""
+    my_men, my_kings, _, _ = board
+    for p in my_men:
+        if check_capture(board, p, 'man', colour):
+            return True
+    for p in my_kings:
+        if check_capture(board, p, 'king', colour):
+            return True
+    return False
+
+def get_capture_moves(board, start, piece_type, colour, visited=None):
+    """
+    Return a list of (end_position, captured_pieces) for all maximal
+    capture sequences that start at *start*.  A maximal sequence ends
+    when no further jump is possible.
+    """
+    if visited is None:
+        visited = set()
+    dirs = DIRS[colour] if piece_type == 'man' else KING_DIRS
+    moves = []
+    for dr, dc in dirs:
+        inter = (start[0] + dr, start[1] + dc)
+        if not on_board(inter) or not is_opp_piece(board, inter):
+            continue
+        landing = (start[0] + 2 * dr, start[1] + 2 * dc)
+        if not on_board(landing) or not is_empty(board, landing) or landing in visited:
+            continue
+        # a capture was found – explore longer chains
+        further = get_capture_moves(board, landing, piece_type, colour, visited | {landing})
+        if further:
+            for end_pos, capts in further:
+                moves.append((end_pos, [inter] + capts))
+        else:
+            moves.append((landing, [inter]))
+    return moves
+
+def get_simple_moves(board, pos, piece_type, colour):
+    """All non‑capture moves for a piece."""
+    dirs = DIRS[colour] if piece_type == 'man' else KING_DIRS
+    moves = []
+    for dr, dc in dirs:
+        landing = (pos[0] + dr, pos[1] + dc)
+        if on_board(landing) and is_empty(board, landing):
+            moves.append((landing, None))
+    return moves
+
+# ----------------------------------------------------------------------
+# Move representation
+# ----------------------------------------------------------------------
+Move = namedtuple('Move', ['start', 'end', 'captured'])
+
+def generate_moves(board, colour):
+    """
+    Return a list of Move objects.  If a capture is possible anywhere,
+    only capture moves are generated (mandatory capture rule).
+    """
+    my_men, my_kings, _, _ = board
+    moves = []
+    if any_capture_available(board, colour):
+        # mandatory captures only
+        for p in my_men:
+            for end, capt in get_capture_moves(board, p, 'man', colour):
+                moves.append(Move(p, end, capt))
+        for p in my_kings:
+            for end, capt in get_capture_moves(board, p, 'king', colour):
+                moves.append(Move(p, end, capt))
+    else:
+        # simple moves
+        for p in my_men:
+            for end, _ in get_simple_moves(board, p, 'man', colour):
+                moves.append(Move(p, end, None))
+        for p in my_kings:
+            for end, _ in get_simple_moves(board, p, 'king', colour):
+                moves.append(Move(p, end, None))
+    return moves
+
+# ----------------------------------------------------------------------
+# Heuristic evaluation
+# ----------------------------------------------------------------------
+def captured_value(board, captured):
+    """Material value of a list of captured squares."""
+    _, _, opp_men, opp_kings = board
+    val = 0
+    for sq in captured:
+        if sq in opp_kings:
+            val += 3
+        else:
+            val += 1
+    return val
+
+def simple_move_heuristic(board, start, end, piece_type, colour):
+    """Tiny reward for advancing men (or centralising kings)."""
+    if piece_type == 'man':
+        if colour == 'w':
+            return end[0] - start[0]          # upward = positive
+        else:
+            return start[0] - end[0]          # downward = positive
+    else:
+        # kings – prefer columns 3‑4
+        col = end[1]
+        return 0.05 * (3.5 - abs(col - 3.5))
+    return 0
+
+def evaluate(board, colour):
+    """
+    Static evaluation from the point of view of the player whose
+    pieces are the first two sets of *board*.
+    """
+    my_men, my_kings, opp_men, opp_kings = board
+    # material
+    score = (len(my_men) - len(opp_men)) * 1 + (len(my_kings) - len(opp_kings)) * 3
+    # advancement bonus for men (encourages promotion)
+    if colour == 'w':
+        for r, c in my_men:
+            score += r / 7.0 * 0.1
+        for r, c in opp_men:
+            score -= (7 - r) / 7.0 * 0.1
+    else:
+        for r, c in my_men:
+            score += (7 - r) / 7.0 * 0.1
+        for r, c in opp_men:
+            score -= r / 7.0 * 0.1
+    return score
+
+# ----------------------------------------------------------------------
+# Applying a move
+# ----------------------------------------------------------------------
+def apply_move(board, move, colour):
+    """
+    Execute *move* on *board* and return the resulting board from the
+    opponent’s point of view (sets are swapped).
+    """
+    my_men, my_kings, opp_men, opp_kings = board
+    # work on mutable copies
+    my_men, my_kings = set(my_men), set(my_kings)
+    opp_men, opp_kings = set(opp_men), set(opp_kings)
+
+    start, end, captured = move
+    # locate the moving piece
+    if start in my_men:
+        ptype = 'man'
+        my_men.remove(start)
+    else:
+        ptype = 'king'
+        my_kings.remove(start)
+
+    # remove captured opponent pieces
+    if captured:
+        for sq in captured:
+            if sq in opp_men:
+                opp_men.remove(sq)
+            else:
+                opp_kings.remove(sq)
+
+    # promotion
+    promo_row = 7 if colour == 'w' else 0
+    if ptype == 'man' and end[0] == promo_row:
+        my_kings.add(end)
+    else:
+        if ptype == 'man':
+            my_men.add(end)
+        else:
+            my_kings.add(end)
+
+    # return board from opponent’s perspective (swap sides)
+    return (opp_men, opp_kings, my_men, my_kings)
+
+# ----------------------------------------------------------------------
+// Minimax with alpha‑beta and move ordering
+// ----------------------------------------------------------------------
+def minimax(board, colour, depth, alpha, beta, maximizing):
+    if depth == 0:
+        return evaluate(board, colour), None
+
+    moves = generate_moves(board, colour)
+    if not moves:                                    # no legal move → lose
+        return (-float('inf') if maximizing else float('inf')), None
+
+    # ----- move ordering (helps alpha‑beta) -----
+    scored = []
+    for m in moves:
+        if m.captured is not None:
+            scored.append((captured_value(board, m.captured), m))
+        else:
+            ptype = 'man' if m.start in board[0] else 'king'
+            scored.append((simple_move_heuristic(board, m.start, m.end, ptype, colour), m))
+    scored.sort(key=lambda x: x[0], reverse=True)    # best moves first
+    ordered_moves = [m for _, m in scored]
+
+    best_move = None
+    if maximizing:
+        value = -float('inf')
+        for m in ordered_moves:
+            next_board = apply_move(board, m, colour)
+            next_colour = 'b' if colour == 'w' else 'w'
+            child_val, _ = minimax(next_board, next_colour, depth - 1, alpha, beta, False)
+            if child_val > value:
+                value, best_move = child_val, m
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value, best_move
+    else:
+        value = float('inf')
+        for m in ordered_moves:
+            next_board = apply_move(board, m, colour)
+            next_colour = 'b' if colour == 'w' else 'w'
+            child_val, _ = minimax(next_board, next_colour, depth - 1, alpha, beta, True)
+            if child_val < value:
+                value, best_move = child_val, m
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value, best_move
+
+# ----------------------------------------------------------------------
+// Iterative deepening with a soft time limit
+// ----------------------------------------------------------------------
+def iterative_deepening(board, colour, time_limit=0.9):
+    start = time.time()
+    best = None
+    for d in range(1, 100):            # practically unlimited depth
+        if time.time() - start > time_limit:
+            break
+        _, move = minimax(board, colour, d, -float('inf'), float('inf'), True)
+        if move is not None:
+            best = move
+    return best
+
+# ----------------------------------------------------------------------
+// Public API required by the arena
+// ----------------------------------------------------------------------
+def policy(my_men, my_kings, opp_men, opp_kings, colour):
+    # convert input lists to sets of tuples
+    my_men_set = {tuple(p) for p in my_men}
+    my_kings_set = {tuple(p) for p in my_kings}
+    opp_men_set = {tuple(p) for p in opp_men}
+    opp_kings_set = {tuple(p) for p in opp_kings}
+
+    board = (my_men_set, my_kings_set, opp_men_set, opp_kings_set)
+
+    # obtain a move using iterative deepening
+    move = iterative_deepening(board, colour, time_limit=0.9)
+
+    # fallback – should never happen when a legal move exists
+    if move is None:
+        avail = generate_moves(board, colour)
+        move = avail[0] if avail else None
+
+    # return the required tuple ((from_row, from_col), (to_row, to_col))
+    return (move.start, move.end)
+```

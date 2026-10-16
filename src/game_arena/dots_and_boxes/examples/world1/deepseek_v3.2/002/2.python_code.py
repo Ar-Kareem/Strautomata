@@ -1,0 +1,430 @@
+
+import numpy as np
+import itertools
+from typing import List, Tuple, Optional
+import copy
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Main policy function for Dots and Boxes on a 4x4 grid.
+    Returns a move string in format 'row,col,dir'
+    """
+    # Create board state object
+    board = BoardState(horizontal, vertical, capture)
+    
+    # If there are immediate captures, take them
+    captures = board.find_capturing_moves()
+    if captures:
+        # Choose the capture that gives the most boxes without giving away boxes
+        best_capture = captures[0]
+        for move in captures:
+            # Test if move creates dangerous situations
+            temp_board = board.copy()
+            temp_board.make_move(*parse_move(move))
+            opponent_captures = temp_board.find_capturing_moves()
+            if not opponent_captures:
+                best_capture = move
+                break
+        return best_capture
+    
+    # If we're in early game (fewer than 12 moves made)
+    empty_edges = board.count_empty_edges()
+    if empty_edges > 40:  # Early game
+        return early_game_move(board)
+    elif empty_edges > 20:  # Mid game
+        return mid_game_move(board)
+    else:  # End game
+        return end_game_move(board)
+
+
+def parse_move(move_str: str) -> Tuple[int, int, str]:
+    """Parse move string into components"""
+    parts = move_str.split(',')
+    return int(parts[0]), int(parts[1]), parts[2]
+
+
+def early_game_move(board: 'BoardState') -> str:
+    """Strategy for early game - control center, create long chains"""
+    # Try to play in the center first
+    center_moves = [
+        (2, 2, 'H'), (2, 2, 'V'),
+        (2, 3, 'H'), (2, 3, 'V'),
+        (3, 2, 'H'), (3, 2, 'V'),
+        (3, 3, 'H'), (3, 3, 'V'),
+    ]
+    
+    for r, c, d in center_moves:
+        if board.is_legal_move(r, c, d):
+            # Check if safe (doesn't create a 3-sided box)
+            if board.is_safe_move(r, c, d):
+                return f"{r},{c},{d}"
+    
+    # Fallback: any safe move
+    for r in range(5):
+        for c in range(5):
+            for d in ['H', 'V']:
+                if board.is_legal_move(r, c, d) and board.is_safe_move(r, c, d):
+                    return f"{r},{c},{d}"
+    
+    # Last resort: any legal move
+    for r in range(5):
+        for c in range(5):
+            for d in ['H', 'V']:
+                if board.is_legal_move(r, c, d):
+                    return f"{r},{c},{d}"
+
+
+def mid_game_move(board: 'BoardState') -> str:
+    """Strategy for mid game - careful chain management"""
+    # First try to find moves that don't give opponent any captures
+    safe_moves = []
+    for r in range(5):
+        for c in range(5):
+            for d in ['H', 'V']:
+                if board.is_legal_move(r, c, d):
+                    if board.is_safe_move(r, c, d):
+                        # Also check if opponent gets immediate reply
+                        temp_board = board.copy()
+                        temp_board.make_move(r, c, d)
+                        opp_captures = temp_board.find_capturing_moves()
+                        if not opp_captures:
+                            safe_moves.append((r, c, d))
+    
+    if safe_moves:
+        # Choose the move that creates the longest chain for opponent to open
+        return choose_best_safe_move(board, safe_moves)
+    
+    # If no completely safe moves, minimize damage
+    return minimize_damage_move(board)
+
+
+def end_game_move(board: 'BoardState') -> str:
+    """Strategy for end game - maximize final score"""
+    # Use minimax with limited depth to choose best move
+    best_move = None
+    best_score = -float('inf')
+    
+    legal_moves = board.get_legal_moves()
+    
+    for move in legal_moves:
+        r, c, d = parse_move(move)
+        if not board.is_legal_move(r, c, d):
+            continue
+            
+        # Evaluate this move
+        temp_board = board.copy()
+        temp_board.make_move(r, c, d)
+        
+        # If we get another turn, continue playing
+        while True:
+            captures = temp_board.find_capturing_moves()
+            if not captures:
+                break
+            # Take a capture (choose first one)
+            r2, c2, d2 = parse_move(captures[0])
+            temp_board.make_move(r2, c2, d2)
+        
+        # Simple evaluation: our boxes - opponent boxes
+        our_boxes = np.sum(temp_board.capture == 1)
+        opp_boxes = np.sum(temp_board.capture == -1)
+        score = our_boxes - opp_boxes
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move if best_move else legal_moves[0]
+
+
+def choose_best_safe_move(board: 'BoardState', safe_moves: List[Tuple]) -> str:
+    """Choose the best safe move based on strategic considerations"""
+    # Prefer moves that create 2-sided boxes (good for future)
+    for r, c, d in safe_moves:
+        # Count how many 2-sided boxes this creates
+        boxes_created = board.count_new_two_sided_boxes(r, c, d)
+        if boxes_created >= 2:
+            return f"{r},{c},{d}"
+    
+    # Prefer moves in the center
+    center_safe = [(r, c, d) for r, c, d in safe_moves 
+                   if 1 <= r <= 3 and 1 <= c <= 3]
+    if center_safe:
+        return f"{center_safe[0][0]},{center_safe[0][1]},{center_safe[0][2]}"
+    
+    # Return first safe move
+    r, c, d = safe_moves[0]
+    return f"{r},{c},{d}"
+
+
+def minimize_damage_move(board: 'BoardState') -> str:
+    """Choose move that gives opponent the fewest boxes"""
+    legal_moves = board.get_legal_moves()
+    best_move = None
+    min_opponent_gain = float('inf')
+    
+    for move in legal_moves:
+        r, c, d = parse_move(move)
+        if not board.is_legal_move(r, c, d):
+            continue
+            
+        # Count how many boxes opponent could get after this move
+        temp_board = board.copy()
+        temp_board.make_move(r, c, d)
+        
+        # Count opponent's immediate captures
+        opp_captures = temp_board.find_capturing_moves()
+        opponent_gain = len(opp_captures)
+        
+        if opponent_gain < min_opponent_gain:
+            min_opponent_gain = opponent_gain
+            best_move = move
+        elif opponent_gain == min_opponent_gain:
+            # Tie-breaker: choose move that gives us more future opportunities
+            current_boxes = np.sum(board.capture == 1)
+            new_boxes = np.sum(temp_board.capture == 1)
+            if new_boxes > current_boxes:
+                best_move = move
+    
+    return best_move if best_move else legal_moves[0]
+
+
+class BoardState:
+    """Helper class to manage board state and operations"""
+    
+    def __init__(self, horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray):
+        self.horizontal = horizontal.copy()
+        self.vertical = vertical.copy()
+        self.capture = capture.copy()
+        self.size = 4  # 4x4 boxes
+        
+    def copy(self) -> 'BoardState':
+        return BoardState(self.horizontal, self.vertical, self.capture)
+    
+    def is_legal_move(self, row: int, col: int, direction: str) -> bool:
+        """Check if a move is legal (edge is empty)"""
+        if direction == 'H':
+            return self.horizontal[row, col] == 0
+        else:  # 'V'
+            return self.vertical[row, col] == 0
+    
+    def make_move(self, row: int, col: int, direction: str) -> bool:
+        """
+        Make a move and return True if we captured any boxes
+        (so we get another turn)
+        """
+        if direction == 'H':
+            self.horizontal[row, col] = 1
+        else:
+            self.vertical[row, col] = 1
+        
+        # Check for captured boxes
+        captured = False
+        
+        # Check boxes above horizontal edge
+        if direction == 'H' and row > 0:
+            # Box above (row-1, col) if col < 4
+            if col < 4:
+                if self.is_box_complete(row-1, col):
+                    self.capture[row-1, col] = 1
+                    captured = True
+        
+        # Check boxes below horizontal edge  
+        if direction == 'H' and row < 4:
+            # Box below (row, col) if col < 4
+            if col < 4:
+                if self.is_box_complete(row, col):
+                    self.capture[row, col] = 1
+                    captured = True
+        
+        # Check boxes left of vertical edge
+        if direction == 'V' and col > 0:
+            # Box to left (row, col-1) if row < 4
+            if row < 4:
+                if self.is_box_complete(row, col-1):
+                    self.capture[row, col-1] = 1
+                    captured = True
+        
+        # Check boxes right of vertical edge
+        if direction == 'V' and col < 4:
+            # Box to right (row, col) if row < 4
+            if row < 4:
+                if self.is_box_complete(row, col):
+                    self.capture[row, col] = 1
+                    captured = True
+        
+        return captured
+    
+    def is_box_complete(self, box_row: int, box_col: int) -> bool:
+        """Check if a box is complete (all 4 sides drawn)"""
+        if box_row < 0 or box_row >= 4 or box_col < 0 or box_col >= 4:
+            return False
+        
+        # Check top, bottom, left, right edges
+        top = self.horizontal[box_row, box_col] != 0
+        bottom = self.horizontal[box_row + 1, box_col] != 0
+        left = self.vertical[box_row, box_col] != 0
+        right = self.vertical[box_row, box_col + 1] != 0
+        
+        return top and bottom and left and right
+    
+    def find_capturing_moves(self) -> List[str]:
+        """Find all moves that would capture a box"""
+        capturing_moves = []
+        
+        # Check all horizontal edges
+        for r in range(5):
+            for c in range(5):
+                if self.horizontal[r, c] == 0:
+                    # Check if this completes any box
+                    completes_box = False
+                    
+                    # Box above
+                    if r > 0 and c < 4:
+                        # Check if box (r-1, c) has 3 sides already
+                        if self.count_box_sides(r-1, c) == 3:
+                            # Verify this is the missing side
+                            if not self.horizontal[r, c] and (
+                                (r-1 == r-1 and c == c) or  # top edge missing
+                                self.count_box_sides_with_edge(r-1, c, 'H', r, c) == 4
+                            ):
+                                completes_box = True
+                    
+                    # Box below
+                    if r < 4 and c < 4:
+                        if self.count_box_sides(r, c) == 3:
+                            completes_box = True
+                    
+                    if completes_box:
+                        capturing_moves.append(f"{r},{c},H")
+        
+        # Check all vertical edges
+        for r in range(5):
+            for c in range(5):
+                if self.vertical[r, c] == 0:
+                    # Check if this completes any box
+                    completes_box = False
+                    
+                    # Box to left
+                    if c > 0 and r < 4:
+                        if self.count_box_sides(r, c-1) == 3:
+                            completes_box = True
+                    
+                    # Box to right
+                    if c < 4 and r < 4:
+                        if self.count_box_sides(r, c) == 3:
+                            completes_box = True
+                    
+                    if completes_box:
+                        capturing_moves.append(f"{r},{c},V")
+        
+        return capturing_moves
+    
+    def count_box_sides(self, box_row: int, box_col: int) -> int:
+        """Count how many sides of a box are drawn"""
+        if box_row < 0 or box_row >= 4 or box_col < 0 or box_col >= 4:
+            return 0
+        
+        count = 0
+        if self.horizontal[box_row, box_col] != 0:
+            count += 1
+        if self.horizontal[box_row + 1, box_col] != 0:
+            count += 1
+        if self.vertical[box_row, box_col] != 0:
+            count += 1
+        if self.vertical[box_row, box_col + 1] != 0:
+            count += 1
+        
+        return count
+    
+    def count_box_sides_with_edge(self, box_row: int, box_col: int, 
+                                  direction: str, edge_row: int, edge_col: int) -> int:
+        """Count box sides including a potential new edge"""
+        count = self.count_box_sides(box_row, box_col)
+        
+        # Check if the new edge would be part of this box
+        if direction == 'H':
+            # Check if this horizontal edge is top or bottom of box
+            if (edge_row == box_row and edge_col == box_col):  # Top edge
+                count += 1
+            elif (edge_row == box_row + 1 and edge_col == box_col):  # Bottom edge
+                count += 1
+        else:  # 'V'
+            # Check if this vertical edge is left or right of box
+            if (edge_row == box_row and edge_col == box_col):  # Left edge
+                count += 1
+            elif (edge_row == box_row and edge_col == box_col + 1):  # Right edge
+                count += 1
+        
+        return count
+    
+    def is_safe_move(self, row: int, col: int, direction: str) -> bool:
+        """
+        Check if a move is safe (doesn't create a 3-sided box that opponent
+        could capture on their next turn)
+        """
+        # Make a temporary copy to test
+        temp = self.copy()
+        
+        # Check boxes that would be affected by this move
+        boxes_to_check = []
+        
+        if direction == 'H':
+            if row > 0 and col < 4:  # Box above
+                boxes_to_check.append((row-1, col))
+            if row < 4 and col < 4:  # Box below
+                boxes_to_check.append((row, col))
+        else:  # 'V'
+            if col > 0 and row < 4:  # Box to left
+                boxes_to_check.append((row, col-1))
+            if col < 4 and row < 4:  # Box to right
+                boxes_to_check.append((row, col))
+        
+        # Check if any box would become 3-sided
+        for box_r, box_c in boxes_to_check:
+            current_sides = self.count_box_sides(box_r, box_c)
+            if current_sides == 2:  # Would become 3-sided
+                # This is dangerous if opponent can complete it
+                return False
+        
+        return True
+    
+    def count_empty_edges(self) -> int:
+        """Count total number of empty edges remaining"""
+        empty = 0
+        empty += np.sum(self.horizontal == 0)
+        empty += np.sum(self.vertical == 0)
+        return empty
+    
+    def get_legal_moves(self) -> List[str]:
+        """Get all legal moves as strings"""
+        moves = []
+        for r in range(5):
+            for c in range(5):
+                if self.horizontal[r, c] == 0:
+                    moves.append(f"{r},{c},H")
+                if self.vertical[r, c] == 0:
+                    moves.append(f"{r},{c},V")
+        return moves
+    
+    def count_new_two_sided_boxes(self, row: int, col: int, direction: str) -> int:
+        """Count how many boxes would become 2-sided after this move"""
+        boxes_to_check = []
+        
+        if direction == 'H':
+            if row > 0 and col < 4:
+                boxes_to_check.append((row-1, col))
+            if row < 4 and col < 4:
+                boxes_to_check.append((row, col))
+        else:
+            if col > 0 and row < 4:
+                boxes_to_check.append((row, col-1))
+            if col < 4 and row < 4:
+                boxes_to_check.append((row, col))
+        
+        count = 0
+        for box_r, box_c in boxes_to_check:
+            current_sides = self.count_box_sides(box_r, box_c)
+            if current_sides == 1:  # Would become 2-sided
+                count += 1
+        
+        return count

@@ -1,0 +1,273 @@
+
+import itertools
+import time
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    start_time = time.time()
+    board_size = 8
+    my_pieces = my_men + my_kings
+    opp_pieces = opp_men + opp_kings
+
+    def is_valid_move(board, from_row, from_col, to_row, to_col, acting_color):
+        if not (0 <= to_row < board_size and 0 <= to_col < board_size):
+            return False
+        if (to_row + to_col) % 2 == 0:
+            return False
+        if (to_row, to_col) in board:
+            return False
+
+        piece_type = "men" if (from_row, from_col) in (my_men if acting_color == color else opp_men) else "king"
+
+        if piece_type == "men":
+            if acting_color == 'b':
+                if to_row - from_row != -1 or abs(to_col - from_col) != 1:
+                    return False
+            else:
+                if to_row - from_row != 1 or abs(to_col - from_col) != 1:
+                    return False
+        else:
+            if abs(to_row - from_row) != abs(to_col - from_col):
+                return False
+
+        return True
+
+    def get_possible_moves(board, men, kings, acting_color):
+        possible_moves = []
+        all_pieces = men + kings
+
+        for piece_row, piece_col in all_pieces:
+            piece_type = "men" if (piece_row, piece_col) in men else "king"
+            
+            # Men moves
+            if piece_type == "men":
+                if acting_color == 'b':
+                    possible_moves.extend([((piece_row, piece_col), (piece_row - 1, piece_col - 1)) for dr, dc in [(-1, -1), (-1, 1)] if 0 <= piece_row + dr < board_size and 0 <= piece_col + dc < board_size and (piece_row + dr, piece_col + dc) not in board])
+                else:
+                    possible_moves.extend([((piece_row, piece_col), (piece_row + 1, piece_col - 1)) for dr, dc in [(1, -1), (1, 1)] if 0 <= piece_row + dr < board_size and 0 <= piece_col + dc < board_size and (piece_row + dr, piece_col + dc) not in board])
+            else: # King moves
+                for dr, dc in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
+                    for i in range(1, 8):
+                        new_row = piece_row + i * dr
+                        new_col = piece_col + i * dc
+                        if not (0 <= new_row < board_size and 0 <= new_col < board_size):
+                            break
+                        if (new_row, new_col) in board:
+                            break
+                        possible_moves.append(((piece_row, piece_col), (new_row, new_col)))
+
+        valid_moves = []
+        for move in possible_moves:
+          if is_valid_move(board, move[0][0], move[0][1], move[1][0], move[1][1], acting_color):
+            valid_moves.append(move)
+        
+        return valid_moves
+
+    def is_valid_capture(board, from_row, from_col, to_row, to_col, acting_color, men, kings, opponent_men, opponent_kings):
+        if not (0 <= to_row < board_size and 0 <= to_col < board_size):
+            return False
+        if (to_row + to_col) % 2 == 0:
+            return False
+        if (to_row, to_col) in board:
+            return False
+
+        piece_type = "men" if (from_row, from_col) in (men if acting_color == color else opponent_men) else "king"
+        jumped_row = (from_row + to_row) // 2
+        jumped_col = (from_col + to_col) // 2
+        jumped_piece = (jumped_row, jumped_col)
+
+        if (not (0 <= jumped_row < board_size and 0 <= jumped_col < board_size)) or (jumped_piece not in opponent_men and jumped_piece not in opponent_kings):
+            return False
+        
+        if piece_type == "men":
+            if abs(to_row - from_row) != 2 or abs(to_col - from_col) != 2:
+                return False
+        else:  # King
+            if abs(to_row - from_row) != abs(to_col - from_col) or abs(to_row - from_row) <= 1:
+                return False
+            row_dir = 1 if to_row > from_row else -1
+            col_dir = 1 if to_col > from_col else -1
+            
+            intermediate_pieces = 0
+            for i in range(1, abs(to_row - from_row)):
+              check_row = from_row + i * row_dir
+              check_col = from_col + i * col_dir
+              if (check_row, check_col) in board:
+                intermediate_pieces += 1
+            
+            if intermediate_pieces > 0:
+              return False
+            
+        return True
+
+    def get_possible_captures(board, men, kings, opponent_men, opponent_kings, acting_color):
+        possible_captures = []
+        all_pieces = men + kings
+
+        for piece_row, piece_col in all_pieces:
+            piece_type = "men" if (piece_row, piece_col) in men else "king"
+
+            if piece_type == "men":
+                if acting_color == 'b': 
+                   jumps = [((piece_row, piece_col), (piece_row - 2, piece_col - 2)), ((piece_row, piece_col), (piece_row - 2, piece_col + 2))]
+                else:
+                  jumps = [((piece_row, piece_col), (piece_row + 2, piece_col - 2)), ((piece_row, piece_col), (piece_row + 2, piece_col + 2))] 
+            else:
+              jumps = []
+              for dr, dc in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
+                  for i in range(1, 8):
+                      new_row = piece_row + i * dr
+                      new_col = piece_col + i * dc
+                      if not (0 <= new_row < board_size and 0 <= new_col < board_size):
+                          break
+                      if (new_row, new_col) in board:
+                          break
+                      jumps.append(((piece_row, piece_col), (new_row, new_col)))
+                      
+        valid_captures = []
+        for move in jumps:
+          if is_valid_capture(board, move[0][0], move[0][1], move[1][0], move[1][1], acting_color, men, kings, opponent_men, opponent_kings):
+            valid_captures.append(move)
+        
+        return valid_captures
+      
+    def perform_move(board, move, men, kings, opponent_men, opponent_kings, acting_color):
+        from_row, from_col = move[0]
+        to_row, to_col = move[1]
+        
+        new_board = set(board)
+        new_men = list(men)
+        new_kings = list(kings)
+        new_opponent_men = list(opponent_men)
+        new_opponent_kings = list(opponent_kings)
+
+        # Remove the piece from its original position on the board
+        new_board.remove((from_row, from_col))
+
+        # Move the piece to the new position
+        new_board.add((to_row, to_col))
+
+        # Update men and kings lists; remove from where it was and add to where it is now
+        if (from_row, from_col) in men:
+            new_men.remove((from_row, from_col))
+            new_men.append((to_row, to_col))
+        else: # King
+            new_kings.remove((from_row, from_col))
+            new_kings.append((to_row, to_col))
+            
+        # If it was a jump, then the captured piece must be removed
+        if abs(to_row - from_row) == 2: # Men jump
+            jumped_row = (from_row + to_row) // 2
+            jumped_col = (from_col + to_col) // 2
+            jumped_piece = (jumped_row, jumped_col)
+            
+            new_board.remove(jumped_piece)
+            if jumped_piece in opponent_men:
+                new_opponent_men.remove(jumped_piece)
+            else:
+                new_opponent_kings.remove(jumped_piece)            
+        elif abs(to_row - from_row) > 2: #King jump removal
+            row_dir = 1 if to_row > from_row else -1
+            col_dir = 1 if to_col > from_col else -1
+            
+            for i in range(1, abs(to_row - from_row)):
+              check_row = from_row + i * row_dir
+              check_col = from_col + i * col_dir
+              check_piece = (check_row, check_col)
+              if check_piece in opponent_men or check_piece in opponent_kings:
+                new_board.remove(check_piece)
+                if check_piece in opponent_men:
+                  new_opponent_men.remove(check_piece)
+                else:
+                  new_opponent_kings.remove(check_piece)
+                break
+        
+        # Check if the move resulted in a men becoming a king
+        if acting_color == 'b' and to_row == 0 and (to_row, to_col) in new_men:
+          new_men.remove((to_row, to_col))
+          new_kings.append((to_row, to_col))
+        elif acting_color == 'w' and to_row == board_size - 1 and (to_row, to_col) in new_men:
+          new_men.remove((to_row, to_col))
+          new_kings.append((to_row, to_col))
+          
+        return new_board, new_men, new_kings, new_opponent_men, new_opponent_kings
+
+      
+    def evaluate_board(men, kings, opponent_men, opponent_kings, color):
+        my_men_count = len(men)
+        my_kings_count = len(kings)
+        opp_men_count = len(opponent_men)
+        opp_kings_count = len(opponent_kings)
+
+        men_value = 100
+        king_value = 250
+
+        my_total_value = my_men_count * men_value + my_kings_count * king_value
+        opp_total_value = opp_men_count * men_value + opp_kings_count * king_value
+
+        # Also consider center control, advancement, etc.
+
+        board_size = 8
+        center_rows = [board_size // 2 - 1, board_size // 2]
+        center_cols = [board_size // 2 - 1, board_size // 2]
+        center_weight = 10  # Weigh the center higher
+
+        my_center_control = 0
+        for row, col in men + kings:
+            if row in center_rows and col in center_cols:
+                my_center_control += center_weight
+            else:
+                my_center_control += 1  # Add some value for all pieces
+
+        opp_center_control = 0
+        for row, col in opponent_men + opponent_kings:
+            if row in center_rows and col in center_cols: # Add some weight
+                opp_center_control += center_weight
+            else:
+                opp_center_control += 1
+
+        advancement_weight = 5 # Weight for advancement
+        my_advancement = 0
+        opp_advancement = 0
+
+        if color == 'b': # Black goes down
+            my_advancement = sum(board_size - 1 - row for row, col in men) * advancement_weight
+            opp_advancement = sum(row for row, col in opponent_men) * advancement_weight
+
+        else:    # White goes up
+            my_advancement = sum(row for row, col in men) * advancement_weight
+            opp_advancement = sum(board_size - 1 - row for row, col in opponent_men) * advancement_weight
+
+        # Early game: Prioritize development (advancement + center)
+        development_weight = 0.2
+        # Mid game: Prioritize material
+        material_weight = 0.6
+        # End game: Highly prioritize winning, but also fast wins
+        endgame_weight = 0.2
+
+        board_score = (development_weight * (my_center_control - opp_center_control + my_advancement - opp_advancement)
+                       + material_weight * (my_total_value - opp_total_value)
+                       + endgame_weight * (my_total_value - opp_total_value))  # Scale endgame score
+
+
+        return board_score
+
+    def minimax(board, men, kings, opponent_men, opponent_kings, depth, maximizing_player, alpha, beta, main_color, start_time, time_limit):
+        current_time = time.time()
+        if current_time - start_time > time_limit:
+            return 0, None # Timed out, return a neutral value
+
+
+        if depth == 0 or len(men) == 0 or len(opponent_men) == 0:
+            return evaluate_board(men, kings, opponent_men, opponent_kings, main_color), None
+
+        acting_color = main_color if maximizing_player else ('w' if main_color == 'b' else 'b')
+        my_men = men if acting_color == main_color else opponent_men
+        my_kings = kings if acting_color == main_color else opponent_kings
+        opp_men = opponent_men if acting_color == main_color else men
+        opp_kings = opponent_kings if acting_color == main_color else kings
+        
+        current_board = men + kings + opponent_men + opponent_kings
+        
+        captures = get_possible_captures(current_board, my_men, my_kings, opp_men, opp_kings, acting_color)
+        if captures:
+            possible_moves

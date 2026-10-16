@@ -1,0 +1,177 @@
+To solve this problem, we need to develop a policy for a Connect 4 game that can choose the best move for the current player on a 6x7 grid. The solution involves checking for immediate winning moves, blocking the opponent's immediate wins, and using a minimax algorithm with alpha-beta pruning to evaluate future moves based on a heuristic function.
+
+### Approach
+1. **Immediate Win Check**: The first step is to check if the current player can win immediately by dropping a disc in any valid column. If such a move exists, it is chosen.
+2. **Block Opponent's Immediate Win**: If no immediate win is available, the policy checks if any of the opponent's possible moves would result in a win. If so, the current player must block the opponent's winning move by dropping a disc in the same column.
+3. **Minimax with Alpha-Beta Pruning**: If neither an immediate win nor a blocking move is available, the policy uses a minimax algorithm with a fixed depth (to manage computational efficiency) and alpha-beta pruning to evaluate the best move. The algorithm alternates between the current player (maximizing) and the opponent (minimizing) turns.
+4. **Heuristic Evaluation**: The evaluation function scores the board based on the current player's position, potential winning windows, and the opponent's threats. It considers center column control, horizontal, vertical, and diagonal windows of four discs.
+
+### Solution Code
+```python
+import sys
+
+sys.setrecursionlimit(10000)
+
+def get_valid_moves(board):
+    valid_moves = []
+    for col in range(7):
+        if board[0][col] == 0:
+            valid_moves.append(col)
+    return valid_moves
+
+def simulate(board, col, player):
+    new_board = [row[:] for row in board]
+    for row in range(6):
+        if new_board[row][col] == 0:
+            new_board[row][col] = player
+            break
+    return new_board
+
+def check_win(board):
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for r in range(6):
+        for c in range(7):
+            for dr, dc in directions:
+                count1 = 0
+                count_minus1 = 0
+                for i in range(4):
+                    nr = r + i * dr
+                    nc = c + i * dc
+                    if 0 <= nr < 6 and 0 <= nc < 7:
+                        if board[nr][nc] == 1:
+                            count1 += 1
+                        elif board[nr][nc] == -1:
+                            count_minus1 += 1
+                    else:
+                        break
+                if count1 == 4:
+                    return 1
+                if count_minus1 == 4:
+                    return -1
+    return 0
+
+def evaluate(board):
+    win = check_win(board)
+    if win == 1:
+        return 10**6
+    elif win == -1:
+        return -10**6
+
+    score = 0
+
+    center_count = 0
+    for row in range(6):
+        if board[row][3] == 1:
+            center_count += 1
+    score += center_count * 3
+
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for dr, dc in directions:
+        for r in range(6):
+            for c in range(7):
+                window = []
+                for i in range(4):
+                    nr = r + i * dr
+                    nc = c + i * dc
+                    if 0 <= nr < 6 and 0 <= nc < 7:
+                        window.append(board[nr][nc])
+                    else:
+                        break
+                else:
+                    count1 = window.count(1)
+                    count_minus1 = window.count(-1)
+                    count0 = window.count(0)
+                    if count1 == 4:
+                        score += 100
+                    elif count1 == 3 and count0 == 1:
+                        score += 5
+                    elif count1 == 2 and count0 == 2:
+                        score += 2
+                    if count_minus1 == 4:
+                        score -= 100
+                    elif count_minus1 == 3 and count0 == 1:
+                        score -= 5
+                    elif count_minus1 == 2 and count0 == 2:
+                        score -= 2
+
+    return score
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    if depth == 0:
+        return evaluate(board)
+    
+    valid_moves = get_valid_moves(board)
+    if not valid_moves:
+        return evaluate(board)
+
+    if maximizing_player:
+        max_eval = -float('inf')
+        for col in valid_moves:
+            new_board = simulate(board, col, 1)
+            eval_score = minimax(new_board, depth-1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for col in valid_moves:
+            new_board = simulate(board, col, -1)
+            eval_score = minimax(new_board, depth-1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board: list[list[int]]) -> int:
+    valid_moves = get_valid_moves(board)
+    if not valid_moves:
+        return 0
+
+    sorted_moves = sorted(valid_moves, key=lambda x: abs(x-3))
+    
+    for col in sorted_moves:
+        new_board = simulate(board, col, 1)
+        if check_win(new_board) == 1:
+            return col
+
+    block_col = None
+    for col in sorted_moves:
+        new_board = simulate(board, col, 1)
+        opponent_win = False
+        opp_moves = get_valid_moves(new_board)
+        for opp_col in opp_moves:
+            opp_board = simulate(new_board, opp_col, -1)
+            if check_win(opp_board) == -1:
+                opponent_win = True
+                break
+        if not opponent_win:
+            block_col = col
+            break
+
+    if block_col is not None:
+        return block_col
+
+    best_col = None
+    best_score = -float('inf')
+    for col in valid_moves:
+        new_board = simulate(board, col, 1)
+        score = minimax(new_board, depth=3, alpha=-float('inf'), beta=float('inf'), maximizing_player=False)
+        if score > best_score:
+            best_score = score
+            best_col = col
+
+    return best_col
+```
+
+### Explanation
+1. **get_valid_moves**: Identifies columns where the current disc can be dropped (columns not full).
+2. **simulate**: Creates a new board state after dropping a disc in a specified column.
+3. **check_win**: Checks if either player has achieved four in a row horizontally, vertically, or diagonally.
+4. **evaluate**: Scores the board based on potential wins, opponent threats, and control of the center column. Positive scores favor the current player; negative scores favor the opponent.
+5. **minimax**: Uses alpha-beta pruning to efficiently explore the game tree up to a fixed depth, alternating between the current player (maximizing) and the opponent (minimizing).
+6. **policy**: The main function that checks for immediate wins, blocks the opponent's immediate wins, and uses minimax to select the best move based on the heuristic evaluation. The depth for minimax is set to 3 to balance performance and decision quality.
+
+This approach efficiently combines heuristic evaluation with strategic lookahead to make informed moves in the Connect 4 game.

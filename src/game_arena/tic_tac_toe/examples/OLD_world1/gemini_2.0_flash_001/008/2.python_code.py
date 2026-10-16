@@ -1,0 +1,85 @@
+
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Selects the next move for a Tic Tac Toe game.
+
+    Args:
+        board: A 3x3 list of lists representing the Tic Tac Toe board.
+               0 = empty, 1 = AI's move, -1 = opponent's move.
+
+    Returns:
+        A tuple (row, col) representing the AI's chosen move (0-indexed).
+    """
+
+    # 1. Check for winning move
+    for row in range(3):
+        for col in range(3):
+            if board[row][col] == 0:
+                board_copy = [row[:] for row in board]  # Create a copy of the board
+                board_copy[row][col] = 1
+                if check_win(board_copy, 1):
+                    return (row, col)
+
+    # 2. Block opponent's winning move
+    for row in range(3):
+        for col in range(3):
+            if board[row][col] == 0:
+                board_copy = [row[:] for row in board]  # Create a copy of the board
+                board_copy[row][col] = -1
+                if check_win(board_copy, -1):
+                    return (row, col)
+
+    # 3. Choose the center if available
+    if board[1][1] == 0:
+        return (1, 1)
+
+    # 4. Choose a corner if available
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    available_corners = [corner for corner in corners if board[corner[0]][corner[1]] == 0]
+    if available_corners:
+        return random.choice(available_corners)
+
+    # 5. Choose any available spot
+    available_moves = []
+    for row in range(3):
+        for col in range(3):
+            if board[row][col] == 0:
+                available_moves.append((row, col))
+
+    if available_moves:
+        return random.choice(available_moves)
+
+    # 6. If no moves are available (board full), return a default move
+    return (0, 0)
+
+def check_win(board: list[list[int]], player: int) -> bool:
+    """
+    Checks if a player has won the Tic Tac Toe game.
+
+    Args:
+        board: The Tic Tac Toe board.
+        player: The player to check for (1 or -1).
+
+    Returns:
+        True if the player has won, False otherwise.
+    """
+
+    # Check rows
+    for row in range(3):
+        if all(board[row][col] == player for col in range(3)):
+            return True
+
+    # Check columns
+    for col in range(3):
+        if all(board[row][col] == player for row in range(3)):
+            return True
+
+    # Check diagonals
+    if all(board[i][i] == player for i in range(3)):
+        return True
+    if all(board[i][2 - i] == player for i in range(3)):
+        return True
+
+    return False

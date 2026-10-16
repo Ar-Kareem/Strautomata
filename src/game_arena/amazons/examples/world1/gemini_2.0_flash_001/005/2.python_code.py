@@ -1,0 +1,127 @@
+
+import numpy as np
+
+def get_possible_moves(board, row, col):
+    """
+    Finds all possible move locations (row, col) for an amazon at a given location.
+    """
+    moves = []
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            for i in range(1, 6):
+                new_row, new_col = row + dr * i, col + dc * i
+                if 0 <= new_row < 6 and 0 <= new_col < 6:
+                    if board[new_row, new_col] == 0:
+                        moves.append((new_row, new_col))
+                    else:
+                        break  # Stop if we hit a blocker
+                else:
+                    break  # Stop if we reach the edge
+    return moves
+
+def get_possible_arrow_targets(board, row, col, from_row, from_col):
+    """
+    Finds all possible arrow locations (row, col) from current position after the move.
+    """
+    arrows = []
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            for i in range(1, 6):
+                new_row, new_col = row + dr * i, col + dc * i
+                if 0 <= new_row < 6 and 0 <= new_col < 6:
+                    if board[new_row, new_col] == 0 or (new_row == from_row and new_col == from_col):
+                        arrows.append((new_row, new_col))
+                        if (new_row, new_col) == (from_row, from_col):
+                            continue
+                    else:
+                        break  # Stop if we hit a blocker
+                else:
+                    break  # Stop if we reach the edge
+    return arrows
+
+def evaluate_move(board, from_row, from_col, to_row, to_col, arrow_row, arrow_col):
+    """
+    Evaluates a move based on heuristic criteria.  
+    - Number of available moves after move.
+    - Center control.
+    """
+
+    # Create a copy of the board to simulate the move
+    temp_board = board.copy()
+    temp_board[from_row, from_col] = 0
+    temp_board[to_row, to_col] = 1
+    temp_board[arrow_row, arrow_col] = -1
+
+    # Calculate available moves for our amazons
+    our_moves = 0
+    for row in range(6):
+        for col in range(6):
+            if temp_board[row, col] == 1:
+                our_moves += len(get_possible_moves(temp_board, row, col))
+    
+    # Calculate available moves from opponent's amazons
+    opponent_moves = 0
+    for row in range(6):
+        for col in range(6):
+          if temp_board[row, col] == 2:
+            opponent_moves += len(get_possible_moves(temp_board, row, col))
+
+    # Center control heuristic
+    center_row = 2.5
+    center_col = 2.5
+    distance_to_center =(abs(to_row - center_row) + abs(to_col-center_col))
+    
+    #Prioritize moves if shooting arrows in the center.
+    arrow_center_distance = (abs(arrow_row - center_row) + abs(arrow_col - center_col))
+
+    # Basic evaluation function (maximize our moves, minimize opponent moves, prioritize center)
+    score = our_moves - 0.5 * opponent_moves - distance_to_center + 0.2* (10 - arrow_center_distance)
+
+    return score
+  
+def policy(board) -> str:
+    """
+    Selects the best move based on possible moves and arrow placements.
+    """
+
+    best_move = None
+    best_score = float('-inf')
+    
+    my_amazons = np.where(board == 1)
+    amazon_locations = list(zip(my_amazons[0], my_amazons[1]))
+
+    for from_row, from_col in amazon_locations:
+        possible_moves = get_possible_moves(board, from_row, from_col)
+        for to_row, to_col in possible_moves:
+            possible_arrows = get_possible_arrow_targets(board, to_row, to_col, from_row, from_col)
+            for arrow_row, arrow_col in possible_arrows:
+              
+                score = evaluate_move(board, from_row, from_col, to_row, to_col, arrow_row, arrow_col)
+
+                if score > best_score:
+                    best_score = score
+                    best_move = (from_row, from_col, to_row, to_col, arrow_row, arrow_col)
+
+    if best_move is None:
+        # If no move found, return a random legal move
+        for from_row, from_col in amazon_locations:
+            possible_moves = get_possible_moves(board, from_row, from_col)
+            if possible_moves:
+                to_row, to_col = possible_moves[0]
+                possible_arrows = get_possible_arrow_targets(board, to_row, to_col, from_row, from_col)
+                if possible_arrows:
+                    arrow_row, arrow_col = possible_arrows[0]
+                    best_move = (from_row, from_col, to_row, to_col, arrow_row, arrow_col)
+                    break
+                
+        if best_move is None:
+          #If still no move found, means we can't move, return the same position.
+          return f"{0},{0}:{0},{0}:{0},{0}" #Should never happen but avoids errors.
+        
+
+    from_row, from_col, to_row, to_col, arrow_row, arrow_col = best_move
+    return f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"

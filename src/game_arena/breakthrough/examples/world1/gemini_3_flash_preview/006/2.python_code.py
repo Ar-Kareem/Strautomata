@@ -1,0 +1,116 @@
+
+import random
+
+def policy(me, opp, color):
+    # me/opp are list of (r, c)
+    # color: 'w' (moves row +1) or 'b' (moves row -1)
+    
+    direction = 1 if color == 'w' else -1
+    goal_row = 7 if color == 'w' else 0
+    opp_goal_row = 0 if color == 'w' else 7
+    
+    def get_legal_moves(current_me, current_opp, current_dir):
+        moves = []
+        opp_set = set(current_opp)
+        me_set = set(current_me)
+        all_occupied = opp_set | me_set
+        
+        for r, c in current_me:
+            nr = r + current_dir
+            if 0 <= nr <= 7:
+                # Straight move
+                if (nr, c) not in all_occupied:
+                    moves.append(((r, c), (nr, c)))
+                # Diagonal moves
+                for dc in [-1, 1]:
+                    nc = c + dc
+                    if 0 <= nc <= 7:
+                        # Diagonal capture or move into empty
+                        if (nr, nc) in opp_set:
+                            moves.append(((r, c), (nr, nc)))
+                        elif (nr, nc) not in me_set:
+                            moves.append(((r, c), (nr, nc)))
+        return moves
+
+    def evaluate(current_me, current_opp, current_color):
+        if not current_opp: return 100000
+        if not current_me: return -100000
+        
+        score = 0
+        my_dir = 1 if current_color == 'w' else -1
+        my_goal = 7 if current_color == 'w' else 0
+        opp_goal = 0 if current_color == 'w' else 7
+        
+        # Win check
+        for r, _ in current_me:
+            if r == my_goal: return 100000
+        for r, _ in current_opp:
+            if r == opp_goal: return -100000
+
+        # Basic material and positioning
+        score += len(current_me) * 100
+        score -= len(current_opp) * 100
+        
+        for r, c in current_me:
+            dist = abs(r - (7 - my_goal))
+            score += (dist * dist)
+            # Support: pieces protecting this one
+            if (r - my_dir, c - 1) in current_me: score += 5
+            if (r - my_dir, c + 1) in current_me: score += 5
+            
+        for r, c in current_opp:
+            dist = abs(r - (7 - opp_goal))
+            score -= (dist * dist)
+
+        return score
+
+    def minimax(current_me, current_opp, depth, alpha, beta, maximizing, current_color):
+        if depth == 0:
+            return evaluate(current_me, current_opp, current_color), None
+        
+        opp_color = 'b' if current_color == 'w' else 'w'
+        moves = get_legal_moves(current_me, current_opp, 1 if current_color == 'w' else -1)
+        
+        if not moves:
+            return -100000 if maximizing else 100000, None
+
+        # Simple move ordering: captures first
+        moves.sort(key=lambda m: m[1] in current_opp, reverse=True)
+        
+        best_move = None
+        if maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                start, end = move
+                new_me = [p if p != start else end for p in current_me]
+                new_opp = [p for p in current_opp if p != end]
+                
+                # Check winning move
+                if end[0] == (7 if current_color == 'w' else 0):
+                    return 90000 + depth, move
+                
+                eval_val, _ = minimax(new_opp, new_me, depth - 1, -beta, -alpha, False, opp_color)
+                eval_val = -eval_val
+                
+                if eval_val > max_eval:
+                    max_eval = eval_val
+                    best_move = move
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            # For simplicity in this logic, maximizing handles the logic recursively via negation
+            return 0, None
+
+    # Entry point for the policy
+    # We use a small depth to ensure we stay under the time limit
+    _, best_move = minimax(me, opp, 2, -float('inf'), float('inf'), True, color)
+    
+    if best_move:
+        return best_move
+    else:
+        # Fallback to random legal move
+        legal = get_legal_moves(me, opp, direction)
+        return random.choice(legal)

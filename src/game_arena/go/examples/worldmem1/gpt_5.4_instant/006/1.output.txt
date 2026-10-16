@@ -1,0 +1,283 @@
+The strategy for this policy is a fast tactical Go heuristic designed to always return a legal move while exploiting the limited API. It does not attempt full-rule superko reasoning, but it plays solid local moves by prioritizing:
+
+1. Immediate captures of opponent groups in atari.
+2. Saving our own groups in atari.
+3. Strong local tactical moves near existing stones.
+4. Preference for moves with good liberties and local support.
+5. Sensible opening behavior near the center/star points.
+6. Guaranteed legality checking, including suicide avoidance.
+7. Safe fallback to the first legal move, and pass only if no legal move exists.
+
+The policy reconstructs the board from `me` and `opponent`, analyzes connected groups and liberties, scores candidate legal moves, and picks the best one under a lightweight evaluation. This makes it much stronger than random while remaining efficient enough for the time limit.
+
+<code>
+from collections import deque, defaultdict
+
+BOARD_SIZE = 19
+DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+
+def in_bounds(r, c):
+    return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+
+
+def neighbors(r, c):
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if in_bounds(nr, nc):
+            yield nr, nc
+
+
+def build_board(me, opponent):
+    board = {}
+    for p in me:
+        board[p] = 1
+    for p in opponent:
+        board[p] = -1
+    return board
+
+
+def get_group_and_liberties(board, start):
+    color = board.get(start, 0)
+    if color == 0:
+        return set(), set()
+    group = set()
+    liberties = set()
+    stack = [start]
+    group.add(start)
+    while stack:
+        r, c = stack.pop()
+        for nr, nc in neighbors(r, c):
+            v = board.get((nr, nc), 0)
+            if v == 0:
+                liberties.add((nr, nc))
+            elif v == color and (nr, nc) not in group:
+                group.add((nr, nc))
+                stack.append((nr, nc))
+    return group, liberties
+
+
+def all_groups(board, color):
+    seen = set()
+    groups = []
+    for pos, v in board.items():
+        if v == color and pos not in seen:
+            g, libs = get_group_and_liberties(board, pos)
+            seen |= g
+            groups.append((g, libs))
+    return groups
+
+
+def play_move(board, move, color):
+    if move == (0, 0):
+        return board.copy(), True
+    if move in board:
+        return board, False
+
+    new_board = board.copy()
+    new_board[move] = color
+    opp = -color
+
+    captured_any = False
+    checked = set()
+    for nb in neighbors(*move):
+        if new_board.get(nb, 0) == opp and nb not in checked:
+            g, libs = get_group_and_liberties(new_board, nb)
+            checked |= g
+            if len(libs) == 0:
+                captured_any = True
+                for s in g:
+                    del new_board[s]
+
+    my_group, my_libs = get_group_and_liberties(new_board, move)
+    if len(my_libs) == 0 and not captured_any:
+        return board, False
+
+    return new_board, True
+
+
+def is_legal(board, move, color=1):
+    _, ok = play_move(board, move, color)
+    return ok
+
+
+def local_empty_neighbors(board, move):
+    cnt = 0
+    for nb in neighbors(*move):
+        if board.get(nb, 0) == 0:
+            cnt += 1
+    return cnt
+
+
+def local_friend_neighbors(board, move, color):
+    cnt = 0
+    for nb in neighbors(*move):
+        if board.get(nb, 0) == color:
+            cnt += 1
+    return cnt
+
+
+def local_enemy_neighbors(board, move, color):
+    cnt = 0
+    opp = -color
+    for nb in neighbors(*move):
+        if board.get(nb, 0) == opp:
+            cnt += 1
+    return cnt
+
+
+def distance_to_center(move):
+    r, c = move
+    return abs(r - 10) + abs(c - 10)
+
+
+def candidate_moves(board):
+    stones = list(board.keys())
+    cands = set()
+    if not stones:
+        opening = [(4, 4), (4, 16), (16, 4), (16, 16), (10, 10), (4, 10), (10, 4), (10, 16), (16, 10)]
+        return opening
+
+    for r, c in stones:
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                nr, nc = r + dr, c + dc
+                if in_bounds(nr, nc) and (nr, nc) not in board:
+                    cands.add((nr, nc))
+
+    # If board is sparse, include some strategic points too
+    strategic = [(4, 4), (4, 16), (16, 4), (16, 16), (10, 10), (4, 10), (10, 4), (10, 16), (16, 10)]
+    for p in strategic:
+        if p not in board:
+            cands.add(p)
+
+    return list(cands)
+
+
+def score_move(board, move, color=1):
+    opp = -color
+    if move in board:
+        return -10**18
+
+    new_board, ok = play_move(board, move, color)
+    if not ok:
+        return -10**18
+
+    score = 0.0
+
+    # Tactical gain: captures
+    captured = sum(1 for p, v in board.items() if v == opp and p not in new_board)
+    score += 1000 * captured
+
+    # Safety of resulting group
+    g, libs = get_group_and_liberties(new_board, move)
+    nlibs = len(libs)
+    score += 35 * min(nlibs, 6)
+
+    # Connection and shape
+    friends = local_friend_neighbors(board, move, color)
+    enemies = local_enemy_neighbors(board, move, color)
+    empties = local_empty_neighbors(board, move)
+    score += 20 * friends
+    score += 8 * enemies
+    score += 6 * empties
+
+    # Save own groups in atari
+    checked = set()
+    for nb in neighbors(*move):
+        if board.get(nb, 0) == color and nb not in checked:
+            og, olib = get_group_and_liberties(board, nb)
+            checked |= og
+            if len(olib) == 1 and move in olib:
+                score += 700 + 30 * len(og)
+            elif len(olib) == 2 and move in olib:
+                score += 80 + 5 * len(og)
+
+    # Attack opponent groups in atari / reduce liberties
+    checked = set()
+    for nb in neighbors(*move):
+        if board.get(nb, 0) == opp and nb not in checked:
+            og, olib = get_group_and_liberties(board, nb)
+            checked |= og
+            if len(olib) == 1 and move in olib:
+                score += 900 + 40 * len(og)
+            elif len(olib) == 2 and move in olib:
+                score += 140 + 8 * len(og)
+
+    # Avoid self-atari unless it captures something big
+    if nlibs == 1 and captured == 0:
+        score -= 500
+
+    # Prefer center-ish in opening / early game
+    stones_n = len(board)
+    if stones_n < 20:
+        score -= 3 * distance_to_center(move)
+
+    # Mild preference against edges early unless tactical
+    r, c = move
+    edge_dist = min(r - 1, BOARD_SIZE - r, c - 1, BOARD_SIZE - c)
+    if stones_n < 30:
+        score += 3 * min(edge_dist, 3)
+
+    # Bonus for extending weak resulting group
+    if nlibs >= 3:
+        score += 30
+
+    return score
+
+
+def first_legal_move(board, color=1):
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            mv = (r, c)
+            if is_legal(board, mv, color):
+                return mv
+    return (0, 0)
+
+
+def policy(me, opponent, memory):
+    board = build_board(me, opponent)
+
+    # Immediate tactical priorities:
+    # 1) Capture opponent groups in atari
+    opp_groups = all_groups(board, -1)
+    capture_moves = set()
+    for g, libs in opp_groups:
+        if len(libs) == 1:
+            mv = next(iter(libs))
+            if is_legal(board, mv, 1):
+                capture_moves.add((mv, len(g)))
+    if capture_moves:
+        best = max(capture_moves, key=lambda x: (x[1], -distance_to_center(x[0])))
+        return best[0], memory
+
+    # 2) Save own groups in atari
+    my_groups = all_groups(board, 1)
+    save_moves = set()
+    for g, libs in my_groups:
+        if len(libs) == 1:
+            mv = next(iter(libs))
+            if is_legal(board, mv, 1):
+                save_moves.add((mv, len(g)))
+    if save_moves:
+        best = max(save_moves, key=lambda x: (x[1], -distance_to_center(x[0])))
+        return best[0], memory
+
+    # 3) Search and score candidate moves
+    cands = candidate_moves(board)
+    best_move = None
+    best_score = -10**18
+
+    for mv in cands:
+        s = score_move(board, mv, 1)
+        if s > best_score:
+            best_score = s
+            best_move = mv
+
+    if best_move is not None and is_legal(board, best_move, 1):
+        return best_move, memory
+
+    # 4) Robust fallback: first legal move
+    mv = first_legal_move(board, 1)
+    return mv, memory
+</code>

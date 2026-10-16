@@ -1,0 +1,142 @@
+**Strategy**
+
+The policy evaluates every empty intersection on the 19×19 board and chooses the move with the highest numerical score.  
+The score of a candidate move is built from the following weighted criteria:
+
+1. **Capture value** – If the move removes opponent stones, the number of captured stones is multiplied by a very large weight (`CAPTURE_WEIGHT`). Capturing is always the top priority.  
+2. **Liberties of the new stone** – More liberties for the newly placed stone are beneficial, so the count of its liberties is added (`LIBERTY_WEIGHT`).  
+3. **Connectivity** – Moves that are adjacent to our own stones help build strong shapes; the number of own‑stone neighbours is added (`CONNECT_WEIGHT`).  
+4. **Centrality** – In the opening, playing near the centre of the board (around (10,10) in 1‑based coordinates) is desirable. A small penalty proportional to the Manhattan distance from the centre is applied (`CENTER_WEIGHT`).  
+5. **Legal‑move filter** – Suicide moves (placing a stone with zero liberties while capturing nothing) are rejected. If no legal move exists the policy passes `(0,0)`.
+
+The evaluation is fast: for each empty point we copy the board, place the stone, detect any captured opponent groups, compute the new liberties, and calculate the score. The whole search finishes comfortably within the 1‑second limit.
+
+<code>
+import random
+
+# Constants for the heuristic
+CAPTURE_WEIGHT = 1000      # huge bonus for capturing opponent stones
+LIBERTY_WEIGHT = 10        # reward for keeping the new stone alive
+CONNECT_WEIGHT = 5         # reward for connecting to own stones
+CENTER_WEIGHT = 0.5        # small penalty for far‑from‑center moves
+
+ME = 1
+OPP = -1
+EMPTY = 0
+BOARD_SIZE = 19
+CENTER = 9  # 0‑based index of the central point (row 9, col 9) -> (10,10) in 1‑based
+
+def policy(me, opponent):
+    # ----------------------------------------------------------------------
+    # Build the board representation (0 = empty, 1 = us, -1 = opponent)
+    # ----------------------------------------------------------------------
+    board = [[EMPTY] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    for r, c in me:
+        board[r - 1][c - 1] = ME
+    for r, c in opponent:
+        board[r - 1][c - 1] = OPP
+
+    # ----------------------------------------------------------------------
+    # Helper functions
+    # ----------------------------------------------------------------------
+    def neighbours(r, c):
+        """Return list of orthogonal neighbours inside the board."""
+        res = []
+        if r > 0:
+            res.append((r - 1, c))
+        if r < BOARD_SIZE - 1:
+            res.append((r + 1, c))
+        if c > 0:
+            res.append((r, c - 1))
+        if c < BOARD_SIZE - 1:
+            res.append((r, c + 1))
+        return res
+
+    def get_group(b, sr, sc):
+        """Return the set of positions belonging to the group containing (sr,sc)."""
+        color = b[sr][sc]
+        if color == EMPTY:
+            return set()
+        stack = [(sr, sc)]
+        group = set()
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in group:
+                continue
+            group.add((r, c))
+            for nr, nc in neighbours(r, c):
+                if b[nr][nc] == color:
+                    stack.append((nr, nc))
+        return group
+
+    def count_liberties(b, group):
+        """Count distinct empty neighbours of all stones in the group."""
+        libs = set()
+        for r, c in group:
+            for nr, nc in neighbours(r, c):
+                if b[nr][nc] == EMPTY:
+                    libs.add((nr, nc))
+        return len(libs)
+
+    # ----------------------------------------------------------------------
+    # Evaluate every empty point
+    # ----------------------------------------------------------------------
+    best_move = None
+    best_score = -10**9
+
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] != EMPTY:
+                continue
+
+            # Create a temporary board with the stone placed
+            new_board = [row[:] for row in board]
+            new_board[r][c] = ME
+
+            # ---- capture detection -------------------------------------------------
+            captured = 0
+            for nr, nc in neighbours(r, c):
+                if new_board[nr][nc] == OPP:
+                    opp_group = get_group(new_board, nr, nc)
+                    if not opp_group:
+                        continue
+                    opp_liberties = count_liberties(new_board, opp_group)
+                    if opp_liberties == 0:
+                        captured += len(opp_group)
+                        # remove captured stones
+                        for gr, gc in opp_group:
+                            new_board[gr][gc] = EMPTY
+
+            # ---- own liberties after potential captures -------------------------
+            our_group = get_group(new_board, r, c)
+            our_liberties = count_liberties(new_board, our_group)
+
+            # ---- reject illegal suicide (no capture) ----------------------------
+            if our_liberties == 0 and captured == 0:
+                continue
+
+            # ---- compute score ----------------------------------------------------
+            score = captured * CAPTURE_WEIGHT
+            score += our_liberties * LIBERTY_WEIGHT
+
+            # connectivity: number of own stones adjacent to the move
+            conn = sum(1 for nr, nc in neighbours(r, c) if board[nr][nc] == ME)
+            score += conn * CONNECT_WEIGHT
+
+            # central preference (early game)
+            dist = abs(r - CENTER) + abs(c - CENTER)
+            score -= dist * CENTER_WEIGHT
+
+            # tiny random tie‑breaker
+            score += random.random() * 0.1
+
+            # ---- keep the best ----------------------------------------------------
+            if score > best_score:
+                best_score = score
+                best_move = (r + 1, c + 1)   # convert back to 1‑based
+
+    # If no legal move was found (board full or all moves suicidal), pass
+    if best_move is None:
+        return (0, 0)
+    return best_move
+</code>

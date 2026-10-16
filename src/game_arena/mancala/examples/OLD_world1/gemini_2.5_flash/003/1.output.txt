@@ -1,0 +1,195 @@
+```python
+import math
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Implements a move-selection policy for the game Kalah.
+
+    The policy uses a minimax-like approach with a limited search depth (1 or 2 turns).
+    It prioritizes moves that lead to an extra turn, captures, or maximize the score,
+    while also considering the opponent's potential best moves.
+    """
+    
+    # Helper function to simulate a move
+    def simulate_move(current_you, current_opponent, move_index):
+        if not (0 <= move_index <= 5) or current_you[move_index] == 0:
+            raise ValueError("Invalid move_index")
+
+        # Create copies of the board states to avoid modifying the original
+        next_you = list(current_you)
+        next_opponent = list(current_opponent)
+        
+        seeds_to_sow = next_you[move_index]
+        next_you[move_index] = 0
+        
+        current_side = 'you' # 'you' or 'opponent'
+        current_index = move_index
+
+        last_landed_in_store = False
+        captured_seeds = 0
+
+        while seeds_to_sow > 0:
+            if current_side == 'you':
+                # Sowing on your side
+                for i in range(current_index + 1, 7):
+                    if seeds_to_sow == 0:
+                        break
+                    next_you[i] += 1
+                    seeds_to_sow -= 1
+                    if seeds_to_sow == 0:
+                        last_landed_house_index = i
+                        last_landed_side = 'you'
+                        if i == 6: # Landed in your store
+                            last_landed_in_store = True
+                        break
+                current_index = -1 # Reset for next loop iteration
+                current_side = 'opponent' # Switch to opponent's side
+            else:
+                # Sowing on opponent's side (skipping opponent's store)
+                for i in range(0, 6): # Opponent's houses 0-5
+                    if seeds_to_sow == 0:
+                        break
+                    next_opponent[i] += 1
+                    seeds_to_sow -= 1
+                    if seeds_to_sow == 0:
+                        last_landed_house_index = i
+                        last_landed_side = 'opponent'
+                        break
+                current_index = -1 # Reset for next loop iteration
+                current_side = 'you' # Switch to your side
+
+        # Check for capture
+        if not last_landed_in_store and last_landed_side == 'you' and \
+           0 <= last_landed_house_index <= 5 and next_you[last_landed_house_index] == 1: # Was empty before drop
+            
+            # Check if opposite house has seeds
+            opposite_house_index = 5 - last_landed_house_index
+            if next_opponent[opposite_house_index] > 0:
+                captured_seeds = next_opponent[opposite_house_index] + next_you[last_landed_house_index]
+                next_opponent[opposite_house_index] = 0
+                next_you[last_landed_house_index] = 0
+                next_you[6] += captured_seeds
+
+        # Check for game end and collect remaining seeds
+        you_houses_empty = all(h == 0 for h in next_you[0:6])
+        opponent_houses_empty = all(h == 0 for h in next_opponent[0:6])
+
+        if you_houses_empty:
+            for i in range(6):
+                next_opponent[6] += next_opponent[i]
+                next_opponent[i] = 0
+        elif opponent_houses_empty:
+            for i in range(6):
+                next_you[6] += next_you[i]
+                next_you[i] = 0
+
+        # Return the new board state, whether an extra turn is granted, and captured seeds
+        return next_you, next_opponent, last_landed_in_store, captured_seeds > 0
+
+    # Evaluation function
+    def evaluate(current_you, current_opponent):
+        # A simple evaluation function: difference in score
+        # Prioritize captures and extra turns implicitly by depth search
+        # Consider number of seeds in your houses to avoid early empty houses
+        score = current_you[6] - current_opponent[6]
+        # Add a small bonus for having more seeds in houses (potential for future moves)
+        # penalize having few seeds in houses (less options)
+        score += sum(current_you[0:6]) * 0.1
+        score -= sum(current_opponent[0:6]) * 0.1
+        return score
+
+    # Minimax-like search function
+    def find_best_move(current_you, current_opponent, depth, is_maximizing_player):
+        if depth == 0:
+            return evaluate(current_you, current_opponent), None
+
+        legal_moves = [i for i in range(6) if current_you[i] > 0]
+        
+        if not legal_moves: # Should not happen if policy is always called with legal moves available
+            return evaluate(current_you, current_opponent), None
+
+        if is_maximizing_player:
+            max_eval = -math.inf
+            best_move = -1
+
+            for move in legal_moves:
+                next_you, next_opponent, extra_turn, _ = simulate_move(current_you, current_opponent, move)
+                
+                # If extra turn, we continue as maximizing player
+                if extra_turn:
+                    eval_score, _ = find_best_move(next_you, next_opponent, depth, True)
+                else:
+                    # Opponent's turn
+                    eval_score, _ = find_best_move(next_opponent, next_you, depth - 1, False) # Opponent plays as maximizing player on their turn
+
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+            return max_eval, best_move
+        else: # Minimizing player (opponent's turn from our perspective)
+            min_eval = math.inf
+            best_move = -1
+
+            for move in legal_moves:
+                next_you, next_opponent, extra_turn, _ = simulate_move(current_you, current_opponent, move)
+                
+                # If extra turn, opponent continues as maximizing player
+                if extra_turn:
+                    eval_score, _ = find_best_move(next_you, next_opponent, depth, True)
+                else:
+                    # Our turn
+                    eval_score, _ = find_best_move(next_opponent, next_you, depth - 1, True) # We play as maximizing player on our turn
+
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+            return min_eval, best_move
+
+    # Main policy logic
+    
+    # Try to find a move that yields an extra turn or a capture
+    # Prioritize moves that give an immediate advantage
+    
+    possible_moves = []
+    for i in range(6):
+        if you[i] > 0:
+            possible_moves.append(i)
+
+    # If no legal moves, return -1 (though the problem states this won't happen)
+    if not possible_moves:
+        return -1 
+    
+    best_score = -math.inf
+    best_move_found = possible_moves[0] # Default to first legal move
+
+    # Iterate through all possible moves and evaluate them
+    for move in possible_moves:
+        next_you, next_opponent, extra_turn, capture_made = simulate_move(you, opponent, move)
+        
+        current_move_score = evaluate(next_you, next_opponent)
+
+        # Apply immediate bonuses for extra turn or capture
+        if extra_turn:
+            current_move_score += 1000 # High bonus for extra move
+        if capture_made:
+            current_move_score += 500  # Good bonus for capture
+        
+        # Look ahead one more turn (opponent's best counter-move)
+        # If we get an extra turn, we look at our next move. Otherwise, we simulate opponent's best response.
+        if extra_turn:
+            # We get another turn, so we maximize our score from this new state
+            re_eval, _ = find_best_move(next_you, next_opponent, 1, True)
+            current_move_score += re_eval * 0.5 # Add a weighted value of the next turn
+        else:
+            # Opponent's turn. We want to find the move that minimizes our score (maximizes theirs).
+            # Opponent simulates their move as the maximizing player in their context
+            opponent_best_response_score, _ = find_best_move(next_opponent, next_you, 1, True)
+            current_move_score -= opponent_best_response_score * 0.7 # Penalize based on opponent's potential gain
+
+        if current_move_score > best_score:
+            best_score = current_move_score
+            best_move_found = move
+
+    return best_move_found
+
+```

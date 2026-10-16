@@ -1,0 +1,250 @@
+
+import numpy as np
+import random
+from collections import deque, defaultdict
+
+def get_all_pieces(board, player):
+    """Get all positions of a player's pieces"""
+    positions = []
+    for i in range(8):
+        for j in range(8):
+            if board[i][j] == player:
+                positions.append((i, j))
+    return positions
+
+def get_line_pieces(board, start_row, start_col, delta_row, delta_col):
+    """Get all pieces in a line from start position in given direction"""
+    pieces = []
+    row, col = start_row + delta_row, start_col + delta_col
+    while 0 <= row < 8 and 0 <= col < 8:
+        if board[row][col] != 0:
+            pieces.append((row, col))
+        row += delta_row
+        col += delta_col
+    return pieces
+
+def get_line_length(board, start_row, start_col, delta_row, delta_col):
+    """Get count of pieces in line in specified direction"""
+    count = 0
+    row, col = start_row + delta_row, start_col + delta_col
+    while 0 <= row < 8 and 0 <= col < 8:
+        if board[row][col] != 0:
+            count += 1
+        row += delta_row
+        col += delta_col
+    return count
+
+def get_valid_moves(board, player):
+    """Get all valid moves for current player"""
+    moves = []
+    pieces = get_all_pieces(board, player)
+    
+    # Directions: horizontal, vertical, diagonal
+    directions = [
+        (-1, 0), (1, 0), (0, -1), (0, 1),  # horizontal/vertical
+        (-1, -1), (-1, 1), (1, -1), (1, 1)  # diagonals
+    ]
+    
+    for start_row, start_col in pieces:
+        # For each direction, check if a move is possible
+        for delta_row, delta_col in directions:
+            # Count pieces in that line
+            line_length = get_line_length(board, start_row, start_col, delta_row, delta_col)
+            
+            # A piece moves exactly as many squares as there are pieces in the line
+            target_row = start_row + delta_row * line_length
+            target_col = start_col + delta_col * line_length
+            
+            # Check if target is valid
+            if 0 <= target_row < 8 and 0 <= target_col < 8:
+                # Check if there are no enemy pieces in the way
+                valid = True
+                current_row, current_col = start_row + delta_row, start_col + delta_col
+                for _ in range(line_length - 1):
+                    if board[current_row][current_col] == -player:
+                        valid = False
+                        break
+                    current_row += delta_row
+                    current_col += delta_col
+                
+                if valid:
+                    # Make sure target position is empty or contains opponent
+                    if board[target_row][target_col] == 0 or board[target_row][target_col] == -player:
+                        moves.append((start_row, start_col, target_row, target_col))
+    
+    return moves
+
+def count_connected_components(board, player):
+    """Count number of connected components for player"""
+    if player == 1:
+        pieces = get_all_pieces(board, 1)
+    else:
+        pieces = get_all_pieces(board, -1)
+    
+    if not pieces:
+        return 0
+    
+    visited = set()
+    components = 0
+    
+    for start_row, start_col in pieces:
+        if (start_row, start_col) not in visited:
+            queue = deque([(start_row, start_col)])
+            visited.add((start_row, start_col))
+            components += 1
+            
+            # 8 directions for connectivity
+            directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+            
+            while queue:
+                row, col = queue.popleft()
+                
+                for d_row, d_col in directions:
+                    new_row, new_col = row + d_row, col + d_col
+                    
+                    if (0 <= new_row < 8 and 0 <= new_col < 8 and 
+                        (new_row, new_col) not in visited and 
+                        board[new_row][new_col] == player):
+                        visited.add((new_row, new_col))
+                        queue.append((new_row, new_col))
+    
+    return components
+
+def connected_pieces_score(board, player):
+    """Calculate score based on number of connected pieces"""
+    return -count_connected_components(board, player)
+
+def is_capture(board, from_row, from_col, to_row, to_col):
+    """Check if a move is a capture"""
+    return board[to_row][to_col] == -player
+
+def count_pieces_in_direction(board, from_row, from_col, delta_row, delta_col):
+    """Count pieces in direction from a position"""
+    count = 0
+    row, col = from_row + delta_row, from_col + delta_col
+    while 0 <= row < 8 and 0 <= col < 8:
+        if board[row][col] != 0:
+            count += 1
+        row += delta_row
+        col += delta_col
+    return count
+
+def evaluate_position(board, player):
+    """Evaluate the current position for a player"""
+    score = 0
+    
+    # Prefer having fewer connected components (more connected pieces)
+    score += connected_pieces_score(board, player) * 10
+    
+    # Prefer captures
+    moves = get_valid_moves(board, player)
+    capture_count = sum(1 for move in moves if is_capture(board, move[0], move[1], move[2], move[3]))
+    score += capture_count * 50
+    
+    # Prefer positions closer to center
+    pieces = get_all_pieces(board, player)
+    center_distance = 0
+    for row, col in pieces:
+        center_distance += abs(row - 3.5) + abs(col - 3.5)
+    score -= center_distance * 0.5
+    
+    # Prefer having more pieces (as many as possible)
+    score += len(pieces) * 2
+    
+    # Prefer to avoid isolated pieces
+    for row, col in pieces:
+        neighbors = 0
+        directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+        for d_row, d_col in directions:
+            new_row, new_col = row + d_row, col + d_col
+            if 0 <= new_row < 8 and 0 <= new_col < 8 and board[new_row][new_col] == player:
+                neighbors += 1
+        score += neighbors * 3
+    
+    return score
+
+def make_move(board, from_row, from_col, to_row, to_col):
+    """Make a move and return new board state"""
+    new_board = [row[:] for row in board]  # Deep copy
+    new_board[to_row][to_col] = new_board[from_row][from_col]
+    new_board[from_row][from_col] = 0
+    return new_board
+
+def minimax(board, depth, alpha, beta, maximizing_player, player):
+    """Minimax with alpha-beta pruning"""
+    if depth == 0:
+        return evaluate_position(board, player)
+    
+    moves = get_valid_moves(board, player if maximizing_player else -player)
+    
+    if not moves:
+        # No moves left - check if we have won
+        if count_connected_components(board, player) <= 1:
+            return 10000 if maximizing_player else -10000
+        else:
+            return evaluate_position(board, player)
+    
+    if maximizing_player:
+        max_eval = float('-inf')
+        for from_row, from_col, to_row, to_col in moves:
+            new_board = make_move(board, from_row, from_col, to_row, to_col)
+            eval = minimax(new_board, depth - 1, alpha, beta, False, player)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break  # Beta cutoff
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for from_row, from_col, to_row, to_col in moves:
+            new_board = make_move(board, from_row, from_col, to_row, to_col)
+            eval = minimax(new_board, depth - 1, alpha, beta, True, player)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break  # Alpha cutoff
+        return min_eval
+
+def policy(board):
+    """Main policy function"""
+    player = 1  # We are always player 1 for this function
+    moves = get_valid_moves(board, player)
+    
+    if not moves:
+        # No moves possible - return any legal move or pass
+        # Actually, it shouldn't happen in a real scenario, but let's just return an empty string
+        # for simplicity, though our code should ensure this doesn't happen
+        return "0,0:0,0"  # Invalid move, but if we actually get here, we return one
+    
+    best_move = None
+    best_score = float('-inf')
+    
+    # Try a few different heuristics for move ordering
+    # First, try capture moves
+    capture_moves = []
+    other_moves = []
+    for move in moves:
+        if is_capture(board, move[0], move[1], move[2], move[3]):
+            capture_moves.append(move)
+        else:
+            other_moves.append(move)
+    
+    # First, try capture moves to maximize tactical evaluation
+    if capture_moves:
+        moves = capture_moves
+    
+    for move in moves:
+        from_row, from_col, to_row, to_col = move
+        # Get immediate evaluation
+        new_board = make_move(board, from_row, from_col, to_row, to_col)
+        score = minimax(new_board, 2, float('-inf'), float('inf'), False, player)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Make sure we return a legal move - if no move has been selected, pick the first one
+    if best_move is None:
+        best_move = moves[0]
+    
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"

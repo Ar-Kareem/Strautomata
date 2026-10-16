@@ -1,0 +1,93 @@
+
+
+The strategy for this policy is to use the `python-chess` library for accurate board representation and legal move generation. Each legal move is evaluated based on the following criteria:
+1. **Material Gain**: Prioritize captures of higher-value pieces (Queen=9, Rook=5, Bishop/Knight=3, Pawn=1).
+2. **Promotion**: Promote pawns to queens whenever possible.
+3. **Check Bonus**: Award bonus points for moves that put the opponent in check.
+4. **Piece Safety**: Penalize moves that leave the moved piece under attack.
+5. **Central Control**: Favor moves towards the center of the board.
+6. **Castling Bonus**: Prioritize castling for king safety.
+
+The move with the highest evaluation score is selected.
+
+<code>
+import chess
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    board = chess.Board()
+    board.clear_board()
+    
+    # Set up the board from the given pieces
+    for square_str, piece_code in pieces.items():
+        square = chess.parse_square(square_str)
+        color = chess.WHITE if piece_code[0] == 'w' else chess.BLACK
+        piece_type = piece_code[1].upper()
+        piece_map = {'P': chess.PAWN, 'N': chess.KNIGHT, 'B': chess.BISHOP, 
+                     'R': chess.ROOK, 'Q': chess.QUEEN, 'K': chess.KING}
+        piece = chess.Piece(piece_map[piece_type], color)
+        board.set_piece_at(square, piece)
+    
+    # Set current player
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+    
+    # If only one legal move, return it immediately
+    legal_moves = list(board.legal_moves)
+    if not legal_moves:
+        return ''  # Should not happen in a valid chess position
+    if len(legal_moves) == 1:
+        return legal_moves[0].uci()
+    
+    # Evaluate moves based on material, checks, and position
+    best_move = None
+    best_score = -10000
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    for move in legal_moves:
+        score = 0
+        
+        # Material gain from captures
+        if board.is_capture(move):
+            captured_piece = board.piece_at(move.to_square)
+            if captured_piece:
+                captured_type = captured_piece.symbol().upper()
+                score += piece_values.get(captured_type, 0)
+            else:  # En passant
+                score += 1
+        
+        # Promotion bonus
+        if move.promotion == chess.QUEEN:
+            score += 8  # Queen (9) - Pawn (1)
+        
+        # Check for discovered checks
+        board.push(move)
+        if board.is_check():
+            score += 1
+        board.pop()
+        
+        # Piece safety penalty
+        board.push(move)
+        attacker_color = not board.turn
+        if board.is_attacked_by(attacker_color, move.to_square):
+            moved_piece = board.piece_at(move.to_square)
+            if moved_piece:
+                moved_type = moved_piece.symbol().upper()
+                score -= piece_values.get(moved_type, 0) * 0.5
+        board.pop()
+        
+        # Central control bonus
+        file = chess.square_file(move.to_square)
+        rank = chess.square_rank(move.to_square)
+        centrality = (3.5 - abs(file - 3.5)) + (3.5 - abs(rank - 3.5))
+        score += centrality * 0.1
+        
+        # Castling bonus
+        if board.is_castling(move):
+            score += 1
+        
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move.uci()
+</code>

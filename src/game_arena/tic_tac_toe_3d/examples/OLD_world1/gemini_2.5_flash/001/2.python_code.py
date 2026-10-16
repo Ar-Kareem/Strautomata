@@ -1,0 +1,105 @@
+
+import numpy as np
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    n = len(board)
+    board_np = np.array(board)
+
+    # 1. Check for a winning move
+    for x in range(n):
+        for y in range(n):
+            for z in range(n):
+                if board_np[x, y, z] == 0:
+                    # Temporarily place our piece and check if it wins
+                    board_np[x, y, z] = 1
+                    if check_win(board_np, (x, y, z), 1, n):
+                        return (x, y, z)
+                    board_np[x, y, z] = 0  # Revert the move
+
+    # 2. Check for opponent's winning move and block it
+    for x in range(n):
+        for y in range(n):
+            for z in range(n):
+                if board_np[x, y, z] == 0:
+                    # Temporarily place opponent's piece and check if it wins
+                    board_np[x, y, z] = -1
+                    if check_win(board_np, (x, y, z), -1, n):
+                        return (x, y, z)
+                    board_np[x, y, z] = 0  # Revert the move
+
+    # 3. Prioritize center cells (generalized for any n)
+    # The 'center' for odd n is a single cell, for even n, it's a 2x2x2 block
+    if n % 2 == 1:
+        center_coords = [(n // 2, n // 2, n // 2)]
+    else:
+        # For even N, consider the 2x2x2 block around the mathematical center
+        center_coords = []
+        c1 = n // 2 - 1
+        c2 = n // 2
+        for x in [c1, c2]:
+            for y in [c1, c2]:
+                for z in [c1, c2]:
+                    center_coords.append((x, y, z))
+
+    for x, y, z in center_coords:
+        if board_np[x, y, z] == 0:
+            return (x, y, z)
+
+    # 4. Take a corner cell (generalized for any n)
+    corner_coords = []
+    for x_idx in [0, n - 1]:
+        for y_idx in [0, n - 1]:
+            for z_idx in [0, n - 1]:
+                corner_coords.append((x_idx, y_idx, z_idx))
+
+    for x, y, z in corner_coords:
+        if board_np[x, y, z] == 0:
+            return (x, y, z)
+
+    # 5. Take any empty cell (fallback)
+    for x in range(n):
+        for y in range(n):
+            for z in range(n):
+                if board_np[x, y, z] == 0:
+                    return (x, y, z)
+
+    # If no empty cells (should not happen in a valid game)
+    return (-1, -1, -1) # Indicate an error or invalid state
+
+def check_win(board: np.ndarray, last_move: tuple[int, int, int], player: int, n: int) -> bool:
+    x, y, z = last_move
+
+    # Check all possible winning lines that pass through (x, y, z)
+    # 1. 3 axial lines (parallel to axes)
+    if np.all(board[x, y, :] == player): return True  # Z-axis
+    if np.all(board[x, :, z] == player): return True  # Y-axis
+    if np.all(board[:, y, z] == player): return True  # X-axis
+
+    # 2. 6 planar diagonals (2 per plane)
+    # XY plane diagonals (z fixed)
+    if np.all(np.diag(board[:, :, z]) == player): return True
+    if np.all(np.diag(np.fliplr(board[:, :, z])) == player): return True # Need to flip for other diagonal
+
+    # XZ plane diagonals (y fixed)
+    if np.all(np.diag(board[:, y, :]) == player): return True
+    if np.all(np.diag(np.fliplr(board[:, y, :])) == player): return True
+
+    # YZ plane diagonals (x fixed)
+    if np.all(np.diag(board[x, :, :]) == player): return True
+    if np.all(np.diag(np.fliplr(board[x, :, :])) == player): return True
+
+    # 3. 4 space diagonals
+    if n == 3: # For n=3, there are only 4 main space diagonals
+        # Main space diagonals
+        if board[0, 0, 0] == player and board[1, 1, 1] == player and board[2, 2, 2] == player: return True
+        if board[0, 0, 2] == player and board[1, 1, 1] == player and board[2, 2, 0] == player: return True
+        if board[0, 2, 0] == player and board[1, 1, 1] == player and board[2, 0, 2] == player: return True
+        if board[2, 0, 0] == player and board[1, 1, 1] == player and board[0, 2, 2] == player: return True
+    else: # General N space diagonals (more complex to check for all 4 without iterating)
+        # Check all 4 main space diagonals
+        if np.all([board[i, i, i] for i in range(n)] == player): return True
+        if np.all([board[i, i, n - 1 - i] for i in range(n)] == player): return True
+        if np.all([board[i, n - 1 - i, i] for i in range(n)] == player): return True
+        if np.all([board[n - 1 - i, i, i] for i in range(n)] == player): return True
+
+    return False

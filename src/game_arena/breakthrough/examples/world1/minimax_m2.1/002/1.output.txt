@@ -1,0 +1,223 @@
+# Strategy for Breakthrough Policy
+
+I'll implement a smart Breakthrough policy using minimax search with alpha-beta pruning and a sophisticated evaluation function. The strategy will:
+
+1. **Generate all legal moves** systematically
+2. **Use depth-limited minimax search** to look ahead multiple moves
+3. **Apply alpha-beta pruning** for efficient search
+4. **Evaluate positions** based on piece count, advancement, center control, and piece protection
+
+The evaluation function rewards:
+- Having more pieces than the opponent
+- Pieces closer to the opponent's home row
+- Controlling center squares
+- Protected pieces that can't be easily captured
+- Nearly-won positions (pieces on the far edge)
+
+Here's the complete Python implementation:
+
+<code>
+import copy
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Breakthrough policy using minimax search with alpha-beta pruning.
+    
+    Args:
+        me: List of (row, col) tuples for my pieces
+        opp: List of (row, col) tuples for opponent pieces  
+        color: 'b' for black (moves towards row 0), 'w' for white (moves towards row 7)
+    
+    Returns:
+        A move as ((from_row, from_col), (to_row, to_col))
+    """
+    # Direction: black moves to lower rows, white to higher rows
+    direction = -1 if color == 'b' else 1
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(me, opp, direction)
+    
+    if not legal_moves:
+        # No moves available - this shouldn't happen in normal play
+        return None
+    
+    # Use minimax with alpha-beta pruning
+    best_move = None
+    best_value = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Search depth based on game state
+    depth = 3  # Fixed depth for performance
+    
+    for move in legal_moves:
+        # Apply move to get new state
+        new_me, new_opp = apply_move(me, opp, move, direction)
+        
+        # Check if move wins immediately
+        if check_win(new_me, direction):
+            return move
+            
+        # Evaluate position
+        value = minimax(new_me, new_opp, direction, depth - 1, False, alpha, beta)
+        
+        if value > best_value:
+            best_value = value
+            best_move = move
+        
+        alpha = max(alpha, best_value)
+    
+    return best_move if best_move else legal_moves[0]
+
+def generate_legal_moves(pieces: List[Tuple[int, int]], opp: List[Tuple[int, int]], direction: int) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """Generate all legal moves for the current player."""
+    moves = []
+    occupied = set(pieces + opp)
+    
+    for row, col in pieces:
+        # Forward move
+        new_row = row + direction
+        if 0 <= new_row < 8 and (new_row, col) not in occupied:
+            moves.append(((row, col), (new_row, col)))
+        
+        # Diagonal moves (including captures)
+        for dc in [-1, 1]:
+            new_col = col + dc
+            if 0 <= new_col < 8:
+                target = (new_row, new_col)
+                if target in occupied:
+                    # Capture move
+                    moves.append(((row, col), target))
+                elif 0 <= new_row < 8:
+                    # Empty diagonal move
+                    moves.append(((row, col), target))
+    
+    return moves
+
+def apply_move(pieces: List[Tuple[int, int]], opp: List[Tuple[int, int]], move: Tuple[Tuple[int, int], Tuple[int, int]], direction: int) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    """Apply a move and return new piece positions."""
+    new_pieces = pieces.copy()
+    new_opp = opp.copy()
+    
+    from_pos, to_pos = move
+    new_pieces.remove(from_pos)
+    new_pieces.append(to_pos)
+    
+    # Remove captured piece if any
+    if to_pos in new_opp:
+        new_opp.remove(to_pos)
+    
+    return new_pieces, new_opp
+
+def check_win(pieces: List[Tuple[int, int]], direction: int) -> bool:
+    """Check if any piece has reached the opposite side."""
+    if direction == -1:  # Black wins by reaching row 0
+        return any(pos[0] == 0 for pos in pieces)
+    else:  # White wins by reaching row 7
+        return any(pos[0] == 7 for pos in pieces)
+
+def minimax(pieces: List[Tuple[int, int]], opp: List[Tuple[int, int]], direction: int, depth: int, maximizing_player: bool, alpha: float, beta: float) -> float:
+    """Minimax algorithm with alpha-beta pruning."""
+    if depth == 0 or not opp or not pieces:
+        return evaluate_position(pieces, opp, direction)
+    
+    legal_moves = generate_legal_moves(pieces, opp, direction)
+    
+    if not legal_moves:
+        return float('-inf') if maximizing_player else float('inf')
+    
+    if maximizing_player:
+        max_eval = float('-inf')
+        for move in legal_moves:
+            new_pieces, new_opp = apply_move(pieces, opp, move, direction)
+            
+            if check_win(new_pieces, direction):
+                return 10000  # Win is very valuable
+            
+            eval_score = minimax(new_pieces, new_opp, direction, depth - 1, False, alpha, beta)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            new_pieces, new_opp = apply_move(pieces, opp, move, direction)
+            
+            if check_win(new_pieces, direction):
+                return -10000  # Opponent win is very bad
+            
+            eval_score = minimax(new_pieces, new_opp, direction, depth - 1, True, alpha, beta)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate_position(pieces: List[Tuple[int, int]], opp: List[Tuple[int, int]], direction: int) -> float:
+    """
+    Evaluate a position using multiple heuristics.
+    Positive values favor the current player, negative values favor the opponent.
+    """
+    score = 0
+    
+    # Piece count difference (most important)
+    piece_diff = len(pieces) - len(opp)
+    score += piece_diff * 100
+    
+    # Advancement score
+    if direction == -1:  # Black wants low rows
+        my_advancement = sum(7 - row for row, col in pieces)  # Lower row = better
+        opp_advancement = sum(7 - row for row, col in opp)
+    else:  # White wants high rows
+        my_advancement = sum(row for row, col in pieces)  # Higher row = better
+        opp_advancement = sum(row for row, col in opp)
+    
+    score += (my_advancement - opp_advancement) * 2
+    
+    # Center control
+    center_squares = [(3, 3), (3, 4), (4, 3), (4, 4)]
+    my_center_control = sum(1 for row, col in pieces if (row, col) in center_squares)
+    opp_center_control = sum(1 for row, col in opp if (row, col) in center_squares)
+    score += (my_center_control - opp_center_control) * 5
+    
+    # Protection score - pieces defended by other pieces
+    my_protected = count_protected_pieces(pieces, opp, direction)
+    opp_protected = count_protected_pieces(opp, pieces, -direction)
+    score += (my_protected - opp_protected) * 3
+    
+    # Nearly-won pieces (pieces that would win next turn)
+    if direction == -1:
+        my_near_win = sum(1 for row, col in pieces if row == 1)  # One move from win
+    else:
+        my_near_win = sum(1 for row, col in pieces if row == 6)
+    score += my_near_win * 20
+    
+    return score
+
+def count_protected_pieces(pieces: List[Tuple[int, int]], opp: List[Tuple[int, int]], direction: int) -> int:
+    """Count pieces that are protected by other friendly pieces."""
+    protected_count = 0
+    occupied = set(pieces + opp)
+    
+    for row, col in pieces:
+        # Check if this piece can be protected (if opponent captures it)
+        # A piece is protected if an opponent can't capture it without being captured
+        attacker_row = row - direction  # Where opponent would come from to capture
+        
+        for dc in [-1, 1]:
+            attacker_pos = (attacker_row, col + dc)
+            if (0 <= attacker_row < 8 and 0 <= col + dc < 8 and 
+                attacker_pos in opp):
+                # This piece can be captured by opponent
+                # Check if our piece can protect by being behind the attacker
+                protector_row = row + direction
+                protector_pos = (protector_row, col)
+                if (0 <= protector_row < 8 and protector_pos in pieces):
+                    protected_count += 1
+                    break
+    
+    return protected_count
+</code>

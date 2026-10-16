@@ -1,0 +1,297 @@
+The strategy for this policy is:
+
+- Always return a legal move, passing only if no legal board move exists.
+- Use full local Go legality checks, including captures and suicide prevention.
+- Approximate ko safely by remembering the board position after our previous move and refusing any move that would recreate that exact position.
+- Play tactically first:
+  1. Capture opponent groups in atari.
+  2. Save our own groups in atari.
+  3. Prefer moves that increase liberties and avoid self-atari.
+- Use a lightweight positional heuristic afterward:
+  - prefer moves near existing stones,
+  - slightly prefer central play in the opening,
+  - avoid the 1st/19th lines early unless tactically justified,
+  - reward moves that pressure opponent groups with few liberties.
+
+This is not a full search engine, but it is fast, legal, and reasonably strong for arena play.
+
+<code>
+from typing import List, Tuple, Dict
+import math
+
+BOARD_SIZE = 19
+EMPTY = 0
+ME = 1
+OPP = 2
+
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    board = [[EMPTY] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    for r, c in me:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r - 1][c - 1] = ME
+    for r, c in opponent:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r - 1][c - 1] = OPP
+
+    previous_ko_hash = memory.get("after_our_move_hash", None)
+    stones_played = len(me) + len(opponent)
+
+    candidates = generate_candidates(board, stones_played)
+    legal_moves = []
+    for move in candidates:
+        res = try_move(board, move, ME, previous_ko_hash)
+        if res is not None:
+            new_board, captured = res
+            score = evaluate_move(board, new_board, move, captured, stones_played)
+            legal_moves.append((score, move, new_board))
+
+    if not legal_moves:
+        # Try every point in case candidate generation missed something.
+        for r in range(1, BOARD_SIZE + 1):
+            for c in range(1, BOARD_SIZE + 1):
+                if board[r - 1][c - 1] != EMPTY:
+                    continue
+                move = (r, c)
+                res = try_move(board, move, ME, previous_ko_hash)
+                if res is not None:
+                    new_board, captured = res
+                    score = evaluate_move(board, new_board, move, captured, stones_played)
+                    legal_moves.append((score, move, new_board))
+
+    if not legal_moves:
+        new_memory = dict(memory)
+        new_memory["after_our_move_hash"] = board_hash(board)
+        return (0, 0), new_memory
+
+    legal_moves.sort(key=lambda x: x[0], reverse=True)
+    _, best_move, best_board = legal_moves[0]
+
+    new_memory = dict(memory)
+    new_memory["after_our_move_hash"] = board_hash(best_board)
+    return best_move, new_memory
+
+
+def neighbors(r: int, c: int):
+    if r > 0:
+        yield r - 1, c
+    if r < BOARD_SIZE - 1:
+        yield r + 1, c
+    if c > 0:
+        yield r, c - 1
+    if c < BOARD_SIZE - 1:
+        yield r, c + 1
+
+
+def group_and_liberties(board, r, c):
+    color = board[r][c]
+    stack = [(r, c)]
+    seen = {(r, c)}
+    group = []
+    libs = set()
+
+    while stack:
+        x, y = stack.pop()
+        group.append((x, y))
+        for nx, ny in neighbors(x, y):
+            v = board[nx][ny]
+            if v == EMPTY:
+                libs.add((nx, ny))
+            elif v == color and (nx, ny) not in seen:
+                seen.add((nx, ny))
+                stack.append((nx, ny))
+    return group, libs
+
+
+def board_hash(board):
+    return tuple(tuple(row) for row in board)
+
+
+def copy_board(board):
+    return [row[:] for row in board]
+
+
+def try_move(board, move, player, forbidden_hash=None):
+    r, c = move
+    r -= 1
+    c -= 1
+    if not (0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE):
+        return None
+    if board[r][c] != EMPTY:
+        return None
+
+    opp = OPP if player == ME else ME
+    b = copy_board(board)
+    b[r][c] = player
+    captured = 0
+
+    checked = set()
+    for nr, nc in neighbors(r, c):
+        if b[nr][nc] == opp and (nr, nc) not in checked:
+            grp, libs = group_and_liberties(b, nr, nc)
+            checked.update(grp)
+            if len(libs) == 0:
+                captured += len(grp)
+                for gx, gy in grp:
+                    b[gx][gy] = EMPTY
+
+    my_group, my_libs = group_and_liberties(b, r, c)
+    if len(my_libs) == 0:
+        return None  # suicide
+
+    if forbidden_hash is not None and board_hash(b) == forbidden_hash:
+        return None  # simple ko approximation
+
+    return b, captured
+
+
+def generate_candidates(board, stones_played):
+    empties = set()
+    tactical = set()
+    friendly = []
+    enemy = []
+
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == ME:
+                friendly.append((r, c))
+            elif board[r][c] == OPP:
+                enemy.append((r, c))
+
+    # Immediate captures / saves
+    seen = set()
+    for r, c in enemy:
+        if (r, c) in seen:
+            continue
+        grp, libs = group_and_liberties(board, r, c)
+        seen.update(grp)
+        if len(libs) == 1:
+            for lr, lc in libs:
+                tactical.add((lr + 1, lc + 1))
+
+    seen = set()
+    for r, c in friendly:
+        if (r, c) in seen:
+            continue
+        grp, libs = group_and_liberties(board, r, c)
+        seen.update(grp)
+        if len(libs) <= 2:
+            for lr, lc in libs:
+                tactical.add((lr + 1, lc + 1))
+            for gx, gy in grp:
+                for nx, ny in neighbors(gx, gy):
+                    if board[nx][ny] == OPP:
+                        egrp, elibs = group_and_liberties(board, nx, ny)
+                        if len(elibs) == 1:
+                            for lr, lc in elibs:
+                                tactical.add((lr + 1, lc + 1))
+
+    # Neighborhood around existing stones
+    for r, c in friendly + enemy:
+        for dr in (-2, -1, 0, 1, 2):
+            for dc in (-2, -1, 0, 1, 2):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr][nc] == EMPTY:
+                    empties.add((nr + 1, nc + 1))
+
+    # Opening points if board is sparse
+    if stones_played < 8:
+        for p in [(4, 4), (4, 10), (4, 16), (10, 4), (10, 10), (10, 16), (16, 4), (16, 10), (16, 16)]:
+            if board[p[0] - 1][p[1] - 1] == EMPTY:
+                empties.add(p)
+
+    # If board empty, prefer center-ish opening
+    if stones_played == 0:
+        return [(10, 10), (4, 4), (4, 16), (16, 4), (16, 16)]
+
+    # Order: tactical first, then local candidates
+    ordered = list(tactical)
+    for m in empties:
+        if m not in tactical:
+            ordered.append(m)
+    return ordered
+
+
+def evaluate_move(old_board, new_board, move, captured, stones_played):
+    r, c = move
+    rr, cc = r - 1, c - 1
+
+    score = 0.0
+
+    # Tactical reward
+    score += 1000.0 * captured
+
+    grp, libs = group_and_liberties(new_board, rr, cc)
+    lib_count = len(libs)
+
+    # Prefer healthy shape
+    score += 12.0 * min(lib_count, 4)
+    if lib_count == 1 and captured == 0:
+        score -= 120.0  # self-atari
+    elif lib_count == 2:
+        score -= 10.0
+
+    # Save endangered friendly groups nearby
+    seen = set()
+    for nr, nc in neighbors(rr, cc):
+        if old_board[nr][nc] == ME and (nr, nc) not in seen:
+            g, l = group_and_liberties(old_board, nr, nc)
+            seen.update(g)
+            if len(l) == 1:
+                score += 250.0
+            elif len(l) == 2:
+                score += 40.0
+
+    # Pressure opponent groups nearby
+    seen = set()
+    for nr, nc in neighbors(rr, cc):
+        if old_board[nr][nc] == OPP and (nr, nc) not in seen:
+            g, l = group_and_liberties(old_board, nr, nc)
+            seen.update(g)
+            if len(l) == 1:
+                score += 400.0
+            elif len(l) == 2:
+                score += 60.0
+            elif len(l) == 3:
+                score += 15.0
+
+    # Local connectivity and contact
+    friendly_adj = 0
+    enemy_adj = 0
+    empty_adj = 0
+    for nr, nc in neighbors(rr, cc):
+        v = old_board[nr][nc]
+        if v == ME:
+            friendly_adj += 1
+        elif v == OPP:
+            enemy_adj += 1
+        else:
+            empty_adj += 1
+
+    score += 18.0 * friendly_adj
+    score += 8.0 * enemy_adj
+    score += 2.0 * empty_adj
+
+    # Opening / positional preferences
+    dist_center = abs(r - 10) + abs(c - 10)
+    if stones_played < 20:
+        score -= 1.7 * dist_center
+        if r in (1, 19) or c in (1, 19):
+            score -= 25.0
+        elif r in (2, 18) or c in (2, 18):
+            score -= 8.0
+    else:
+        score -= 0.4 * dist_center
+
+    # Slight preference for 3-4 / 4-4 style over first line
+    if r in (4, 16) or c in (4, 16):
+        score += 2.0
+    if r in (3, 17) or c in (3, 17):
+        score += 1.0
+
+    # Encourage extending from own stones in sparse local fights
+    if friendly_adj == 0 and enemy_adj == 0:
+        score -= 15.0
+
+    return score
+</code>

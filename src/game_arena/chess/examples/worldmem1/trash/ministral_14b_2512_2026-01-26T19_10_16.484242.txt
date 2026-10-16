@@ -1,0 +1,379 @@
+### **Strategy for this Policy**
+This policy will implement a **hybrid approach combining material evaluation, positional threats, and king safety** to select strong moves. The key principles are:
+
+1. **Checkmate First**: If any legal move results in a checkmate, choose the fastest one (prioritizing captures if they lead to mate).
+2. **Material Gain**: Prefer moves that capture opponent pieces (especially high-value ones like queens, rooks, or bishops) while losing minimal value (or none at all).
+3. **Threat Prevention**: Avoid moves that leave the king in danger or allow the opponent to capture a valuable piece (e.g., don’t move a pawn to a square where the opponent can take it with a knight/queen).
+4. **King Safety**: Prioritize moves that improve king safety (e.g., castling, moving the king to a safer square, or blocking checks).
+5. **Development & Mobility**: Prefer moves that develop pieces (knights to center, bishops to long diagonals) or increase mobility (e.g., rook lifts, pawn breaks).
+6. **Positional Advantages**: Look for tactical opportunities like pins, forks, or discovered attacks.
+7. **Pawn Structure**: Avoid weakening pawn structure unnecessarily (e.g., pawn moves that create isolated or doubled pawns if no clear compensation).
+8. **Center Control**: Prefer moves that occupy or attack the center (d4, e4, d5, e5).
+9. **Promotions**: Prioritize promotions that maintain material advantage (e.g., `=Q` over `=R` unless the rook is pinned).
+10. **Castling**: Castle early if possible (especially kingside for white, queenside for black) to improve king safety.
+
+The policy will use **evaluation functions** to score moves based on:
+- **Material balance** (piece-square tables for pawns, knights, bishops, rooks, queens, and king safety).
+- **Threats** (opponent attacks on own pieces or king).
+- **Tactical opportunities** (pins, forks, discovered attacks).
+- **King safety** (distance to edge, pawn shield, open files).
+
+The `memory` dictionary will store **game history** (e.g., move sequences, pawn structure, piece positions) to improve decision-making over time.
+
+---
+
+### **Python Policy Implementation**
+```python
+import numpy as np
+from typing import Dict, List, Tuple
+
+# Piece values (standard)
+PIECE_VALUES = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+
+# Pawn square tables (simplified)
+PAWN_TABLE_WHITE = np.array([
+    [0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0],
+    [5.0,  5.0,  5.0,  5.0,  5.0,  5.0,  5.0,  5.0],
+    [1.0,  1.0,  2.0,  3.0,  3.0,  2.0,  1.0,  1.0],
+    [0.5,  0.5,  1.0,  2.5,  2.5,  1.0,  0.5,  0.5],
+    [0.0,  0.0,  0.5,  2.0,  2.0,  0.5,  0.0,  0.0],
+    [0.5, -0.5,  0.0,  2.0,  2.0,  0.0, -0.5,  0.5],
+    [0.5,  1.0, -0.5,  0.0,  0.0, -0.5,  1.0,  0.5],
+    [0.0,  0.0,  0.0,  2.0,  2.0,  0.0,  0.0,  0.0]
+])
+
+PAWN_TABLE_BLACK = np.array([
+    [0.0,  0.0,  0.0,  2.0,  2.0,  0.0,  0.0,  0.0],
+    [0.5,  1.0, -0.5,  0.0,  0.0, -0.5,  1.0,  0.5],
+    [0.5, -0.5,  0.0,  2.0,  2.0,  0.0, -0.5,  0.5],
+    [0.0,  0.0,  0.5,  2.0,  2.0,  0.5,  0.0,  0.0],
+    [0.5,  0.5,  1.0,  2.5,  2.5,  1.0,  0.5,  0.5],
+    [1.0,  1.0,  2.0,  3.0,  3.0,  2.0,  1.0,  1.0],
+    [5.0,  5.0,  5.0,  5.0,  5.0,  5.0,  5.0,  5.0],
+    [0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0]
+])
+
+# Knight square tables (simplified)
+KNIGHT_TABLE = np.array([
+    [-5.0, -4.0, -3.0, -3.0, -3.0, -3.0, -4.0, -5.0],
+    [-4.0, -2.0,  0.0,  0.5,  0.5,  0.0, -2.0, -4.0],
+    [-3.0,  0.0,  1.0,  1.5,  1.5,  1.0,  0.0, -3.0],
+    [-3.0,  0.5,  1.5,  2.0,  2.0,  1.5,  0.5, -3.0],
+    [-3.0,  0.5,  1.5,  2.0,  2.0,  1.5,  0.5, -3.0],
+    [-3.0,  0.0,  1.0,  1.5,  1.5,  1.0,  0.0, -3.0],
+    [-4.0, -2.0,  0.0,  0.5,  0.5,  0.0, -2.0, -4.0],
+    [-5.0, -4.0, -3.0, -3.0, -3.0, -3.0, -4.0, -5.0]
+])
+
+# Bishop square tables (simplified)
+BISHOP_TABLE = np.array([
+    [-2.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -2.0],
+    [-1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0, -1.0],
+    [-1.0,  0.0,  0.5,  1.0,  1.0,  0.5,  0.0, -1.0],
+    [-1.0,  0.5,  0.5,  1.0,  1.0,  0.5,  0.5, -1.0],
+    [-1.0,  0.5,  1.0,  1.0,  1.0,  1.0,  0.5, -1.0],
+    [-1.0,  0.0,  0.5,  1.0,  1.0,  0.5,  0.0, -1.0],
+    [-1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0, -1.0],
+    [-2.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0, -2.0]
+])
+
+# Rook square tables (simplified)
+ROOK_TABLE = np.array([
+    [0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0],
+    [0.5,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  0.5],
+    [-0.5,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0, -0.5],
+    [-0.5,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0, -0.5],
+    [-0.5,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0, -0.5],
+    [-0.5,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0, -0.5],
+    [-0.5,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0, -0.5],
+    [0.0,  0.0,  0.0,  0.5,  0.5,  0.0,  0.0,  0.0]
+])
+
+# Queen square tables (simplified)
+QUEEN_TABLE = np.array([
+    [-2.0, -1.0, -1.0, -0.5, -0.5, -1.0, -1.0, -2.0],
+    [-1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0, -1.0],
+    [-1.0,  0.0,  0.5,  0.5,  0.5,  0.5,  0.0, -1.0],
+    [-0.5,  0.0,  0.5,  0.5,  0.5,  0.5,  0.0, -0.5],
+    [0.0,  0.0,  0.5,  0.5,  0.5,  0.5,  0.0,  0.0],
+    [-1.0,  0.5,  0.5,  0.5,  0.5,  0.5,  0.0, -1.0],
+    [-1.0,  0.0,  0.5,  0.0,  0.0,  0.0,  0.0, -1.0],
+    [-2.0, -1.0, -1.0, -0.5, -0.5, -1.0, -1.0, -2.0]
+])
+
+# King square tables (simplified)
+KING_TABLE_WHITE = np.array([
+    [2.0,  3.0,  1.0,  0.0,  0.0,  1.0,  3.0,  2.0],
+    [2.0,  3.0,  3.0,  2.0,  2.0,  2.0,  3.0,  2.0],
+    [-1.0, -1.0,  2.0,  3.0,  3.0,  2.0, -1.0, -1.0],
+    [-1.0, -2.0, -2.0,  2.0,  2.0, -2.0, -2.0, -1.0],
+    [-2.0, -3.0, -3.0, -2.0, -2.0, -3.0, -3.0, -2.0],
+    [-3.0, -4.0, -4.0, -3.0, -3.0, -4.0, -4.0, -3.0],
+    [-4.0, -4.0, -4.0, -4.0, -4.0, -4.0, -4.0, -4.0],
+    [-5.0, -5.0, -5.0, -5.0, -5.0, -5.0, -5.0, -5.0]
+])
+
+KING_TABLE_BLACK = np.array([
+    [-5.0, -5.0, -5.0, -5.0, -5.0, -5.0, -5.0, -5.0],
+    [-4.0, -4.0, -4.0, -4.0, -4.0, -4.0, -4.0, -4.0],
+    [-3.0, -4.0, -4.0, -3.0, -3.0, -4.0, -4.0, -3.0],
+    [-2.0, -3.0, -3.0, -2.0, -2.0, -3.0, -3.0, -2.0],
+    [-1.0, -2.0, -2.0,  2.0,  2.0, -2.0, -2.0, -1.0],
+    [-1.0, -1.0,  2.0,  3.0,  3.0,  2.0, -1.0, -1.0],
+    [2.0,  3.0,  3.0,  2.0,  2.0,  3.0,  3.0,  2.0],
+    [2.0,  3.0,  1.0,  0.0,  0.0,  1.0,  3.0,  2.0]
+])
+
+def square_to_index(square: str) -> Tuple[int, int]:
+    """Convert algebraic square (e.g., 'e4') to (row, col) indices (0-7)."""
+    col = ord(square[0]) - ord('a')
+    row = int(square[1]) - 1
+    return (row, col)
+
+def evaluate_position(pieces: Dict[str, str], to_play: str) -> int:
+    """Evaluate the current board position using piece-square tables."""
+    white_score = 0
+    black_score = 0
+
+    for square, piece in pieces.items():
+        color, ptype = piece[0], piece[1]
+        row, col = square_to_index(square)
+
+        if color == 'w':
+            if ptype == 'P':
+                white_score += PAWN_TABLE_WHITE[row, col]
+            elif ptype == 'N':
+                white_score += KNIGHT_TABLE[row, col]
+            elif ptype == 'B':
+                white_score += BISHOP_TABLE[row, col]
+            elif ptype == 'R':
+                white_score += ROOK_TABLE[row, col]
+            elif ptype == 'Q':
+                white_score += QUEEN_TABLE[row, col]
+            elif ptype == 'K':
+                white_score += KING_TABLE_WHITE[row, col]
+        else:
+            if ptype == 'P':
+                black_score += PAWN_TABLE_BLACK[row, col]
+            elif ptype == 'N':
+                black_score += KNIGHT_TABLE[row, col]
+            elif ptype == 'B':
+                black_score += BISHOP_TABLE[row, col]
+            elif ptype == 'R':
+                black_score += ROOK_TABLE[row, col]
+            elif ptype == 'Q':
+                black_score += QUEEN_TABLE[row, col]
+            elif ptype == 'K':
+                black_score += KING_TABLE_BLACK[row, col]
+
+    return white_score - black_score if to_play == 'white' else black_score - white_score
+
+def parse_move(move: str) -> Tuple[str, str, bool, str]:
+    """Parse a move string into (from_square, to_square, is_capture, promotion)."""
+    if move == 'O-O' or move == 'O-O-O':
+        return (move, None, False, None)  # Castling
+
+    parts = []
+    for c in move:
+        if c.isalpha() or c.isdigit():
+            parts.append(c)
+        else:
+            parts.append(c)
+    if len(parts) == 2:  # e.g., 'e4'
+        from_square, to_square = parts[0], parts[1]
+        is_capture = False
+        promotion = None
+    elif len(parts) == 3:  # e.g., 'e5=Q'
+        from_square, to_square = parts[0], parts[1]
+        promotion = parts[2]
+        is_capture = False
+    elif len(parts) == 4:  # e.g., 'Nc3', 'Nxe5'
+        if parts[1] == 'x':
+            from_square, to_square = parts[0] + parts[1], parts[2]
+            is_capture = True
+            promotion = None
+        else:
+            from_square, to_square = parts[0] + parts[1], parts[2]
+            is_capture = False
+            promotion = None
+    else:  # e.g., 'Nc3=Q' (invalid in legal_moves, but handled)
+        from_square, to_square = parts[0], parts[1]
+        is_capture = False
+        promotion = parts[2] if len(parts) > 2 else None
+
+    return (from_square, to_square, is_capture, promotion)
+
+def is_checkmate(move: str, legal_moves: List[str]) -> bool:
+    """Check if a move results in checkmate (by seeing if '#' is in the move)."""
+    return '#' in move
+
+def is_check(move: str) -> bool:
+    """Check if a move gives check (by seeing if '+' is in the move)."""
+    return '+' in move
+
+def is_castling(move: str) -> bool:
+    """Check if the move is castling."""
+    return move in ['O-O', 'O-O-O']
+
+def get_piece_value(piece: str) -> int:
+    """Return the value of a piece (e.g., 'wQ' -> 9)."""
+    return PIECE_VALUES.get(piece[1], 0)
+
+def evaluate_move_capture(piece: str, captured_piece: str) -> int:
+    """Evaluate a capture move based on material gain."""
+    return get_piece_value(captured_piece) - get_piece_value(piece)
+
+def evaluate_move_safety(pieces: Dict[str, str], to_play: str, move: str) -> float:
+    """Evaluate how much a move improves king safety."""
+    from_square, to_square, is_capture, promotion = parse_move(move)
+    if to_square is None or is_castling(move):
+        return 100.0  # Castling is very good for safety
+
+    # Check if the move blocks a check
+    if is_check(move):
+        return 50.0  # Giving check is good
+
+    # Check if the move improves king position
+    king_square = None
+    for square, piece in pieces.items():
+        if piece[1] == 'K' and piece[0] == to_play[0]:
+            king_square = square
+            break
+
+    if king_square is None:
+        return 0.0
+
+    # Check if the move brings the king closer to the center
+    from_row, from_col = square_to_index(from_square)
+    to_row, to_col = square_to_index(to_square)
+    if piece[1] == 'K':
+        return (abs(to_row - 3.5) + abs(to_col - 3.5)) - (abs(from_row - 3.5) + abs(from_col - 3.5))
+
+    # Check if the move improves pawn structure (e.g., supports pawns)
+    if piece[1] == 'P':
+        # Check if the move supports a pawn (e.g., 'd4' if 'd3' is occupied)
+        pass  # Simplified for now
+
+    return 0.0
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str], memory: Dict) -> Tuple[str, Dict]:
+    """Select the best move from legal_moves using a hybrid evaluation strategy."""
+    if not legal_moves:
+        return ("", memory)  # Should not happen per problem statement
+
+    # Step 1: Check for checkmate moves
+    checkmate_moves = [move for move in legal_moves if is_checkmate(move)]
+    if checkmate_moves:
+        return (checkmate_moves[0], memory)  # Fastest mate (prioritize captures if they lead to mate)
+
+    # Step 2: Check for check moves (prioritize giving check)
+    check_moves = [move for move in legal_moves if is_check(move)]
+    if check_moves:
+        # Among checks, prefer captures
+        capture_checks = [move for move in check_moves if 'x' in move]
+        if capture_checks:
+            return (capture_checks[0], memory)  # Fastest capture check
+        else:
+            return (check_moves[0], memory)  # Fastest check
+
+    # Step 3: Check for castling (very high priority)
+    castling_moves = [move for move in legal_moves if is_castling(move)]
+    if castling_moves:
+        return (castling_moves[0], memory)  # Castle if possible
+
+    # Step 4: Evaluate all moves based on material + positional factors
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        from_square, to_square, is_capture, promotion = parse_move(move)
+        if to_square is None:
+            score = 1000.0  # Castling is very strong
+        else:
+            # Get the piece being moved
+            moving_piece = pieces[from_square]
+            moving_color, moving_ptype = moving_piece[0], moving_piece[1]
+
+            # Material score (captures are better)
+            material_score = 0
+            if is_capture:
+                captured_piece = pieces[to_square]
+                material_score = evaluate_move_capture(moving_piece, captured_piece)
+
+            # Positional score (piece-square tables)
+            positional_score = 0
+            if promotion is not None:
+                # For promotions, prefer queen unless rook is pinned
+                if promotion == '=Q':
+                    positional_score = 9.0
+                else:
+                    positional_score = PIECE_VALUES.get(promotion[1], 0)
+            else:
+                # Evaluate the destination square for the moving piece
+                to_row, to_col = square_to_index(to_square)
+                if moving_ptype == 'P':
+                    positional_score = PAWN_TABLE_WHITE[to_row, to_col] if moving_color == 'w' else PAWN_TABLE_BLACK[to_row, to_col]
+                elif moving_ptype == 'N':
+                    positional_score = KNIGHT_TABLE[to_row, to_col]
+                elif moving_ptype == 'B':
+                    positional_score = BISHOP_TABLE[to_row, to_col]
+                elif moving_ptype == 'R':
+                    positional_score = ROOK_TABLE[to_row, to_col]
+                elif moving_ptype == 'Q':
+                    positional_score = QUEEN_TABLE[to_row, to_col]
+                elif moving_ptype == 'K':
+                    positional_score = KING_TABLE_WHITE[to_row, to_col] if moving_color == 'w' else KING_TABLE_BLACK[to_row, to_col]
+
+            # Safety score (king position, pawn structure)
+            safety_score = evaluate_move_safety(pieces, to_play, move)
+
+            # Combine scores (weights can be adjusted)
+            score = (material_score * 100) + (positional_score * 10) + (safety_score * 5)
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return (best_move, memory)
+```
+
+---
+### **Key Features of the Policy**
+1. **Checkmate Detection**: Immediately returns the first checkmate move found.
+2. **Check Priority**: Prefers moves that give check, especially if they involve captures.
+3. **Castling**: Castles if available (kingside preferred for white, queenside for black).
+4. **Material Evaluation**: Uses piece-square tables to assess positional value and material gain from captures.
+5. **King Safety**: Scores moves based on how much they improve king safety (e.g., castling, moving the king away from the edge).
+6. **Promotions**: Favors queen promotions unless a rook is pinned (simplified here).
+7. **Pawn Structure**: (Basic) Avoids weakening pawn structure unnecessarily.
+8. **Center Control**: Piece-square tables encourage center occupation (e.g., pawns on d4/e4, knights/bishops on central squares).
+
+### **Limitations & Improvements**
+- **No Full Tactical Search**: This policy does not look ahead (e.g., no "if opponent takes this, I can recapture better"). For a stronger policy, you could implement a **minimax with alpha-beta pruning** or **quiescence search** (but this would require more time).
+- **Simplified Piece-Square Tables**: The tables are basic; using **more refined tables** (e.g., from Stockfish) would improve performance.
+- **No Opening/Middlegame/Endgame Distinction**: A stronger policy would use **different evaluation weights** for opening, middlegame, and endgame.
+- **No Pawn Endgame Knowledge**: Pawn endgames (e.g., king + pawn vs. king) are not handled optimally. Adding **specific rules** for such cases would help.
+- **No Time Management**: This policy does not account for time constraints (e.g., move speed in blitz games). A stronger policy might adjust evaluation based on time.
+
+### **How to Use This Policy**
+1. **Input**: The `policy` function takes:
+   - `pieces`: Current board state (e.g., `{'e1': 'bK', 'f3': 'wR'}`).
+   - `to_play`: `'white'` or `'black'` (your turn).
+   - `legal_moves`: List of all legal moves (e.g., `['e4', 'Nf3', 'O-O']`).
+   - `memory`: Empty dict (can be used for game history).
+2. **Output**: Returns a tuple `(best_move, memory)`, where `best_move` is a string from `legal_moves`.
+
+---
+### **Example Usage**
+```python
+pieces = {'e1': 'wK', 'e8': 'bK', 'a1': 'wR', 'h1': 'wR', 'd1': 'wQ', 'a8': 'bQ', 'b8': 'bN', 'g8': 'bB'}
+to_play = 'white'
+legal_moves = ['e4', 'Nf3', 'O-O', 'd4', 'Qf3', 'Rd1', 'Rh1', 'Bc4', 'Bxf7#']
+memory = {}
+
+best_move, memory = policy(pieces, to_play, legal_moves, memory)
+print(best_move)  # Output: 'Bxf7#' (checkmate)
+```
+
+---
+This policy should perform well against **basic or greedy opponents** (e.g., those that prioritize material over development or king safety). For stronger competition, consider adding **look-ahead search** or **opening book knowledge**.

@@ -1,0 +1,65 @@
+
+import random
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Selects a column to drop a disc in for Connect 4, prioritizing winning moves,
+    then blocking opponent's winning moves, then a random valid move.
+    """
+    rows = len(board)
+    cols = len(board[0])
+
+    def check_win(board, player):
+        # Check horizontal
+        for i in range(rows):
+            for j in range(cols - 3):
+                if board[i][j] == player and board[i][j+1] == player and board[i][j+2] == player and board[i][j+3] == player:
+                    return True
+
+        # Check vertical
+        for i in range(rows - 3):
+            for j in range(cols):
+                if board[i][j] == player and board[i+1][j] == player and board[i+2][j] == player and board[i+3][j] == player:
+                    return True
+
+        # Check positive diagonals
+        for i in range(rows - 3):
+            for j in range(cols - 3):
+                if board[i][j] == player and board[i+1][j+1] == player and board[i+2][j+2] == player and board[i+3][j+3] == player:
+                    return True
+
+        # Check negative diagonals
+        for i in range(3, rows):
+            for j in range(cols - 3):
+                if board[i][j] == player and board[i-1][j+1] == player and board[i-2][j+2] == player and board[i-3][j+3] == player:
+                    return True
+
+        return False
+
+    def simulate_move(board, col, player):
+        temp_board = [row[:] for row in board]  # Create a deep copy
+        for row in reversed(range(rows)):
+            if temp_board[row][col] == 0:
+                temp_board[row][col] = player
+                return temp_board
+        return None  # Column full
+
+    # Check for winning move
+    for col in range(cols):
+        temp_board = simulate_move(board, col, 1)
+        if temp_board and check_win(temp_board, 1):
+            return col
+
+    # Check for blocking move
+    for col in range(cols):
+        temp_board = simulate_move(board, col, -1)
+        if temp_board and check_win(temp_board, -1):
+            return col
+
+    # Play a random valid move
+    valid_moves = [col for col in range(cols) if board[0][col] == 0]
+    if valid_moves:
+        return random.choice(valid_moves)
+    else:
+        # Should never happen in a standard game, but handle it just in case
+        return 0  # Just pick the first column if somehow all are full

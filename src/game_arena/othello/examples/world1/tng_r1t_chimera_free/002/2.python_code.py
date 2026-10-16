@@ -1,0 +1,88 @@
+
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Static evaluation matrix favoring corners and edges
+    position_scores = np.array([
+        [120, -20,  20,   5,   5,  20, -20, 120],
+        [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+        [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+        [  5,  -5,   3,   3,   3,   3,  -5,   5],
+        [  5,  -5,   3,   3,   3,   3,  -5,   5],
+        [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+        [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+        [120, -20,  20,   5,   5,  20, -20, 120],
+    ])
+
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+    
+    legal_moves = {}
+    # Find all legal moves and their flip details
+    for r in range(8):
+        for c in range(8):
+            if you[r, c] == 0 and opponent[r, c] == 0:
+                total_flips = 0
+                flips_per_dir = []
+                for dr, dc in directions:
+                    tr, tc = r + dr, c + dc
+                    temp_flips = 0
+                    while 0 <= tr < 8 and 0 <= tc < 8 and opponent[tr, tc] == 1:
+                        temp_flips += 1
+                        tr += dr
+                        tc += dc
+                    if 0 <= tr < 8 and 0 <= tc < 8 and you[tr, tc] == 1 and temp_flips > 0:
+                        total_flips += temp_flips
+                        flips_per_dir.append((dr, dc, temp_flips))
+                if total_flips > 0:
+                    legal_moves[(r, c)] = (total_flips, flips_per_dir)
+    
+    if not legal_moves:
+        return "pass"
+    
+    best_score = -float('inf')
+    best_move = None
+    corners = [(0, 0), (0, 7), (7, 0), (7, 7)]
+    
+    for (r, c), (total_flips, flips_per_dir) in legal_moves.items():
+        score = position_scores[r, c] + total_flips * 2
+        
+        # Simulate move to check opponent corner access
+        you_copy = you.copy()
+        opponent_copy = opponent.copy()
+        you_copy[r, c] = 1
+        for dr, dc, flips in flips_per_dir:
+            tr, tc = r + dr, c + dc
+            for _ in range(flips):
+                you_copy[tr, tc] = 1
+                opponent_copy[tr, tc] = 0
+                tr += dr
+                tc += dc
+        
+        opponent_has_corner = False
+        for (cr, cc) in corners:
+            if you_copy[cr, cc] == 0 and opponent_copy[cr, cc] == 0:
+                for dr, dc in directions:
+                    tr, tc = cr + dr, cc + dc
+                    count = 0
+                    while 0 <= tr < 8 and 0 <= tc < 8 and you_copy[tr, tc] == 1:
+                        count += 1
+                        tr += dr
+                        tc += dc
+                    if 0 <= tr < 8 and 0 <= tc < 8 and opponent_copy[tr, tc] == 1 and count > 0:
+                        opponent_has_corner = True
+                        break
+                if opponent_has_corner:
+                    break
+        
+        if opponent_has_corner:
+            score -= 1000
+        
+        if score > best_score or (score == best_score and best_move and (r > best_move[0] or (r == best_move[0] and c > best_move[1]))):
+            best_score = score
+            best_move = (r, c)
+    
+    if best_move:
+        return f"{chr(best_move[1] + ord('a'))}{best_move[0] + 1}"
+    return "pass"

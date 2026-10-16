@@ -1,0 +1,193 @@
+# Strategy for Advanced Checkers AI
+
+This checkers AI uses a combination of tactics:
+1. **Prioritizes captures** - First looks for all possible captures, then selects the most valuable one (preferring kings over regular pieces)
+2. **King advancement** - Promotes regular pieces to kings when possible
+3. **Defensive positioning** - Prefers moves that keep pieces toward the center and back row
+4. **Aggressive advancement** - When no captures available, makes smart advancing moves toward promotion
+5. **Piece valuation** - Values kings more than regular pieces (3x) and values center positions higher
+
+The algorithm:
+1. First gathers all possible capture moves (mandatory in checkers)
+2. If captures exist, selects the one capturing the most valuable pieces
+3. If no captures, evaluates all possible moves based on:
+   - Distance to promotion
+   - Central board control
+   - King safety
+   - Maintaining formation
+
+<code>
+import math
+from typing import List, Tuple
+
+def policy(my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]], 
+          opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]], 
+          color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    # Combine all pieces
+    my_pieces = set(my_men + my_kings)
+    opp_pieces = set(opp_men + opp_kings)
+    all_pieces = my_pieces | opp_pieces
+    
+    # First look for any capture moves (mandatory in checkers)
+    capture_moves = get_all_capture_moves(my_men, my_kings, opp_pieces, color)
+    if capture_moves:
+        # Select the capture that gets most valuable pieces (prioritize kings)
+        best_capture = None
+        best_value = -1
+        for move in capture_moves:
+            captured = get_captured_pieces(move[0], move[1], opp_men, opp_kings)
+            value = len([p for p in captured if p in opp_kings])*3 + len([p for p in captured if p in opp_men])
+            if value > best_value:
+                best_value = value
+                best_capture = move
+        return best_capture
+    
+    # No captures available, look for best normal move
+    all_moves = get_all_normal_moves(my_men, my_kings, all_pieces, color)
+    
+    if not all_moves:  # should never happen as you must return a move
+        return ((0,0),(0,0))  # fallback
+    
+    # Evaluate moves based on several factors
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in all_moves:
+        score = evaluate_move(move, my_men, my_kings, opp_men, opp_kings, color)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def get_all_capture_moves(my_men, my_kings, opp_pieces, color):
+    capture_moves = []
+    # Check capture moves for regular pieces
+    for (r, c) in my_men:
+        for dr in [-2, 2]:
+            for dc in [-2, 2]:
+                new_r, new_c = r + dr, c + dc
+                if 0 <= new_r < 8 and 0 <= new_c < 8:
+                    mid_r, mid_c = r + dr//2, c + dc//2
+                    if (mid_r, mid_c) in opp_pieces and (new_r, new_c) not in opp_pieces:
+                        # Check direction based on color
+                        if (color == 'b' and dr == -2) or (color == 'w' and dr == 2):
+                            capture_moves.append(((r, c), (new_r, new_c)))
+    
+    # Check capture moves for kings (can move any direction)
+    for (r, c) in my_kings:
+        for dr in [-2, 2]:
+            for dc in [-2, 2]:
+                new_r, new_c = r + dr, c + dc
+                if 0 <= new_r < 8 and 0 <= new_c < 8:
+                    mid_r, mid_c = r + dr//2, c + dc//2
+                    if (mid_r, mid_c) in opp_pieces and (new_r, new_c) not in opp_pieces:
+                        capture_moves.append(((r, c), (new_r, new_c)))
+    
+    return capture_moves
+
+def get_all_normal_moves(my_men, my_kings, all_pieces, color):
+    normal_moves = []
+    # Regular pieces can only move forward
+    for (r, c) in my_men:
+        for dc in [-1, 1]:
+            new_r = r + (1 if color == 'w' else -1)
+            new_c = c + dc
+            if 0 <= new_r < 8 and 0 <= new_c < 8 and (new_r, new_c) not in all_pieces:
+                normal_moves.append(((r, c), (new_r, new_c)))
+    
+    # Kings can move in all directions
+    for (r, c) in my_kings:
+        for dr in [-1, 1]:
+            for dc in [-1, 1]:
+                new_r, new_c = r + dr, c + dc
+                if 0 <= new_r < 8 and 0 <= new_c < 8 and (new_r, new_c) not in all_pieces:
+                    normal_moves.append(((r, c), (new_r, new_c)))
+    
+    return normal_moves
+
+def get_captured_pieces(from_pos, to_pos, opp_men, opp_kings):
+    from_r, from_c = from_pos
+    to_r, to_c = to_pos
+    dr = to_r - from_r
+    dc = to_c - from_c
+    
+    # Calculate all jumped squares (could be multiple jumps)
+    jumps = []
+    step_r = 1 if dr > 0 else -1
+    step_c = 1 if dc > 0 else -1
+    
+    r, c = from_r, from_c
+    while r != to_r and c != to_c:
+        r += step_r
+        c += step_c
+        if (r, c) in opp_men or (r, c) in opp_kings:
+            jumps.append((r, c))
+    
+    return [j for j in jumps if j in opp_men or j in opp_kings]
+
+def evaluate_move(move, my_men, my_kings, opp_men, opp_kings, color):
+    from_pos, to_pos = move
+    score = 0
+    
+    # Promotion is very valuable
+    if from_pos in my_men:
+        if (color == 'w' and to_pos[0] == 7) or (color == 'b' and to_pos[0] == 0):
+            score += 100
+    
+    # Central positions are better
+    center_score = 3 - abs(to_pos[0] - 3.5) - abs(to_pos[1] - 3.5)
+    score += center_score
+    
+    # Being in back row is good defensively
+    if (color == 'w' and to_pos[0] == 0) or (color == 'b' and to_pos[0] == 7):
+        score += 2
+    
+    # Don't leave pieces vulnerable to capture
+    # Check if opponent can capture this piece in their next move
+    if is_position_vulnerable(to_pos, my_men, my_kings, opp_men, opp_kings, color):
+        score -= 10
+    
+    return score
+
+def is_position_vulnerable(pos, my_men, my_kings, opp_men, opp_kings, color):
+    # Check if opponent could capture this piece in their next move
+    r, c = pos
+    
+    # Opponents moves depend on their color (opposite of current color)
+    opp_color = 'b' if color == 'w' else 'w'
+    
+    # Check regular pieces
+    if pos in my_men:
+        for dr in [-1, 1]:
+            for dc in [-1, 1]:
+                # Check if opponent could jump over this piece
+                adj_r, adj_c = r + (1 if opp_color == 'w' else -1), c + dc
+                land_r, land_c = r + (2 if opp_color == 'w' else -2), c + 2*dc
+                
+                # Check if adjacent piece is opponent and landing spot is empty
+                if (0 <= land_r < 8 and 0 <= land_c < 8 and 
+                    (adj_r, adj_c) in opp_men and 
+                    (land_r, land_c) not in my_men and 
+                    (land_r, land_c) not in my_kings and
+                    (land_r, land_c) not in opp_men and 
+                    (land_r, land_c) not in opp_kings):
+                    return True
+    
+    # Check kings (vulnerable from all directions)
+    if pos in my_kings:
+        for dr in [-1, 1]:
+            for dc in [-1, 1]:
+                adj_r, adj_c = r + dr, c + dc
+                land_r, land_c = r + 2*dr, c + 2*dc
+                
+                if (0 <= land_r < 8 and 0 <= land_c < 8 and 
+                    ((adj_r, adj_c) in opp_men or (adj_r, adj_c) in opp_kings) and 
+                    (land_r, land_c) not in my_men and 
+                    (land_r, land_c) not in my_kings and
+                    (land_r, land_c) not in opp_men and 
+                    (land_r, land_c) not in opp_kings):
+                    return True
+    
+    return False
+</code>

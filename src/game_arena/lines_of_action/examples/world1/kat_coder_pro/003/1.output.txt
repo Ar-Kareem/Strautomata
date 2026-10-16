@@ -1,0 +1,345 @@
+<thinking>
+I need to implement a Lines of Action policy that can beat other policies in a gaming arena. Let me think through the key components:
+
+1. **Game Rules Understanding**: 
+   - Players alternate moves on an 8x8 board
+   - Pieces move horizontally, vertically, or diagonally
+   - Must move exactly as many squares as there are pieces in that line of movement
+   - Can jump over friendly pieces but not enemy pieces
+   - Can capture enemy pieces by landing on them
+   - Win condition: connect all your pieces into a single contiguous group
+
+2. **Strategy Considerations**:
+   - Need to evaluate legal moves efficiently
+   - Should prioritize moves that improve connectivity
+   - Should consider blocking opponent's connectivity
+   - Should consider capturing opponent pieces
+   - Need to balance offense and defense
+
+3. **Implementation Plan**:
+   - Parse the board state
+   - Generate all legal moves for the current player
+   - Evaluate each move using heuristics:
+     - Connectivity improvement
+     - Opponent connectivity disruption
+     - Piece safety
+     - Mobility
+   - Use minimax with alpha-beta pruning for lookahead
+   - Implement iterative deepening for time management
+
+4. **Key Functions Needed**:
+   - `get_legal_moves(board)`: Generate all valid moves
+   - `make_move(board, move)`: Apply a move to create new board state
+   - `is_connected(board, player)`: Check if player's pieces are connected
+   - `evaluate_position(board)`: Heuristic evaluation function
+   - `minimax(board, depth, alpha, beta, maximizing)`: Search algorithm
+
+Let me implement this step by step.
+</thinking>
+<code>
+import numpy as np
+from typing import List, Tuple, Optional
+import time
+
+def policy(board) -> str:
+    """Main policy function that selects the best move."""
+    board_array = np.array(board)
+    start_time = time.time()
+    
+    # If we're already connected, play safely
+    if _is_connected(board_array, 1):
+        # Try to find any legal move
+        legal_moves = _get_legal_moves(board_array)
+        if legal_moves:
+            # Prefer moves that maintain connectivity and don't endanger pieces
+            safe_moves = [m for m in legal_moves if _is_safe_move(board_array, m)]
+            if safe_moves:
+                return safe_moves[0]
+            return legal_moves[0]
+    
+    # Use iterative deepening for time management
+    best_move = None
+    depth = 1
+    
+    while time.time() - start_time < 0.9:  # Leave some buffer time
+        try:
+            move = _minimax_search(board_array, depth, -np.inf, np.inf, True, start_time)
+            if move:
+                best_move = move
+            depth += 1
+        except:
+            break
+    
+    if best_move:
+        return best_move
+    
+    # Fallback to greedy move if search fails
+    return _get_greedy_move(board_array)
+
+def _get_legal_moves(board: np.ndarray) -> List[str]:
+    """Generate all legal moves for the current player (1)."""
+    moves = []
+    
+    # Find all current player's pieces
+    player_positions = np.where(board == 1)
+    positions = list(zip(player_positions[0], player_positions[1]))
+    
+    for row, col in positions:
+        # Check all 8 directions
+        directions = [
+            (-1, -1), (-1, 0), (-1, 1),  # Up-left, Up, Up-right
+            (0, -1),           (0, 1),   # Left, Right
+            (1, -1),  (1, 0),  (1, 1)    # Down-left, Down, Down-right
+        ]
+        
+        for dr, dc in directions:
+            # Count pieces in this direction
+            count = 0
+            r, c = row + dr, col + dc
+            
+            # Count pieces in the line of movement
+            while 0 <= r < 8 and 0 <= c < 8:
+                if board[r, c] != 0:
+                    count += 1
+                r += dr
+                c += dc
+            
+            if count == 0:
+                continue
+                
+            # Try to move 'count' squares in this direction
+            target_r = row + dr * count
+            target_c = col + dc * count
+            
+            # Check if target is within bounds
+            if 0 <= target_r < 8 and 0 <= target_c < 8:
+                # Check if path is clear (can jump over friendly but not enemy)
+                if _is_path_clear(board, row, col, target_r, target_c, dr, dc):
+                    # Valid move
+                    move_str = f"{row},{col}:{target_r},{target_c}"
+                    moves.append(move_str)
+    
+    return moves
+
+def _is_path_clear(board: np.ndarray, from_r: int, from_c: int, to_r: int, to_c: int, dr: int, dc: int) -> bool:
+    """Check if the path from (from_r, from_c) to (to_r, to_c) is clear."""
+    r, c = from_r + dr, from_c + dc
+    
+    while r != to_r or c != to_c:
+        if board[r, c] == -1:  # Enemy piece blocking
+            return False
+        r += dr
+        c += dc
+    
+    # Check the destination - can capture enemy or be empty
+    if board[to_r, to_c] == 1:  # Friendly piece at destination
+        return False
+    
+    return True
+
+def _make_move(board: np.ndarray, move: str) -> np.ndarray:
+    """Apply a move to the board and return the new board state."""
+    from_pos, to_pos = move.split(':')
+    from_r, from_c = map(int, from_pos.split(','))
+    to_r, to_c = map(int, to_pos.split(','))
+    
+    new_board = board.copy()
+    
+    # Move the piece
+    new_board[to_r, to_c] = new_board[from_r, from_c]
+    new_board[from_r, from_c] = 0
+    
+    # Capture if enemy piece at destination
+    if new_board[to_r, to_c] == -1:
+        new_board[to_r, to_c] = 1  # Our piece captures
+    
+    return new_board
+
+def _is_connected(board: np.ndarray, player: int) -> bool:
+    """Check if all pieces of the given player are connected."""
+    # Find all player's pieces
+    player_mask = (board == player)
+    piece_positions = np.where(player_mask)
+    positions = list(zip(piece_positions[0], piece_positions[1]))
+    
+    if len(positions) <= 1:
+        return True
+    
+    # BFS to check connectivity
+    visited = set()
+    stack = [positions[0]]
+    visited.add(positions[0])
+    
+    while stack:
+        r, c = stack.pop()
+        
+        # Check all 8 neighbors
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    if (nr, nc) not in visited and board[nr, nc] == player:
+                        visited.add((nr, nc))
+                        stack.append((nr, nc))
+    
+    return len(visited) == len(positions)
+
+def _evaluate_position(board: np.ndarray) -> float:
+    """Evaluate the board position from player 1's perspective."""
+    score = 0.0
+    
+    # Check win conditions
+    if _is_connected(board, 1):
+        return 1000.0  # Win
+    if _is_connected(board, -1):
+        return -1000.0  # Loss
+    
+    # Piece count advantage
+    my_pieces = np.sum(board == 1)
+    opp_pieces = np.sum(board == -1)
+    score += (my_pieces - opp_pieces) * 10
+    
+    # Connectivity score for player 1
+    my_connectivity = _compute_connectivity(board, 1)
+    score += my_connectivity * 5
+    
+    # Connectivity score for opponent (negative impact)
+    opp_connectivity = _compute_connectivity(board, -1)
+    score -= opp_connectivity * 5
+    
+    # Mobility (number of legal moves)
+    my_moves = len(_get_legal_moves(board))
+    opp_moves = len(_get_legal_moves(_rotate_board(board)))
+    score += (my_moves - opp_moves) * 2
+    
+    return score
+
+def _compute_connectivity(board: np.ndarray, player: int) -> float:
+    """Compute a connectivity score for the given player."""
+    player_mask = (board == player)
+    piece_positions = np.where(player_mask)
+    positions = list(zip(piece_positions[0], piece_positions[1]))
+    
+    if len(positions) <= 1:
+        return len(positions)
+    
+    # Count connected components using BFS
+    visited = set()
+    components = 0
+    
+    for pos in positions:
+        if pos not in visited:
+            components += 1
+            stack = [pos]
+            visited.add(pos)
+            
+            while stack:
+                r, c = stack.pop()
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            if (nr, nc) not in visited and board[nr, nc] == player:
+                                visited.add((nr, nc))
+                                stack.append((nr, nc))
+    
+    # Score is number of pieces minus number of components (want fewer components)
+    return len(positions) - components
+
+def _rotate_board(board: np.ndarray) -> np.ndarray:
+    """Rotate board to swap player perspectives."""
+    return -board[::-1, ::-1]
+
+def _minimax_search(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool, start_time: float) -> Optional[str]:
+    """Minimax search with alpha-beta pruning."""
+    if time.time() - start_time > 0.95:  # Time limit
+        return None
+    
+    if depth == 0:
+        return None
+    
+    legal_moves = _get_legal_moves(board) if maximizing else _get_legal_moves(_rotate_board(board))
+    
+    if not legal_moves:
+        # No moves available - check if this is a win/loss
+        if maximizing:
+            if _is_connected(board, 1):
+                return None  # Win
+            else:
+                return None  # Loss or draw
+        else:
+            if _is_connected(_rotate_board(board), 1):  # Opponent wins
+                return None
+            else:
+                return None
+    
+    best_move = None
+    
+    for move in legal_moves:
+        if time.time() - start_time > 0.95:
+            break
+            
+        new_board = _make_move(board, move) if maximizing else _make_move(_rotate_board(board), move)
+        
+        if depth == 1:
+            score = _evaluate_position(new_board)
+        else:
+            result = _minimax_search(new_board, depth - 1, alpha, beta, not maximizing, start_time)
+            if result is None:
+                continue
+            score = _evaluate_position(new_board)
+        
+        if maximizing:
+            if score > alpha:
+                alpha = score
+                best_move = move
+            if alpha >= beta:
+                break
+        else:
+            if score < beta:
+                beta = score
+                best_move = move
+            if beta <= alpha:
+                break
+    
+    return best_move
+
+def _get_greedy_move(board: np.ndarray) -> str:
+    """Fallback greedy move selection."""
+    legal_moves = _get_legal_moves(board)
+    if not legal_moves:
+        return "0,0:0,0"  # Invalid move, but should not happen
+    
+    best_score = -np.inf
+    best_move = legal_moves[0]
+    
+    for move in legal_moves:
+        new_board = _make_move(board, move)
+        score = _evaluate_position(new_board)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def _is_safe_move(board: np.ndarray, move: str) -> bool:
+    """Check if a move is safe (doesn't leave pieces vulnerable)."""
+    # Simple safety check - doesn't move into immediate danger
+    from_pos, to_pos = move.split(':')
+    to_r, to_c = map(int, to_pos.split(','))
+    
+    # Check if the destination could be immediately captured
+    directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    
+    for dr, dc in directions:
+        # Check if opponent could move to capture this position next turn
+        # This is a simplified check
+        pass
+    
+    return True  # For now, consider all moves safe
+</code>

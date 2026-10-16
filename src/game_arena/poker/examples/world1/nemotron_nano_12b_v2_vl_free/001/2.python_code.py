@@ -1,0 +1,141 @@
+
+import random
+from itertools import combinations
+
+def evaluate_5_card_hand(hand):
+    # Helper function to evaluate a 5-card hand
+    ranks = [c['rank'] for c in hand]
+    suits = {c['suit'] for c in hand}
+    
+    flush = len(suits) == 1
+
+    # Check for straight
+    unique_ranks = sorted(set(ranks), reverse=True)
+    straight = False
+    straight_high = None
+
+    if len(unique_ranks) >= 5:
+        for i in range(len(unique_ranks) - 4):
+            if unique_ranks[i] - unique_ranks[i + 4] == 4:
+                straight = True
+                straight_high = unique_ranks[i]
+                break
+
+    # Check for Ace-low straight (5-4-3-2-10)
+    if not straight and len(unique_ranks) == 5 and 5 in unique_ranks and 14 in unique_ranks and all(r in unique_ranks for r in [2, 3, 4, 5]):
+        straight = True
+        straight_high = 5
+
+    # Count occurrences of each rank
+    count_rank = {}
+    for r in ranks:
+        count_rank[r] = count_rank.get(r, 0) + 1
+
+    counts = sorted(count_rank.items(), key=lambda x: (-x[1], -x[0]))
+
+    if flush and straight:
+        return (0, straight_high, ranks)
+    if flush:
+        return (1, ranks)
+    if straight:
+        return (2, straight_high)
+    if counts[0][1] == 4:
+        # Four of a kind
+        return (6, counts[0][0], ranks[-1])
+    if counts[0][1] == 3:
+        if len(counts) > 1 and counts[1][1] == 2:
+            return (7, counts[0][0], counts[1][0])
+        else:
+            return (8, counts[0][0], sorted([r for r in ranks if counts[r] != 3], reverse=True)[:2])
+    if len([c for c in counts if c[1] == 2]) >= 2:
+        # Two pairs
+        pairs = sorted([(c[0], c[1]) for c in counts if c[1] == 2], key=lambda x: -x[0])
+        pair1, pair2 = pairs[0][0], pairs[1][0]
+        kicker = sorted([r for r in ranks if r not in (pair1, pair2)], reverse=True)[0]
+        return (9, pair1, pair2, kicker)
+    if counts[0][1] == 2:
+        # One pair
+        pair = counts[0][0]
+        kickers = sorted([r for r in ranks if r != pair], reverse=True)[:3]
+        return (10, pair, kickers[0], kickers[1], kickers[2])
+    return (11, ranks)  # High card
+
+def evaluate_best_hand(cards):
+    best_score = None
+    for combo in combinations(cards, 5):
+        score = evaluate_5_card_hand(combo)
+        if best_score is None or score > best_score:
+            best_score = score
+    return best_score
+
+def calculate_equity(state):
+    my_cards = [card for card in state['private_cards']]
+    public_cards = state['public_cards']
+    used = set()
+
+    for c in my_cards:
+        used.add((card['rank'], card['suit']))
+    for card in public_cards:
+        used.append((card['rank'], card['suit']))
+
+    all_cards = []
+    for suit in range(4):
+        for rank in range(2, 15):
+            if (rank, suit) not in used:
+                remaining.append((rank, suit))
+
+    needed_public = max(0, 5 - len(public_cards))
+
+    wins = 0
+    ties = 0
+    trials = 1000
+
+    for _ in range(trials):
+        if len(remaining) < 2 + needed_public:
+            break
+
+        opponent_cards = random.sample(remaining, 2)
+        remaining_after_opp = [c for c in remaining if c not in opponent_cards]
+
+        if len(remaining_after_opp) < needed_public:
+            continue
+
+        board = random.sample(remaining_after_opp, needed_public)
+        full_board = public_cards + new_community
+        my_final = my_cards + full_board
+        opp_final = opponent_cards + full_board
+
+        my_best = evaluate_best_hand(my_final)
+        opp_best = evaluate_best_hand(opp_final)
+
+        if my_best > opp_best:
+            wins += 1
+        elif my_best == opp_best:
+            ties += 1
+
+    return (wins + 0.5 * ties) / trials
+
+def policy(state):
+    my_cards = [(c['rank'], c['suit']) for c in state['private_cards']]
+    public_cards = [(c['rank'], c['suit']) for c in state['public_cards']]
+    to_call = state['to_call']
+    pot = state['pot']
+    allowed_actions = state['allowed_actions']
+
+    equity = calculate_equity(state)
+
+    if 'fold' not in allowed_actions:
+        return 'call'
+
+    if equity < 0.35 and state['round'] == 'pre_flop':
+        return 'fold'
+    elif equity < 0.5:
+        return 'fold' if count == 0 else 'call'
+    elif to_call <= (0.5 * pot):
+        return 'call'
+    elif 'raise' in allowed_actions:
+        return 'raise'
+    elif 'all-in' in allowed_actions:
+        return 'all-in'
+    else:
+        return 'call'

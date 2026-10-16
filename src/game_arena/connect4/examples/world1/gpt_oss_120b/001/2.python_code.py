@@ -1,0 +1,135 @@
+
+import copy
+from typing import List, Optional
+
+# Directions: (dr, dc)
+_DIRECTIONS = [(0, 1), (1, 0), (1, 1), (-1, 1)]
+
+def _available_row(board: List[List[int]], col: int) -> Optional[int]:
+    """Return the row index where a disc will land in column `col`,
+    or None if the column is full."""
+    for row in range(len(board) - 1, -1, -1):
+        if board[row][col] == 0:
+            return row
+    return None
+
+def _make_move(board: List[List[int]], col: int, player: int) -> Optional[List[List[int]]]:
+    """Return a new board after player drops a disc in `col`,
+    or None if move is illegal."""
+    row = _available_row(board, col)
+    if row is None:
+        return None
+    new_board = copy.deepcopy(board)
+    new_board[row][col] = player
+    return new_board
+
+def _is_winning_move(board: List[List[int]], player: int) -> bool:
+    """Check if `player` has a connect‑four on the board."""
+    rows, cols = len(board), len(board[0])
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] != player:
+                continue
+            for dr, dc in _DIRECTIONS:
+                cnt = 1
+                nr, nc = r + dr, c + dc
+                while 0 <= nr < rows and 0 <= nc < cols and board[nr][nc] == player:
+                    cnt += 1
+                    if cnt == 4:
+                        return True
+                    nr += dr
+                    nc += dc
+    return False
+
+def _score_window(window: List[int], player: int) -> int:
+    """Score a length‑4 slice for `player`. Empty cells are 0."""
+    opp = -player
+    if opp in window:
+        return 0  # blocked by opponent
+    count = window.count(player)
+    empty = window.count(0)
+    if count == 4:
+        return 10000
+    if count == 3 and empty == 1:
+        return 100
+    if count == 2 and empty == 2:
+        return 10
+    return 0
+
+def _score_board(board: List[List[int]], player: int) -> int:
+    """Simple heuristic score: sum of scores of all length‑4 windows."""
+    rows, cols = len(board), len(board[0])
+    total = 0
+
+    # Horizontal
+    for r in range(rows):
+        for c in range(cols - 3):
+            window = [board[r][c + i] for i in range(4)]
+            total += _score_window(window, player)
+
+    # Vertical
+    for c in range(cols):
+        for r in range(rows - 3):
+            window = [board[r + i][c] for i in range(4)]
+            total += _score_window(window, player)
+
+    # Positive diagonal
+    for r in range(rows - 3):
+        for c in range(cols - 3):
+            window = [board[r + i][c + i] for i in range(4)]
+            total += _score_window(window, player)
+
+    # Negative diagonal
+    for r in range(3, rows):
+        for c in range(cols - 3):
+            window = [board[r - i][c + i] for i in range(4)]
+            total += _score_window(window, player)
+
+    return total
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Return a column (0‑6) to drop the current player's disc.
+    The board uses 0 = empty, 1 = our disc, -1 = opponent disc.
+    """
+    ROWS, COLS = 6, 7
+    player = 1
+    opponent = -1
+
+    # 1. collect legal columns
+    legal_cols = [c for c in range(COLS) if _available_row(board, c) is not None]
+    if not legal_cols:
+        raise ValueError("No legal moves available")
+
+    # 2. Immediate winning move?
+    for col in legal_cols:
+        new_board = _make_move(board, col, player)
+        if new_board and _is_winning_move(new_board, player):
+            return col
+
+    # 3. Block opponent's immediate winning move
+    for col in legal_cols:
+        opp_board = _make_move(board, col, opponent)
+        if opp_board and _is_winning_move(opp_board, opponent):
+            return col
+
+    # 4. Evaluate each move with heuristic
+    best_score = -float('inf')
+    best_col = legal_cols[0]
+    # centre bias: columns closer to the centre get a small boost
+    centre = COLS // 2
+    for col in legal_cols:
+        new_board = _make_move(board, col, player)
+        if new_board is None:
+            continue
+        score = _score_board(new_board, player) - _score_board(new_board, opponent)
+        # centre preference
+        score += 5 * (-(abs(col - centre)))  # higher for centre columns
+        if score > best_score:
+            best_score = score
+            best_col = col
+        elif score == best_score and abs(col - centre) < abs(best_col - centre):
+            # tie‑breaker preferring more central column
+            best_col = col
+
+    return best_col

@@ -1,0 +1,94 @@
+
+import numpy as np
+
+def calculate_hand_value(hand: list[str], target: int) -> int:
+    """Calculate the best possible value of the hand without busting if possible."""
+    # Convert cards to values
+    values = []
+    aces = 0
+    for card in hand:
+        if card in ["J", "Q", "K"]:
+            values.append(10)
+        elif card == "A":
+            aces += 1
+        else:
+            values.append(int(card))
+    
+    # Calculate base value without aces
+    base_value = sum(values)
+    
+    # Handle aces optimally
+    total_value = base_value
+    for _ in range(aces):
+        if total_value + 11 <= target:
+            total_value += 11
+        elif total_value + 1 <= target:
+            total_value += 1
+        else:
+            # Adding even 1 would bust, so we have to bust
+            total_value += 1
+    
+    return total_value
+
+def policy(hand: list[str], target: int) -> str:
+    # Calculate current hand value
+    current_value = calculate_hand_value(hand, target)
+    
+    # If we've already busted or reached the target, stay
+    if current_value > target:
+        return "STAY"
+    if current_value == target:
+        return "STAY"
+    
+    # Estimate how many cards are left in our deck
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining_cards = [card for card in all_cards if card not in hand]
+    
+    # If no cards left, we must stay
+    if not remaining_cards:
+        return "STAY"
+    
+    # Calculate the value we need to reach the target
+    needed = target - current_value
+    
+    # If we're very close, consider staying
+    if needed <= 4:
+        # Count how many cards would bust us
+        bust_count = 0
+        safe_count = 0
+        for card in remaining_cards:
+            card_value = 10 if card in ["J", "Q", "K"] else (11 if card == "A" else int(card))
+            # For aces, we'll consider the safer value first
+            if card == "A":
+                card_value = 1 if current_value + 11 > target else 11
+            
+            if current_value + card_value > target:
+                bust_count += 1
+            else:
+                safe_count += 1
+        
+        # If more than half of remaining cards would bust us, stay
+        if bust_count >= safe_count:
+            return "STAY"
+    
+    # If we're far from target, hit
+    if needed > 6:
+        return "HIT"
+    
+    # For mid-range values, consider probabilities
+    # We'll hit if there's a good chance of improving without busting
+    safe_hits = 0
+    for card in remaining_cards:
+        card_value = 10 if card in ["J", "Q", "K"] else (11 if card == "A" else int(card))
+        # For aces, determine optimal value
+        if card == "A":
+            card_value = 1 if current_value + 11 > target else 11
+            
+        if current_value + card_value <= target:
+            safe_hits += 1
+    
+    # Hit if at least 30% of cards are safe
+    if safe_hits / len(remaining_cards) > 0.3:
+        return "HIT"
+    else:
+        return "STAY"

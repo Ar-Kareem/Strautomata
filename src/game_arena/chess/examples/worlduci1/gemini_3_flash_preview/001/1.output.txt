@@ -1,0 +1,158 @@
+The strategy for this policy is a fast and efficient evaluation-based search. It performs the following steps:
+1.  **Material and Positional Evaluation**: Uses a piece-square table to value material (P=100, N=320, B=330, R=500, Q=900, K=20000) and rewards pieces for being in the center of the board.
+2.  **Move Generation**: It includes a lightweight move generator that handles basic movement, captures, and pawn mechanics for all pieces.
+3.  **One-Move Lookahead (Greedy)**: It evaluates the resulting board state for every legal move. It prioritizes capturing high-value targets and moving toward better positional squares.
+4.  **Minimax Simulation**: It simulates the opponent's best response to ensure the chosen move doesn't lead to an immediate heavy loss (like losing a Queen for a Pawn).
+5.  **Safety First**: If no clear advantage is found, it selects a move that maintains the highest possible evaluation score.
+
+<code>
+import random
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # Piece values and positional bonuses (basic center control)
+    VALS = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    def get_piece_info(sq):
+        p = pieces.get(sq)
+        if not p: return None, None
+        return p[0], p[1]
+
+    def evaluate(board):
+        score = 0
+        for sq, p in board.items():
+            color, type = p[0], p[1]
+            val = VALS.get(type, 0)
+            # Center bonus
+            rank, file = int(sq[1]), ord(sq[0]) - ord('a')
+            dist_center = abs(3.5 - file) + abs(4.5 - rank)
+            val += (5 - dist_center) * 2
+            
+            if (color == 'w' and to_play == 'white') or (color == 'b' and to_play == 'black'):
+                score += val
+            else:
+                score -= val
+        return score
+
+    def get_legal_moves(board, color_char):
+        moves = []
+        enemy_char = 'b' if color_char == 'w' else 'w'
+        
+        for sq, pc in board.items():
+            if pc[0] != color_char: continue
+            f, r = ord(sq[0]) - ord('a'), int(sq[1])
+            pt = pc[1]
+            
+            # Simplified movement logic for evaluation
+            dirs = []
+            if pt == 'N':
+                dirs = [(1,2),(1,-2),(-1,2),(-1,-2),(2,1),(2,-1),(-2,1),(-2,-1)]
+            elif pt == 'B':
+                dirs = [(1,1),(1,-1),(-1,1),(-1,-1)]
+            elif pt == 'R':
+                dirs = [(0,1),(0,-1),(1,0),(-1,0)]
+            elif pt == 'Q' or pt == 'K':
+                dirs = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
+            
+            if pt in 'NBRQK':
+                limit = 1 if pt == 'K' else 8
+                for dx, dy in dirs:
+                    for i in range(1, limit + 1):
+                        nf, nr = f + dx*i, r + dy*i
+                        if 0 <= nf < 8 and 1 <= nr <= 8:
+                            target = chr(nf + ord('a')) + str(nr)
+                            occ = board.get(target)
+                            if not occ:
+                                moves.append(sq + target)
+                            elif occ[0] == enemy_char:
+                                moves.append(sq + target)
+                                break
+                            else: break
+                        else: break
+            elif pt == 'P':
+                # Pawn logic
+                fwd = 1 if color_char == 'w' else -1
+                # Push
+                target = sq[0] + str(r + fwd)
+                if 1 <= r + fwd <= 8 and target not in board:
+                    if r + fwd == 8 or r + fwd == 1:
+                        for p in 'qrbn': moves.append(sq + target + p)
+                    else:
+                        moves.append(sq + target)
+                        # Double push
+                        if (color_char == 'w' and r == 2) or (color_char == 'b' and r == 7):
+                            t2 = sq[0] + str(r + 2*fwd)
+                            if t2 not in board: moves.append(sq + t2)
+                # Captures
+                for df in [-1, 1]:
+                    nf = f + df
+                    if 0 <= nf < 8:
+                        target = chr(nf + ord('a')) + str(r + fwd)
+                        occ = board.get(target)
+                        if occ and occ[0] == enemy_char:
+                            if r + fwd == 8 or r + fwd == 1:
+                                for p in 'qrbn': moves.append(sq + target + p)
+                            else: moves.append(sq + target)
+        return moves
+
+    my_color = 'w' if to_play == 'white' else 'b'
+    legal_moves = get_legal_moves(pieces, my_color)
+    
+    if not legal_moves:
+        return "" # Should not happen per prompt
+
+    best_move = legal_moves[0]
+    best_score = -999999
+
+    # Shuffle to avoid deterministic patterns in equal positions
+    random.shuffle(legal_moves)
+
+    for move in legal_moves:
+        # Simulate move
+        start, end = move[:2], move[2:4]
+        promo = move[4:] if len(move) > 4 else None
+        
+        saved_end_piece = pieces.get(end)
+        moving_piece = pieces[start]
+        
+        # Apply move
+        del pieces[start]
+        pieces[end] = (moving_piece[0] + promo.upper()) if promo else moving_piece
+        
+        # Static Eval
+        move_score = evaluate(pieces)
+        
+        # Check for immediate hanging response (mini-minimax)
+        opp_color = 'b' if my_color == 'w' else 'w'
+        opp_moves = get_legal_moves(pieces, opp_color)
+        best_opp_reply = -999999
+        if opp_moves:
+            for om in opp_moves:
+                o_start, o_end = om[:2], om[2:4]
+                o_promo = om[4:] if len(om) > 4 else None
+                o_saved = pieces.get(o_end)
+                o_moving = pieces[o_start]
+                
+                del pieces[o_start]
+                pieces[o_end] = (o_moving[0] + o_promo.upper()) if o_promo else o_moving
+                
+                val = -evaluate(pieces) # Opponent wants to minimize my score
+                if val > best_opp_reply: best_opp_reply = val
+                
+                # Undo opp
+                pieces[o_start] = o_moving
+                if o_saved: pieces[o_end] = o_saved
+                else: del pieces[o_end]
+            
+            move_score -= best_opp_reply
+
+        if move_score > best_score:
+            best_score = move_score
+            best_move = move
+            
+        # Undo move
+        pieces[start] = moving_piece
+        if saved_end_piece: pieces[end] = saved_end_piece
+        else: del pieces[end]
+
+    return best_move
+</code>

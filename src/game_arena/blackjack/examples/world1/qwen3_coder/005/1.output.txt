@@ -1,0 +1,254 @@
+<thinking>
+This is a simplified blackjack game with a twist: the target score `T` is variable (10-30), and we have a fixed deck of 13 cards. The key challenge is to decide when to HIT or STAY based on the current hand and target.
+
+### Step 1: Understand Card Values
+- `"2"` to `"10"`: face value
+- `"J"`, `"Q"`, `"K"`: 10
+- `"A"`: 11 if it doesn't cause the hand to exceed `T`, else 1
+
+### Step 2: Simulate Hand Values
+Because `"A"` has dual values, calculating the best possible value of a hand is non-trivial. We need a function to compute the current best value of a hand given a target `T`.
+
+Here's how we can handle the Ace:
+- Start by summing all cards as their minimum value.
+- Count the number of Aces.
+- If adding 10 (to convert an Ace from 1 to 11) brings us closer to or under `T`, do it.
+- Repeat for all Aces until no more beneficial conversions are possible.
+
+### Step 3: Strategy Overview
+The decision to HIT or STAY must balance the risk of busting against the potential improvement in score.
+
+Key considerations:
+- How many cards are left in the deck?
+- What are the possible outcomes if we HIT?
+- What is the expected value of our hand if we HIT?
+- How likely are we to bust?
+- What do we think the opponent will do? (We can't simulate opponent fully, but we know they follow some policy.)
+
+This is a classic problem solvable with Expectimax or dynamic programming. However, we're writing just a policy function that returns an action based on the current state.
+
+A practical approach:
+1. Calculate the risk of busting if we HIT.
+2. If we're already very close to `T`, it might be safer to STAY.
+3. If we are far from `T` and have low risk of busting, it’s better to HIT.
+4. Incorporate probabilistic modeling: model the expectation of next card to decide.
+
+### Step 4: Risk Assessment Logic
+Let's define a few heuristics:
+- Let `current_value` be the best hand value without busting.
+- Let `deck` be the set of cards we still have.
+- The next card is drawn uniformly from `deck`.
+- We can simulate the value if we draw each remaining card, and calculate:
+  - How many result in a bust?
+  - What's the average resulting score?
+  - What's the best-case and worst-case score?
+
+We can make an estimate based on:
+- If the probability of busting is high → STAY.
+- If the current score is far below `T` → HIT.
+- Balance these with a simple formula.
+
+Alternatively, we can use a threshold-based approach.
+We can calculate for a lot of combinations of `hand` and `target` what the optimal move is via simulation or DP, but that’s outside the scope of this function.
+
+A simple probabilistic policy:
+- Calculate the number of cards that would bust us if drawn.
+- If probability of busting > threshold → STAY.
+- Else → HIT.
+
+But what’s a good threshold? Let’s look at how aggressive we should be.
+
+Refined idea:
+
+Let’s compute:
+1. Current best score without busting.
+2. List of remaining cards.
+3. For each remaining card:
+   - Simulate adding it to hand.
+   - Recompute score.
+   - If any bust → count as loss.
+   - Else keep track of new scores.
+4. Use an evaluation metric like:
+   - Probability of improving without busting.
+   - Expected score increase.
+5. If expected benefit is high and risk of bust is low → HIT.
+
+Or simpler rule-based:
+
+Let’s define:
+- `margin = T - current_score`
+- If `margin` is large → HIT.
+- If `margin` is small and risk of bust is > threshold → STAY.
+
+This can be combined with a simple simulation of next card impact.
+
+Let’s design a hybrid:
+
+1. Compute current best score.
+2. Compute remaining deck.
+3. For each possible next card:
+   - Compute new hand value.
+   - If bust → bad.
+   - Else record gain.
+4. Use simple statistics:
+   - % that bust.
+   - Expected gain.
+5. If % bust < threshold AND expected gain improves score → HIT.
+   - Threshold = 0.4 seems reasonable.
+
+Okay. Here’s the final idea for the function:
+
+### Policy Algorithm:
+1. Compute best possible score from current hand (without busting).
+2. If current score equals `T`, STAY.
+3. If current score > `T` (shouldn’t happen since we lose immediately), STAY.
+4. If no cards left to draw, STAY.
+5. Else compute:
+   - Possible next cards (from remaining deck).
+   - For each next card:
+     - Add to hand, compute new value.
+     - If > T → bust.
+     - Else store new value.
+6. Calculate:
+   - `bust_probability = (# bust outcomes) / (total outcomes)`
+   - `avg_gain = avg(new_vals) - current_score`
+7. Then:
+   - If `bust_probability > 0.4` → STAY
+   - If `avg_gain > 0.5` → HIT
+   - Else STAY (conservative)
+
+### Implementation Steps:
+1. Helper function to compute hand value given `T`.
+2. Determine remaining cards.
+3. Simulate values from each possible next card.
+4. Apply strategy.
+</thinking>
+
+<code>
+import math
+
+# Full deck of 13 cards
+FULL_DECK = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+# Card value mapping
+CARD_VALUES = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6,
+    "7": 7, "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10
+}
+# Ace is handled separately as 1 or 11
+
+
+def calculate_hand_value(hand: list[str], target: int) -> int:
+    """Calculate the best possible value of the hand without exceeding target."""
+    # First, sum all cards assuming ace is 1
+    value = 0
+    ace_count = 0
+    for card in hand:
+        if card == "A":
+            ace_count += 1
+            value += 1
+        else:
+            value += CARD_VALUES[card]
+    
+    # Try to promote aces from 1 to 11 as long as we don't bust
+    for _ in range(ace_count):
+        if value + 10 <= target:
+            value += 10
+        else:
+            break
+
+    return value
+
+
+def policy(hand: list[str], target: int) -> str:
+    current_value = calculate_hand_value(hand, target)
+
+    # If already at or above target, no reason to hit
+    if current_value >= target:
+        return "STAY"
+
+    # Determine remaining cards in the deck
+    # We assume we draw from our own full 13-card deck in order
+    # So we need to find out which cards we still have left to draw
+    # This is not explicitly given, but we know we start with full deck
+    # So let's assume that hand is always a subset and we draw in order?
+    # Wait— the problem says "you draw the next card from your deck"
+    # but it does not specify an initial order or draw mechanism.
+    # A safe assumption is that we start with a shuffled deck, and you draw from the remaining unseen cards.
+    # But we're given only `hand` and not draw order or seen cards.
+    # So a reasonable interpretation is that we have a full deck, and we can draw from the remaining cards
+    # that are NOT in `hand`.
+
+    # Count occurrences in hand to determine remaining cards
+    hand_counts = {}
+    for card in hand:
+        hand_counts[card] = hand_counts.get(card, 0) + 1
+
+    # All cards are unique in a single suit deck, so max 1 of each
+    # So remaining cards are those not in hand
+    remaining_deck = []
+    for card in FULL_DECK:
+        if hand_counts.get(card, 0) == 0:
+            remaining_deck.append(card)
+
+    # If no cards left, must stay
+    if not remaining_deck:
+        return "STAY"
+
+    # Simulate each possible next card draw
+    bust_count = 0
+    total_outcomes = len(remaining_deck)
+    new_values = []
+
+    for card in remaining_deck:
+        new_hand = hand + [card]
+        new_value = calculate_hand_value(new_hand, target)
+        if new_value > target:
+            bust_count += 1
+        else:
+            new_values.append(new_value)
+
+    # If all outcomes bust
+    if bust_count == total_outcomes:
+        return "STAY"
+
+    bust_probability = bust_count / total_outcomes
+    expected_gain = 0.0
+    if new_values:
+        expected_new_value = sum(new_values) / len(new_values)
+        expected_gain = expected_new_value - current_value
+
+    # Decision criteria
+    # If we're already pretty close, be more conservative
+    margin = target - current_value
+
+    # Heuristic thresholds
+    # If bust chance is high, STAY
+    if bust_probability > 0.4:
+        return "STAY"
+
+    # If margin is small, STAY unless gain is significant
+    if margin <= 2:
+        if bust_probability <= 0.2 and expected_gain > 0.1:
+            return "HIT"
+        else:
+            return "STAY"
+
+    # If margin is medium, HIT if moderate chance of gain
+    if 3 <= margin <= 5:
+        if bust_probability <= 0.3 and expected_gain > 0.2:
+            return "HIT"
+        else:
+            return "STAY"
+
+    # If margin is large, be more aggressive
+    if margin > 5:
+        if bust_probability <= 0.5:  # Even at 50%, if we're far, it's worth the risk
+            return "HIT"
+        else:
+            return "STAY"
+
+    # Default to STAY if uncertain
+    return "STAY"
+</code>

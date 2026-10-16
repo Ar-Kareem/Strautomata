@@ -1,0 +1,254 @@
+
+import time
+
+# --- PENTAGO CONSTANTS & PRECOMPUTATION ---
+
+# Board Lines (Indices 0-35) for Win Checking
+# A 6x6 board has indices 0 to 35.
+WIN_LINES = []
+# Rows
+for r in range(6):
+    WIN_LINES.append([r * 6 + c for c in range(6)])
+# Cols
+for c in range(6):
+    WIN_LINES.append([r * 6 + c for r in range(6)])
+# Diagonals (Length >= 5)
+# Main Diagonals
+WIN_LINES.append([i * 7 for i in range(6)])       # TL-BR Main
+WIN_LINES.append([5 + i * 5 for i in range(6)])   # TR-BL Main
+# Offset Diagonals (Length 5)
+WIN_LINES.append([1 + i * 7 for i in range(5)])   # Above Main TL-BR
+WIN_LINES.append([6 + i * 7 for i in range(5)])   # Below Main TL-BR
+WIN_LINES.append([4 + i * 5 for i in range(5)])   # Above Main TR-BL
+WIN_LINES.append([11 + i * 5 for i in range(5)])  # Below Main TR-BL
+
+# Quadrant Definitions
+# Q0: TL, Q1: TR, Q2: BL, Q3: BR
+QUAD_INDICES = [
+    [0, 1, 2, 6, 7, 8, 12, 13, 14],      # Q0
+    [3, 4, 5, 9, 10, 11, 15, 16, 17],    # Q1
+    [18, 19, 20, 24, 25, 26, 30, 31, 32], # Q2
+    [21, 22, 23, 27, 28, 29, 33, 34, 35]  # Q3
+]
+
+# Precompute Permutations for Rotations
+# PERMS[quad][dir_idx] is a list of 36 indices mapping src -> dst
+# Actually, to generate new board: new[i] = old[P[i]]
+# So P should map distinct destination index to source index.
+PERMS = []
+
+def _init_perms():
+    base = list(range(36))
+    perms = []
+    
+    for q in range(4):
+        qs = []
+        # Calculate coordinate offsets for this quadrant
+        r_off = 0 if q < 2 else 3
+        c_off = 0 if (q % 2) == 0 else 3
+        
+        # We need two permutations: L (0) and R (1)
+        # L (Counter-Clockwise): Local (r,c) moves to (2-c, r)
+        # R (Clockwise): Local (r,c) moves to (c, 2-r)
+        # To construct a mapping for "new_board[i] = old_board[map[i]]",
+        # the map[i] must be the index WHERE the value at i CAME FROM.
+        # So map[dest_idx] = src_idx.
+        
+        perm_L = base[:]
+        perm_R = base[:]
+        
+        for r in range(3):
+            for c in range(3):
+                src_idx = (r + r_off) * 6 + (c + c_off)
+                
+                # L Desintation in local coords
+                dst_r_L, dst_c_L = 2 - c, r
+                dst_idx_L = (dst_r_L + r_off) * 6 + (dst_c_L + c_off)
+                perm_L[dst_idx_L] = src_idx
+                
+                # R Destination in local coords
+                dst_r_R, dst_c_R = c, 2 - r
+                dst_idx_R = (dst_r_R + r_off) * 6 + (dst_c_R + c_off)
+                perm_R[dst_idx_R] = src_idx
+                
+        qs.append(perm_L)
+        qs.append(perm_R)
+        perms.append(qs)
+    return perms
+
+PERMS = _init_perms()
+
+def policy(you, opponent) -> str:
+    start_time = time.time()
+    
+    # 1. Parse Board State
+    # Flatten input arrays into a single list of length 36
+    # 1 = You, -1 = Opponent, 0 = Empty
+    board = [0] * 36
+    empties = []
+    
+    idx = 0
+    for r in range(6):
+        row_y = you[r]
+        row_o = opponent[r]
+        for c in range(6):
+            if row_y[c]:
+                board[idx] = 1
+            elif row_o[c]:
+                board[idx] = -1
+            else:
+                board[idx] = 0
+                empties.append(idx)
+            idx += 1
+
+    # --- Helper Functions ---
+    
+    def get_win_status(b):
+        """Returns (me_win, opp_win) booleans."""
+        me_win, opp_win = False, False
+        for line in WIN_LINES:
+            # Check for 5 consecutive stones
+            # Extract line values
+            vals = [b[k] for k in line]
+            
+            w_count = 0
+            curr_val = 0
+            
+            for v in vals:
+                if v == curr_val and v != 0:
+                    w_count += 1
+                else:
+                    w_count = 1
+                    curr_val = v
+                
+                if w_count >= 5:
+                    if curr_val == 1: me_win = True
+                    if curr_val == -1: opp_win = True
+            
+            if me_win and opp_win: break
+        return me_win, opp_win
+
+    def evaluate(b):
+        """Heuristic score of the board from 'you' perspective."""
+        score = 0
+        for line in WIN_LINES:
+            seq = [b[k] for k in line]
+            # Analyze all sub-windows of length 5
+            for i in range(len(seq) - 4):
+                window = seq[i : i+5]
+                cnt_me = window.count(1)
+                cnt_opp = window.count(-1)
+                
+                if cnt_opp == 0:
+                    # Potential line for me
+                    if cnt_me == 4: score += 5000
+                    elif cnt_me == 3: score += 100
+                    elif cnt_me == 2: score += 10
+                elif cnt_me == 0:
+                    # Potential line for opponent (Penalty)
+                    if cnt_opp == 4: score -= 10000 # Critical threat
+                    elif cnt_opp == 3: score -= 200
+                    elif cnt_opp == 2: score -= 20
+        return score
+
+    # --- Search Logic ---
+    
+    choices = []
+    
+    # Generate all legal moves: Place stone at 'pos', Rotate 'q' in 'd'
+    # There are max 36 positions * 8 rotations = 288 moves.
+    
+    for pos in empties:
+        # Optimization: Early exit if time is critical
+        if time.time() - start_time > 0.85:
+            break
+            
+        board[pos] = 1
+        
+        for q in range(4):
+            for d_idx, d_char in enumerate(['L', 'R']):
+                # Apply rotation
+                perm = PERMS[q][d_idx]
+                next_board = [board[k] for k in perm]
+                
+                # Check for completion
+                mw, ow = get_win_status(next_board)
+                
+                if mw and not ow:
+                    # Immediate Win found (and not a draw)
+                    r, c = divmod(pos, 6)
+                    return f"{r+1},{c+1},{q},{d_char}"
+                
+                # Heuristic Score
+                # If opponent also wins (draw) or opponent wins (loss), handle score
+                move_score = 0
+                if ow and not mw:
+                    move_score = -1_000_000_000 # Loss
+                else:
+                    move_score = evaluate(next_board)
+                
+                choices.append((move_score, pos, q, d_char, next_board))
+        
+        board[pos] = 0 # Backtrack
+
+    # Sort choices by heuristic score (descending)
+    choices.sort(key=lambda x: x[0], reverse=True)
+    
+    # --- Safety Check (Depth 2 Pruning) ---
+    # For the top N moves, check if the opponent has an unstoppable winning response.
+    # If opponent can win immediately after our move, discard the move.
+    
+    best_safe_move = None
+    
+    # Limit candidates to check to conserve time
+    check_limit = 20
+    candidates = choices[:check_limit] if len(choices) > check_limit else choices
+    
+    for cand in candidates:
+        if time.time() - start_time > 0.95:
+            break
+            
+        score, c_pos, c_q, c_d, state = cand
+        
+        # If the move is already scored as a loss, skip it
+        if score < -500_000:
+            continue
+            
+        is_unsafe = False
+        
+        # Identify opponent's valid moves from this state
+        opp_empties = [i for i, x in enumerate(state) if x == 0]
+        
+        # Optimization: Only perform deep check if opponent has enough material.
+        # If opponent has < 4 stones, impossible to form 5.
+        if state.count(-1) >= 4:
+            for op_pos in opp_empties:
+                state[op_pos] = -1
+                
+                # Check all rotations for opponent
+                for oq in range(4):
+                    for od_idx in range(2):
+                        operm = PERMS[oq][od_idx]
+                        opp_next_board = [state[k] for k in operm]
+                        
+                        omw, oow = get_win_status(opp_next_board)
+                        if oow and not omw:
+                            # Opponent wins and I don't -> Loss for me
+                            is_unsafe = True
+                            break
+                    if is_unsafe: break
+                
+                state[op_pos] = 0
+                if is_unsafe: break
+        
+        if not is_unsafe:
+            best_safe_move = cand
+            break
+            
+    # Fallback: if no safe move found (or timeout), pick the best heuristic move
+    final_choice = best_safe_move if best_safe_move else choices[0]
+    
+    # Format Output: "row,col,quad,dir" (1-indexed row/col)
+    _, f_pos, f_q, f_d, _ = final_choice
+    r, c = divmod(f_pos, 6)
+    return f"{r+1},{c+1},{f_q},{f_d}"

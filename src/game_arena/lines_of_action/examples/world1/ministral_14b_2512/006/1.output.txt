@@ -1,0 +1,544 @@
+### Strategy for this Policy
+
+**Lines of Action (LoA)** is a fascinating game that combines elements of **Gomoku** (connecting pieces) and **Poker** (moving pieces based on line lengths). The key to winning is balancing **contiguity** (connecting your own pieces) and **aggressive play** (forcing the opponent into a position where they cannot move optimally).
+
+Here’s my strategy for this policy:
+
+1. **Prioritize Contiguity**:
+   - First, check if any of my pieces can be moved to connect two or more of my own pieces into a larger contiguous group. This is the core objective of the game.
+   - If multiple such moves exist, prioritize the one that maximizes the size of the contiguous group I form.
+
+2. **Aggressive Play (Forcing Opponent into Weak Moves)**:
+   - If no immediate contiguity move is available, look for moves that would **increase the opponent’s line lengths** in a way that makes their future moves harder.
+   - For example, if moving a piece would create a long line for the opponent (e.g., forcing them to move a piece that would otherwise stay still), do so to restrict their options.
+
+3. **Defensive Play (Preventing Opponent from Winning)**:
+   - If the opponent has a single contiguous group that is about to grow (e.g., they have a 2-piece line and can connect it), try to **block their contiguity** by moving my pieces in a way that disrupts their potential connections.
+   - Avoid letting the opponent connect their pieces unless I can force a win in the next move.
+
+4. **Center Control**:
+   - Prefer moves near the center of the board (rows 3-4, columns 3-4) because they offer more opportunities for future contiguity and restrict the opponent’s mobility.
+
+5. **Line Length Optimization**:
+   - If no contiguity or blocking move is available, move pieces to **maximize my own line lengths** (similar to how in LoA, pieces must move as many squares as the length of the line they’re on).
+   - This helps me create longer lines in future turns, allowing me to move more aggressively.
+
+6. **Jump Over Friendly Pieces**:
+   - If a move requires jumping over my own pieces (but not the opponent’s), prioritize it because it can lead to more flexible future moves.
+
+7. **Capture Opponent’s Pieces**:
+   - If a move allows me to capture the opponent’s piece (land on it), prioritize it to reduce their mobility and potentially force them into a weaker position.
+
+8. **Fallback to Random Legal Move**:
+   - If no strategic move is found, return a random legal move to avoid getting stuck.
+
+---
+
+### Python Implementation
+
+```python
+import numpy as np
+import random
+
+def policy(board):
+    # Convert the board to a numpy array for easier manipulation
+    board_np = np.array(board)
+    my_pieces = np.where(board_np == 1)
+    opponent_pieces = np.where(board_np == -1)
+
+    # Get all possible legal moves
+    legal_moves = get_legal_moves(board_np)
+
+    if not legal_moves:
+        return "0,0:0,0"  # Should never happen if the game is valid
+
+    # Strategy 1: Prioritize contiguity (connecting my own pieces)
+    contiguity_moves = prioritize_contiguity(board_np, my_pieces)
+    if contiguity_moves:
+        return random.choice(contiguity_moves)
+
+    # Strategy 2: Aggressive play (increase opponent's line lengths)
+    aggressive_moves = increase_opponent_line_lengths(board_np, opponent_pieces)
+    if aggressive_moves:
+        return random.choice(aggressive_moves)
+
+    # Strategy 3: Defensive play (prevent opponent from connecting)
+    defensive_moves = prevent_opponent_contiguity(board_np, opponent_pieces)
+    if defensive_moves:
+        return random.choice(defensive_moves)
+
+    # Strategy 4: Center control (prefer moves near the center)
+    center_moves = prefer_center_moves(board_np, legal_moves)
+    if center_moves:
+        return random.choice(center_moves)
+
+    # Strategy 5: Maximize my own line lengths
+    line_length_moves = maximize_my_line_lengths(board_np, my_pieces)
+    if line_length_moves:
+        return random.choice(line_length_moves)
+
+    # Fallback: Random legal move
+    return random.choice(legal_moves)
+
+def get_legal_moves(board):
+    legal_moves = []
+    my_pieces = np.where(board == 1)
+    opponent_pieces = np.where(board == -1)
+
+    # Directions: 8 possible (horizontal, vertical, diagonal)
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1),
+                 (0, -1), (-1, 0), (-1, 1), (-1, -1)]
+
+    for (row, col) in zip(my_pieces[0], my_pieces[1]):
+        for dr, dc in directions:
+            # Calculate the line length in this direction
+            line_length = 0
+            temp_row, temp_col = row, col
+            while 0 <= temp_row < 8 and 0 <= temp_col < 8 and board[temp_row][temp_col] != 0:
+                line_length += 1
+                temp_row += dr
+                temp_col += dc
+
+            # If the line length is > 0, we can move
+            if line_length > 0:
+                # Calculate the target position (row + dr * line_length, col + dc * line_length)
+                target_row = row + dr * line_length
+                target_col = col + dc * line_length
+
+                # Check if the target is within bounds
+                if 0 <= target_row < 8 and 0 <= target_col < 8:
+                    # Check if the path is clear (no opponent pieces in the way)
+                    path_clear = True
+                    temp_row, temp_col = row + dr, col + dc
+                    steps = line_length - 1
+                    for _ in range(steps):
+                        if 0 <= temp_row < 8 and 0 <= temp_col < 8:
+                            if board[temp_row][temp_col] == -1:
+                                path_clear = False
+                                break
+                            temp_row += dr
+                            temp_col += dc
+                        else:
+                            path_clear = False
+                            break
+
+                    if path_clear:
+                        # Check if the target is empty or opponent's piece
+                        if board[target_row][target_col] == 0 or board[target_row][target_col] == -1:
+                            legal_moves.append(f"{row},{col}:{target_row},{target_col}")
+
+    return legal_moves
+
+def prioritize_contiguity(board, my_pieces):
+    # Check if any move can connect two or more of my pieces
+    moves = []
+    my_rows, my_cols = my_pieces
+
+    # Directions: 8 possible (horizontal, vertical, diagonal)
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1),
+                 (0, -1), (-1, 0), (-1, 1), (-1, -1)]
+
+    for (row, col) in zip(my_rows, my_cols):
+        for dr, dc in directions:
+            # Calculate the line length in this direction
+            line_length = 0
+            temp_row, temp_col = row, col
+            while 0 <= temp_row < 8 and 0 <= temp_col < 8 and board[temp_row][temp_col] != 0:
+                line_length += 1
+                temp_row += dr
+                temp_col += dc
+
+            if line_length > 0:
+                target_row = row + dr * line_length
+                target_col = col + dc * line_length
+
+                if 0 <= target_row < 8 and 0 <= target_col < 8:
+                    path_clear = True
+                    temp_row, temp_col = row + dr, col + dc
+                    steps = line_length - 1
+                    for _ in range(steps):
+                        if 0 <= temp_row < 8 and 0 <= temp_col < 8:
+                            if board[temp_row][temp_col] == -1:
+                                path_clear = False
+                                break
+                            temp_row += dr
+                            temp_col += dc
+                        else:
+                            path_clear = False
+                            break
+
+                    if path_clear:
+                        # Check if landing on this position connects my pieces
+                        if board[target_row][target_col] == 0:
+                            # Simulate the move and check contiguity
+                            new_board = board.copy()
+                            new_board[row][col] = 0
+                            new_board[target_row][target_col] = 1
+
+                            # Check if this move increases my contiguity
+                            if does_move_increase_contiguity(new_board, (row, col), (target_row, target_col)):
+                                moves.append(f"{row},{col}:{target_row},{target_col}")
+
+    return moves if moves else None
+
+def does_move_increase_contiguity(board, from_pos, to_pos):
+    # Check if the move connects two or more of my pieces
+    from_row, from_col = from_pos
+    to_row, to_col = to_pos
+
+    # Find all my pieces in the new board
+    my_pieces = np.where(board == 1)
+
+    # Check if the moved piece connects to any other piece
+    if board[to_row][to_col] == 1:
+        return False  # Landing on my own piece is not allowed (capture only)
+
+    # Check if any adjacent piece (including diagonals) is mine
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1),
+                 (0, -1), (-1, 0), (-1, 1), (-1, -1)]
+
+    for dr, dc in directions:
+        adj_row = to_row + dr
+        adj_col = to_col + dc
+        if 0 <= adj_row < 8 and 0 <= adj_col < 8 and board[adj_row][adj_col] == 1:
+            # Check if the moved piece connects to the contiguity
+            # This is a simplified check; a full implementation would track contiguity groups
+            return True
+
+    return False
+
+def increase_opponent_line_lengths(board, opponent_pieces):
+    # Check if any move would increase the opponent's line lengths
+    moves = []
+    opponent_rows, opponent_cols = opponent_pieces
+
+    # Directions: 8 possible (horizontal, vertical, diagonal)
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1),
+                 (0, -1), (-1, 0), (-1, 1), (-1, -1)]
+
+    for (row, col) in zip(opponent_rows, opponent_cols):
+        for dr, dc in directions:
+            # Calculate the line length in this direction
+            line_length = 0
+            temp_row, temp_col = row, col
+            while 0 <= temp_row < 8 and 0 <= temp_col < 8 and board[temp_row][temp_col] != 0:
+                line_length += 1
+                temp_row += dr
+                temp_col += dc
+
+            if line_length > 0:
+                target_row = row + dr * line_length
+                target_col = col + dc * line_length
+
+                if 0 <= target_row < 8 and 0 <= target_col < 8:
+                    path_clear = True
+                    temp_row, temp_col = row + dr, col + dc
+                    steps = line_length - 1
+                    for _ in range(steps):
+                        if 0 <= temp_row < 8 and 0 <= temp_col < 8:
+                            if board[temp_row][temp_col] == 1:
+                                path_clear = False
+                                break
+                            temp_row += dr
+                            temp_col += dc
+                        else:
+                            path_clear = False
+                            break
+
+                    if path_clear:
+                        # Check if landing on this position would increase the opponent's line lengths
+                        if board[target_row][target_col] == 0:
+                            new_board = board.copy()
+                            new_board[row][col] = 0
+                            new_board[target_row][target_col] = -1
+
+                            # Check if any opponent piece's line length increases
+                            if does_move_increase_opponent_line_length(new_board, (row, col), (target_row, target_col)):
+                                moves.append(f"{row},{col}:{target_row},{target_col}")
+
+    return moves if moves else None
+
+def does_move_increase_opponent_line_length(board, from_pos, to_pos):
+    # Check if any opponent piece's line length increases after this move
+    from_row, from_col = from_pos
+    to_row, to_col = to_pos
+
+    # Directions: 8 possible (horizontal, vertical, diagonal)
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1),
+                 (0, -1), (-1, 0), (-1, 1), (-1, -1)]
+
+    # Check all opponent pieces' lines
+    opponent_pieces = np.where(board == -1)
+    for (row, col) in zip(opponent_pieces[0], opponent_pieces[1]):
+        for dr, dc in directions:
+            # Calculate line length before the move
+            line_length_before = 0
+            temp_row, temp_col = row, col
+            while 0 <= temp_row < 8 and 0 <= temp_col < 8 and board[temp_row][temp_col] != 0:
+                line_length_before += 1
+                temp_row += dr
+                temp_col += dc
+
+            # Calculate line length after the move (simulate)
+            new_board = board.copy()
+            new_board[from_row][from_col] = 0
+            new_board[to_row][to_col] = -1
+
+            line_length_after = 0
+            temp_row, temp_col = row, col
+            while 0 <= temp_row < 8 and 0 <= temp_col < 8 and new_board[temp_row][temp_col] != 0:
+                line_length_after += 1
+                temp_row += dr
+                temp_col += dc
+
+            if line_length_after > line_length_before:
+                return True
+
+    return False
+
+def prevent_opponent_contiguity(board, opponent_pieces):
+    # Check if any move would prevent the opponent from connecting their pieces
+    moves = []
+    opponent_rows, opponent_cols = opponent_pieces
+
+    # Directions: 8 possible (horizontal, vertical, diagonal)
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1),
+                 (0, -1), (-1, 0), (-1, 1), (-1, -1)]
+
+    for (row, col) in zip(opponent_rows, opponent_cols):
+        for dr, dc in directions:
+            # Calculate the line length in this direction
+            line_length = 0
+            temp_row, temp_col = row, col
+            while 0 <= temp_row < 8 and 0 <= temp_col < 8 and board[temp_row][temp_col] != 0:
+                line_length += 1
+                temp_row += dr
+                temp_col += dc
+
+            if line_length > 0:
+                target_row = row + dr * line_length
+                target_col = col + dc * line_length
+
+                if 0 <= target_row < 8 and 0 <= target_col < 8:
+                    path_clear = True
+                    temp_row, temp_col = row + dr, col + dc
+                    steps = line_length - 1
+                    for _ in range(steps):
+                        if 0 <= temp_row < 8 and 0 <= temp_col < 8:
+                            if board[temp_row][temp_col] == 1:
+                                path_clear = False
+                                break
+                            temp_row += dr
+                            temp_col += dc
+                        else:
+                            path_clear = False
+                            break
+
+                    if path_clear:
+                        # Check if landing on this position would block the opponent's contiguity
+                        if board[target_row][target_col] == 0:
+                            new_board = board.copy()
+                            new_board[target_row][target_col] = -1
+
+                            # Check if any opponent piece can now connect
+                            if not can_opponent_connect(new_board):
+                                moves.append(f"{row},{col}:{target_row},{target_col}")
+
+    return moves if moves else None
+
+def can_opponent_connect(board):
+    # Simplified check: If any opponent piece can connect to another, return True
+    opponent_pieces = np.where(board == -1)
+    for (row, col) in zip(opponent_pieces[0], opponent_pieces[1]):
+        # Directions: 8 possible (horizontal, vertical, diagonal)
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1),
+                     (0, -1), (-1, 0), (-1, 1), (-1, -1)]
+
+        for dr, dc in directions:
+            # Calculate line length
+            line_length = 0
+            temp_row, temp_col = row, col
+            while 0 <= temp_row < 8 and 0 <= temp_col < 8 and board[temp_row][temp_col] != 0:
+                line_length += 1
+                temp_row += dr
+                temp_col += dc
+
+            if line_length > 0:
+                target_row = row + dr * line_length
+                target_col = col + dc * line_length
+
+                if 0 <= target_row < 8 and 0 <= target_col < 8:
+                    path_clear = True
+                    temp_row, temp_col = row + dr, col + dc
+                    steps = line_length - 1
+                    for _ in range(steps):
+                        if 0 <= temp_row < 8 and 0 <= temp_col < 8:
+                            if board[temp_row][temp_col] == 1:
+                                path_clear = False
+                                break
+                            temp_row += dr
+                            temp_col += dc
+                        else:
+                            path_clear = False
+                            break
+
+                    if path_clear and board[target_row][target_col] == 0:
+                        # Simulate the move and check if it connects opponent pieces
+                        new_board = board.copy()
+                        new_board[row][col] = 0
+                        new_board[target_row][target_col] = -1
+
+                        # Check if the opponent can now connect (simplified)
+                        if does_opponent_connect(new_board):
+                            return True
+
+    return False
+
+def does_opponent_connect(new_board):
+    # Check if the opponent has a single contiguous group
+    # This is a placeholder; a full implementation would track contiguity groups
+    opponent_pieces = np.where(new_board == -1)
+    if len(opponent_pieces[0]) == 0:
+        return False
+
+    # Check if all opponent pieces are connected (simplified)
+    visited = set()
+    stack = [(opponent_pieces[0][0], opponent_pieces[1][0])]
+
+    while stack:
+        row, col = stack.pop()
+        if (row, col) in visited:
+            continue
+        visited.add((row, col))
+
+        # Directions: 8 possible (horizontal, vertical, diagonal)
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1),
+                     (0, -1), (-1, 0), (-1, 1), (-1, -1)]
+
+        for dr, dc in directions:
+            adj_row = row + dr
+            adj_col = col + dc
+            if 0 <= adj_row < 8 and 0 <= adj_col < 8 and new_board[adj_row][adj_col] == -1:
+                stack.append((adj_row, adj_col))
+
+    # If all opponent pieces are visited, they are connected
+    return len(visited) == len(opponent_pieces[0])
+
+def prefer_center_moves(board, legal_moves):
+    # Prefer moves near the center (rows 3-4, cols 3-4)
+    center_moves = []
+    for move in legal_moves:
+        from_row, from_col = map(int, move.split(':')[0].split(','))
+        to_row, to_col = map(int, move.split(':')[1].split(','))
+
+        # Calculate distance from center for both start and end positions
+        center_row, center_col = 3, 3
+        start_dist = abs(from_row - center_row) + abs(from_col - center_col)
+        end_dist = abs(to_row - center_row) + abs(to_col - center_col)
+
+        # Prefer moves where the end position is closer to the center
+        if end_dist <= 3:  # Within a certain radius of the center
+            center_moves.append(move)
+
+    return center_moves if center_moves else None
+
+def maximize_my_line_lengths(board, my_pieces):
+    # Check if any move would maximize my own line lengths
+    moves = []
+    my_rows, my_cols = my_pieces
+
+    # Directions: 8 possible (horizontal, vertical, diagonal)
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1),
+                 (0, -1), (-1, 0), (-1, 1), (-1, -1)]
+
+    for (row, col) in zip(my_rows, my_cols):
+        for dr, dc in directions:
+            # Calculate the line length in this direction
+            line_length = 0
+            temp_row, temp_col = row, col
+            while 0 <= temp_row < 8 and 0 <= temp_col < 8 and board[temp_row][temp_col] != 0:
+                line_length += 1
+                temp_row += dr
+                temp_col += dc
+
+            if line_length > 0:
+                target_row = row + dr * line_length
+                target_col = col + dc * line_length
+
+                if 0 <= target_row < 8 and 0 <= target_col < 8:
+                    path_clear = True
+                    temp_row, temp_col = row + dr, col + dc
+                    steps = line_length - 1
+                    for _ in range(steps):
+                        if 0 <= temp_row < 8 and 0 <= temp_col < 8:
+                            if board[temp_row][temp_col] == -1:
+                                path_clear = False
+                                break
+                            temp_row += dr
+                            temp_col += dc
+                        else:
+                            path_clear = False
+                            break
+
+                    if path_clear:
+                        # Check if landing on this position would maximize my line lengths
+                        if board[target_row][target_col] == 0:
+                            new_board = board.copy()
+                            new_board[row][col] = 0
+                            new_board[target_row][target_col] = 1
+
+                            # Check if any of my pieces' line lengths increase
+                            if does_move_increase_my_line_length(new_board, (row, col), (target_row, target_col)):
+                                moves.append(f"{row},{col}:{target_row},{target_col}")
+
+    return moves if moves else None
+
+def does_move_increase_my_line_length(board, from_pos, to_pos):
+    # Check if any of my pieces' line lengths increase after this move
+    from_row, from_col = from_pos
+    to_row, to_col = to_pos
+
+    # Directions: 8 possible (horizontal, vertical, diagonal)
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1),
+                 (0, -1), (-1, 0), (-1, 1), (-1, -1)]
+
+    # Check all my pieces' lines
+    my_pieces = np.where(board == 1)
+    for (row, col) in zip(my_pieces[0], my_pieces[1]):
+        for dr, dc in directions:
+            # Calculate line length before the move
+            line_length_before = 0
+            temp_row, temp_col = row, col
+            while 0 <= temp_row < 8 and 0 <= temp_col < 8 and board[temp_row][temp_col] != 0:
+                line_length_before += 1
+                temp_row += dr
+                temp_col += dc
+
+            # Calculate line length after the move (simulate)
+            new_board = board.copy()
+            new_board[from_row][from_col] = 0
+            new_board[to_row][to_col] = 1
+
+            line_length_after = 0
+            temp_row, temp_col = row, col
+            while 0 <= temp_row < 8 and 0 <= temp_col < 8 and new_board[temp_row][temp_col] != 0:
+                line_length_after += 1
+                temp_row += dr
+                temp_col += dc
+
+            if line_length_after > line_length_before:
+                return True
+
+    return False
+```
+
+---
+### Notes on the Implementation:
+1. **Legal Move Generation**: The `get_legal_moves` function generates all possible moves based on the LoA rules (line length, jumping over friendly pieces, etc.).
+2. **Contiguity Check**: The `prioritize_contiguity` function checks if a move would connect two or more of my pieces. This is a simplified version; a full implementation would track contiguity groups more carefully.
+3. **Aggressive/Defensive Moves**: The policy tries to increase the opponent's line lengths or prevent them from connecting their pieces.
+4. **Center Control**: Moves near the center are preferred because they offer more strategic flexibility.
+5. **Line Length Maximization**: The policy also tries to maximize its own line lengths for future aggressive moves.
+6. **Fallback**: If no strategic move is found, it defaults to a random legal move.
+
+This strategy should perform well in the gaming arena by balancing contiguity, aggression, and defense.

@@ -1,0 +1,212 @@
+<thinking>
+Let me think about a good strategy for Battleship:
+
+1. **Hunt mode**: When there are no hits that haven't been fully explored, I should search for ships efficiently. A checkerboard pattern is often used since the smallest ship is length 2, so every ship must cover at least one cell of each color in a checkerboard.
+
+2. **Target mode**: When there's a hit that's part of an unsunk ship, I should explore adjacent cells to find and sink the rest of the ship.
+
+Key considerations:
+- Ships are lengths 5, 4, 3, 3, 2
+- I need to detect "active" hits - hits that are part of ships not yet fully sunk
+- When I have multiple hits in a line, I should continue in that direction
+- Use probability density to pick the best cell in hunt mode
+
+Let me implement this:
+
+1. First, identify all hit cells (value = 1)
+2. Try to identify which hits are part of the same ship (consecutive hits)
+3. For hits that form a line, try to extend in that direction
+4. For isolated hits, try all 4 adjacent cells
+5. If no targets, use hunt mode with checkerboard preference
+
+For hunt mode, I'll calculate probability density based on:
+- How many ship placements could cover each cell
+- Prefer cells that could be part of more remaining ships
+
+Let me refine this:
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    import random
+    
+    # Find all hits and misses
+    hits = set()
+    misses = set()
+    unknown = set()
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.add((r, c))
+            elif board[r][c] == -1:
+                misses.add((r, c))
+            else:
+                unknown.add((r, c))
+    
+    # Target mode: find adjacent cells to hits
+    if hits:
+        # Find hits that might be part of unsunk ships
+        # A hit is "active" if it has at least one unknown neighbor
+        # or is part of a line of hits with unknown extension
+        
+        targets = []
+        
+        for r, c in hits:
+            # Check if this hit has unknown neighbors
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in unknown:
+                    # Check if there's a line of hits in opposite direction
+                    opp_r, opp_c = r - dr, c - dc
+                    if (opp_r, opp_c) in hits:
+                        # We have a line, prioritize continuing it
+                        targets.append(((nr, nc), 2))
+                    else:
+                        targets.append(((nr, nc), 1))
+        
+        if targets:
+            # Sort by priority (higher is better)
+            targets.sort(key=lambda x: x[1], reverse=True)
+            best_priority = targets[0][1]
+            best_targets = [t[0] for t in targets if t[1] == best_priority]
+            return random.choice(best_targets)
+    
+    # Hunt mode: use probability-based targeting
+    # Checkerboard pattern for efficiency
+    checkerboard = [(r, c) for r, c in unknown if (r + c) % 2 == 0]
+    if not checkerboard:
+        checkerboard = list(unknown)
+    
+    if checkerboard:
+        return random.choice(checkerboard)
+    
+    # Fallback
+    return list(unknown)[0] if unknown else (0, 0)
+```
+
+Actually, let me make this more sophisticated with probability density calculation:
+
+The probability approach: for each unknown cell, count how many ways remaining ships could be placed that include this cell. Cells with higher counts are better targets.
+
+I also need to be smarter about identifying "sunk" vs "active" ships. A group of hits that is surrounded by misses/edges on both ends of a line is likely sunk.
+
+Let me implement a more complete solution:
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    import random
+    
+    # Categorize cells
+    hits = set()
+    unknown = set()
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.add((r, c))
+            elif board[r][c] == 0:
+                unknown.add((r, c))
+    
+    if not unknown:
+        return (0, 0)  # Shouldn't happen
+    
+    # Target mode: if we have hits, try to sink ships
+    if hits:
+        # Find connected components of hits and determine best targets
+        targets_with_priority = []
+        
+        for r, c in hits:
+            # Check for line patterns and extend them
+            for dr, dc in [(0, 1), (1, 0)]:  # horizontal and vertical
+                # Count hits in positive direction
+                pos_hits = 0
+                nr, nc = r + dr, c + dc
+                while (nr, nc) in hits:
+                    pos_hits += 1
+                    nr, nc = nr + dr, nc + dc
+                pos_unknown = (nr, nc) in unknown
+                
+                # Count hits in negative direction
+                neg_hits = 0
+                nr, nc = r - dr, c - dc
+                while (nr, nc) in hits:
+                    neg_hits += 1
+                    nr, nc = nr - dr, nc - dc
+                neg_unknown = (nr, nc) in unknown
+                
+                line_length = 1 + pos_hits + neg_hits
+                
+                # If we have a line of 2+ hits, strongly prefer extending it
+                if line_length >= 2:
+                    if pos_unknown:
+                        ext_r, ext_c = r + dr * (pos_hits + 1), c + dc * (pos_hits + 1)
+                        targets_with_priority.append(((ext_r, ext_c), 100 + line_length))
+                    if neg_unknown:
+                        ext_r, ext_c = r - dr * (neg_hits + 1), c - dc * (neg_hits + 1)
+                        targets_with_priority.append(((ext_r, ext_c), 100 + line_length))
+            
+            # Also consider single-hit adjacents
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in unknown:
+                    targets_with_priority.append(((nr, nc), 1))
+        
+        if targets_with_priority:
+            # Pick highest priority target
+            targets_with_priority.sort(key=lambda x: x[1], reverse=True)
+            best_priority = targets_with_priority[0][1]
+            best_targets = list(set(t[0] for t in targets_with_priority if t[1] == best_priority))
+            return random.choice(best_targets)
+    
+    # Hunt mode: calculate probability density
+    ship_lengths = [5, 4, 3, 3, 2]
+    # Estimate remaining ships (rough heuristic based on total hits)
+    total_ship_cells = sum(ship_lengths)  # 17
+    remaining_cells = total_ship_cells - len(hits)
+    
+    # For simplicity, assume all ships might still be there
+    # Calculate density
+    density = {}
+    for cell in unknown:
+        density[cell] = 0
+    
+    for length in ship_lengths:
+        # Horizontal placements
+        for r in range(10):
+            for c in range(10 - length + 1):
+                cells = [(r, c + i) for i in range(length)]
+                # Check if placement is valid (all cells unknown or hit)
+                valid = all(cell in unknown or cell in hits for cell in cells)
+                if valid:
+                    for cell in cells:
+                        if cell in unknown:
+                            density[cell] += 1
+        
+        # Vertical placements
+        for r in range(10 - length + 1):
+            for c in range(10):
+                cells = [(r + i, c) for i in range(length)]
+                valid = all(cell in unknown or cell in hits for cell in cells)
+                if valid:
+                    for cell in cells:
+                        if cell in unknown:
+                            density[cell] += 1
+    
+    if density:
+        max_density = max(density.values())
+        if max_density > 0:
+            best_cells = [cell for cell, d in density.items() if d == max_density]
+            # Prefer checkerboard pattern among best cells
+            checkerboard_best = [cell for cell in best_cells if (cell[0] + cell[1]) % 2 == 0]
+            if checkerboard_best:
+                return random.choice(checkerboard_best)
+            return random.choice(best_cells)
+    
+    # Fallback: checkerboard pattern
+    checkerboard = [(r, c) for r, c in unknown if (r + c) % 2 == 0]
+    if checkerboard:
+        return random.choice(checkerboard)
+    
+    return random.choice(list(unknown))
+</code>

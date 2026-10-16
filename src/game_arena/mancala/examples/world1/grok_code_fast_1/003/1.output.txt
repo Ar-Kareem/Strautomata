@@ -1,0 +1,87 @@
+The strategy for this policy is a minimax search with a depth of 4, evaluating positions based on the difference in stores (with a large bonus for game-ending states to prefer wins). It prioritizes moves that maintain the initiative (extra turns) and leverages captures and potential store seeds in deeper searches. Illegal moves are avoided by only considering indices with seeds.
+
+<code>
+import sys
+
+BOARD_SIZE = 6
+DEPTH = 4
+INF = sys.maxsize
+
+def apply_move(you, opponent, i):
+    seeds = you[i]
+    you[i] = 0
+    pos = i + 1
+    me_again = False
+    while seeds > 0:
+        if pos < BOARD_SIZE:
+            you[pos] += 1
+            if seeds == 1 and pos == i and you[pos] == 1:
+                opp_h = BOARD_SIZE - 1 - pos
+                if opponent[opp_h] > 0:
+                    captured = opponent[opp_h] + 1
+                    opponent[opp_h] = 0
+                    you[pos] = 0
+                    you[BOARD_SIZE] += captured
+            pos += 1
+        elif pos == BOARD_SIZE:
+            you[BOARD_SIZE] += 1
+            if seeds == 1:
+                me_again = True
+            pos += 1  # Now to opponent's 0
+        elif pos < 2 * BOARD_SIZE + 1:
+            opp_idx = pos - BOARD_SIZE - 1
+            opponent[opp_idx] += 1
+            pos += 1
+        else:
+            pos = 0
+        seeds -= 1
+    return you, opponent, me_again
+
+def is_game_end(you, opponent):
+    return all(x == 0 for x in you[:BOARD_SIZE]) or all(x == 0 for x in opponent[:BOARD_SIZE])
+
+def evaluate(you, opponent):
+    store_diff = you[BOARD_SIZE] - opponent[BOARD_SIZE]
+    if is_game_end(you, opponent):
+        return store_diff * 999
+    return store_diff
+
+def minimax_me(me, opp, depth, player_me=True):
+    if depth == 0 or is_game_end(me, opp):
+        return evaluate(me, opp)
+    mover = me if player_me else opp
+    opponent = opp if player_me else me
+    legal = [i for i in range(BOARD_SIZE) if mover[i] > 0]
+    if not legal:
+        return evaluate(me, opp)
+    best = -INF if player_me else INF
+    for move in legal:
+        new_mover, new_opponent, extra = apply_move(list(mover), list(opponent), move)
+        if extra:
+            val = minimax_me(new_mover, new_opponent, depth, player_me)
+        else:
+            val = minimax_me(new_mover, new_opponent, depth - 1, not player_me)
+        if player_me:
+            best = max(best, val)
+        else:
+            best = min(best, val)
+    return best
+
+def policy(you, opponent):
+    legal_moves = [i for i in range(BOARD_SIZE) if you[i] > 0]
+    if not legal_moves:
+        return 0  # Should not happen
+    best_move = None
+    best_val = -INF
+    for i in range(BOARD_SIZE):
+        if you[i] > 0:
+            new_you, new_opp, extra = apply_move(list(you), list(opponent), i)
+            if extra:
+                val = minimax_me(new_you, new_opp, DEPTH, True)
+            else:
+                val = minimax_me(new_you, new_opp, DEPTH, False)
+            if val > best_val:
+                best_val = val
+                best_move = i
+    return best_move if best_move is not None else 0
+</code>

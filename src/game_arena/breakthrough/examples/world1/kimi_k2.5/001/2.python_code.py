@@ -1,0 +1,214 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    INF = 1000000
+    
+    # Determine direction and target row based on color
+    if color == 'w':
+        DR = 1
+        TARGET_ROW = 7
+    else:
+        DR = -1
+        TARGET_ROW = 0
+    
+    def to_set(pieces):
+        return set(pieces)
+    
+    def generate_moves(pieces, opp_set, player_color):
+        """Generate all legal moves for player_color given their pieces and opponent set."""
+        moves = []
+        dr = 1 if player_color == 'w' else -1
+        occupied = set(pieces) | opp_set
+        
+        for r, c in pieces:
+            # Straight forward
+            nr, nc = r + dr, c
+            if 0 <= nr < 8 and (nr, nc) not in occupied:
+                moves.append(((r, c), (nr, nc)))
+            
+            # Diagonal left
+            nr, nc = r + dr, c - 1
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                if (nr, nc) in opp_set:
+                    moves.append(((r, c), (nr, nc)))  # Capture
+                elif (nr, nc) not in occupied:
+                    moves.append(((r, c), (nr, nc)))  # Move to empty
+            
+            # Diagonal right
+            nr, nc = r + dr, c + 1
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                if (nr, nc) in opp_set:
+                    moves.append(((r, c), (nr, nc)))  # Capture
+                elif (nr, nc) not in occupied:
+                    moves.append(((r, c), (nr, nc)))  # Move to empty
+        return moves
+    
+    def is_win(pieces, player_color):
+        """Check if player has reached the target row."""
+        if not pieces:
+            return False
+        if player_color == 'w':
+            return any(r == 7 for r, c in pieces)
+        else:
+            return any(r == 0 for r, c in pieces)
+    
+    def evaluate(pieces, opp_pieces, player_color):
+        """Static evaluation from perspective of player_color."""
+        # Win/loss conditions
+        if is_win(pieces, player_color):
+            return INF
+        if is_win(opp_pieces, 'b' if player_color == 'w' else 'w'):
+            return -INF
+        if not opp_pieces:
+            return INF
+        if not pieces:
+            return -INF
+        
+        # Material
+        material = len(pieces) - len(opp_pieces)
+        
+        # Advancement
+        if player_color == 'w':
+            my_adv = sum(r for r, c in pieces)
+            opp_adv = sum((7 - r) for r, c in opp_pieces)  # Opponent is black
+            # Bonus for pieces one step from winning
+            threat = sum(50 for r, c in pieces if r == 6)
+        else:
+            my_adv = sum((7 - r) for r, c in pieces)
+            opp_adv = sum(r for r, c in opp_pieces)  # Opponent is white
+            threat = sum(50 for r, c in pieces if r == 1)
+        
+        return material * 100 + my_adv * 10 - opp_adv * 10 + threat
+    
+    def negamax(pieces, opp_pieces, player_color, depth, alpha, beta):
+        """Negamax search with alpha-beta pruning."""
+        # Terminal checks
+        opp_color = 'b' if player_color == 'w' else 'w'
+        if is_win(opp_pieces, opp_color):
+            return -INF
+        if is_win(pieces, player_color):
+            return INF
+        
+        if depth == 0:
+            return evaluate(pieces, opp_pieces, player_color)
+        
+        opp_set = to_set(opp_pieces)
+        moves = generate_moves(pieces, opp_set, player_color)
+        
+        if not moves:
+            return -INF  # No moves = loss
+        
+        # Move ordering: captures first, then advancement
+        def move_key(m):
+            (_, _), (tr, tc) = m
+            if (tr, tc) in opp_set:
+                return 1000 + (tr if player_color == 'w' else 7-tr)
+            return tr if player_color == 'w' else 7-tr
+        
+        moves.sort(key=move_key, reverse=True)
+        
+        best = -INF
+        for (fr, fc), (tr, tc) in moves:
+            # Apply move
+            new_pieces = [(r, c) for r, c in pieces if (r, c) != (fr, fc)]
+            new_pieces.append((tr, tc))
+            new_opp = [(r, c) for r, c in opp_pieces if (r, c) != (tr, tc)]
+            
+            # Immediate win check
+            if player_color == 'w' and tr == 7:
+                return INF
+            if player_color == 'b' and tr == 0:
+                return INF
+            
+            score = -negamax(new_opp, new_pieces, opp_color, depth - 1, -beta, -alpha)
+            
+            if score > best:
+                best = score
+            if score > alpha:
+                alpha = score
+            if alpha >= beta:
+                break
+        
+        return best
+    
+    def find_best_move(pieces, opp_pieces, player_color, max_depth):
+        """Iterative deepening to find best move."""
+        opp_set = to_set(opp_pieces)
+        moves = generate_moves(pieces, opp_set, player_color)
+        
+        if not moves:
+            return None
+        
+        # Check for immediate win
+        for move in moves:
+            (_, _), (tr, tc) = move
+            if player_color == 'w' and tr == 7:
+                return move
+            if player_color == 'b' and tr == 0:
+                return move
+        
+        # Move ordering for root
+        def move_key(m):
+            (_, _), (tr, tc) = m
+            if (tr, tc) in opp_set:
+                return 1000 + (tr if player_color == 'w' else 7-tr)
+            return tr if player_color == 'w' else 7-tr
+        
+        moves.sort(key=move_key, reverse=True)
+        
+        best_move = moves[0]
+        alpha = -INF
+        beta = INF
+        
+        # Iterative deepening
+        for depth in range(1, max_depth + 1):
+            current_best = best_move
+            current_alpha = -INF
+            
+            for move in moves:
+                (fr, fc), (tr, tc) = move
+                new_pieces = [(r, c) for r, c in pieces if (r, c) != (fr, fc)]
+                new_pieces.append((tr, tc))
+                new_opp = [(r, c) for r, c in opp_pieces if (r, c) != (tr, tc)]
+                
+                # Quick win check
+                if player_color == 'w' and tr == 7:
+                    return move
+                if player_color == 'b' and tr == 0:
+                    return move
+                
+                opp_color = 'b' if player_color == 'w' else 'w'
+                score = -negamax(new_opp, new_pieces, opp_color, depth - 1, -beta, -current_alpha)
+                
+                if score > current_alpha:
+                    current_alpha = score
+                    current_best = move
+                
+                if score >= INF - 100:  # Found winning move
+                    return move
+            
+            if current_best:
+                best_move = current_best
+                alpha = current_alpha
+        
+        return best_move
+    
+    # Determine search depth based on piece count (fewer pieces = deeper search)
+    total_pieces = len(me) + len(opp)
+    if total_pieces > 20:
+        max_depth = 3
+    elif total_pieces > 12:
+        max_depth = 4
+    else:
+        max_depth = 5
+    
+    move = find_best_move(list(me), list(opp), color, max_depth)
+    
+    if move is None:
+        # Fallback to any legal move
+        opp_set = to_set(opp)
+        moves = generate_moves(list(me), opp_set, color)
+        if moves:
+            return moves[0]
+        return ((0,0), (0,0))  # Should never happen in legal game
+    
+    return move

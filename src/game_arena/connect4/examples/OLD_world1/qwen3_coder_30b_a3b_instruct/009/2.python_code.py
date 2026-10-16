@@ -1,0 +1,85 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    # Convert to numpy array for easier manipulation
+    board = np.array(board)
+    rows, cols = board.shape
+    
+    # Check for winning move
+    for col in range(cols):
+        if is_valid_move(board, col):
+            # Try dropping our disc
+            temp_board = board.copy()
+            drop_disc(temp_board, col, 1)
+            if check_winner(temp_board) == 1:
+                return col
+    
+    # Check for blocking opponent's winning move
+    for col in range(cols):
+        if is_valid_move(board, col):
+            # Try dropping opponent's disc
+            temp_board = board.copy()
+            drop_disc(temp_board, col, -1)
+            if check_winner(temp_board) == -1:
+                return col
+    
+    # Prefer center columns
+    center_cols = [3, 2, 4, 1, 5, 0, 6]
+    for col in center_cols:
+        if is_valid_move(board, col):
+            return col
+    
+    # Fallback: choose first valid column
+    for col in range(cols):
+        if is_valid_move(board, col):
+            return col
+
+def is_valid_move(board, col):
+    """Check if a move is valid (column not full)"""
+    return board[0][col] == 0
+
+def drop_disc(board, col, player):
+    """Drop a disc in the specified column"""
+    for row in range(len(board) - 1, -1, -1):
+        if board[row][col] == 0:
+            board[row][col] = player
+            break
+
+def check_winner(board):
+    """Check if there's a winner on the board"""
+    rows, cols = board.shape
+    
+    # Check horizontal
+    for row in range(rows):
+        for col in range(cols - 3):
+            if all(board[row][col + i] == 1 for i in range(4)):
+                return 1
+            elif all(board[row][col + i] == -1 for i in range(4)):
+                return -1
+    
+    # Check vertical
+    for row in range(rows - 3):
+        for col in range(cols):
+            if all(board[row + i][col] == 1 for i in range(4)):
+                return 1
+            elif all(board[row + i][col] == -1 for i in range(4)):
+                return -1
+    
+    # Check diagonal (top-left to bottom-right)
+    for row in range(rows - 3):
+        for col in range(cols - 3):
+            if all(board[row + i][col + i] == 1 for i in range(4)):
+                return 1
+            elif all(board[row + i][col + i] == -1 for i in range(4)):
+                return -1
+    
+    # Check diagonal (top-right to bottom-left)
+    for row in range(rows - 3):
+        for col in range(3, cols):
+            if all(board[row + i][col - i] == 1 for i in range(4)):
+                return 1
+            elif all(board[row + i][col - i] == -1 for i in range(4)):
+                return -1
+    
+    return 0  # No winner

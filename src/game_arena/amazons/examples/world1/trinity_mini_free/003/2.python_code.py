@@ -1,0 +1,130 @@
+
+import numpy as np
+
+def policy(board):
+    # Helper functions
+    def get_moves(pos, board):
+        moves = []
+        directions = [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]
+        for dr, dc in directions:
+            step = 1
+            while True:
+                r, c = pos[0] + dr*step, pos[1] + dc*step
+                if not (0 <= r < 6 and 0 <= c < 6):
+                    break
+                if board[r][c] != 0:
+                    break
+                moves.append((r, c))
+                step += 1
+        return moves
+
+    def generate_moves(board):
+        moves = []
+        for r in range(6):
+            for c in range(6):
+                if board[r][c] == 1:  # My amazon
+                    for dr, dc in [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                        step = 1
+                        while True:
+                            nr, nc = r + dr*step, c + dc*step
+                            if not (0 <= nr < 6 and 0 <= nc < 6):
+                                break
+                            if board[nr][nc] != 0:
+                                break
+                            # Valid move
+                            moves.append((r, c, nr, nc))
+                            step += 1
+        return moves
+
+    def evaluate(board):
+        my_amazons = np.sum(board == 1)
+        opp_amazons = np.sum(board == 2)
+        center_control = 0
+        for r in [2,3]:
+            for c in [2,3]:
+                if board[r][c] == 1:
+                    center_control += 1
+                elif board[r][c] == 2:
+                    center_control -= 1
+        moves = generate_moves(board)
+        return (my_amazons * 2 - opp_amazons * 3 + center_control * 5 + len(moves) * 10)
+
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        if depth == 0:
+            return evaluate(board), None
+        moves = generate_moves(board)
+        if not moves:
+            return -float('inf'), None
+        if maximizing_player:
+            value = -float('inf')
+            best_move = None
+            for move in moves:
+                r1, c1, r2, c2 = move
+                # Simulate move
+                board[r1][c1] = 0
+                board[r2][c2] = 1
+                # Arrow shot
+                dr, dc = r2 - r1, c2 - c1
+                step = 1
+                while True:
+                    ar, ac = r2 + dr*step, c2 + dc*step
+                    if not (0 <= ar < 6 and 0 <= ac < 6):
+                        break
+                    if board[ar][ac] != 0:
+                        break
+                    board[ar][ac] = -1
+                    step += 1
+                # Recursive call
+                new_val, _ = minimax(board, depth-1, alpha, beta, False)
+                value = max(value, new_val)
+                alpha = max(alpha, value)
+                board[ar][ac] = 0  # Undo arrow
+                board[r2][c2] = 0
+                board[r1][c1] = 1
+                if beta <= alpha:
+                    break
+            return value, best_move
+        else:
+            value = float('inf')
+            best_move = None
+            for move in moves:
+                r1, c1, r2, c2 = move
+                board[r1][c1] = 0
+                board[r2][c2] = 2
+                dr, dc = r2 - r1, c2 - c1
+                step = 1
+                while True:
+                    ar, ac = r2 + dr*step, c2 + dc*step
+                    if not (0 <= ar < 6 and 0 <= ac < 6):
+                        break
+                    if board[ar][ac] != 0:
+                        break
+                    board[ar][ac] = -1
+                    step += 1
+                new_val, _ = minimax(board, depth-1, alpha, beta, True)
+                value = min(value, new_val)
+                beta = min(beta, value)
+                board[ar][ac] = 0
+                board[r2][c2] = 0
+                board[r1][c1] = 2
+                if beta <= alpha:
+                    break
+            return value, best_move
+
+    # Main policy function
+    moves = generate_moves(board)
+    if not moves:
+        return None
+    best_val, best_move = minimax(board, 3, -float('inf'), float('inf'), True)
+    r1, c1, r2, c2 = best_move
+    dr, dc = r2 - r1, c2 - c1
+    step = 1
+    while True:
+        ar, ac = r2 + dr*step, c2 + dc*step
+        if not (0 <= ar < 6 and 0 <= ac < 6):
+            break
+        if board[ar][ac] != 0:
+            break
+        board[ar][ac] = -1
+        step += 1
+    return f"{r1},{c1}:{r2},{c2}:{ar},{ac}"

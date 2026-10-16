@@ -1,0 +1,356 @@
+
+import numpy as np
+import time
+import random
+from collections import deque
+
+def policy(me, opp, valid_mask):
+    valid_mask = np.array(valid_mask)
+    N = valid_mask.shape[0]  # 15 for size-8 Havannah (board_size=8, N=2*8-1=15)
+    board_size = (N + 1) // 2  # 8
+    
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+    
+    valid_moves = [(r, c) for r in range(N) for c in range(N) if valid_mask[r][c] and (r, c) not in occupied]
+    
+    if not valid_moves:
+        # Fallback: return any valid cell
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c]:
+                    return (r, c)
+    
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+    
+    def neighbors(r, c):
+        """Get 6 hex neighbors in the offset grid representation."""
+        return [(r-1, c), (r+1, c), (r-1, c-1), (r, c-1), (r+1, c+1), (r, c+1)]
+    
+    def valid_neighbors(r, c):
+        return [(nr, nc) for nr, nc in neighbors(r, c) if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]]
+    
+    # Identify corners and edges
+    # For a hex board of size board_size stored in NxN grid:
+    # The 6 corners of the hex board
+    corners = set()
+    edges = {}  # cell -> edge_id (0-5), corners excluded
+    
+    # The hex board valid cells: row r has columns from max(0, r-(board_size-1)) to min(N-1, r+(board_size-1))
+    # Corner cells are the 6 vertices of the hexagon
+    # Top-left: (0, 0)
+    # Top-right: (0, board_size-1)
+    # Left: (board_size-1, 0)
+    # Right: (board_size-1, N-1)
+    # Bottom-left: (N-1, board_size-1)  wait let me think more carefully
+    
+    # For board_size=8, N=15:
+    # Row 0: cols 0..7 (8 cells)
+    # Row 1: cols 0..8 (9 cells)
+    # ...
+    # Row 7: cols 0..14 (15 cells)
+    # Row 8: cols 1..14 (14 cells)
+    # ...
+    # Row 14: cols 7..14 (8 cells)
+    
+    bs = board_size  # 8
+    
+    corner_list = [
+        (0, 0),           # top-left
+        (0, bs-1),        # top-right
+        (bs-1, 0),        # mid-left
+        (bs-1, N-1),      # mid-right
+        (N-1, N-1),       # bottom-right
+        (N-1, bs-1),      # bottom-left
+    ]
+    corners = set(corner_list)
+    
+    # Edges (excluding corners):
+    # Edge 0: top edge - row 0, cols 1..bs-2
+    # Edge 1: upper-right edge - rows 1..bs-2, last col in each row
+    # Edge 2: lower-right edge - rows bs..N-2, col N-1
+    # Edge 3: bottom edge - row N-1, cols bs..N-2
+    # Edge 4: lower-left edge - rows bs..N-2, first col in each row
+    # Edge 5: upper-left edge - rows 1..bs-2, col 0
+    
+    edge_cells = {i: set() for i in range(6)}
+    
+    # Edge 0: top row (row 0), cols 1 to bs-2
+    for c in range(1, bs-1):
+        edge_cells[0].add((0, c))
+    
+    # Edge 1: upper-right diagonal, rows 1..bs-2
+    for r in range(1, bs-1):
+        c = r + bs - 1
+        if 0 <= c < N and valid_mask[r][c]:
+            edge_cells[1].add((r, c))
+    
+    # Edge 2: lower-right, rows bs..N-2, col N-1
+    for r in range(bs, N-1):
+        edge_cells[2].add((r, N-1))
+    
+    # Edge 3: bottom row (row N-1), cols bs to N-2
+    for c in range(bs, N-1):
+        edge_cells[3].add((r, c))
+    # Fix: row is N-1
+    edge_cells[3] = set()
+    for c in range(bs, N-1):
+        edge_cells[3].add((N-1, c))
+    
+    # Edge 4: lower-left diagonal, rows bs..N-2
+    for r in range(bs, N-1):
+        c = r - bs + 1
+        if 0 <= c < N and valid_mask[r][c]:
+            edge_cells[4].add((r, c))
+    
+    # Edge 5: upper-left, rows 1..bs-2, col 0
+    for r in range(1, bs-1):
+        edge_cells[5].add((r, 0))
+    
+    cell_edge = {}  # cell -> edge_id
+    for eid, cells in edge_cells.items():
+        for cell in cells:
+            cell_edge[cell] = eid
+    
+    cell_corner = {}  # cell -> corner_id
+    for i, c in enumerate(corner_list):
+        cell_corner[c] = i
+    
+    def get_components(stones_set):
+        """Find connected components using BFS."""
+        visited = set()
+        components = []
+        for s in stones_set:
+            if s in visited:
+                continue
+            comp = set()
+            queue = deque([s])
+            visited.add(s)
+            while queue:
+                node = queue.popleft()
+                comp.add(node)
+                for nb in neighbors(*node):
+                    if nb in stones_set and nb not in visited:
+                        visited.add(nb)
+                        queue.append(nb)
+            components.append(comp)
+        return components
+    
+    def component_touches(comp):
+        """Return (set of edge_ids, set of corner_ids) touched by component."""
+        e = set()
+        co = set()
+        for cell in comp:
+            if cell in cell_edge:
+                e.add(cell_edge[cell])
+            if cell in cell_corner:
+                co.add(cell_corner[cell])
+        return e, co
+    
+    def has_ring(comp):
+        """Check if component forms a ring (cycle enclosing at least one cell)."""
+        if len(comp) < 6:
+            return False
+        # A ring exists if there's a cycle in the component graph
+        # More precisely: check if any empty cell (or opponent cell) is fully surrounded
+        # Simpler check: component has a cycle if |edges| > |nodes| - 1
+        # Count edges in the component
+        edge_count = 0
+        for cell in comp:
+            for nb in neighbors(*cell):
+                if nb in comp:
+                    edge_count += 1
+        edge_count //= 2
+        # If edges >= nodes, there's a cycle
+        if edge_count >= len(comp):
+            # Verify it actually encloses something using flood fill from outside
+            # Find all cells not in comp, flood fill from a border cell
+            # If any valid cell is unreachable, it's enclosed
+            all_valid = set()
+            for r in range(N):
+                for c in range(N):
+                    if valid_mask[r][c]:
+                        all_valid.add((r, c))
+            non_comp = all_valid - comp
+            if not non_comp:
+                return False
+            # Find a border cell not in comp to start flood fill
+            border_cells = []
+            for r in range(N):
+                for c in range(N):
+                    if valid_mask[r][c] and (r, c) not in comp:
+                        # Check if it's on the board border
+                        is_border = False
+                        n_count = sum(1 for nr, nc in neighbors(r, c) if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc])
+                        if n_count < 6:
+                            is_border = True
+                        if is_border:
+                            border_cells.append((r, c))
+            
+            if not border_cells:
+                return True  # All non-comp cells are enclosed
+            
+            visited = set()
+            queue = deque(border_cells)
+            for b in border_cells:
+                visited.add(b)
+            while queue:
+                node = queue.popleft()
+                for nb in neighbors(*node):
+                    if nb in non_comp and nb not in visited:
+                        visited.add(nb)
+                        queue.append(nb)
+            
+            unreachable = non_comp - visited
+            if unreachable:
+                return True
+        return False
+    
+    def check_win(stones_set):
+        """Check if stones_set has a winning configuration."""
+        comps = get_components(stones_set)
+        for comp in comps:
+            e, co = component_touches(comp)
+            # Bridge: connects 2 corners
+            if len(co) >= 2:
+                return True
+            # Fork: connects 3 edges
+            if len(e) >= 3:
+                return True
+            # Ring
+            if has_ring(comp):
+                return True
+        return False
+    
+    def check_win_fast(stones_set):
+        """Faster win check without ring detection."""
+        comps = get_components(stones_set)
+        for comp in comps:
+            e, co = component_touches(comp)
+            if len(co) >= 2:
+                return True
+            if len(e) >= 3:
+                return True
+        return False
+    
+    # 1. Check for immediate winning moves
+    for move in valid_moves:
+        new_me = me_set | {move}
+        if check_win_fast(new_me):
+            return move
+    
+    # 2. Check for opponent winning moves (block them)
+    blocking_moves = []
+    for move in valid_moves:
+        new_opp = opp_set | {move}
+        if check_win_fast(new_opp):
+            blocking_moves.append(move)
+    
+    if len(blocking_moves) == 1:
+        return blocking_moves[0]
+    elif len(blocking_moves) > 1:
+        # Multiple threats - we might be losing, but try to block the best one
+        # and also check if any blocking move wins for us
+        pass
+    
+    # Heuristic evaluation for move ordering
+    def evaluate_move(move):
+        r, c = move
+        score = 0.0
+        
+        # Connectivity to own stones
+        my_neighbors = sum(1 for nb in neighbors(r, c) if nb in me_set)
+        opp_neighbors = sum(1 for nb in neighbors(r, c) if nb in opp_set)
+        score += my_neighbors * 3.0
+        
+        # Block opponent connections
+        score += opp_neighbors * 1.5
+        
+        # Edge/corner value
+        if move in corners:
+            score += 4.0
+        if move in cell_edge:
+            score += 2.0
+        
+        # Center proximity
+        center = N // 2
+        dist = abs(r - center) + abs(c - center)
+        score += max(0, (N - dist)) * 0.3
+        
+        # Check if move connects two separate components of mine
+        my_adj_comps = set()
+        for nb in neighbors(r, c):
+            if nb in me_set:
+                # Find which component this neighbor belongs to
+                for i, comp in enumerate(my_components):
+                    if nb in comp:
+                        my_adj_comps.add(i)
+                        break
+        if len(my_adj_comps) >= 2:
+            # Check combined edge/corner touches
+            combined_edges = set()
+            combined_corners = set()
+            for ci in my_adj_comps:
+                e, co = my_comp_info[ci]
+                combined_edges |= e
+                combined_corners |= co
+            if move in cell_edge:
+                combined_edges.add(cell_edge[move])
+            if move in cell_corner:
+                combined_corners.add(cell_corner[move])
+            if len(combined_corners) >= 2:
+                score += 50.0  # Near bridge
+            if len(combined_edges) >= 3:
+                score += 50.0  # Near fork
+            score += len(my_adj_comps) * 8.0
+        
+        # Check how many edges/corners this extends to
+        if my_adj_comps:
+            ci = list(my_adj_comps)[0]
+            e, co = my_comp_info[ci]
+            new_e = set(e)
+            new_co = set(co)
+            if move in cell_edge:
+                new_e.add(cell_edge[move])
+            if move in cell_corner:
+                new_co.add(cell_corner[move])
+            if len(new_co) >= 2 and len(co) < 2:
+                score += 30.0
+            if len(new_e) >= 3 and len(e) < 3:
+                score += 30.0
+            if len(new_e) > len(e):
+                score += 5.0
+            if len(new_co) > len(co):
+                score += 5.0
+        
+        # Priority for blocking moves
+        if move in blocking_moves:
+            score += 20.0
+        
+        return score
+    
+    # Compute my components and their info
+    my_components = get_components(me_set)
+    my_comp_info = []
+    for comp in my_components:
+        my_comp_info.append(component_touches(comp))
+    
+    opp_components = get_components(opp_set)
+    opp_comp_info = []
+    for comp in opp_components:
+        opp_comp_info.append(component_touches(comp))
+    
+    # Score all moves
+    move_scores = [(evaluate_move(m), m) for m in valid_moves]
+    move_scores.sort(key=lambda x: -x[0])
+    
+    # If early game, prefer center
+    if len(me) == 0:
+        center = N // 2
+        if valid_mask[center][center] and (center, center) not in occupied:
+            return (center, center)
+    
+    # Return best scored move
+    return move_scores[0][1]

@@ -1,0 +1,225 @@
+The strategy employs a depth-limited minimax search with alpha‑beta pruning (depth 5) to look ahead several ply.  
+All legal moves are generated on an 8×8 board representation. Captures are mandatory; if several capture sequences are possible the engine restricts itself to those that capture the maximum number of pieces (standard checkers rule). Multi‑jump captures are fully explored with a depth‑first search that handles king promotion during the turn.  
+The evaluation function scores material (men = 100, kings = 180), rewards advancement toward the king row, gives a small bonus for kings near the center, and protects the back rank. This combination produces strong tactical play while staying well within the 1 second time limit.
+
+<code>
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    # Board codes: 0 empty, 1 b_man, 2 b_king, 3 w_man, 4 w_king
+    board = [0] * 64
+    if color == 'b':
+        for r, c in my_men: board[r * 8 + c] = 1
+        for r, c in my_kings: board[r * 8 + c] = 2
+        for r, c in opp_men: board[r * 8 + c] = 3
+        for r, c in opp_kings: board[r * 8 + c] = 4
+        opp_color = 'w'
+    else:
+        for r, c in my_men: board[r * 8 + c] = 3
+        for r, c in my_kings: board[r * 8 + c] = 4
+        for r, c in opp_men: board[r * 8 + c] = 1
+        for r, c in opp_kings: board[r * 8 + c] = 2
+        opp_color = 'b'
+
+    # Directions
+    DIRS_BMAN = [(-1, -1), (-1, 1)]
+    DIRS_WMAN = [(1, -1), (1, 1)]
+    DIRS_KING = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    def piece_dirs(p):
+        if p == 1:
+            return DIRS_BMAN
+        if p == 2:
+            return DIRS_KING
+        if p == 3:
+            return DIRS_WMAN
+        if p == 4:
+            return DIRS_KING
+        return []
+
+    def opposite(col):
+        return 'w' if col == 'b' else 'b'
+
+    # Recursive capture search
+    def explore_captures(r, c, is_king, turn_col, captured):
+        res = []
+        found = False
+        dirs = DIRS_KING if is_king else (DIRS_BMAN if turn_col == 'b' else DIRS_WMAN)
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if not (0 <= nr < 8 and 0 <= nc < 8):
+                continue
+            nidx = nr * 8 + nc
+            p = board[nidx]
+            # Must be opponent piece not yet captured
+            if turn_col == 'b':
+                if p not in (3, 4):
+                    continue
+            else:
+                if p not in (1, 2):
+                    continue
+            if nidx in captured:
+                continue
+            jr, jc = r + 2 * dr, c + 2 * dc
+            if not (0 <= jr < 8 and 0 <= jc < 8):
+                continue
+            jidx = jr * 8 + jc
+            if board[jidx] != 0:
+                continue
+            found = True
+            new_cap = captured | {nidx}
+            new_king = is_king
+            if not is_king:
+                if (turn_col == 'b' and jr == 0) or (turn_col == 'w' and jr == 7):
+                    new_king = True
+            subs = explore_captures(jr, jc, new_king, turn_col, new_cap)
+            if subs:
+                res.extend(subs)
+            else:
+                res.append((jr, jc, new_cap))
+        return res
+
+    def generate_moves(brd, turn_col):
+        captures = []
+        max_cap = 0
+        # Search for captures
+        for r in range(8):
+            for c in range(8):
+                idx = r * 8 + c
+                p = brd[idx]
+                if turn_col == 'b':
+                    if p not in (1, 2):
+                        continue
+                else:
+                    if p not in (3, 4):
+                        continue
+                is_k = p in (2, 4)
+                caps = explore_captures(r, c, is_k, turn_col, set())
+                for fr, fc, cap_set in caps:
+                    cnt = len(cap_set)
+                    if cnt > max_cap:
+                        max_cap = cnt
+                    captures.append((idx, fr * 8 + fc, list(cap_set)))
+        if captures:
+            # keep only max capture moves
+            best = [m for m in captures if len(m[2]) == max_cap]
+            return best
+        # Simple moves
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                idx = r * 8 + c
+                p = brd[idx]
+                if turn_col == 'b':
+                    if p not in (1, 2):
+                        continue
+                else:
+                    if p not in (3, 4):
+                        continue
+                for dr, dc in piece_dirs(p):
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and brd[nr * 8 + nc] == 0:
+                        moves.append((idx, nr * 8 + nc, []))
+        return moves
+
+    def apply_move(brd, move, turn_col):
+        f, t, caps = move
+        new_b = brd[:]
+        piece = new_b[f]
+        new_b[f] = 0
+        for cap in caps:
+            new_b[cap] = 0
+        # Promotion
+        tr = t // 8
+        if piece == 1 and turn_col == 'b' and tr == 0:
+            piece = 2
+        elif piece == 3 and turn_col == 'w' and tr == 7:
+            piece = 4
+        new_b[t] = piece
+        return new_b
+
+    def evaluate(brd, my_col):
+        score = 0
+        for idx in range(64):
+            p = brd[idx]
+            if p == 0:
+                continue
+            r = idx // 8
+            c = idx % 8
+            if my_col == 'b':
+                if p == 1:
+                    score += 100 + (7 - r) * 5
+                    if r == 7:
+                        score += 10
+                elif p == 2:
+                    score += 180 + (3 - abs(3.5 - c)) * 2
+                elif p == 3:
+                    score -= 100 + r * 5
+                    if r == 0:
+                        score -= 10
+                elif p == 4:
+                    score -= 180 + (3 - abs(3.5 - c)) * 2
+            else:
+                if p == 3:
+                    score += 100 + r * 5
+                    if r == 0:
+                        score += 10
+                elif p == 4:
+                    score += 180 + (3 - abs(3.5 - c)) * 2
+                elif p == 1:
+                    score -= 100 + (7 - r) * 5
+                    if r == 7:
+                        score -= 10
+                elif p == 2:
+                    score -= 180 + (3 - abs(3.5 - c)) * 2
+        return score
+
+    # Minimax with alpha-beta, depth 5
+    def minimax(brd, turn_col, depth, alpha, beta, maximizing, root_col):
+        if depth == 0:
+            return evaluate(brd, root_col)
+        moves = generate_moves(brd, turn_col)
+        if not moves:
+            return -1000000 if maximizing else 1000000
+        if maximizing:
+            val = -10**9
+            for m in moves:
+                nb = apply_move(brd, m, turn_col)
+                v = minimax(nb, opposite(turn_col), depth - 1, alpha, beta, False, root_col)
+                if v > val:
+                    val = v
+                if val > alpha:
+                    alpha = val
+                if beta <= alpha:
+                    break
+            return val
+        else:
+            val = 10**9
+            for m in moves:
+                nb = apply_move(brd, m, turn_col)
+                v = minimax(nb, opposite(turn_col), depth - 1, alpha, beta, True, root_col)
+                if v < val:
+                    val = v
+                if val < beta:
+                    beta = val
+                if beta <= alpha:
+                    break
+            return val
+
+    # Root search
+    root_moves = generate_moves(board, color)
+    if not root_moves:
+        # Should not happen; return dummy to satisfy API
+        return ((0, 0), (0, 0))
+    best_move = root_moves[0]
+    best_val = -10**9
+    for m in root_moves:
+        nb = apply_move(board, m, color)
+        v = minimax(nb, opposite(color), 4, -10**9, 10**9, False, color)  # depth 5 total (4 after root)
+        if v > best_val:
+            best_val = v
+            best_move = m
+
+    fidx, tidx, _ = best_move
+    fr, fc = divmod(fidx, 8)
+    tr, tc = divmod(tidx, 8)
+    return ((fr, fc), (tr, tc))
+</code>

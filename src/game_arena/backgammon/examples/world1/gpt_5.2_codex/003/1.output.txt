@@ -1,0 +1,174 @@
+The strategy for this policy is to always generate all legal moves based on the current dice, respect bar and bearing‑off rules, and prioritize sequences that use both dice whenever possible. It uses a heuristic to choose among legal moves, favoring hits, reducing pip count, bearing off, and keeping own checkers safe. If only one die can be played, it uses the higher die whenever legal, otherwise the lower die, otherwise passes.
+
+<code>
+import random
+from copy import deepcopy
+
+def policy(state: dict) -> str:
+    dice = state.get('dice', [])
+    if not dice:
+        return "H:P,P"
+    if len(dice) == 1:
+        die = dice[0]
+        moves = legal_froms(state, die)
+        if not moves:
+            return "H:P,P"
+        best_from = choose_best_single(state, die, moves)
+        return f"H:{from_token(best_from)},P"
+    # two dice
+    dH = max(dice)
+    dL = min(dice)
+
+    sequences = []
+    sequences += generate_sequences(state, dH, dL, 'H')
+    sequences += generate_sequences(state, dL, dH, 'L')
+
+    if sequences:
+        best = max(sequences, key=lambda x: evaluate_state(x[3]))
+        order, f1, f2, _ = best
+        return f"{order}:{from_token(f1)},{from_token(f2)}"
+
+    # no way to play both dice: must play higher if possible
+    movesH = legal_froms(state, dH)
+    if movesH:
+        best_from = choose_best_single(state, dH, movesH)
+        return f"H:{from_token(best_from)},P"
+    movesL = legal_froms(state, dL)
+    if movesL:
+        best_from = choose_best_single(state, dL, movesL)
+        return f"L:{from_token(best_from)},P"
+    return "H:P,P"
+
+def choose_best_single(state, die, moves):
+    best = None
+    best_score = -1e9
+    for f in moves:
+        st = apply_move(state, f, die)
+        if st is None:
+            continue
+        sc = evaluate_state(st)
+        if sc > best_score:
+            best_score = sc
+            best = f
+    return best if best is not None else moves[0]
+
+def generate_sequences(state, d1, d2, order_tag):
+    seqs = []
+    for f1 in legal_froms(state, d1):
+        st1 = apply_move(state, f1, d1)
+        if st1 is None:
+            continue
+        for f2 in legal_froms(st1, d2):
+            st2 = apply_move(st1, f2, d2)
+            if st2 is None:
+                continue
+            seqs.append((order_tag, f1, f2, st2))
+    return seqs
+
+def legal_froms(state, die):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    if my_bar > 0:
+        dest = 24 - die
+        if dest < 0 or dest > 23:
+            return []
+        if opp_pts[dest] >= 2:
+            return []
+        return ['B']
+    legal = []
+    for i in range(24):
+        if my_pts[i] <= 0:
+            continue
+        if can_move_from(state, i, die):
+            legal.append(i)
+    return legal
+
+def can_move_from(state, i, die):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    dest = i - die
+    if dest >= 0:
+        return opp_pts[dest] < 2
+    # bearing off
+    if not all_in_home(state):
+        return False
+    # exact
+    if die == i + 1:
+        return True
+    if die > i + 1:
+        # only if no checkers on higher points
+        for j in range(i + 1, 6):
+            if my_pts[j] > 0:
+                return False
+        return True
+    return False
+
+def all_in_home(state):
+    if state['my_bar'] > 0:
+        return False
+    return sum(state['my_pts'][6:]) == 0
+
+def apply_move(state, frm, die):
+    st = {
+        'my_pts': state['my_pts'][:],
+        'opp_pts': state['opp_pts'][:],
+        'my_bar': state['my_bar'],
+        'opp_bar': state['opp_bar'],
+        'my_off': state['my_off'],
+        'opp_off': state['opp_off'],
+    }
+    if frm == 'B':
+        if st['my_bar'] <= 0:
+            return None
+        dest = 24 - die
+        if dest < 0 or dest > 23:
+            return None
+        if st['opp_pts'][dest] >= 2:
+            return None
+        st['my_bar'] -= 1
+        if st['opp_pts'][dest] == 1:
+            st['opp_pts'][dest] -= 1
+            st['opp_bar'] += 1
+        st['my_pts'][dest] += 1
+        return st
+    # normal move
+    i = frm
+    if i < 0 or i > 23 or st['my_pts'][i] <= 0:
+        return None
+    dest = i - die
+    if dest >= 0:
+        if st['opp_pts'][dest] >= 2:
+            return None
+        st['my_pts'][i] -= 1
+        if st['opp_pts'][dest] == 1:
+            st['opp_pts'][dest] -= 1
+            st['opp_bar'] += 1
+        st['my_pts'][dest] += 1
+        return st
+    # bearing off
+    if not can_move_from(state, i, die):
+        return None
+    st['my_pts'][i] -= 1
+    st['my_off'] += 1
+    return st
+
+def evaluate_state(state):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    pip = sum((i + 1) * my_pts[i] for i in range(24)) + state['my_bar'] * 25
+    opp_pip = sum((24 - i) * opp_pts[i] for i in range(24)) + state['opp_bar'] * 25
+    made_points = sum(1 for i in range(24) if my_pts[i] >= 2)
+    score = -pip + 0.3 * opp_pip
+    score += 20 * state['my_off'] - 20 * state['opp_off']
+    score += 8 * state['opp_bar'] - 8 * state['my_bar']
+    score += 0.5 * made_points
+    return score
+
+def from_token(f):
+    if f == 'B':
+        return "B"
+    if f == 'P':
+        return "P"
+    return f"A{f}"
+</code>

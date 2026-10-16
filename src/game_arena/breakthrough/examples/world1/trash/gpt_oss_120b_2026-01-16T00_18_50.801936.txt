@@ -1,0 +1,147 @@
+**Strategy Overview**
+
+The policy follows a simple but effective heuristic for Breakthrough:
+
+1. **Generate all legal moves** for the current player, including forward moves, diagonal moves, and captures.
+2. **Detect immediate winning moves** – any move that reaches the opponent’s home row (row 7 for Black, row 0 for White) is chosen instantly.
+3. **Score every legal move** with a lightweight evaluation:
+   * **Capture bonus** – captures are strongly preferred.
+   * **Progress bonus** – moving to a higher row for Black (or lower row for White) is rewarded.
+   * **Centralisation** – staying near the centre (columns 3‑4) is slightly favoured.
+   * **Safety penalty** – moving onto a square that can be captured by the opponent on their next turn is discouraged.
+4. **Select the move with the highest score**.  
+   The evaluation is deliberately fast, guaranteeing sub‑second runtime while still providing solid play that beats naïve random or purely forward‑only policies.
+
+The implementation is self‑contained, uses only the Python standard library, and always returns a legal move.
+
+```python
+<code>
+#!/usr/bin/env python3
+"""
+Breakthrough policy for an 8x8 board.
+
+The function `policy(me, opp, color)` receives the list of our pieces,
+the list of opponent pieces, and our colour ('b' for black, 'w' for white).
+It returns a legal move ((from_row, from_col), (to_row, to_col)).
+The policy uses a lightweight heuristic:
+    * immediate winning move → take it
+    * capture moves are valuable
+    * advancing towards the opponent’s Bols row is rewarded
+    * staying near the centre is a small bonus
+    * moving onto a square that can be captured next turn is penalised
+The move with the highest score is returned.
+"""
+
+from typing import List, Tuple, Set
+
+Position = Tuple[int, int]
+Move = Tuple[Position, Position]
+
+def _all_legal_moves(me: List[Position],
+                     opp: List[Position],
+                     color: str) -> List[Tuple[Move, bool]]:
+    """
+    Returns a list of ((src, dst), is_capture) for all legal moves.
+    """
+    direction = 1 if color == 'b' else -1   # Black moves +row, White moves -row
+    occupied: Set[Position] = set(me) | set(opp)
+    opp_set: Set[Position] = set(opp)
+
+    moves: List[Tuple[Move, bool]] = []
+
+    for r, c in me:
+        fr = r + direction
+        if not (0 <= fr <= 7):
+            continue  # cannot move off the board
+
+        # Straight forward
+        if (fr, c) not in occupied:
+            moves.append(((r, c), (fr, c)), False)
+
+        # Diagonal left
+        fc = c - 1
+        if 0 <= fc <= 7:
+            if (fr, fc) in opp_set:
+                moves.append(((r, c), (fr, fc)), True)   # capture
+            elif (fr, fc) not in occupied:
+                moves.append(((r, c), (fr, fc)), False)
+
+        # Diagonal right
+        fc = c + 1
+        if 0 <= fc <= 7:
+            if (fr, fc) in opp_set:
+                moves.append(((r, c), (fr, fc)), True)   # capture
+            elif (fr, fc) not in occupied:
+                moves.append(((r, c), (fr, fc)), False)
+
+    return moves
+
+
+def _danger_to_square(square: Position,
+                     opp: List[Position],
+                     opp_dir: int) -> bool:
+    """
+    Returns True if the opponent could capture `square` on its next move.
+    """
+    r, c = square
+    # opponent captures by moving one step forward (their direction) and
+    # one diagonal column.
+    possible_attackers = [
+        (r - opp_dir, c - 1),
+        (r - opp_dir, c + 1)
+    ]
+    opp_set = set(opp)
+    return any(p in opp_set for p in possible_attackers)
+
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Choose a move for the current player.
+    """
+    direction = 1 if color == 'b' else -1猜
+    opp_dir = -direction
+
+    # 1. Generate all legal moves
+    moves_with_capture = _all_legal_moves(me, opp, color)
+
+    # 2. Immediate win check
+    home_row = 7 if color == 'b' else 0
+    for (src, dst), is_cap in moves_with_capture:
+        if dst[0] == home_row:
+            #ықәса win immediately
+            return src, dst
+
+    # 3. Score each move
+    best_score = -float('inf')
+    best_move: Move = moves_with_capture[0][0]  # fallback
+
+    for (src, dst), is_cap in moves_with_capture:
+        score = 0.0
+
+        # capture bonus
+        if is_cap:
+            score += 10.0
+
+        # progress towards opponent home row
+        progress = (dst[0] - src[0]) * direction  # 1 for a forward step
+        score += 3.0 * progress
+
+        # centralisation – columns 3 and 4 are most central
+        col_dist = min(abs(dst[1] - 3), abs(dst[1] - 4))
+        score += 1.0 - 0.2 * col_dist  # up to +1 for centre
+
+        # safety penalty – avoid moving onto a square opponent can capture next turn
+        if _danger_to_square(dst, opp, opp_dir):
+            score -= 4.0
+
+        if score > best_score:
+            best_score = score
+            best_move = (src, dst)
+
+    return best_move
+</code>
+```
+
+The policy is deterministic, always returns a legal move, and balances aggression (captures and advancement)נוע with basic safety considerations, giving it a solid edge over trivial opponents.

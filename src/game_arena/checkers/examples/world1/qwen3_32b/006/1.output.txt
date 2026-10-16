@@ -1,0 +1,110 @@
+The strategy for this policy is to prioritize captures, especially those that remove the maximum number of opponent pieces. If no captures are available, the policy chooses non-capturing moves that advance pieces toward the king row (closer to promotion), with ties broken by preferring moves toward the center of the board. The implementation uses recursive exploration of capture sequences and evaluates all possible legal moves efficiently within the time limit.
+
+<code>
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    my_pieces = set(my_men + my_kings)
+    opp_pieces = set(opp_men + opp_kings)
+    all_captures = []
+
+    def get_capture_directions(piece_type):
+        if color == 'b':
+            if piece_type == 'man':
+                return [(-2, -2), (-2, 2)]
+            else:
+                return [(-2, -2), (-2, 2), (2, -2), (2, 2)]
+        else:
+            if piece_type == 'man':
+                return [(2, -2), (2, 2)]
+            else:
+                return [(-2, -2), (-2, 2), (2, -2), (2, 2)]
+
+    def find_all_captures(r, c, piece_type, my_pieces, opp_pieces):
+        directions = get_capture_directions(piece_type)
+        captures = []
+        for dr, dc in directions:
+            new_r = r + dr
+            new_c = c + dc
+            if not (0 <= new_r < 8 and 0 <= new_c < 8):
+                continue
+            if (new_r, new_c) in my_pieces or (new_r, new_c) in opp_pieces:
+                continue
+            mid_r = r + dr // 2
+            mid_c = c + dc // 2
+            if (mid_r, mid_c) not in opp_pieces:
+                continue
+            new_opp_pieces = opp_pieces.copy()
+            new_opp_pieces.remove((mid_r, mid_c))
+            recursive_captures = find_all_captures(new_r, new_c, piece_type, my_pieces, new_opp_pieces)
+            if not recursive_captures:
+                captures.append(((new_r, new_c), 1))
+            else:
+                for (end_pos, count) in recursive_captures:
+                    captures.append((end_pos, count + 1))
+        return captures
+
+    for (r, c) in my_men:
+        captures = find_all_captures(r, c, 'man', my_pieces, opp_pieces)
+        for end_pos, count in captures:
+            all_captures.append(((r, c), end_pos, count))
+    for (r, c) in my_kings:
+        captures = find_all_captures(r, c, 'king', my_pieces, opp_pieces)
+        for end_pos, count in captures:
+            all_captures.append(((r, c), end_pos, count))
+
+    if all_captures:
+        max_count = max(count for _, _, count in all_captures)
+        best_captures = [(start, end) for (start, end, count) in all_captures if count == max_count]
+        return best_captures[0]
+    else:
+        def get_non_capture_directions(piece_type):
+            if color == 'b':
+                if piece_type == 'man':
+                    return [(-1, -1), (-1, 1)]
+                else:
+                    return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+            else:
+                if piece_type == 'man':
+                    return [(1, -1), (1, 1)]
+                else:
+                    return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+        def find_all_non_capturing(r, c, piece_type, my_pieces, opp_pieces):
+            directions = get_non_capture_directions(piece_type)
+            non_caps = []
+            for dr, dc in directions:
+                new_r = r + dr
+                new_c = c + dc
+                if not (0 <= new_r < 8 and 0 <= new_c < 8):
+                    continue
+                if (new_r, new_c) not in my_pieces and (new_r, new_c) not in opp_pieces:
+                    non_caps.append((new_r, new_c))
+            return non_caps
+
+        all_moves = []
+        for (r, c) in my_men + my_kings:
+            if (r, c) in my_men:
+                piece_type = 'man'
+            else:
+                piece_type = 'king'
+            moves = find_all_non_capturing(r, c, piece_type, my_pieces, opp_pieces)
+            for end_pos in moves:
+                all_moves.append(((r, c), end_pos))
+        if not all_moves:
+            return (my_men[0], my_men[0]) if my_men else (my_kings[0], my_kings[0])
+        best_move = None
+        best_value = -float('inf')
+        for (start_r, start_c), (end_r, end_c) in all_moves:
+            if color == 'b':
+                value = start_r - end_r
+            else:
+                value = end_r - start_r
+            if value > best_value:
+                best_value = value
+                best_move = ((start_r, start_c), (end_r, end_c))
+            elif value == best_value:
+                if best_move is not None:
+                    current_end_c = best_move[1][1]
+                    if end_c > current_end_c:
+                        best_move = ((start_r, start_c), (end_r, end_c))
+        return best_move
+</code>

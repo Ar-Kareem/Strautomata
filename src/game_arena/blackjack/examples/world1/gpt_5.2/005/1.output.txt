@@ -1,0 +1,253 @@
+The strategy for this policy is to **treat the next card as a uniform random draw from the remaining ranks (no replacement)** and choose `"HIT"` or `"STAY"` by **maximizing expected match outcome** (win=1, draw=0.5, loss=0) against a **robust mixture of likely opponent behaviors**.  
+It precomputes, for each `target`, (1) an estimated opponent final-score distribution (including bust) by averaging several simple opponent policies (various “stop at target−k” thresholds plus a few extremes), then (2) the optimal stopping policy for our hand via dynamic programming over the 2¹³ possible hand-sets.
+
+<code>
+# blackjack_policy.py
+from __future__ import annotations
+
+from functools import lru_cache
+import math
+from typing import Dict, List, Tuple
+
+# ----- Card / deck model -----
+RANKS: List[str] = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+IDX: Dict[str, int] = {r: i for i, r in enumerate(RANKS)}
+FULL_MASK: int = (1 &lt;&lt; 13) - 1
+
+# Base values with Ace counted as 11 initially (single Ace exists in the deck)
+BASE_VAL: List[int] = [11, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10]
+ACE_BIT: int = 1 &lt;&lt; IDX["A"]
+
+# Precompute for all masks: sum with Ace as 11, and whether mask contains Ace.
+BASE_SUM: List[int] = [0] * (1 &lt;&lt; 13)
+HAS_ACE: List[bool] = [False] * (1 &lt;&lt; 13)
+for m in range(1, 1 &lt;&lt; 13):
+    lsb = m &amp; -m
+    i = (lsb.bit_length() - 1)
+    prev = m ^ lsb
+    BASE_SUM[m] = BASE_SUM[prev] + BASE_VAL[i]
+    HAS_ACE[m] = HAS_ACE[prev] or (i == IDX["A"])
+
+
+def hand_value(mask: int, target: int) -&gt; int:
+    """Hand value with a single Ace that can drop from 11 to 1 if needed."""
+    s = BASE_SUM[mask]
+    if HAS_ACE[mask] and s &gt; target:
+        s -= 10
+    return s
+
+
+# ----- Opponent modeling: mixture of simple policies -----
+# Each opponent policy is represented as a tuple ("type", parameter)
+# Types:
+#   ("always_stay", None)
+#   ("always_hit", None)
+#   ("threshold", k): HIT while total &lt; target - k, else STAY
+OPPONENT_POLICIES: List[Tuple[str, int | None]] = (
+    [("always_stay", None), ("always_hit", None)]
+    + [("threshold", k) for k in range(0, 8)]
+)
+
+# Weights: emphasize threshold policies around k≈4, keep a bit of mass on extremes.
+_raw_weights: List[float] = []
+for t, p in OPPONENT_POLICIES:
+    if t == "always_stay":
+        w = 0.05
+    elif t == "always_hit":
+        w = 0.05
+    else:
+        # Gaussian-ish bump centered at k=4 (typical "stand around target-4/5")
+        k = int(p)  # type: ignore[arg-type]
+        w = math.exp(-((k - 4) ** 2) / 6.0)
+    _raw_weights.append(w)
+_wsum = sum(_raw_weights)
+OPP_WEIGHTS: List[float] = [w / _wsum for w in _raw_weights]
+
+
+def _opp_should_stay(policy: Tuple[str, int | None], total: int, mask: int, target: int) -&gt; bool:
+    """Decision rule for an assumed opponent policy."""
+    ptype, param = policy
+    if total &gt; target:
+        return True  # already terminal bust
+    if mask == FULL_MASK:
+        return True  # no cards left
+    if ptype == "always_stay":
+        return True
+    if ptype == "always_hit":
+        return False
+    # threshold
+    k = int(param)  # type: ignore[arg-type]
+    return total &gt;= (target - k)
+
+
+# Cache: for each (target, policy_index) store opponent distribution from empty hand.
+# Distribution is an array length (target+2):
+#   indices 0..target : final totals
+#   index target+1    : bust
+_OPP_DIST_CACHE: Dict[Tuple[int, int], List[float]] = {}
+
+
+def opponent_distribution(target: int, policy_index: int) -&gt; List[float]:
+    """Exact distribution over opponent's terminal outcome under a fixed simple policy."""
+    key = (target, policy_index)
+    if key in _OPP_DIST_CACHE:
+        return _OPP_DIST_CACHE[key]
+
+    policy = OPPONENT_POLICIES[policy_index]
+    bust_idx = target + 1
+
+    @lru_cache(maxsize=None)
+    def dist_from(mask: int) -&gt; Tuple[float, ...]:
+        total = hand_value(mask, target)
+        out = [0.0] * (target + 2)
+
+        # Terminal bust
+        if total &gt; target:
+            out[bust_idx] = 1.0
+            return tuple(out)
+
+        # Decide to stay or hit (or forced stay)
+        if _opp_should_stay(policy, total, mask, target):
+            out[total] = 1.0
+            return tuple(out)
+
+        # Otherwise hit uniformly from remaining ranks
+        rem = FULL_MASK ^ mask
+        n = rem.bit_count()
+        if n == 0:
+            out[total] = 1.0
+            return tuple(out)
+
+        acc = [0.0] * (target + 2)
+        r = rem
+        while r:
+            lsb = r &amp; -r
+            r ^= lsb
+            nxt = mask | lsb
+            d = dist_from(nxt)
+            for i in range(target + 2):
+                acc[i] += d[i]
+        inv = 1.0 / n
+        for i in range(target + 2):
+            acc[i] *= inv
+        return tuple(acc)
+
+    d0 = list(dist_from(0))
+    _OPP_DIST_CACHE[key] = d0
+    return d0
+
+
+def opponent_mixture_distribution(target: int) -&gt; List[float]:
+    """Weighted mixture distribution over opponent terminal totals/bust."""
+    mix = [0.0] * (target + 2)
+    for j, w in enumerate(OPP_WEIGHTS):
+        dj = opponent_distribution(target, j)
+        for i in range(target + 2):
+            mix[i] += w * dj[i]
+    return mix
+
+
+# ----- Our policy computation (DP for optimal stopping vs opponent mixture) -----
+# Cache: per target, store action table for all masks.
+_POLICY_TABLE: Dict[int, List[str]] = {}
+
+
+def _compute_policy_table(target: int) -&gt; List[str]:
+    """Compute best action for each hand-mask to maximize expected match score."""
+    opp = opponent_mixture_distribution(target)
+    bust_idx = target + 1
+    p_opp_bust = opp[bust_idx]
+
+    # Precompute cumulative sums for quick P(opp &lt; v) and P(opp == v)
+    cdf_lt = [0.0] * (target + 1)  # cdf_lt[v] = sum_{s=0..v-1} P(opp=s)
+    running = 0.0
+    for v in range(target + 1):
+        cdf_lt[v] = running
+        running += opp[v]
+
+    def expected_score_if_stay(v: int) -&gt; float:
+        # Our bust already handled elsewhere; if v within range, higher v is always closer.
+        if v &lt; 0:
+            return 0.0
+        if v &gt; target:
+            # We busted: draw only if opponent busts too
+            return 0.5 * p_opp_bust
+        p_win = p_opp_bust + cdf_lt[v]
+        p_draw = opp[v]
+        return p_win + 0.5 * p_draw
+
+    action = ["STAY"] * (1 &lt;&lt; 13)
+
+    @lru_cache(maxsize=None)
+    def best_ev(mask: int) -&gt; float:
+        v = hand_value(mask, target)
+
+        # If we're already bust, terminal
+        if v &gt; target:
+            return 0.5 * p_opp_bust
+
+        stay_ev = expected_score_if_stay(v)
+
+        rem = FULL_MASK ^ mask
+        if rem == 0:
+            action[mask] = "STAY"
+            return stay_ev
+
+        # Compute hit EV
+        n = rem.bit_count()
+        acc = 0.0
+        r = rem
+        while r:
+            lsb = r &amp; -r
+            r ^= lsb
+            acc += best_ev(mask | lsb)
+        hit_ev = acc / n
+
+        if hit_ev &gt; stay_ev + 1e-12:
+            action[mask] = "HIT"
+            return hit_ev
+        else:
+            action[mask] = "STAY"
+            return stay_ev
+
+    # Fill by evaluating from empty; recursion will populate needed states.
+    best_ev(0)
+    return action
+
+
+# ----- Required API -----
+def policy(hand: list[str], target: int) -&gt; str:
+    """
+    Return "HIT" or "STAY" (always legal).
+    hand: list of ranks currently held (subset of RANKS, no duplicates expected).
+    target: integer in [10, 30].
+    """
+    # Safety: if the engine ever calls us with all cards drawn, we must stay.
+    if len(hand) &gt;= 13:
+        return "STAY"
+
+    # Build mask from observed hand
+    mask = 0
+    for c in hand:
+        i = IDX.get(c)
+        if i is None:
+            # Unknown card string; safest legal action is STAY.
+            return "STAY"
+        mask |= (1 &lt;&lt; i)
+
+    # If already bust (should normally end the game), STAY is safe.
+    if hand_value(mask, target) &gt; target:
+        return "STAY"
+
+    # Compute / fetch table for this target
+    tbl = _POLICY_TABLE.get(target)
+    if tbl is None:
+        tbl = _compute_policy_table(target)
+        _POLICY_TABLE[target] = tbl
+
+    act = tbl[mask]
+    # Final safety: never HIT when no cards remain
+    if act == "HIT" and mask == FULL_MASK:
+        return "STAY"
+    return act
+</code>

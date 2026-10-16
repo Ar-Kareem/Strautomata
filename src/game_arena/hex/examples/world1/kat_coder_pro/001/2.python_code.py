@@ -1,0 +1,181 @@
+
+import numpy as np
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    # Convert lists to sets for faster lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    all_stones = me_set | opp_set
+    
+    # Get empty cells
+    empty_cells = []
+    for r in range(11):
+        for c in range(11):
+            if (r, c) not in all_stones:
+                empty_cells.append((r, c))
+    
+    if not empty_cells:
+        return (0, 0)  # Should not happen in normal play
+    
+    # Define goal edges based on color
+    if color == 'b':  # Black connects top (row 0) to bottom (row 10)
+        my_goals = (set((0, c) for c in range(11)), set((10, c) for c in range(11)))
+        opp_goals = (set((r, 0) for r in range(11)), set((r, 10) for r in range(11)))
+    else:  # White connects left (col 0) to right (col 10)
+        my_goals = (set((r, 0) for r in range(11)), set((r, 10) for r in range(11)))
+        opp_goals = (set((0, c) for c in range(11)), set((10, c) for c in range(11)))
+    
+    def get_neighbors(r, c):
+        """Get all 6 neighboring hex cells"""
+        neighbors = []
+        # Same row
+        if c > 0: neighbors.append((r, c-1))
+        if c < 10: neighbors.append((r, c+1))
+        
+        # Top row (r-1)
+        if r > 0:
+            neighbors.append((r-1, c))
+            if c < 10: neighbors.append((r-1, c+1))
+        
+        # Bottom row (r+1)
+        if r < 10:
+            neighbors.append((r+1, c))
+            if c > 0: neighbors.append((r+1, c-1))
+        
+        return neighbors
+    
+    def can_connect_to_goals(stones, goals):
+        """Check if stones can connect to both goal sets"""
+        from collections import deque
+        
+        # Start from stones that touch first goal
+        start_points = []
+        for stone in stones:
+            if stone in goals[0]:
+                start_points.append(stone)
+        
+        if not start_points:
+            return False
+        
+        # BFS to find connection to second goal
+        visited = set(start_points)
+        queue = deque(start_points)
+        
+        while queue:
+            r, c = queue.popleft()
+            
+            # Check if we reached the second goal
+            if (r, c) in goals[1]:
+                return True
+            
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) not in visited and (nr, nc) in stones:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        
+        return False
+    
+    def would_win_if_placed(r, c, stones, goals):
+        """Check if placing a stone at (r,c) would create a winning connection"""
+        new_stones = stones | {(r, c)}
+        return can_connect_to_goals(new_stones, goals)
+    
+    def is_threat_move(r, c, stones, goals):
+        """Check if placing a stone creates multiple potential winning paths"""
+        # Place hypothetical stone
+        new_stones = stones | {(r, c)}
+        
+        # Count how many ways we can connect to goals
+        connections = 0
+        
+        # Check direct connections
+        for goal_set in goals:
+            for goal_cell in goal_set:
+                if goal_cell in new_stones:
+                    connections += 1
+                    break
+        
+        # Check if we're one move away from connecting
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) not in all_stones:
+                if would_win_if_placed(nr, nc, new_stones, goals):
+                    connections += 1
+        
+        return connections >= 2
+    
+    def voronoi_distance(r, c, stones, goals):
+        """Calculate distance to nearest goal considering stone positions"""
+        from collections import deque
+        
+        if (r, c) in goals[0] or (r, c) in goals[1]:
+            return 0
+        
+        # BFS from the cell
+        visited = {(r, c)}
+        queue = deque([(r, c, 0)])
+        
+        while queue:
+            cr, cc, dist = queue.popleft()
+            
+            # Check if we reached a goal or connecting stone
+            if (cr, cc) in goals[0] or (cr, cc) in goals[1]:
+                return dist
+            
+            for nr, nc in get_neighbors(cr, cc):
+                if (nr, nc) not in visited and (nr, nc) not in opp_set:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc, dist + 1))
+        
+        return 100  # Far distance if blocked
+    
+    def is_edge_proximity_move(r, c, goals):
+        """Check if move gets us closer to connecting to edges"""
+        # Check if we're within 2 cells of connecting to an edge
+        for goal_set in goals:
+            for goal_r, goal_c in goal_set:
+                # Manhattan-like distance for hex grid
+                dist = max(abs(r - goal_r), abs(c - goal_c))
+                if dist <= 2:
+                    return True
+        return False
+    
+    # 1. Check for winning moves
+    for r, c in empty_cells:
+        if would_win_if_placed(r, c, me_set, my_goals):
+            return (r, c)
+    
+    # 2. Check for blocking opponent wins
+    for r, c in empty_cells:
+        if would_win_if_placed(r, c, opp_set, opp_goals):
+            return (r, c)
+    
+    # 3. Look for threat moves
+    threat_moves = []
+    for r, c in empty_cells:
+        if is_threat_move(r, c, me_set, my_goals):
+            threat_moves.append((r, c))
+    
+    if threat_moves:
+        # Choose threat move closest to center (more flexible)
+        center_dist = [(abs(r-5) + abs(c-5), r, c) for r, c in threat_moves]
+        center_dist.sort()
+        return (center_dist[0][1], center_dist[0][2])
+    
+    # 4. Evaluate Voronoi territory and edge proximity
+    best_moves = []
+    for r, c in empty_cells:
+        dist = voronoi_distance(r, c, me_set, my_goals)
+        edge_bonus = 2 if is_edge_proximity_move(r, c, my_goals) else 0
+        
+        # Prefer moves that reduce distance to goals and are near edges
+        score = -dist + edge_bonus
+        best_moves.append((score, r, c))
+    
+    if best_moves:
+        best_moves.sort(reverse=True)
+        return (best_moves[0][1], best_moves[0][2])
+    
+    # 5. Fallback: random move
+    import random
+    return random.choice(empty_cells)

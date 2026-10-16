@@ -1,0 +1,93 @@
+
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 4x4 Tic Tac Toe game.
+
+    Args:
+        board: A 4x4 list of lists containing 0 (empty), 1 (you), and -1 (opponent).
+
+    Returns:
+        A tuple of two integers (0-3, 0-3) indicating the row and column to choose.
+    """
+
+    # 1. Check for winning moves.
+    for row in range(4):
+        for col in range(4):
+            if board[row][col] == 0:
+                # Try the move
+                board[row][col] = 1
+                if check_win(board, 1):
+                    board[row][col] = 0  # Undo the move
+                    return (row, col)
+                board[row][col] = 0  # Undo the move
+
+    # 2. Check for blocking moves.
+    for row in range(4):
+        for col in range(4):
+            if board[row][col] == 0:
+                # Try the move for the opponent.
+                board[row][col] = -1
+                if check_win(board, -1):
+                    board[row][col] = 0  # Undo the move
+                    return (row, col)
+                board[row][col] = 0  # Undo the move
+
+    # 3. Choose a random available move.
+    available_moves = []
+    for row in range(4):
+        for col in range(4):
+            if board[row][col] == 0:
+                available_moves.append((row, col))
+
+    if available_moves:
+        return random.choice(available_moves)
+    else:
+        # No moves available. This should not happen in a standard game.
+        return (0, 0)
+
+def check_win(board: list[list[int]], player: int) -> bool:
+    """
+    Checks if the given player has won the game.
+    """
+    # Check rows
+    for row in range(4):
+        if all(board[row][col] == player for col in range(4)):
+            return True
+
+    # Check columns
+    for col in range(4):
+        if all(board[row][col] == player for row in range(4)):
+            return True
+
+    # Check diagonals
+    if all(board[i][i] == player for i in range(4)):
+        return True
+    if all(board[i][3 - i] == player for i in range(4)):
+        return True
+
+    return False
+
+
+if __name__ == '__main__':
+    # Example usage
+    board = [
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0]
+    ]
+
+    move = policy(board)
+    print(f"Next move: {move}")
+
+    board = [
+    [1, -1, 1, -1],
+    [-1, 1, -1, 1],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0]
+    ]
+
+    move = policy(board)
+    print(f"Next move: {move}")

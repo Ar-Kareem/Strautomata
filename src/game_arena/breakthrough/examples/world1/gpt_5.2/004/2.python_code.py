@@ -1,0 +1,318 @@
+
+import time
+from typing import List, Tuple, Optional, Dict, Any
+
+# Breakthrough policy with iterative-deepening alpha-beta negamax on bitboards.
+
+WIN_SCORE = 1_000_000
+INF = 10**18
+
+# Precomputed row masks for quick promotion detection.
+ROW_MASK = [(0xFF << (r * 8)) for r in range(8)]
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _pos_list_to_bb(pos: List[Tuple[int, int]]) -> int:
+    bb = 0
+    for r, c in pos:
+        bb |= 1 << (r * 8 + c)
+    return bb
+
+
+def _bb_popcount(bb: int) -> int:
+    return bb.bit_count()
+
+
+def _iter_bits(bb: int):
+    # yields indices 0..63
+    while bb:
+        lsb = bb & -bb
+        idx = lsb.bit_length() - 1
+        yield idx
+        bb ^= lsb
+
+
+def _idx_to_rc(idx: int) -> Tuple[int, int]:
+    return idx // 8, idx % 8
+
+
+def _rc_to_idx(r: int, c: int) -> int:
+    return r * 8 + c
+
+
+def _other(color: str) -> str:
+    return "w" if color == "b" else "b"
+
+
+def _goal_row(color: str) -> int:
+    return 7 if color == "w" else 0
+
+
+def _has_promoted(bb: int, color: str) -> bool:
+    return (bb & ROW_MASK[_goal_row(color)]) != 0
+
+
+def _gen_moves(me_bb: int, opp_bb: int, color: str) -> List[Tuple[int, int, bool]]:
+    """
+    Returns list of moves as (from_idx, to_idx, is_capture).
+    Includes diagonal non-captures and diagonal captures; forward only if empty.
+    """
+    occ = me_bb | opp_bb
+    dr = 1 if color == "w" else -1
+    moves: List[Tuple[int, int, bool]] = []
+
+    for idx in _iter_bits(me_bb):
+        r, c = _idx_to_rc(idx)
+        nr = r + dr
+        if nr < 0 or nr > 7:
+            continue
+
+        # forward
+        f_idx = _rc_to_idx(nr, c)
+        f_bit = 1 << f_idx
+        if (occ & f_bit) == 0:
+            moves.append((idx, f_idx, False))
+
+        # diagonals
+        if c - 1 >= 0:
+            d_idx = _rc_to_idx(nr, c - 1)
+            d_bit = 1 << d_idx
+            if (me_bb & d_bit) == 0:
+                moves.append((idx, d_idx, (opp_bb & d_bit) != 0))
+        if c + 1 <= 7:
+            d_idx = _rc_to_idx(nr, c + 1)
+            d_bit = 1 << d_idx
+            if (me_bb & d_bit) == 0:
+                moves.append((idx, d_idx, (opp_bb & d_bit) != 0))
+
+    return moves
+
+
+def _apply_move(me_bb: int, opp_bb: int, mv: Tuple[int, int, bool]) -> Tuple[int, int]:
+    f, t, is_cap = mv
+    f_bit = 1 << f
+    t_bit = 1 << t
+    new_me = (me_bb ^ f_bit) | t_bit
+    new_opp = opp_bb
+    if is_cap:
+        new_opp = opp_bb & ~t_bit
+    return new_me, new_opp
+
+
+def _progress_sum(bb: int, color: str) -> int:
+    # Advancement toward promotion: white wants larger r; black wants smaller r.
+    s = 0
+    if color == "w":
+        for idx in _iter_bits(bb):
+            r = idx // 8
+            s += r
+    else:
+        for idx in _iter_bits(bb):
+            r = idx // 8
+            s += (7 - r)
+    return s
+
+
+def _count_capture_moves(me_bb: int, opp_bb: int, color: str) -> int:
+    dr = 1 if color == "w" else -1
+    count = 0
+    for idx in _iter_bits(me_bb):
+        r, c = _idx_to_rc(idx)
+        nr = r + dr
+        if nr < 0 or nr > 7:
+            continue
+        if c - 1 >= 0:
+            t = _rc_to_idx(nr, c - 1)
+            if (opp_bb & (1 << t)) != 0:
+                count += 1
+        if c + 1 <= 7:
+            t = _rc_to_idx(nr, c + 1)
+            if (opp_bb & (1 << t)) != 0:
+                count += 1
+    return count
+
+
+def _count_moves(me_bb: int, opp_bb: int, color: str) -> int:
+    return len(_gen_moves(me_bb, opp_bb, color))
+
+
+def _evaluate(me_bb: int, opp_bb: int, color: str) -> int:
+    # From perspective of side-to-move (me_bb / color).
+    opp_color = _other(color)
+
+    # Terminal checks
+    if me_bb == 0:
+        return -WIN_SCORE
+    if opp_bb == 0:
+        return WIN_SCORE
+    if _has_promoted(me_bb, color):
+        return WIN_SCORE
+    if _has_promoted(opp_bb, opp_color):
+        return -WIN_SCORE
+
+    my_n = _bb_popcount(me_bb)
+    op_n = _bb_popcount(opp_bb)
+
+    material = 120 * (my_n - op_n)
+    progress = 12 * (_progress_sum(me_bb, color) - _progress_sum(opp_bb, opp_color))
+
+    # Tactical features
+    my_caps = _count_capture_moves(me_bb, opp_bb, color)
+    op_caps = _count_capture_moves(opp_bb, me_bb, opp_color)
+    threats = 10 * (my_caps - op_caps)
+
+    mobility = _count_moves(me_bb, opp_bb, color) - _count_moves(opp_bb, me_bb, opp_color)
+
+    # Extra: strong bonus for having pawns very close to promotion.
+    # (Small, but helps endgames.)
+    goal = _goal_row(color)
+    near = 0
+    for idx in _iter_bits(me_bb):
+        r = idx // 8
+        dist = abs(goal - r)
+        near += max(0, 7 - dist)  # closer => bigger
+    near_bonus = 2 * near
+
+    return material + progress + threats + mobility + near_bonus
+
+
+def _move_order_key(mv: Tuple[int, int, bool], color: str) -> int:
+    f, t, is_cap = mv
+    fr, fc = _idx_to_rc(f)
+    tr, tc = _idx_to_rc(t)
+    # Prefer: promotion, captures, and bigger advancement.
+    promotion = 1 if (tr == _goal_row(color)) else 0
+    if color == "w":
+        adv = tr - fr
+    else:
+        adv = fr - tr
+    return (promotion * 10_000) + (1_000 if is_cap else 0) + (20 * adv) + (3 * (3 - abs(tc - 3)))
+
+
+def _negamax(
+    me_bb: int,
+    opp_bb: int,
+    color: str,
+    depth: int,
+    alpha: int,
+    beta: int,
+    end_time: float,
+    tt: Dict[Tuple[int, int, str], Tuple[int, int, Optional[Tuple[int, int, bool]]]],
+) -> Tuple[int, Optional[Tuple[int, int, bool]]]:
+    if time.perf_counter() > end_time:
+        raise _Timeout
+
+    key = (me_bb, opp_bb, color)
+    if key in tt:
+        tt_depth, tt_val, tt_best = tt[key]
+        if tt_depth >= depth:
+            return tt_val, tt_best
+
+    # Terminal / leaf
+    opp_color = _other(color)
+    if depth == 0 or me_bb == 0 or opp_bb == 0 or _has_promoted(me_bb, color) or _has_promoted(opp_bb, opp_color):
+        v = _evaluate(me_bb, opp_bb, color)
+        tt[key] = (depth, v, None)
+        return v, None
+
+    moves = _gen_moves(me_bb, opp_bb, color)
+    # If no legal moves exist, treat as losing (should be rare; arena typically avoids this).
+    if not moves:
+        v = -WIN_SCORE + 1
+        tt[key] = (depth, v, None)
+        return v, None
+
+    moves.sort(key=lambda m: _move_order_key(m, color), reverse=True)
+
+    best_move: Optional[Tuple[int, int, bool]] = None
+    best_val = -INF
+
+    for mv in moves:
+        new_me, new_opp = _apply_move(me_bb, opp_bb, mv)
+
+        # If this move immediately wins, take it.
+        if _has_promoted(new_me, color) or new_opp == 0:
+            tt[key] = (depth, WIN_SCORE, mv)
+            return WIN_SCORE, mv
+
+        # Next ply: swap perspective
+        val, _ = _negamax(
+            new_opp,
+            new_me,
+            _other(color),
+            depth - 1,
+            -beta,
+            -alpha,
+            end_time,
+            tt,
+        )
+        val = -val
+
+        if val > best_val:
+            best_val = val
+            best_move = mv
+
+        if best_val > alpha:
+            alpha = best_val
+        if alpha >= beta:
+            break
+
+        if time.perf_counter() > end_time:
+            raise _Timeout
+
+    tt[key] = (depth, best_val, best_move)
+    return best_val, best_move
+
+
+def policy(
+    me: List[Tuple[int, int]],
+    opp: List[Tuple[int, int]],
+    color: str
+) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    me_bb = _pos_list_to_bb(me)
+    opp_bb = _pos_list_to_bb(opp)
+
+    # Generate legal moves at root; must always return a legal move.
+    root_moves = _gen_moves(me_bb, opp_bb, color)
+    if not root_moves:
+        # Extremely rare; to avoid disqualification, try a last-ditch fallback by scanning again.
+        # If still none, return a "do nothing" placeholder (may be illegal, but arena usually won't call here).
+        # NOTE: The game logic in typical arenas ensures at least one legal move for the side to move.
+        if me:
+            return (me[0], me[0])
+        return ((0, 0), (0, 0))
+
+    # If any immediate winning move exists, play it.
+    for mv in root_moves:
+        new_me, new_opp = _apply_move(me_bb, opp_bb, mv)
+        if _has_promoted(new_me, color) or new_opp == 0:
+            f, t, _ = mv
+            return (_idx_to_rc(f), _idx_to_rc(t))
+
+    # Iterative deepening within time budget
+    start = time.perf_counter()
+    # Keep a little safety margin.
+    end_time = start + 0.93
+
+    tt: Dict[Tuple[int, int, str], Tuple[int, int, Optional[Tuple[int, int, bool]]]] = {}
+
+    # Seed with best 1-ply move to ensure we always have something decent.
+    root_moves.sort(key=lambda m: _move_order_key(m, color), reverse=True)
+    best_mv = root_moves[0]
+    best_val = -INF
+
+    max_depth = 6
+    for depth in range(1, max_depth + 1):
+        try:
+            val, mv = _negamax(me_bb, opp_bb, color, depth, -INF, INF, end_time, tt)
+            if mv is not None:
+                best_mv = mv
+                best_val = val
+        except _Timeout:
+            break
+
+    f, t, _ = best_mv
+    return (_idx_to_rc(f), _idx_to_rc(t))

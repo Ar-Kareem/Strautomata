@@ -1,0 +1,263 @@
+
+def policy(state: dict) -> str:
+    import random
+    
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    if not dice:
+        return "H:P,P"
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(state)
+    
+    if not legal_moves:
+        return "H:P,P"
+    
+    # Evaluate each move and pick the best
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        score = evaluate_move(state, move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move if best_move else legal_moves[0]
+
+
+def generate_legal_moves(state):
+    """Generate all legal moves for current state"""
+    my_pts = state['my_pts'][:]
+    opp_pts = state['opp_pts'][:]
+    my_bar = state['my_bar']
+    dice = state['dice'][:]
+    
+    if not dice:
+        return ["H:P,P"]
+    
+    moves = []
+    
+    # Handle doubles
+    if len(dice) == 1:
+        dice = dice * 2
+    
+    dice_sorted = sorted(dice, reverse=True)
+    high_die = dice_sorted[0]
+    low_die = dice_sorted[1] if len(dice_sorted) > 1 else dice_sorted[0]
+    
+    # Try both orderings: H (high first) and L (low first)
+    for order in ['H', 'L']:
+        if order == 'H':
+            dice_sequence = [high_die, low_die]
+        else:
+            dice_sequence = [low_die, high_die]
+        
+        # Generate moves for this ordering
+        moves_for_order = generate_moves_for_order(my_pts[:], opp_pts[:], my_bar, dice_sequence, order)
+        moves.extend(moves_for_order)
+    
+    return list(set(moves)) if moves else ["H:P,P"]
+
+
+def generate_moves_for_order(my_pts, opp_pts, my_bar, dice_sequence, order):
+    """Generate legal moves for a specific dice ordering"""
+    moves = []
+    
+    # Try all possible first moves
+    first_moves = get_possible_moves(my_pts, opp_pts, my_bar, dice_sequence[0])
+    
+    for from1 in first_moves:
+        # Apply first move
+        my_pts_temp = my_pts[:]
+        my_bar_temp = my_bar
+        
+        if from1 == 'P':
+            # Pass on first die - try second die alone
+            second_moves = get_possible_moves(my_pts_temp, opp_pts, my_bar_temp, dice_sequence[1])
+            for from2 in second_moves:
+                if from2 != 'P':
+                    # Can only use second die
+                    moves.append(f"{order}:P,{from2}")
+            if not second_moves or all(m == 'P' for m in second_moves):
+                moves.append(f"{order}:P,P")
+        else:
+            # Apply first move
+            if from1 == 'B':
+                my_bar_temp -= 1
+                dest1 = 24 - dice_sequence[0]
+                if dest1 >= 0:
+                    my_pts_temp[dest1] += 1
+            else:
+                point1 = int(from1[1:])
+                my_pts_temp[point1] -= 1
+                dest1 = point1 - dice_sequence[0]
+                if dest1 >= 0:
+                    my_pts_temp[dest1] += 1
+            
+            # Try second move
+            second_moves = get_possible_moves(my_pts_temp, opp_pts, my_bar_temp, dice_sequence[1])
+            
+            if second_moves:
+                for from2 in second_moves:
+                    moves.append(f"{order}:{from1},{from2}")
+            else:
+                moves.append(f"{order}:{from1},P")
+    
+    # If no first moves possible, check if we can pass both
+    if not first_moves:
+        moves.append(f"{order}:P,P")
+    
+    return moves
+
+
+def get_possible_moves(my_pts, opp_pts, my_bar, die):
+    """Get all possible starting points for a single die"""
+    possible = []
+    
+    # Must move from bar first if any checkers there
+    if my_bar > 0:
+        entry_point = 24 - die
+        if entry_point >= 0 and opp_pts[entry_point] < 2:
+            return ['B']
+        else:
+            return ['P']
+    
+    # Check if bearing off
+    can_bear_off = all(my_pts[i] == 0 for i in range(6, 24))
+    
+    for point in range(24):
+        if my_pts[point] == 0:
+            continue
+        
+        dest = point - die
+        
+        if dest < 0:
+            # Bearing off
+            if can_bear_off:
+                # Can bear off from this point if it matches die or is highest point
+                if point < 6:
+                    if point == die - 1 or all(my_pts[i] == 0 for i in range(die, 24)):
+                        possible.append(f'A{point}')
+        else:
+            # Regular move
+            if opp_pts[dest] < 2:
+                possible.append(f'A{point}')
+    
+    return possible if possible else ['P']
+
+
+def evaluate_move(state, move_str):
+    """Evaluate the quality of a move"""
+    # Simulate the move and evaluate resulting position
+    new_state = apply_move(state, move_str)
+    return evaluate_position(new_state)
+
+
+def apply_move(state, move_str):
+    """Apply a move and return new state"""
+    my_pts = state['my_pts'][:]
+    opp_pts = state['opp_pts'][:]
+    my_bar = state['my_bar']
+    my_off = state['my_off']
+    dice = state['dice'][:]
+    
+    parts = move_str.split(':')
+    order = parts[0]
+    froms = parts[1].split(',')
+    
+    if not dice:
+        return state
+    
+    dice_sorted = sorted(dice, reverse=True)
+    high_die = dice_sorted[0]
+    low_die = dice_sorted[1] if len(dice_sorted) > 1 else dice_sorted[0]
+    
+    dice_sequence = [high_die, low_die] if order == 'H' else [low_die, high_die]
+    
+    for i, from_str in enumerate(froms):
+        if from_str == 'P':
+            continue
+        
+        die = dice_sequence[i]
+        
+        if from_str == 'B':
+            my_bar -= 1
+            dest = 24 - die
+            if dest >= 0:
+                my_pts[dest] += 1
+        else:
+            point = int(from_str[1:])
+            my_pts[point] -= 1
+            dest = point - die
+            if dest < 0:
+                my_off += 1
+            else:
+                my_pts[dest] += 1
+    
+    return {
+        'my_pts': my_pts,
+        'opp_pts': opp_pts,
+        'my_bar': my_bar,
+        'my_off': my_off,
+        'opp_bar': state['opp_bar'],
+        'opp_off': state['opp_off'],
+        'dice': []
+    }
+
+
+def evaluate_position(state):
+    """Evaluate board position"""
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    
+    score = 0.0
+    
+    # Progress: borne off checkers
+    score += my_off * 100
+    score -= opp_off * 100
+    
+    # Penalty for bar
+    score -= my_bar * 50
+    score += opp_bar * 50
+    
+    # Pip count (lower is better)
+    my_pips = sum((23 - i + 1) * my_pts[i] for i in range(24)) + my_bar * 25
+    opp_pips = sum((i + 1) * opp_pts[i] for i in range(24)) + opp_bar * 25
+    score -= my_pips * 0.5
+    score += opp_pips * 0.5
+    
+    # Blots (single checkers) - penalty
+    for i in range(24):
+        if my_pts[i] == 1:
+            # More dangerous in opponent's home board
+            danger = 3.0 if i >= 18 else 2.0
+            score -= danger
+    
+    # Primes (consecutive blocked points)
+    prime_length = 0
+    max_prime = 0
+    for i in range(24):
+        if my_pts[i] >= 2:
+            prime_length += 1
+            max_prime = max(max_prime, prime_length)
+        else:
+            prime_length = 0
+    score += max_prime * 10
+    
+    # Anchors in opponent territory
+    for i in range(18, 24):
+        if my_pts[i] >= 2:
+            score += 15
+    
+    return score

@@ -1,0 +1,180 @@
+
+import numpy as np
+import random
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Determines the next move for a 4x4 Dots and Boxes game.
+    """
+    
+    # Helper to get the count of drawn edges for a specific box (r, c)
+    # Box coordinates are 0..3
+    def get_box_edges(r, c):
+        count = 0
+        # Top: h[r, c], Bottom: h[r+1, c], Left: v[r, c], Right: v[r, c+1]
+        if horizontal[r, c] != 0: count += 1
+        if horizontal[r+1, c] != 0: count += 1
+        if vertical[r, c] != 0: count += 1
+        if vertical[r, c+1] != 0: count += 1
+        return count
+
+    # Identify all legal moves
+    legal_moves = []
+    
+    # Horizontal edges: 5 rows (0-4), 4 cols (0-3)
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+                
+    # Vertical edges: 4 rows (0-3), 5 cols (0-4)
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+
+    # Fallback if game is over (should not happen in normal gameplay)
+    if not legal_moves:
+        return "0,0,H"
+
+    # Categorize moves
+    capture_moves = []  # Moves that complete a box
+    safe_moves = []     # Moves that don't create a 3-box
+    forced_moves = []   # Moves that create a 3-box (give points to opponent)
+
+    for move in legal_moves:
+        r, c, d = move
+        boxes_to_check = []
+        
+        # Determine which boxes are adjacent to this edge
+        if d == 'H':
+            # Top box (r, c) exists if r < 4
+            if r < 4: boxes_to_check.append((r, c))
+            # Bottom box (r-1, c) exists if r > 0
+            if r > 0: boxes_to_check.append((r-1, c))
+        else: # 'V'
+            # Left box (r, c) exists if c < 4
+            if c < 4: boxes_to_check.append((r, c))
+            # Right box (r, c-1) exists if c > 0
+            if c > 0: boxes_to_check.append((r, c-1))
+        
+        immediate_captures = 0
+        creates_three = False
+        
+        for br, bc in boxes_to_check:
+            # We only care about unclaimed boxes
+            if capture[br, bc] != 0:
+                continue
+            
+            edges = get_box_edges(br, bc)
+            
+            if edges == 3:
+                immediate_captures += 1
+            elif edges == 2:
+                creates_three = True
+
+        if immediate_captures > 0:
+            # Store: (move, captures_count, creates_three_bool)
+            capture_moves.append((move, immediate_captures, creates_three))
+        elif creates_three:
+            forced_moves.append(move)
+        else:
+            safe_moves.append(move)
+
+    # --- Phase 1: Execute Captures ---
+    if capture_moves:
+        # Sort by: most captures first, then prefer moves that don't create 3-boxes (safe captures)
+        capture_moves.sort(key=lambda x: (-x[1], x[2]))
+        best_move = capture_moves[0][0]
+        return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+
+    # --- Phase 2: Execute Safe Moves ---
+    if safe_moves:
+        # Heuristic: Prefer moves adjacent to boxes with 1 edge (progressing to 2)
+        # rather than empty boxes (progressing to 1).
+        def safe_score(move):
+            r, c, d = move
+            score = 0
+            boxes = []
+            if d == 'H':
+                if r < 4: boxes.append((r, c))
+                if r > 0: boxes.append((r-1, c))
+            else:
+                if c < 4: boxes.append((r, c))
+                if c > 0: boxes.append((r, c-1))
+            
+            for br, bc in boxes:
+                if capture[br, bc] != 0: continue
+                e = get_box_edges(br, bc)
+                if e == 1: score += 10
+                elif e == 0: score += 1
+            return score
+
+        safe_moves.sort(key=safe_score, reverse=True)
+        best_move = safe_moves[0]
+        return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+
+    # --- Phase 3: Forced Moves (Endgame) ---
+    # We must give the opponent a box. Try to give away the shortest chain.
+    # A move creates a 3-box. If that 3-box is connected to a 2-box, the chain continues.
+    # We prefer creating 3-boxes that are NOT connected to other 2-boxs.
+    def chain_risk(move):
+        r, c, d = move
+        risk = 0 # Number of adjacent 2-boxs connected to the resulting 3-box
+        
+        boxes = []
+        if d == 'H':
+            if r < 4: boxes.append((r, c))
+            if r > 0: boxes.append((r-1, c))
+        else:
+            if c < 4: boxes.append((r, c))
+            if c > 0: boxes.append((r, c-1))
+            
+        for br, bc in boxes:
+            # We know this box is a 2-box (because this is a forced move)
+            # Check its neighbors (excluding the current edge) to see if they are 2-boxes.
+            # Neighbors: Top, Bottom, Left, Right
+            neighbors = []
+            # Top neighbor (br-1, bc), shared edge h[br, bc]
+            if br > 0: neighbors.append( (br-1, bc, 'H', br, bc) ) # (n_r, n_c, shared_dir, shared_r, shared_c)
+            # Bottom neighbor (br+1, bc), shared edge h[br+1, bc]
+            if br < 3: neighbors.append( (br+1, bc, 'H', br+1, bc) )
+            # Left neighbor (br, bc-1), shared edge v[br, bc]
+            if bc > 0: neighbors.append( (br, bc-1, 'V', br, bc) )
+            # Right neighbor (br, bc+1), shared edge v[br, bc+1]
+            if bc < 3: neighbors.append( (br, bc+1, 'V', br, bc+1) )
+            
+            for nr, nc, nd, sr, sc in neighbors:
+                # If the shared edge is the move we are playing, we are closing that connection.
+                # So we don't care about that neighbor.
+                if nd == d and sr == r and sc == c:
+                    continue
+                
+                # If shared edge is already drawn, boxes are already connected/processed. 
+                # But we are in forced phase, meaning edges are empty.
+                # Wait, if shared edge is DRAWN, then the neighbor already has an edge counted.
+                # If the shared edge is EMPTY, then playing our move doesn't affect the neighbor's edge count directly?
+                # No, the logic is: 
+                # We play Move M. Box B becomes 3-box. Opponent takes B.
+                # Opponent's move takes the 4th edge of B. Is that edge shared with Neighbor N?
+                # If Neighbor N is a 2-box, and the shared edge is empty, then Opponent taking B 
+                # draws that shared edge. Now N has 3 edges. Chain continues.
+                
+                # So we care about neighbors N that are 2-boxes AND share an empty edge with B.
+                # (And that shared edge is NOT M).
+                
+                is_shared_empty = False
+                if nd == 'H':
+                    if horizontal[sr, sc] == 0: is_shared_empty = True
+                else:
+                    if vertical[sr, sc] == 0: is_shared_empty = True
+                
+                if is_shared_empty:
+                    # Check if neighbor is a 2-box
+                    if capture[nr, nc] == 0 and get_box_edges(nr, nc) == 2:
+                        risk += 1
+        return risk
+
+    forced_moves.sort(key=chain_risk)
+    best_move = forced_moves[0]
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"

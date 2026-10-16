@@ -1,0 +1,214 @@
+
+import math
+import random
+
+# Directions: 8 surrounding directions
+DIRECTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+              (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def policy(board) -> str:
+    # Ensure board is a list of lists
+    board = [list(row) for row in board]
+
+    moves = generate_moves(board, 1)
+    if not moves:
+        # Fallback; ideally never happens in LOA
+        return "0,0:0,0"
+
+    # If any move immediately wins, play it
+    for mv in moves:
+        nb = apply_move(board, mv, 1)
+        comps, _, _ = component_info(nb, 1)
+        if comps == 1:
+            return move_to_str(mv)
+
+    # Choose search depth based on branching
+    depth = 3 if len(moves) <= 10 else 2
+    cache = {}
+
+    best_score = -float("inf")
+    best_moves = []
+
+    for mv in moves:
+        nb = apply_move(board, mv, 1)
+        val = minimax(nb, depth - 1, -float("inf"), float("inf"), -1, cache)
+        if val > best_score + 1e-6:
+            best_score = val
+            best_moves = [mv]
+        elif abs(val - best_score) <= 1e-6:
+            best_moves.append(mv)
+
+    # Choose among best moves (deterministic or random)
+    chosen = best_moves[0]
+    return move_to_str(chosen)
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def count_line(board, r, c, dr, dc):
+    # Move to the start of the line
+    rr, cc = r, c
+    while in_bounds(rr - dr, cc - dc):
+        rr -= dr
+        cc -= dc
+
+    count = 0
+    while in_bounds(rr, cc):
+        if board[rr][cc] != 0:
+            count += 1
+        rr += dr
+        cc += dc
+    return count
+
+def generate_moves(board, player):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                for dr, dc in DIRECTIONS:
+                    dist = count_line(board, r, c, dr, dc)
+                    r2 = r + dr * dist
+                    c2 = c + dc * dist
+                    if not in_bounds(r2, c2):
+                        continue
+                    if board[r2][c2] == player:
+                        continue
+
+                    blocked = False
+                    for step in range(1, dist):
+                        rr = r + dr * step
+                        cc = c + dc * step
+                        if board[rr][cc] == -player:
+                            blocked = True
+                            break
+                    if blocked:
+                        continue
+                    moves.append((r, c, r2, c2))
+    return moves
+
+def apply_move(board, move, player):
+    r1, c1, r2, c2 = move
+    nb = [row[:] for row in board]
+    nb[r1][c1] = 0
+    nb[r2][c2] = player
+    return nb
+
+def component_info(board, player):
+    visited = [[False] * 8 for _ in range(8)]
+    components = 0
+    largest = 0
+    total = 0
+
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                total += 1
+                if not visited[r][c]:
+                    components += 1
+                    size = 0
+                    stack = [(r, c)]
+                    visited[r][c] = True
+                    while stack:
+                        rr, cc = stack.pop()
+                        size += 1
+                        for dr in (-1, 0, 1):
+                            for dc in (-1, 0, 1):
+                                if dr == 0 and dc == 0:
+                                    continue
+                                r2 = rr + dr
+                                c2 = cc + dc
+                                if in_bounds(r2, c2) and not visited[r2][c2] and board[r2][c2] == player:
+                                    visited[r2][c2] = True
+                                    stack.append((r2, c2))
+                    if size > largest:
+                        largest = size
+    return components, largest, total
+
+def spread(board, player):
+    coords = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                coords.append((r, c))
+    if not coords:
+        return 0.0
+    n = len(coords)
+    avg_r = sum(r for r, _ in coords) / n
+    avg_c = sum(c for _, c in coords) / n
+    dist = 0.0
+    for r, c in coords:
+        dist += (r - avg_r) ** 2 + (c - avg_c) ** 2
+    return dist
+
+def evaluate(board):
+    my_comp, _, my_total = component_info(board, 1)
+    opp_comp, _, opp_total = component_info(board, -1)
+
+    if my_comp == 1:
+        return 10000 + (my_total - opp_total)
+    if opp_comp == 1:
+        return -10000 - (my_total - opp_total)
+
+    my_spread = spread(board, 1)
+    opp_spread = spread(board, -1)
+
+    my_moves = len(generate_moves(board, 1))
+    opp_moves = len(generate_moves(board, -1))
+
+    score = (opp_comp - my_comp) * 50
+    score += (my_total - opp_total) * 5
+    score += (opp_spread - my_spread) * 0.5
+    score += (my_moves - opp_moves) * 1.0
+    return score
+
+def minimax(board, depth, alpha, beta, player, cache):
+    key = (depth, player, board_to_tuple(board))
+    if key in cache:
+        return cache[key]
+
+    my_comp, _, _ = component_info(board, 1)
+    opp_comp, _, _ = component_info(board, -1)
+    if my_comp == 1:
+        return 10000 + depth
+    if opp_comp == 1:
+        return -10000 - depth
+    if depth == 0:
+        val = evaluate(board)
+        cache[key] = val
+        return val
+
+    moves = generate_moves(board, player)
+    if not moves:
+        val = evaluate(board)
+        cache[key] = val
+        return val
+
+    if player == 1:
+        best = -float("inf")
+        for mv in moves:
+            nb = apply_move(board, mv, player)
+            val = minimax(nb, depth - 1, alpha, beta, -player, cache)
+            if val > best:
+                best = val
+            alpha = max(alpha, best)
+            if beta <= alpha:
+                break
+    else:
+        best = float("inf")
+        for mv in moves:
+            nb = apply_move(board, mv, player)
+            val = minimax(nb, depth - 1, alpha, beta, -player, cache)
+            if val < best:
+                best = val
+            beta = min(beta, best)
+            if beta <= alpha:
+                break
+    cache[key] = best
+    return best
+
+def board_to_tuple(board):
+    return tuple(tuple(row) for row in board)
+
+def move_to_str(move):
+    r1, c1, r2, c2 = move
+    return f"{r1},{c1}:{r2},{c2}"

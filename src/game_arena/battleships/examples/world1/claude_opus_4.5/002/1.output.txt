@@ -1,0 +1,240 @@
+<thinking>
+Let me think about a good strategy for Battleship.
+
+Key observations:
+1. Ships have lengths 5, 4, 3, 3, 2 - total of 17 cells
+2. When we get a hit (1), we should try to find the direction of the ship and sink it
+3. For hunting (when no hits are pending), we should use a probability-based approach
+
+Strategy:
+1. **Target mode**: If there are hits that aren't part of a sunk ship, prioritize cells adjacent to those hits
+2. **Hunt mode**: Use probability density to find the most likely cell to contain a ship
+
+For the probability approach:
+- For each possible ship placement, check if it's valid (doesn't overlap with misses)
+- Count how many valid placements cover each unknown cell
+- Target the cell with the highest count
+
+Let me implement this:
+
+1. First, identify if we have any "active" hits (hits that likely belong to unsunk ships)
+2. If we have active hits, look for adjacent cells to continue sinking
+3. If in hunt mode, calculate probabilities
+
+For detecting "active" hits vs sunk ships:
+- This is tricky because we don't know which ships are sunk
+- A simple heuristic: if we have a line of hits of length equal to a ship, it might be sunk
+- Actually, let's just prioritize any cell adjacent to a hit that hasn't been explored
+
+Let me think about the targeting logic more carefully:
+
+When we have hits:
+1. If there's a single hit, try all 4 adjacent cells
+2. If there are multiple aligned hits, try extending in that direction
+3. If we have multiple separate hits, focus on one at a time
+
+For hunt mode, I'll use a checkerboard pattern with probability weighting, since ships of length 2+ will always cover at least one cell of a checkerboard pattern.
+
+Actually, let me implement a probability-based approach that considers all remaining ships:
+
+```python
+def policy(board):
+    # Find all hits and misses
+    hits = []
+    unknown = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.append((r, c))
+            elif board[r][c] == 0:
+                unknown.append((r, c))
+    
+    # If we have hits, prioritize cells adjacent to hits
+    if hits:
+        # Find cells adjacent to hits that are unknown
+        candidates = set()
+        for r, c in hits:
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    candidates.add((nr, nc))
+        
+        if candidates:
+            # Prioritize based on alignment with existing hits
+            # ...
+            return best_candidate
+    
+    # Hunt mode - use probability
+    # ...
+```
+
+Let me refine this with proper probability calculation:
+
+```python
+import numpy as np
+
+def policy(board):
+    board = np.array(board)
+    ships = [5, 4, 3, 3, 2]
+    
+    # Calculate probability for each cell
+    prob = np.zeros((10, 10))
+    
+    for ship_len in ships:
+        # Horizontal placements
+        for r in range(10):
+            for c in range(10 - ship_len + 1):
+                cells = [(r, c + i) for i in range(ship_len)]
+                if all(board[r, c+i] != -1 for i in range(ship_len)):
+                    # Valid placement
+                    has_hit = any(board[r, c+i] == 1 for i in range(ship_len))
+                    for i in range(ship_len):
+                        if board[r, c+i] == 0:
+                            prob[r, c+i] += 10 if has_hit else 1
+        
+        # Vertical placements
+        for r in range(10 - ship_len + 1):
+            for c in range(10):
+                if all(board[r+i, c] != -1 for i in range(ship_len)):
+                    has_hit = any(board[r+i, c] == 1 for i in range(ship_len))
+                    for i in range(ship_len):
+                        if board[r+i, c] == 0:
+                            prob[r+i, c] += 10 if has_hit else 1
+    
+    # Find the cell with highest probability
+    max_prob = -1
+    best = None
+    for r in range(10):
+        for c in range(10):
+            if board[r, c] == 0 and prob[r, c] > max_prob:
+                max_prob = prob[r, c]
+                best = (r, c)
+    
+    return best
+```
+
+This is a good start but I can improve the hit-targeting logic. When we have hits, we should heavily weight cells that continue the line of hits.
+
+Let me also add better handling for the case where we need to deduce which ships are already sunk.
+</thinking>
+
+<code>
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    board = np.array(board)
+    ships = [5, 4, 3, 3, 2]
+    
+    # Find hits and potential targets
+    hits = set()
+    unknown = []
+    for r in range(10):
+        for c in range(10):
+            if board[r, c] == 1:
+                hits.add((r, c))
+            elif board[r, c] == 0:
+                unknown.append((r, c))
+    
+    if not unknown:
+        # Shouldn't happen, but fallback
+        return (0, 0)
+    
+    # Calculate probability density for each cell
+    prob = np.zeros((10, 10), dtype=float)
+    
+    for ship_len in ships:
+        # Horizontal placements
+        for r in range(10):
+            for c in range(10 - ship_len + 1):
+                valid = True
+                hit_count = 0
+                unknown_count = 0
+                for i in range(ship_len):
+                    if board[r, c + i] == -1:
+                        valid = False
+                        break
+                    elif board[r, c + i] == 1:
+                        hit_count += 1
+                    else:
+                        unknown_count += 1
+                
+                if valid and unknown_count > 0:
+                    # Weight placements that include hits much higher
+                    weight = 1.0
+                    if hit_count > 0:
+                        weight = 100.0 * (hit_count ** 2)
+                    
+                    for i in range(ship_len):
+                        if board[r, c + i] == 0:
+                            prob[r, c + i] += weight
+        
+        # Vertical placements
+        for r in range(10 - ship_len + 1):
+            for c in range(10):
+                valid = True
+                hit_count = 0
+                unknown_count = 0
+                for i in range(ship_len):
+                    if board[r + i, c] == -1:
+                        valid = False
+                        break
+                    elif board[r + i, c] == 1:
+                        hit_count += 1
+                    else:
+                        unknown_count += 1
+                
+                if valid and unknown_count > 0:
+                    weight = 1.0
+                    if hit_count > 0:
+                        weight = 100.0 * (hit_count ** 2)
+                    
+                    for i in range(ship_len):
+                        if board[r + i, c] == 0:
+                            prob[r + i, c] += weight
+    
+    # Find cells adjacent to hits (for prioritization)
+    adjacent_to_hit = set()
+    for r, c in hits:
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr, nc] == 0:
+                adjacent_to_hit.add((nr, nc))
+    
+    # If we have hits and adjacent unknowns, prioritize those
+    if hits and adjacent_to_hit:
+        best = None
+        best_prob = -1
+        for r, c in adjacent_to_hit:
+            if prob[r, c] > best_prob:
+                best_prob = prob[r, c]
+                best = (r, c)
+        if best:
+            return best
+    
+    # Otherwise, choose the cell with highest probability
+    # Add small bias for center cells in hunt mode (ships more likely there)
+    if not hits:
+        for r in range(10):
+            for c in range(10):
+                if board[r, c] == 0:
+                    # Slight center bias
+                    center_dist = abs(r - 4.5) + abs(c - 4.5)
+                    prob[r, c] += 0.1 * (9 - center_dist)
+                    # Checkerboard pattern preference for hunting
+                    if (r + c) % 2 == 0:
+                        prob[r, c] += 0.5
+    
+    best = None
+    best_prob = -1
+    for r in range(10):
+        for c in range(10):
+            if board[r, c] == 0 and prob[r, c] > best_prob:
+                best_prob = prob[r, c]
+                best = (r, c)
+    
+    if best:
+        return best
+    
+    # Fallback: return first unknown
+    return unknown[0]
+</code>

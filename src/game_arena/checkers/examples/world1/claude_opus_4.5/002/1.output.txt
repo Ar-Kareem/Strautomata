@@ -1,0 +1,166 @@
+My strategy for this Checkers policy is based on the following principles:
+
+1. **Mandatory Captures**: First, I identify all possible capture moves since captures are mandatory in checkers. I implement multi-jump captures to find the complete capture sequence.
+
+2. **Move Generation**: Generate all legal moves for both men and kings, considering their movement directions (men move in one direction based on color, kings move in both directions).
+
+3. **Evaluation Function**: I use a weighted evaluation considering:
+   - Material advantage (pieces and kings count)
+   - King value is worth more than regular men
+   - Positional bonuses for advancement toward promotion
+   - Center control bonus
+   - Back row protection (keeping pieces on the back rank for defense)
+
+4. **Minimax with Alpha-Beta Pruning**: I implement a minimax search with alpha-beta pruning to look several moves ahead and choose the best move based on the evaluation function. The search depth is limited to ensure we stay within the 1-second time constraint.
+
+5. **Move Ordering**: Captures are considered first to improve alpha-beta pruning efficiency.
+
+<code>
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    my_men = set(my_men)
+    my_kings = set(my_kings)
+    opp_men = set(opp_men)
+    opp_kings = set(opp_kings)
+    
+    forward = -1 if color == 'b' else 1
+    opp_forward = -forward
+    promo_row = 0 if color == 'b' else 7
+    opp_promo_row = 7 if color == 'b' else 0
+    
+    def get_captures(men, kings, opp_m, opp_k, fwd, is_my_turn=True):
+        captures = []
+        all_opp = opp_m | opp_k
+        all_pieces = men | kings | opp_m | opp_k
+        
+        for r, c in men:
+            dirs = [(fwd, -1), (fwd, 1)]
+            for dr, dc in dirs:
+                mr, mc = r + dr, c + dc
+                lr, lc = r + 2*dr, c + 2*dc
+                if 0 <= lr < 8 and 0 <= lc < 8:
+                    if (mr, mc) in all_opp and (lr, lc) not in all_pieces:
+                        captures.append(((r, c), (lr, lc), (mr, mc), False))
+        
+        for r, c in kings:
+            dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+            for dr, dc in dirs:
+                mr, mc = r + dr, c + dc
+                lr, lc = r + 2*dr, c + 2*dc
+                if 0 <= lr < 8 and 0 <= lc < 8:
+                    if (mr, mc) in all_opp and (lr, lc) not in all_pieces:
+                        captures.append(((r, c), (lr, lc), (mr, mc), True))
+        return captures
+    
+    def get_moves(men, kings, opp_m, opp_k, fwd, promo):
+        caps = get_captures(men, kings, opp_m, opp_k, fwd)
+        if caps:
+            return [(c[0], c[1]) for c in caps]
+        
+        moves = []
+        all_pieces = men | kings | opp_m | opp_k
+        
+        for r, c in men:
+            for dc in [-1, 1]:
+                nr, nc = r + fwd, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in all_pieces:
+                    moves.append(((r, c), (nr, nc)))
+        
+        for r, c in kings:
+            for dr in [-1, 1]:
+                for dc in [-1, 1]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in all_pieces:
+                        moves.append(((r, c), (nr, nc)))
+        return moves
+    
+    def evaluate(men, kings, opp_m, opp_k):
+        score = len(men) * 100 + len(kings) * 180
+        score -= len(opp_m) * 100 + len(opp_k) * 180
+        
+        for r, c in men:
+            adv = (7 - r) if color == 'b' else r
+            score += adv * 5
+            if 2 <= c <= 5:
+                score += 3
+        for r, c in kings:
+            if 2 <= c <= 5 and 2 <= r <= 5:
+                score += 5
+        return score
+    
+    def minimax(men, kings, opp_m, opp_k, depth, alpha, beta, maximizing, fwd, promo):
+        if depth == 0 or (not men and not kings) or (not opp_m and not opp_k):
+            return evaluate(men, kings, opp_m, opp_k) if maximizing or depth == 0 else evaluate(men, kings, opp_m, opp_k)
+        
+        if maximizing:
+            moves = get_moves(men, kings, opp_m, opp_k, fwd, promo)
+            if not moves:
+                return -10000
+            max_eval = -float('inf')
+            for frm, to in moves:
+                nm, nk, nom, nok = apply_move(men, kings, opp_m, opp_k, frm, to, fwd, promo)
+                ev = minimax(nom, nok, nm, nk, depth-1, alpha, beta, False, -fwd, 7-promo)
+                max_eval = max(max_eval, ev)
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            moves = get_moves(opp_m, opp_k, men, kings, -fwd, 7-promo)
+            if not moves:
+                return 10000
+            min_eval = float('inf')
+            for frm, to in moves:
+                nom, nok, nm, nk = apply_move(opp_m, opp_k, men, kings, frm, to, -fwd, 7-promo)
+                ev = minimax(nm, nk, nom, nok, depth-1, alpha, beta, True, fwd, promo)
+                min_eval = min(min_eval, ev)
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    def apply_move(men, kings, opp_m, opp_k, frm, to, fwd, promo):
+        nm = set(men)
+        nk = set(kings)
+        nom = set(opp_m)
+        nok = set(opp_k)
+        
+        is_king = frm in nk
+        if is_king:
+            nk.remove(frm)
+            nk.add(to)
+        else:
+            nm.remove(frm)
+            if to[0] == promo:
+                nk.add(to)
+            else:
+                nm.add(to)
+        
+        if abs(to[0] - frm[0]) == 2:
+            cap_r, cap_c = (frm[0] + to[0]) // 2, (frm[1] + to[1]) // 2
+            nom.discard((cap_r, cap_c))
+            nok.discard((cap_r, cap_c))
+        
+        return nm, nk, nom, nok
+    
+    moves = get_moves(my_men, my_kings, opp_men, opp_kings, forward, promo_row)
+    
+    if not moves:
+        for r, c in my_men | my_kings:
+            return ((r, c), (r, c))
+    
+    if len(moves) == 1:
+        return moves[0]
+    
+    best_move = moves[0]
+    best_score = -float('inf')
+    
+    depth = 4
+    for frm, to in moves:
+        nm, nk, nom, nok = apply_move(my_men, my_kings, opp_men, opp_kings, frm, to, forward, promo_row)
+        score = minimax(nom, nok, nm, nk, depth-1, -float('inf'), float('inf'), False, opp_forward, opp_promo_row)
+        if score > best_score:
+            best_score = score
+            best_move = (frm, to)
+    
+    return best_move
+</code>

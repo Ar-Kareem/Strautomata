@@ -1,0 +1,46 @@
+
+def calculate_value(hand, target):
+    sum_face = 0
+    num_aces = 0
+    value_map = {
+        '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7,
+        '8': 8, '9': 9, '10': 10, 'J': 10, 'Q': 10, 'K': 10
+    }
+    for c in hand:
+        if c == 'A':
+            num_aces += 1
+        else:
+            sum_face += value_map[c]
+    
+    # Try to maximize sum by treating as many Aces as 11 as possible without exceeding target
+    best_sum = sum_face + num_aces * 1
+    for i in range(num_aces + 1):
+        current_sum = sum_face + i * 10
+        if current_sum <= target:
+            best_sum = current_sum
+        else:
+            break
+    return best_sum
+
+def policy(hand, target):
+    if not hand:
+        return "HIT"  # Special case for empty hand, but unlikely
+    
+    current_value = calculate_value(hand, target)
+    remaining = {'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'} - set(hand)
+    
+    if current_value >= target or not remaining:
+        return "STAY"
+    
+    # Compute expected value after hitting
+    expected_value = 0
+    count = len(remaining)
+    for c in remaining:
+        new_hand = hand + [c]
+        new_value = calculate_value(new_hand, target)
+        expected_value += new_value / count
+    
+    if expected_value > current_value:
+        return "HIT"
+    else:
+        return "STAY"

@@ -1,0 +1,80 @@
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Optimized Blackjack policy with dynamic risk-based decision making.
+    
+    Strategy:
+    1. Calculate current hand value (optimizing Ace usage)
+    2. If at/above target: always stay
+    3. If far from target (>=9): always hit
+    4. If close to target (<=2): always stay
+    5. Otherwise, calculate probability of busting on next draw
+    6. Hit if bust probability < dynamic threshold based on distance to target
+    """
+    
+    # Precompute card base values for efficiency
+    base_values = {
+        'A': 11,  # Temporarily count as 11, will adjust if bust
+        '2': 2, '3': 3, '4': 4, '5': 5, '6': 6,
+        '7': 7, '8': 8, '9': 9, '10': 10,
+        'J': 10, 'Q': 10, 'K': 10
+    }
+    
+    def calculate_hand_value(cards):
+        """Calculate optimal hand value with Ace adjustment"""
+        total = 0
+        ace_count = 0
+        
+        for card in cards:
+            if card == 'A':
+                ace_count += 1
+                total += 11  # Start with 11 per Ace
+            else:
+                total += base_values[card]
+        
+        # Convert Aces from 11 to 1 (subtract 10) until not busting or no Aces left
+        while total > target and ace_count > 0:
+            total -= 10
+            ace_count -= 1
+        
+        return total
+    
+    # Get current hand value
+    current_value = calculate_hand_value(hand)
+    
+    # Can't improve without busting
+    if current_value >= target:
+        return "STAY"
+    
+    distance = target - current_value
+    
+    # Aggressive strategy when far from target
+    if distance >= 9:
+        return "HIT"
+    
+    # Conservative strategy when very close
+    if distance <= 2:
+        return "STAY"
+    
+    # Calculate remaining cards in our deck
+    full_deck = list(base_values.keys())
+    remaining_cards = [card for card in full_deck if card not in hand]
+    
+    # No cards left to draw
+    if not remaining_cards:
+        return "STAY"
+    
+    # Calculate probability of busting on next draw
+    bust_count = 0
+    for card in remaining_cards:
+        if calculate_hand_value(hand + [card]) > target:
+            bust_count += 1
+    
+    bust_probability = bust_count / len(remaining_cards)
+    
+    # Dynamic risk threshold: higher tolerance when further away
+    # Ranges from 0.3 (distance=3) to 0.8 (distance=8)
+    risk_threshold = distance / 10.0
+    
+    # Hit if bust probability is acceptable given our distance
+    return "HIT" if bust_probability < risk_threshold else "STAY"

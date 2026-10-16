@@ -1,0 +1,359 @@
+<div
+  class="panel panel-primary arena-setup-panel"
+  [style.--arena-setup-max-width.px]="panelMaxWidth"
+  [class.is-resizing]="isResizingPanel"
+>
+  <div class="form-steps">
+    <div class="form-step">
+      <div class="step-marker">1</div>
+      <div class="step-body">
+        <label for="gameSelect">Game</label>
+        <select
+          id="gameSelect"
+          [ngModel]="state().selection.id"
+          (ngModelChange)="onGameChange($event)"
+        >
+          <option [ngValue]="null">Choose a game</option>
+          @for (game of state().catalog.games; track game.id) {
+            <option [ngValue]="game.id">{{ game.label }}{{ game.hasGui ? '' : ' [No GUI]' }}</option>
+          }
+        </select>
+      </div>
+    </div>
+
+    @if (!!activeGame) {
+      <div class="form-step form-step--lineup">
+        <div class="step-body step-body--lineup">
+          @if (isBotsSuccessful) {
+          <div class="lineup-shell">
+            @if (state().selection.matchup === null) {
+              <!-- dims the rest of the page while the Players section waits for a choice -->
+              <div class="choice-dim" aria-hidden="true"></div>
+            }
+            <div class="lineup-section lineup-section--top" [class.needs-choice]="state().selection.matchup === null">
+              <div class="step-marker step-marker--inline">2</div>
+              <div class="lineup-section-main">
+                <div class="lineup-head-row">
+                  <label>Players</label>
+                </div>
+                <div class="lineup-options" role="radiogroup" aria-label="Matchup">
+                  <label class="lineup-option">
+                    <input
+                      type="radio"
+                      name="matchup"
+                      [ngModel]="state().selection.matchup"
+                      (ngModelChange)="onMatchupChange($event)"
+                      value="ai-vs-ai"
+                    />
+                    <span>AI vs AI</span>
+                  </label>
+                  <label class="lineup-option" [class.is-disabled]="!canUseHumanBots">
+                    <input
+                      type="radio"
+                      name="matchup"
+                      [ngModel]="state().selection.matchup"
+                      (ngModelChange)="onMatchupChange($event)"
+                      value="human-vs-ai"
+                      [disabled]="!canUseHumanBots"
+                    />
+                    <span>Human vs AI</span>
+                  </label>
+                  <label class="lineup-option" [class.is-disabled]="!canUseHumanBots">
+                    <input
+                      type="radio"
+                      name="matchup"
+                      [ngModel]="state().selection.matchup"
+                      (ngModelChange)="onMatchupChange($event)"
+                      value="human-vs-human"
+                      [disabled]="!canUseHumanBots"
+                    />
+                    <span>Human vs Human</span>
+                  </label>
+                </div>
+                @if (!canUseHumanBots) {
+                  <p class="hint lineup-hint">Human modes require a GUI-enabled game.</p>
+                }
+              </div>
+            </div>
+            <div class="lineup-section lineup-section--bottom">
+              <div class="bot-grid">
+            <div class="bot-slot">
+              <span class="bot-label">Automaton A</span>
+              <div class="bot-picker-row">
+                <arena-bot-picker
+                  label="Automaton A"
+                  [bots]="visibleBots"
+                  [selectedId]="state().selection.botAId"
+                  [elo]="activeEloMap"
+                  [showAll]="showAllBots"
+                  [showAllEnabled]="isShowAllBotsToggleEnabled"
+                  [showAllTooltip]="showAllBotsTooltip"
+                  (selectedChange)="onBotChange('a', $event)"
+                  (showAllChange)="onShowAllBotsChange($event)"
+                ></arena-bot-picker>
+                <div class="bot-actions">
+                  <button
+                    class="ghost-button bot-random"
+                    type="button"
+                    (click)="selectRandomBot('a')"
+                    aria-label="Random automaton A"
+                    title="Random automaton A"
+                  >
+                    <i class="fa-solid fa-shuffle" aria-hidden="true"></i>
+                  </button>
+                  <div
+                    class="bot-elo-badge"
+                    [class.is-empty]="isBotEloEmpty(state().selection.botAId)"
+                    [class.is-dnq]="isBotEloDnq(state().selection.botAId)"
+                    [attr.aria-label]="'ELO ' + getBotEloDisplay(state().selection.botAId)"
+                    [pTooltip]="getBotEloTooltip(state().selection.botAId)"
+                    tooltipPosition="top"
+                  >
+                    {{ getBotEloDisplay(state().selection.botAId) }}
+                  </div>
+                </div>
+              </div>
+              <div class="bot-strategy-panel">
+                <div class="bot-strategy-head">
+                  <span class="bot-strategy-title">Details</span>
+                  <div class="bot-strategy-actions">
+                    <button
+                      class="ghost-button"
+                      type="button"
+                      [disabled]="!state().selection.botAId"
+                      (click)="openStrategyModal('a')"
+                      aria-label="Expand strategy"
+                      title="Expand strategy"
+                    >
+                      <i class="fa-solid fa-up-right-and-down-left-from-center" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </div>
+                <div class="bot-strategy-body">
+                  @if (!state().selection.botAId) {
+                    <div class="bot-strategy-meta">Select an automaton to load its strategy.</div>
+                  } @else if (state().selection.botAId === 'human') {
+                    <div class="bot-strategy-meta is-human">Your Brain :)</div>
+                  } @else if (state().botStrategies.a.loading) {
+                    <div class="bot-strategy-meta">Loading strategy...</div>
+                  } @else if (state().botStrategies.a.error) {
+                    <div class="bot-strategy-meta">{{ state().botStrategies.a.error }}</div>
+                  } @else if (state().botStrategies.a.text) {
+                    @if (getInlineStrategySections('a'); as sections) {
+                      @if (sections.strategy) {
+                        <details class="bot-strategy-collapsible">
+                          <summary class="bot-strategy-section-title">
+                            <span class="strategy-section-icon strategy-section-icon--strategy">
+                              <i class="fa-solid fa-lightbulb" aria-hidden="true"></i>
+                            </span>
+                            <span>Strategy</span>
+                          </summary>
+                          <pre class="bot-strategy-text">{{ sections.strategy }}</pre>
+                        </details>
+                      }
+                      @if (sections.code) {
+                        <details class="bot-strategy-collapsible bot-strategy-collapsible--code">
+                          <summary class="bot-strategy-section-title">
+                            <span class="strategy-section-icon strategy-section-icon--code">
+                              <i class="fa-solid fa-code" aria-hidden="true"></i>
+                            </span>
+                            <span>Code</span>
+                          </summary>
+                          <pre class="bot-strategy-text bot-strategy-text--code"><code class="python-highlight" [innerHTML]="highlightCodeHtml(sections.code)"></code></pre>
+                        </details>
+                      }
+                      @if (!sections.strategy && !sections.code) {
+                        <div class="bot-strategy-meta">Strategy not available.</div>
+                      }
+                    }
+                  } @else {
+                    <div class="bot-strategy-meta">Strategy not available.</div>
+                  }
+                </div>
+              </div>
+            </div>
+            <div class="bot-slot">
+              <span class="bot-label">Automaton B</span>
+              <div class="bot-picker-row">
+                <arena-bot-picker
+                  label="Automaton B"
+                  [bots]="visibleBots"
+                  [selectedId]="state().selection.botBId"
+                  [elo]="activeEloMap"
+                  [showAll]="showAllBots"
+                  [showAllEnabled]="isShowAllBotsToggleEnabled"
+                  [showAllTooltip]="showAllBotsTooltip"
+                  (selectedChange)="onBotChange('b', $event)"
+                  (showAllChange)="onShowAllBotsChange($event)"
+                ></arena-bot-picker>
+                <div class="bot-actions">
+                  <button
+                    class="ghost-button bot-random"
+                    type="button"
+                    (click)="selectRandomBot('b')"
+                    aria-label="Random automaton B"
+                    title="Random automaton B"
+                  >
+                    <i class="fa-solid fa-shuffle" aria-hidden="true"></i>
+                  </button>
+                  <div
+                    class="bot-elo-badge"
+                    [class.is-empty]="isBotEloEmpty(state().selection.botBId)"
+                    [class.is-dnq]="isBotEloDnq(state().selection.botBId)"
+                    [attr.aria-label]="'ELO ' + getBotEloDisplay(state().selection.botBId)"
+                    [pTooltip]="getBotEloTooltip(state().selection.botBId)"
+                    tooltipPosition="top"
+                  >
+                    {{ getBotEloDisplay(state().selection.botBId) }}
+                  </div>
+                </div>
+              </div>
+              <div class="bot-strategy-panel">
+                <div class="bot-strategy-head">
+                  <span class="bot-strategy-title">Details</span>
+                  <div class="bot-strategy-actions">
+                    <button
+                      class="ghost-button"
+                      type="button"
+                      [disabled]="!state().selection.botBId"
+                      (click)="openStrategyModal('b')"
+                      aria-label="Expand strategy"
+                      title="Expand strategy"
+                    >
+                      <i class="fa-solid fa-up-right-and-down-left-from-center" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </div>
+                <div class="bot-strategy-body">
+                  @if (!state().selection.botBId) {
+                    <div class="bot-strategy-meta">Select an automaton to load its strategy.</div>
+                  } @else if (state().selection.botBId === 'human') {
+                    <div class="bot-strategy-meta is-human">Your Brain :)</div>
+                  } @else if (state().botStrategies.b.loading) {
+                    <div class="bot-strategy-meta">Loading strategy...</div>
+                  } @else if (state().botStrategies.b.error) {
+                    <div class="bot-strategy-meta">{{ state().botStrategies.b.error }}</div>
+                  } @else if (state().botStrategies.b.text) {
+                    @if (getInlineStrategySections('b'); as sections) {
+                      @if (sections.strategy) {
+                        <details class="bot-strategy-collapsible">
+                          <summary class="bot-strategy-section-title">
+                            <span class="strategy-section-icon strategy-section-icon--strategy">
+                              <i class="fa-solid fa-lightbulb" aria-hidden="true"></i>
+                            </span>
+                            <span>Strategy</span>
+                          </summary>
+                          <pre class="bot-strategy-text">{{ sections.strategy }}</pre>
+                        </details>
+                      }
+                      @if (sections.code) {
+                        <details class="bot-strategy-collapsible bot-strategy-collapsible--code">
+                          <summary class="bot-strategy-section-title">
+                            <span class="strategy-section-icon strategy-section-icon--code">
+                              <i class="fa-solid fa-code" aria-hidden="true"></i>
+                            </span>
+                            <span>Code</span>
+                          </summary>
+                          <pre class="bot-strategy-text bot-strategy-text--code"><code class="python-highlight" [innerHTML]="highlightCodeHtml(sections.code)"></code></pre>
+                        </details>
+                      }
+                      @if (!sections.strategy && !sections.code) {
+                        <div class="bot-strategy-meta">Strategy not available.</div>
+                      }
+                    }
+                  } @else {
+                    <div class="bot-strategy-meta">Strategy not available.</div>
+                  }
+                </div>
+              </div>
+            </div>
+              </div>
+            </div>
+          </div>
+          } @else {
+            <div class="lineup-shell">
+              <div class="lineup-section lineup-section--top">
+                <div class="step-marker step-marker--inline">2</div>
+                <div class="lineup-section-main">
+                  <label>Players</label>
+                  <p class="hint">Loading automata...</p>
+                </div>
+              </div>
+            </div>
+          }
+        </div>
+      </div>
+    }
+  </div>
+  <button
+    class="arena-panel-resize-handle"
+    type="button"
+    (pointerdown)="onPanelResizeStart($event)"
+    aria-label="Resize setup panel width"
+    title="Drag horizontally to resize panel"
+  ></button>
+</div>
+@if (isStrategyModalOpen) {
+  <div class="strategy-modal-backdrop" (click)="closeStrategyModal()">
+    <div
+      class="strategy-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="strategyModalTitle"
+      (click)="$event.stopPropagation()"
+    >
+      <div class="strategy-modal-head">
+        <div>
+          <div class="strategy-modal-kicker">{{ strategyModalTitle }}</div>
+          <h4 id="strategyModalTitle" class="strategy-modal-title">{{ activeStrategyLabel }}</h4>
+        </div>
+        <button class="ghost-button strategy-modal-close" type="button" (click)="closeStrategyModal()">
+          Close
+        </button>
+      </div>
+      <div class="strategy-modal-body">
+        @if (isActiveStrategyHuman) {
+          <div class="strategy-modal-meta is-human">Your Brain :)</div>
+        } @else if (activeStrategy; as strategy) {
+          @if (strategy.loading) {
+            <div class="strategy-modal-meta">Loading strategy...</div>
+          } @else if (strategy.error) {
+            <div class="strategy-modal-meta">{{ strategy.error }}</div>
+          } @else if (strategy.text) {
+            @if (getModalStrategySections(); as sections) {
+              @if (sections.strategy) {
+                <div class="strategy-modal-section">
+                  <div class="strategy-modal-section-title">
+                    <span class="strategy-section-icon strategy-section-icon--strategy">
+                      <i class="fa-solid fa-lightbulb" aria-hidden="true"></i>
+                    </span>
+                    <span>Strategy</span>
+                  </div>
+                  <pre class="strategy-modal-text">{{ sections.strategy }}</pre>
+                </div>
+              }
+              @if (sections.code) {
+                <div class="strategy-modal-section strategy-modal-section--code">
+                  <div class="strategy-modal-section-title">
+                    <span class="strategy-section-icon strategy-section-icon--code">
+                      <i class="fa-solid fa-code" aria-hidden="true"></i>
+                    </span>
+                    <span>Code</span>
+                  </div>
+                  <pre class="strategy-modal-text strategy-modal-text--code"><code class="python-highlight" [innerHTML]="highlightCodeHtml(sections.code)"></code></pre>
+                </div>
+              }
+              @if (!sections.strategy && !sections.code) {
+                <div class="strategy-modal-meta">Strategy not available.</div>
+              }
+            }
+          } @else {
+            <div class="strategy-modal-meta">Strategy not available.</div>
+          }
+        } @else {
+          <div class="strategy-modal-meta">Strategy not available.</div>
+        }
+      </div>
+    </div>
+  </div>
+}

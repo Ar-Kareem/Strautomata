@@ -1,0 +1,168 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    # Convert to numpy arrays for easier manipulation
+    board_size = len(valid_mask)
+    me_set = set(me)
+    opp_set = set(opp)
+    valid_positions = np.argwhere(valid_mask)
+
+    # Directions for hexagonal grid (6 neighbors)
+    directions = [
+        (0, 1),   # Right
+        (1, 0),   # Down-right
+        (1, -1),  # Down-left
+        (0, -1),  # Left
+        (-1, 0),  # Up-left
+        (-1, 1)   # Up-right
+    ]
+
+    # Helper function to get neighbors
+    def get_neighbors(pos):
+        row, col = pos
+        neighbors = []
+        for dr, dc in directions:
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < board_size and 0 <= nc < board_size and valid_mask[nr][nc]:
+                neighbors.append((nr, nc))
+        return neighbors
+
+    # Check if a move wins immediately
+    def is_win(move, player):
+        row, col = move
+        player_stones = me_set if player == 0 else opp_set
+        # Check for ring (loop)
+        if is_ring(move, player_stones):
+            return True
+        # Check for bridge (connects two corners)
+        if is_bridge(move, player_stones):
+            return True
+        # Check for fork (connects three edges)
+        if is_fork(move, player_stones):
+            return True
+        return False
+
+    # Check if a move blocks opponent's win
+    def is_blocking(move, player):
+        row, col = move
+        opp_stones = opp_set if player == 0 else me_set
+        # Simulate opponent's move
+        temp_stones = opp_stones.copy()
+        temp_stones.add((row, col))
+        # Check if opponent would win with this move
+        if is_win((row, col), 1 - player):
+            return True
+        return False
+
+    # Check for ring (loop)
+    def is_ring(move, stones):
+        row, col = move
+        visited = set()
+        stack = [move]
+        while stack:
+            pos = stack.pop()
+            if pos in visited:
+                continue
+            visited.add(pos)
+            for neighbor in get_neighbors(pos):
+                if neighbor in stones and neighbor not in visited:
+                    stack.append(neighbor)
+        # Check if the loop encloses any cell (simplified check)
+        # For simplicity, assume a loop is formed if the move connects two existing stones in a cycle
+        # This is a placeholder; a full implementation would require more complex checks
+        return len(visited) >= 4  # At least 4 stones in a loop
+
+    # Check for bridge (connects two corners)
+    def is_bridge(move, stones):
+        corners = [(0, 0), (0, board_size-1), (board_size-1, 0), (board_size-1, board_size-1)]
+        row, col = move
+        # Check if the move connects two corners
+        for corner in corners:
+            if corner in stones:
+                # Check if the move connects to another corner
+                for other_corner in corners:
+                    if other_corner != corner and other_corner in stones:
+                        # Check if there's a path between the two corners via the move
+                        # This is a simplified check; a full implementation would require BFS
+                        return True
+        return False
+
+    # Check for fork (connects three edges)
+    def is_fork(move, stones):
+        edges = set()
+        # Define edge cells (non-corner)
+        for row in range(board_size):
+            for col in range(board_size):
+                if (row == 0 or row == board_size-1 or col == 0 or col == board_size-1) and \
+                   not ((row == 0 and col == 0) or (row == 0 and col == board_size-1) or
+                        (row == board_size-1 and col == 0) or (row == board_size-1 and col == board_size-1)):
+                    edges.add((row, col))
+        row, col = move
+        # Check if the move connects three edges
+        connected_edges = 0
+        for neighbor in get_neighbors(move):
+            if neighbor in edges and neighbor in stones:
+                connected_edges += 1
+        return connected_edges >= 3
+
+    # Evaluate all valid moves
+    best_move = None
+    best_score = -float('inf')
+
+    for move in valid_positions:
+        row, col = move[0], move[1]
+        if (row, col) in me_set or (row, col) in opp_set:
+            continue
+
+        # Check if this move wins
+        if is_win((row, col), 0):
+            return (row, col)
+
+        # Check if this move blocks opponent's win
+        if is_blocking((row, col), 0):
+            return (row, col)
+
+        # Score the move based on strategic value
+        score = 0
+
+        # Center control (higher score for center)
+        center_distance = np.sqrt((row - (board_size-1)/2)**2 + (col - (board_size-1)/2)**2)
+        score += 100 / (1 + center_distance)
+
+        # Edge control (avoid opponent's edges)
+        is_edge = (row == 0 or row == board_size-1 or col == 0 or col == board_size-1)
+        if is_edge:
+            score += 50
+
+        # Corner control (high value for corners)
+        is_corner = ((row == 0 or row == board_size-1) and (col == 0 or col == board_size-1))
+        if is_corner:
+            score += 100
+
+        # Mobility (more empty neighbors)
+        empty_neighbors = 0
+        for neighbor in get_neighbors((row, col)):
+            if neighbor not in me_set and neighbor not in opp_set:
+                empty_neighbors += 1
+        score += empty_neighbors * 5
+
+        # Potential ring, bridge, or fork
+        if is_ring((row, col), me_set):
+            score += 200
+        if is_bridge((row, col), me_set):
+            score += 200
+        if is_fork((row, col), me_set):
+            score += 200
+
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = (row, col)
+
+    # Fallback: random move if no clear strategy
+    if best_move is None:
+        best_move = valid_positions[np.random.randint(0, len(valid_positions))]
+
+    return best_move

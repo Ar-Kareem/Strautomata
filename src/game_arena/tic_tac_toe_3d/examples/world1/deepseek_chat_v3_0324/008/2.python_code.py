@@ -1,0 +1,87 @@
+
+import numpy as np
+import random
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Convert to numpy array for easier manipulation
+    board = np.array(board)
+    
+    # All possible lines in 3D tic-tac-toe (rows, columns, depths, and diagonals)
+    lines = []
+    
+    # Add all rows, columns, and depths
+    for i in range(3):
+        for j in range(3):
+            lines.append(board[i, j, :])  # depth lines
+            lines.append(board[i, :, j])  # column lines
+            lines.append(board[:, i, j])  # row lines
+    
+    # Add all face diagonals
+    for i in range(3):
+        lines.append([board[i, 0, 0], board[i, 1, 1], board[i, 2, 2]])  # main face diagonal
+        lines.append([board[i, 0, 2], board[i, 1, 1], board[i, 2, 0]])  # anti-face diagonal
+    
+    # Add all space diagonals
+    lines.append([board[0, 0, 0], board[1, 1, 1], board[2, 2, 2]])  # main space diagonal
+    lines.append([board[0, 0, 2], board[1, 1, 1], board[2, 2, 0]])  # anti-space diagonal
+    lines.append([board[0, 2, 0], board[1, 1, 1], board[2, 0, 2]])  # other space diagonal
+    lines.append([board[0, 2, 2], board[1, 1, 1], board[2, 0, 0]])  # other anti-space diagonal
+    
+    # Check for winning move (two 1s and one 0)
+    for line in lines:
+        if np.sum(line == 1) == 2 and np.sum(line == 0) == 1:
+            empty_pos = np.where(line == 0)[0][0]
+            # Find the 3D coordinates of this empty cell
+            for i in range(3):
+                for j in range(3):
+                    for k in range(3):
+                        if board[i, j, k] == 0 and any([np.array_equal(board[i, j, :], line),
+                                                       np.array_equal(board[i, :, k], line),
+                                                       np.array_equal(board[:, j, k], line),
+                                                       (i == j == k and board[0, 0, 0] == line[0] and board[1, 1, 1] == line[1] and board[2, 2, 2] == line[2]),
+                                                       (i == j and k == 2 - i and board[0, 0, 2] == line[0] and board[1, 1, 1] == line[1] and board[2, 2, 0] == line[2]),
+                                                       (i == k and j == 2 - i and board[0, 2, 0] == line[0] and board[1, 1, 1] == line[1] and board[2, 0, 2] == line[2]),
+                                                       (j == k and i == 2 - j and board[2, 0, 0] == line[0] and board[1, 1, 1] == line[1] and board[0, 2, 2] == line[2])]):
+                            return (i, j, k)
+    
+    # Check for blocking move (two -1s and one 0)
+    for line in lines:
+        if np.sum(line == -1) == 2 and np.sum(line == 0) == 1:
+            empty_pos = np.where(line == 0)[0][0]
+            # Find the 3D coordinates of this empty cell
+            for i in range(3):
+                for j in range(3):
+                    for k in range(3):
+                        if board[i, j, k] == 0 and any([np.array_equal(board[i, j, :], line),
+                                                       np.array_equal(board[i, :, k], line),
+                                                       np.array_equal(board[:, j, k], line),
+                                                       (i == j == k and board[0, 0, 0] == line[0] and board[1, 1, 1] == line[1] and board[2, 2, 2] == line[2]),
+                                                       (i == j and k == 2 - i and board[0, 0, 2] == line[0] and board[1, 1, 1] == line[1] and board[2, 2, 0] == line[2]),
+                                                       (i == k and j == 2 - i and board[0, 2, 0] == line[0] and board[1, 1, 1] == line[1] and board[2, 0, 2] == line[2]),
+                                                       (j == k and i == 2 - j and board[2, 0, 0] == line[0] and board[1, 1, 1] == line[1] and board[0, 2, 2] == line[2])]):
+                            return (i, j, k)
+    
+    # Try to take the center if available
+    if board[1, 1, 1] == 0:
+        return (1, 1, 1)
+    
+    # Try to take a corner
+    corners = [(0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+               (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)]
+    random.shuffle(corners)
+    for corner in corners:
+        if board[corner] == 0:
+            return corner
+    
+    # Take any available cell
+    empty_cells = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i, j, k] == 0:
+                    empty_cells.append((i, j, k))
+    if empty_cells:
+        return random.choice(empty_cells)
+    
+    # Shouldn't reach here if board isn't full
+    return (0, 0, 0)

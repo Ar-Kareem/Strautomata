@@ -1,0 +1,794 @@
+<thinking>
+The user wants a Python policy for a simplified Blackjack-like game.
+The goal is to get as close as possible to the target `T` without exceeding it.
+The policy needs to return either "HIT" or "STAY".
+
+Let's break down the card values and hand evaluation first.
+Card values:
+- "2"-"10": Face value
+- "J", "Q", "K": 10
+- "A": 11 (if current sum + 11 <= T) or 1 (otherwise)
+
+The `policy` function will be called repeatedly, each time with the current `hand` and the `target`.
+
+My strategy should be to maximize my chances of winning.
+Winning conditions:
+1. Opponent busts, I don't bust -> I win.
+2. Neither busts, I am closer to `T` than the opponent -> I win.
+3. Opponent busts and I bust -> Draw.
+
+Losing conditions:
+1. I bust -> I lose (unless opponent also busts).
+
+This is a single-player policy, meaning I don't know the opponent's hand or strategy.
+Therefore, my primary focus should be on *my* hand and trying to achieve the best possible score relative to `T` without busting.
+
+Let's define a function to calculate the current value of the hand. This function needs to handle the "A" card intelligently. An Ace can be 11 or 1.
+The rule states: "A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T). This means, an ace *always* prefers to be 11, *unless* making it 11 would bust the hand *relative to T*. Or, more precisely, if making it 11 would push the total *over* T, it should be 1. If sum is already > T, it makes no difference, but it's already a bust anyway.
+
+Let's refine the Ace rule:
+When calculating the hand value, first sum all non-Ace cards.
+Then, for each Ace:
+  - If `current_sum + 11 <= T`, choose 11.
+  - Else, choose 1.
+This implies we should prioritize using 11 for Aces as long as it keeps us under or equal to T. If multiple Aces, we can count them as 11s initially, and then convert them to 1s one by one if the total exceeds T.
+
+Example: hand = ["A", "5"], T = 15
+  - Non-Ace sum = 5
+  - Add Ace as 11: 5 + 11 = 16. 16 > T (15). So Ace should be 1.
+  - Final sum = 5 + 1 = 6.
+
+Example: hand = ["A", "5"], T = 20
+  - Non-Ace sum = 5
+  - Add Ace as 11: 5 + 11 = 16. 16 <= T (20). So Ace is 11.
+  - Final sum = 5 + 11 = 16.
+
+This seems like the correct interpretation.
+
+Now, for the policy making a decision ("HIT" or "STAY").
+The core idea is to "HIT" if there's a good chance to improve the hand without busting, and "STAY" if hitting is too risky or the current hand is already good.
+
+What constitutes "too risky"?
+If the current hand value + the smallest possible drawn card (a "2") makes us bust, then we should definitely "STAY".
+What's the smallest card value? "2" is 2.
+So, if `current_value + 2 > T`, we should "STAY". This seems like a reasonable lower bound for staying.
+
+What constitutes "good"?
+If `current_value` is far from `T`, we want to hit.
+If `current_value` is very close to `T`, we might want to stay.
+
+Let's calculate the `current_value` of the hand first.
+
+```python
+def get_card_value(card: str) -> int:
+    if card in ("J", "Q", "K"):
+        return 10
+    elif card == "A":
+        return 11 # Temporary, will be adjusted
+    else:
+        return int(card)
+
+def calculate_hand_value(hand: list[str], target: int) -> int:
+    num_aces = 0
+    current_sum = 0
+    for card in hand:
+        if card == "A":
+            num_aces += 1
+        else:
+            current_sum += get_card_value(card)
+
+    # Add Aces, prioritizing 11 if possible, then reducing to 1
+    for _ in range(num_aces):
+        if current_sum + 11 <= target:
+            current_sum += 11
+        else:
+            current_sum += 1
+    return current_sum
+```
+
+Now for the `policy` logic.
+
+Consider the current `hand_value`.
+1. If `hand_value > target`, we have busted. This function doesn't handle busted state explicitly, it just returns "HIT" or "STAY". The game rules say "If at any point the sum of your card values is greater than target, you bust and immediately lose." So, if `hand_value > target`, the previous hit caused the bust; this call is just to reflect that state, but we can't do anything about it. If we *are* busted, the previous turn already determined our fate. The policy is deciding *before* drawing the next card. So, if our *current* hand is already over target, there's nothing to do, the game is over. If `calculate_hand_value` returns something greater than `target`, returning "STAY" or "HIT" is moot. Assume we always call `policy` when `hand_value <= target`.
+
+2. What is the optimal stopping point? In standard Blackjack, it's often around 17-18. Here, our target `T` varies.
+If `hand_value` is close to `T`, hitting is risky.
+If `hand_value` is far from `T`, hitting is less risky and potentially rewarding.
+
+Let's think about the remaining cards in our deck. We have a 13-card deck. We know which cards are in our `hand`. The cards *not* in our hand are the ones we might draw.
+The problem statement says "You have your own 13-card deck (one copy of each rank)". This implies a very small deck, and what's *left* in the deck changes.
+This means we can calculate the probability of busting if we hit, or the probability of improving.
+
+The available cards from the initial deck are:
+`{"A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"}`
+Values: `{11/1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10}`
+
+Let's determine the set of cards *not* yet in our hand.
+`deck_values = {"A":11, "2":2, "3":3, "4":4, "5":5, "6":6, "7":7, "8":8, "9":9, "10":10, "J":10, "Q":10, "K":10}`
+`cards_in_play = [card_str for card_str in hand]` (This is actually just the current hand, not the whole game's history of cards drawn)
+The problem says "hand: the list of strings representing the cards you currently hold." This implies the *entire* sequence of cards drawn for *this player*.
+
+So, we need to track `available_cards`.
+The prompt doesn't give us the game state history, *only* the current `hand`.
+"You have your own 13-card deck". This means if I draw a "3", that "3" is gone.
+If `hand` contains `"A", "5"`, it means those two cards have been drawn from my deck.
+The prompt *doesn't* offer methods to know which cards are remaining in the deck. This is a critical omission for advanced probability calculation.
+
+If I cannot know the remaining cards, then I must assume a fixed probability distribution for future draws *or* assume the initial full deck distribution.
+"You *draw the next card* from your deck." This implies the deck state is persistent.
+The problem setter usually provides `draw_pile` or similar if card counting is expected.
+Given the simplicity of the problem structure and "simplified Blackjack-like game", it's more likely that a simpler heuristic is expected, or that the "deck state" is just "all cards not currently in my hand".
+
+If I cannot track the deck:
+Then the probability distribution of the *next* card is effectively uniform over the 13 possible card values, assuming my hand is small. This is a simplification, but often made in simplified games if full deck tracking is not supported by API.
+
+Let's assume for a moment we are dealing with a full, fresh 13-card deck for each draw *for probability calculation*, as we don't have information about drawn cards being removed from the deck for future calculations (beyond what's in `hand`). This is the most reasonable assumption if there's no stateful deck available.
+The 13 cards are unique.
+`card_ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]`
+
+Let's re-evaluate the card value function to calculate potential outcomes when we HIT.
+If we have `current_sum` and we draw a card `C`:
+- If `C` is a number card (2-10) or J/Q/K (10): `new_sum = current_sum + value(C)`.
+- If `C` is "A": `new_sum_if_11 = current_sum + 11` and `new_sum_if_1 = current_sum + 1`. The choice depends on `target`.
+  - If `new_sum_if_11 <= target`, then Ace is 11.
+  - Else, Ace is 1.
+
+Let's calculate the probability of busting, or getting a desired score.
+`current_value = calculate_hand_value(hand, target)`
+
+If `current_value >= target`, as stated, we shouldn't be here (already busted or at target).
+So `current_value < target`.
+
+We need a threshold. What's a good `threshold`?
+If `current_value` is `T-X`, and I hit, what's my chance of busting?
+Max value of a card is 10 (or 11 for Ace *if* it fits).
+If `current_value + MIN_CARD_VALUE > target`, then hitting means busting with certainty (MIN_CARD_VALUE is 1 for an Ace, but 2 for a "2" card). No, the *lowest possible card value* is 1 (for an Ace that must be 1) or 2 (for "2").
+Let's consider the possible *incremental* values if we draw a card:
+- "A": can be +1 or +11
+- "2" to "9": +2 to +9
+- "10", "J", "Q", "K": +10
+
+Suppose `current_value` is `S`. We want to draw a card `C` such that `S + value(C) <= target`.
+Let's define `remaining_capacity = target - S`.
+
+If `remaining_capacity` is small, hitting is very risky.
+If `remaining_capacity` is large, hitting is less risky.
+
+Consider a simple heuristic:
+If `target - current_value` is less than some `critical_difference` value, "STAY". Otherwise, "HIT".
+What should `critical_difference` be?
+This value represents how much "headroom" we need to feel safe hitting.
+Max card value is 10 (or 1 on Ace if 11 busts).
+
+If `remaining_capacity == 0`, we are exactly at `target`. We should "STAY". (This is covered as `current_value == target`)
+If `remaining_capacity == 1`, any card except a special Ace (if it can be 1) will bust us. No card is *always* 1. An ace can be 1, but only if 11 busts. If `target - current_value` is 1, and we draw an Ace, then `current_value + 11 > target` implies Ace becomes 1. So `current_value + 1 = target`. This is a very specific case.
+For example, if `current_value = target - 1`, we need to draw a card that adds exactly 1. Only an Ace can do this, *if* `current_value + 11` would bust. This means that if we are at `target - 1`, drawing an Ace would bring us to `target`. All other cards (2-10) would bust us. Probability of drawing an Ace from a fresh 13-card deck is 1/13.
+So if `target - current_value` is 1, hitting is very risky (12/13 chance to bust). We should "STAY".
+
+If `target - current_value` is `X`.
+We need to draw a card `C` such that `value(C) <= X`.
+Let's iterate through the possible cards we could draw and their values.
+We'll assume a fresh 13-card deck for *each draw calculation*.
+This is because we don't have a mechanism to know which cards are *really* left in *our specific deck* throughout the game. The `hand` only shows what *we have*.
+
+Let's map card strings to their "base" values for drawing probability:
+`card_face_values = { "A": 11, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 10, "Q": 10, "K": 10 }`
+
+Number of cards we can draw without busting:
+`busting_cards_count = 0`
+`total_possible_cards = 13` (assuming no cards have been removed from the deck for this calculation, or this is a fresh deck)
+
+For each card `C` in `card_ranks`:
+  `potential_value = card_face_values[C]`
+  `temp_sum = current_value + potential_value`
+  If `C == "A"`:
+      If `current_value + 11 <= target`: # Ace can be 11
+          `actual_ace_value = 11`
+      Else: # Ace must be 1
+          `actual_ace_value = 1`
+      `temp_sum = current_value + actual_ace_value`
+
+  If `temp_sum > target`:
+      `busting_cards_count += 1`
+
+`bust_probability = busting_cards_count / total_possible_cards`
+
+Now, decide based on `bust_probability`.
+What's an acceptable `bust_probability`?
+If `bust_probability` is high (e.g., > 0.5), we should "STAY".
+If `bust_probability` is low, we can "HIT".
+
+What's a good threshold for this `bust_probability`?
+In standard Blackjack, players often hit on 12 against a high dealer card, even though it's risky.
+Here, we want to get *close* to `target`.
+If `current_value` is very low (e.g., 5), our `bust_probability` will be 0. We should definitely "HIT".
+If `current_value` is `T-1`, `bust_probability` will be 12/13 (if Ace logic correctly handled).
+If `current_value` is `T-2`, we can take "2" or "A" (as 1) or "A" (as 11 if `current_value + 11 <= target`).
+  Example: `current_value = 18`, `target = 20`. `remaining_capacity = 2`.
+  Cards that don't bust: "A" (as 1), "2". Only "A" (as 1) and "2" are safe (2 cards out of 13). Bust chance: 11/13. Very high.
+
+This probability-based approach seems more robust than a fixed `threshold`.
+
+Let's refine the probability calculation: iterate through the 13 card ranks. Each has a 1/13 chance.
+```python
+def calculate_hit_outcome_probabilities(current_hand_value: int, target: int) -> tuple[float, float, float]:
+    """
+    Calculates probabilities of busting, getting optimal value (target),
+    or getting an intermediate value, if the player hits.
+    Returns (prob_bust, prob_target, prob_can_improve_without_busting).
+    """
+    card_ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    card_base_values = { "A": 11, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 10, "Q": 10, "K": 10 }
+
+    total_cards = len(card_ranks)
+    busting_count = 0
+    target_count = 0
+    # Cards that improve without busting (i.e. not bust, not exactly target)
+    improving_count = 0
+
+    for card_rank in card_ranks:
+        potential_card_value = card_base_values[card_rank]
+        
+        # Special handling for Ace trying to be 11 or 1
+        if card_rank == "A":
+            if current_hand_value + 11 <= target:
+                actual_drawn_card_value = 11
+            else:
+                actual_drawn_card_value = 1
+        else:
+            actual_drawn_card_value = potential_card_value
+
+        new_sum = current_hand_value + actual_drawn_card_value
+
+        if new_sum > target:
+            busting_count += 1
+        elif new_sum == target:
+            target_count += 1
+        else: # new_sum < target
+            improving_count += 1
+
+    prob_bust = busting_count / total_cards
+    prob_target = target_count / total_cards
+    prob_improve = improving_count / total_cards
+    
+    return prob_bust, prob_target, prob_improve
+
+```
+
+Now, the `policy` function.
+What do we prioritize?
+1. Avoiding bust.
+2. Reaching `target`.
+3. Getting close to `target`.
+
+If `current_value == target`, we should definitely "STAY". We can't improve, and hitting risks busting.
+
+If `current_value < target`:
+  `prob_bust, prob_target, prob_improve = calculate_hit_outcome_probabilities(current_value, target)`
+
+Let's consider a threshold `RISK_TOLERANCE_BUST`. If `prob_bust` is higher than this, we "STAY".
+What value? Typically 0.5 is a common threshold. If we have >50% chance to bust, don't hit.
+
+If `prob_target > 0`: This is excellent, we have a chance to hit the target exactly.
+  Should we hit even if `prob_bust` is high? Say, `prob_target = 1/13` but `prob_bust = 11/13`.
+  This is a dilemma. Getting `target` is a strong win condition. Getting close without busting is also good.
+
+Let's assume the opponent also plays optimally (or at least reasonably).
+If *I* hit `target`, I'm in a very strong position.
+If *I* am close to `target` (e.g., `target - 1`, `target - 2`), staying has value.
+
+Perhaps a weighted score for hitting?
+`expected_hit_outcome = -bust_penalty * prob_bust + target_reward * prob_target + improve_reward * prob_improve`
+Compare this against `stay_value`. `stay_value` is basically `current_value`.
+
+This gets complicated quickly. Let's simplify.
+A standard Blackjack strategy often involves a hard 'stay' threshold.
+For this game, `target` varies.
+
+Strategy:
+1. Calculate `current_value`.
+2. If `current_value >= target`: "STAY". (If we are here, our last card made us either hit the target or bust. If bust, it's too late. If we hit the target, we should stay.)
+   Actually, the problem says "If at any point the sum of your card values is greater than target, you bust and immediately lose." This implies the game ends.
+   So, if `calculate_hand_value(hand, target)` returned `target`, we would stay. If it returned `target+X`, we would have already lost, and `policy` presumably wouldn't be called.
+   What if `hand` can result in `current_value` exactly equal to `target`? Example: `hand = ["K"], target = 10`. `calculate_hand_value` will return 10. In this case, we've hit the target, so we should "STAY".
+
+3. Calculate `prob_bust, prob_target, prob_improve` if we hit.
+4. Decision logic:
+   - If `prob_bust < 0.3` (arbitrary low threshold, say 30% risk of busting): "HIT". It's relatively safe.
+   - Else if `prob_target > 0` (even if `prob_bust` is high): If we have a chance to hit `target` exactly, it's very attractive. Should we take it? Maybe compare chance to bust vs chance to hit `target`.
+      If `prob_target > prob_bust` (unlikely but possible), definitely target.
+      If `prob_target > 0` and `prob_bust` is not *too* high:
+        What if `current_value = 18`, `target = 20`. `remaining_capacity = 2`.
+        Cards that give 2: "2" (1/13).
+        Cards that give 1: "A" (only if current_value + 11 > target, i.e., 18+11 (29) > 20, so yes, A=1) (1/13).
+        So, `prob_target = 2/13`.
+        Cards that bust (value > 2): "3" through "K", excluding "A" (if A=1). That's 13 - 2 = 11 cards. `prob_bust = 11/13`.
+        Here, `prob_target` is not `0`, but `prob_bust` is much higher. In this case, "STAY" is better.
+
+This suggests that `prob_bust` should be the primary factor.
+Let's try a simple, robust threshold for `prob_bust`.
+If the probability of busting on the next hit is too high, STAY. Otherwise, HIT.
+
+What's a good threshold for this simplified game?
+With a 13-card deck, if we have 5 cards left that bust us, `prob_bust` is 5/13 ≈ 0.38.
+If we have 6 cards left, `prob_bust` is 6/13 ≈ 0.46.
+If we have 7, `prob_bust` is 7/13 ≈ 0.54.
+
+A value for `prob_bust_threshold` around 0.4 or 0.5 seems reasonable.
+Let's try `bust_threshold = 0.5`. If more than half the remaining cards bust, we stay.
+
+Consider edge cases:
+- Hand: `[]`, Target: `10`. `current_value = 0`. `prob_bust = 0` (min card is 1 from Ace). `prob_improve = 1`. -> HIT. Good.
+- Hand: `["A"]`, Target: `10`. `current_value = 1` (since 0+11 > 10 is false, 11 would be the choice, wait, `current_sum + 11 <= target`. So 0 + 11 = 11. 11 > 10. So Ace is 1. `current_value = 1`).
+  `calculate_hand_value(["A"], 10)`: non-Ace sum=0, num_aces=1. `0 + 11 <= 10` is `False`. So Ace becomes 1. `current_sum = 1`.
+  `current_value = 1`. `target = 10`.
+  `remaining_capacity = 9`.
+  `calculate_hit_outcome_probabilities(1, 10)`:
+    - Ace: `1+11 <= 10` is `False`. So Ace is `1`. `new_sum = 1+1=2`. Improve.
+    - 2-9: `1+value <= 10`. All these improve.
+    - 10, J, Q, K (value 10): `1+10 = 11 > 10`. These bust.
+    Busting cards: 4 (10, J, Q, K).
+    Non-busting: 9 (A, 2, ..., 9).
+    `prob_bust = 4/13` approx 0.3.
+    `prob_improve = 9/13`.
+    Since `prob_bust (0.3)` is less than `0.5`, we HIT. This seems reasonable.
+
+- Hand: `["7", "8"]`, Target: `20`. `current_value = 15`. `remaining_capacity = 5`.
+  `calculate_hit_outcome_probabilities(15, 20)`:
+    - Ace: `15+11 <= 20` is `False`. So Ace is `1`. `new_sum = 15+1=16`. Improve.
+    - 2, 3, 4, 5: `15+value <= 20`. These improve.
+    - 6, 7, 8, 9, 10, J, Q, K: `15+value > 20`. These bust.
+    Busting cards: 8 (6, 7, 8, 9, 10, J, Q, K).
+    Non-busting: 5 (A, 2, 3, 4, 5).
+    `prob_bust = 8/13` approx 0.61.
+    Since `prob_bust (0.61)` is greater than `0.5`, we STAY. This seems reasonable.
+
+It seems a fixed `prob_bust_threshold = 0.5` is a good starting point.
+This threshold is usually for basic strategy in Blackjack when dealer card is known, but here we don't have that information. We are only optimizing our own score against a `target`.
+
+Final check of the `calculate_hand_value` function:
+`elif current_sum + 11 <= target:` This is right, if 11 still keeps us under or equal to T, use it.
+`else: current_sum += 1` This is crucial. If 11 would bust, use 1.
+
+What about the "deck tracking" vs "fresh deck" assumption?
+"You have your own 13-card deck (one copy of each rank)".
+"you draw the next card from your deck".
+This wording *strongly implies* deck tracking. If I hit and get a "5", then "5" is gone from my deck for future draws.
+The problem description *doesn't provide a way to pass the deck state*.
+The only information on subsequent calls is `hand: list[str]`. This `hand` itself *is* the history of cards drawn.
+
+Okay, so the `calculate_hit_outcome_probabilities` needs to account for cards *already in the hand* not being available in the draw pile.
+This means `total_cards` is `13 - len(hand)`.
+And the loop for `card_rank in card_ranks` should filter out cards already in `hand`.
+
+Corrected `calculate_hit_outcome_probabilities`:
+
+```python
+def calculate_hit_outcome_probabilities(hand: list[str], current_hand_value: int, target: int) -> tuple[float, float, float]:
+    """
+    Calculates probabilities of busting, getting optimal value (target),
+    or getting an intermediate value, if the player hits.
+    Considers cards already in hand as unavailable for draw.
+    Returns (prob_bust, prob_target, prob_can_improve_without_busting).
+    """
+    card_ranks_full_deck = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    card_base_values = { "A": 11, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 10, "Q": 10, "K": 10 }
+
+    # Determine cards remaining in the deck
+    # We need to correctly count occurrences for '10', 'J', 'Q', 'K' as they all map to value 10.
+    # The problem states "single suit of 13 distinct cards".
+    # And "one copy of each rank". So 'J', 'Q', 'K' are distinct cards, even if they have the same value.
+    # So if hand is ["J", "Q"], then "J" and "Q" are gone. "K" and "10" (card '10') are still available.
+
+    remaining_deck_cards = list(card_ranks_full_deck)
+    for card in hand:
+        # Remove only one instance of the card.
+        # This assumes card names in hand are unique, which they should be if from a single-suit deck.
+        if card in remaining_deck_cards:
+            remaining_deck_cards.remove(card)
+        # else: This case implies a card got into the hand that wasn't in the original 13,
+        # which shouldn't happen by game rules.
+
+    total_possible_draws = len(remaining_deck_cards)
+
+    if total_possible_draws == 0:
+        # No cards left to draw, effectively indicates "STAY" because cannot HIT
+        # (Though the game rules might force a draw, but for policy, we effectively STAY)
+        # This case is probably not reached if current_hand_value < target and we still choose to HIT
+        # Or if it is, consider it 100% bust if the game requires a draw and there's nothing.
+        # Let's assume this means we must STAY, as hitting is impossible / meaningless.
+        return 0.0, 0.0, 0.0 # Return 0 for all probabilities, which will lead to STAY
+
+    busting_count = 0
+    target_count = 0
+    improving_count = 0 # Getting a score < target
+
+    for drawn_card_rank in remaining_deck_cards:
+        potential_card_value = card_base_values[drawn_card_rank]
+        
+        # Special handling for Ace trying to be 11 or 1
+        if drawn_card_rank == "A":
+            # If current_hand_value + 11 fits within target, use 11.
+            # Otherwise, use 1.
+            if current_hand_value + 11 <= target:
+                actual_drawn_card_value = 11
+            else:
+                actual_drawn_card_value = 1
+        else:
+            actual_drawn_card_value = potential_card_value
+
+        new_sum = current_hand_value + actual_drawn_card_value
+
+        if new_sum > target:
+            busting_count += 1
+        elif new_sum == target:
+            target_count += 1
+        else: # new_sum < target
+            improving_count += 1
+
+    prob_bust = busting_count / total_possible_draws
+    prob_target = target_count / total_possible_draws
+    prob_improve = improving_count / total_possible_draws
+    
+    return prob_bust, prob_target, prob_improve
+```
+
+This updated probability calculation is much more accurate and aligns with the "own 13-card deck" rule.
+
+Now, strategy for `policy` using this:
+```python
+# Constants for policy tuning (could be parameters, but fixing for now)
+BUST_PROB_THRESHOLD = 0.4 # Tune this value. Maybe 0.35, 0.4, 0.45?
+                          # Higher threshold means more aggressive HITTING.
+                          # Lower threshold means more cautious STAYING.
+
+def policy(hand: list[str], target: int) -> str:
+    current_value = calculate_hand_value(hand, target)
+
+    # 1. If we have exactly hit the target, STAY. Cannot improve, only risk bust.
+    if current_value == target:
+        return "STAY"
+
+    # 2. If we are already over the target, we have busted. The game should have ended.
+    #    The policy isn't supposed to handle the consequences of busting itself,
+    #    but rather decide *before* the next card is drawn.
+    #    However, if `calculate_hand_value` returns > target, this means the hand *is* busted.
+    #    This implies the previous decision led to a bust.
+    #    If the simulator calls `policy` with a busted hand, returning "STAY" is the only sensible thing.
+    if current_value > target:
+        return "STAY" # Or raises an error, but "STAY" is safer for a competition.
+
+    # 3. Calculate probabilities of outcomes if we HIT.
+    prob_bust, prob_target, prob_improve = calculate_hit_outcome_probabilities(hand, current_value, target)
+
+    # 4. Decision logic based on probabilities.
+    #    Prioritize avoiding bust. If bust probability is too high, STAY.
+    if prob_bust > BUST_PROB_THRESHOLD:
+        return "STAY"
+    
+    #    Otherwise, we can HIT.
+    #    Even if prob_target is 0 and prob_improve is 0,
+    #    if prob_bust is low, it means we're still very far from target where most cards don't bust.
+    #    Example: current=5, target=30. prob_bust = 0. prob_improve = 1. HIT.
+    #    This covers the initial "always hit unless risky" part.
+
+    # If not too risky to bust, HIT.
+    return "HIT"
+
+```
+
+Let's think about `BUST_PROB_THRESHOLD`.
+The goal is to be *closer* to `target` than opponent.
+If I have 19 and target is 20, and `prob_bust` is very high (say, 11/13 for 2-10, J,Q,K, and A as 1 (11 busts)).
+It means only drawing a '2' or 'A'(as 1) would save me.
+If `current_value = target - 1`, what are the chances?
+  Say `target = 20`, `current_value = 19`.
+  `remaining_capacity = 1`.
+  Drawn card `C`:
+  - If `C="A"`: `19+11 > 20`, so `C=1`. `new_sum = 19+1=20`. `prob_target` is 1/N.
+  - If `C` is anything else (`2` to `K`): `new_sum = 19+value(C) > 20`. Busting.
+  So if A is available: `prob_target = 1/N`, `prob_bust = (N-1)/N`.
+  If A is *not* available: `prob_target = 0`, `prob_bust = N/N = 1`.
+
+  In this scenario (`current_value = target - 1`), `prob_bust` is very high, unless 'A' was drawn early and is gone.
+  If hand=["A"], target=20. Current value will be 1 (0+11>20 -> A=1). `current_value = 1`. Then hit probability calculation.
+  This means if we are at `target - 1`, we will usually "STAY" with `BUST_PROB_THRESHOLD = 0.4`.
+  E.g. If hand is `["8", "Q"]`, target `19`. `current_value = 18`. `prob_bust` for 18 to 19:
+  Available cards: Depends on initial `hand`. Assume full deck for a moment, after `8, Q` removed.
+  `remaining_deck_cards` has 11 cards.
+  `current_value = 18`, `target = 19`. `remaining_capacity = 1`.
+  - Draw 'A': `18+11 > 19`, so `A=1`. `new_sum = 19`. `target_count += 1`.
+  - Draw '2'...'K', '10'. All values are >=2. So `18+value` will be `20` or more. All these bust.
+  `target_count = 1` (Ace). `busting_count = 10` (all others). `total_possible_draws = 11`.
+  `prob_bust = 10/11` (approx 0.9).
+  `0.9 > 0.4`, so we "STAY". This is good.
+
+What about `prob_bust_threshold` selection?
+If `prob_target` is high, but `prob_bust` is also relatively high?
+Consider: `current_value = 10`, `target = 12`. `remaining_capacity = 2`.
+Assume `hand = ["10"]`.
+`remaining_deck_cards` has 12 cards.
+- Draw 'A': `10+11 > 12`, so `A=1`. `new_sum = 11`. `improving_count += 1`.
+- Draw '2': `new_sum = 12`. `target_count += 1`.
+- Draw all others (3 through K): `new_sum > 12`. Bust.
+`prob_bust = 10/12` (approx 0.83). `prob_target = 1/12`. `prob_improve = 1/12`.
+`0.83 > 0.4`, so we "STAY". Again, good.
+
+The simple `BUST_PROB_THRESHOLD` seems quite effective.
+The opponent's strategy is not known. We can only maximize our own score relative to `T`.
+Staying when bust risk is high seems like the safest and often optimal choice.
+
+Let's verify the "A" rule thoroughly for `calculate_hand_value` and `calculate_hit_outcome_probabilities`.
+"A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T)
+This means, if using 11 would make the hand value *exceed* T, then it must be 1. Otherwise, it prefers 11.
+
+`calculate_hand_value`:
+  - It iterates over aces after summing non-aces.
+  - `if current_sum + 11 <= target: current_sum += 11`
+  - `else: current_sum += 1`
+  This logic is correct for multiple aces too. E.g., `["A", "A"]`, `target=15`.
+  Non-Ace sum = 0.
+  First Ace: `0 + 11 <= 15` (True). `current_sum = 11`.
+  Second Ace: `11 + 11 <= 15` (False). So `current_sum = 11 + 1 = 12`.
+  Final sum = 12. This looks correct.
+
+`calculate_hit_outcome_probabilities`:
+  - `if drawn_card_rank == "A":`
+  - `if current_hand_value + 11 <= target:` then `actual_drawn_card_value = 11`.
+  - `else: actual_drawn_card_value = 1`.
+  This is also correct. It's evaluating the newly drawn Ace in the context of the current hand value and target.
+
+Consider the case where `total_possible_draws == 0`.
+This happens when `len(hand) == 13`. All cards are in hand.
+In this case, `prob_bust, prob_target, prob_improve` will all be `0.0`.
+`if prob_bust > BUST_PROB_THRESHOLD` will be `False` (`0.0 > 0.4` is false).
+So it will return "HIT". This is not ideal as we cannot hit.
+This means the `policy` should handle `total_possible_draws` specifically.
+If `total_possible_draws == 0`, we must "STAY" as there are no cards left.
+
+```python
+# ... (imports and helper functions)
+
+def policy(hand: list[str], target: int) -> str:
+    current_value = calculate_hand_value(hand, target)
+
+    # 1. If we have exactly hit the target, STAY. Cannot improve, only risk bust.
+    if current_value == target:
+        return "STAY"
+
+    # 2. If we are already over the target, we have busted. The game should have ended.
+    #    The policy isn't supposed to evaluate a busted hand for action, but if called, STAY.
+    if current_value > target:
+        return "STAY" 
+
+    # 3. Check if there are any cards left to draw.
+    card_ranks_full_deck = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining_deck_cards = list(card_ranks_full_deck)
+    for card in hand:
+        if card in remaining_deck_cards:
+            remaining_deck_cards.remove(card)
+    
+    if len(remaining_deck_cards) == 0:
+        return "STAY" # No cards left to draw.
+    
+    # 4. Calculate probabilities of outcomes if we HIT.
+    prob_bust, prob_target, prob_improve = calculate_hit_outcome_probabilities(hand, current_value, target)
+
+    # 5. Decision logic based on probabilities.
+    #    Prioritize avoiding bust.
+    #    Consider tuning this threshold for competitive play.
+    BUST_PROB_THRESHOLD = 0.4 
+    if prob_bust > BUST_PROB_THRESHOLD:
+        return "STAY"
+    
+    # Otherwise, if it's not too risky to bust, HIT.
+    return "HIT"
+
+```
+
+One final consideration: what if `target` is very low, e.g., `target=10`, `hand=[]`.
+`current_value = 0`.
+`remaining_deck_cards = ["A", "2", ..., "K"]` (13 cards).
+`prob_bust, prob_target, prob_improve = calculate_hit_outcome_probabilities([], 0, 10)`
+  - Draw 'A': `0+11 > 10`, so A=1. `new_sum=1`. Improve.
+  - Draw '2'...'9': `0+value` is fine. Improve.
+  - Draw '10', 'J', 'Q', 'K': `0+10=10`. Target.
+  `target_count = 4` (for '10', 'J', 'Q', 'K')
+  `improve_count = 9` (for 'A', '2', ..., '9')
+  `busting_count = 0`.
+  `prob_bust = 0/13 = 0`. `prob_target = 4/13`. `prob_improve = 9/13`.
+  `0.0 > 0.4` is false. So `policy` returns "HIT". Correct.
+
+Consider `target=15`, `hand=["10", "A"]`.
+`current_value = calculate_hand_value(["10", "A"], 15)`.
+  Non-Ace sum = 10. `num_aces = 1`.
+  `10 + 11 <= 15` (False). So Ace is 1. `current_value = 10 + 1 = 11`.
+  `if current_value == target`: (11 == 15) False.
+  `if current_value > target`: (11 > 15) False.
+  `remaining_deck_cards` = All cards except "10" and "A". (11 cards left).
+  `prob_bust, prob_target, prob_improve = calculate_hit_outcome_probabilities(["10", "A"], 11, 15)`.
+    `current_hand_value = 11`. `target = 15`. `remaining_capacity = 4`.
+    Cards to be drawn from `remaining_deck_cards` (size 11).
+    Available values `X` that don't bust: `X <= 4`.
+    - '2', '3', '4' (3 cards): `11+2=13, 11+3=14, 11+4=15`.
+      '2', '3' are `improve_count`. '4' makes `new_sum = 15`. `target_count`.
+    - '5', '6', '7', '8', '9', 'J', 'Q', 'K' (8 cards): All bust.
+    
+    `card_ranks_full_deck = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]`
+    `hand = ["10", "A"]`
+    `remaining_deck_cards = ["2", "3", "4", "5", "6", "7", "8", "9", "J", "Q", "K"]` (11 cards)
+    
+    For each in `remaining_deck_cards`:
+      - '2': `actual=2`. `sum=13`. Improve.
+      - '3': `actual=3`. `sum=14`. Improve.
+      - '4': `actual=4`. `sum=15`. Target.
+      - '5', '6', '7', '8', '9', 'J', 'Q', 'K': All values `>=5`, `sum >= 16`. Bust.
+    
+    `prob_bust = 8/11` (approx 0.72)
+    `prob_target = 1/11` (for '4')
+    `prob_improve = 2/11` (for '2', '3')
+    
+    `prob_bust (0.72) > BUST_PROB_THRESHOLD (0.4)`. So return "STAY".
+    This seems like a very good decision.
+
+The policy appears sound given the constraints and my interpretation of the game rules.
+The `BUST_PROB_THRESHOLD` is a hyperparameter that could be tuned. For a generic submission without knowledge of opponent's policy or value functions, a conservative value (like 0.4 or 0.35) seems like a safe bet to avoid busting, which is an immediate loss condition. Trying 0.4 for now.
+</thinking>
+```python
+def get_card_value(card: str) -> int:
+    """
+    Returns the base numeric value of a card.
+    Ace (A) is treated as 11 initially, its final value (1 or 11)
+    is determined by the hand calculation logic.
+    """
+    if card in ("J", "Q", "K"):
+        return 10
+    elif card == "A":
+        return 11
+    else:
+        return int(card)
+
+def calculate_hand_value(hand: list[str], target: int) -> int:
+    """
+    Calculates the total value of the given hand, adjusting for Aces.
+    An Ace counts as 11 if the total hand value (including that Ace)
+    does not exceed the target, otherwise it counts as 1.
+    This logic prioritizes making Aces 11 as long as it doesn't bust
+    or exceed the target.
+    """
+    num_aces = 0
+    current_sum = 0
+    non_ace_cards = []
+
+    # First, sum all non-Ace cards and count Aces
+    for card in hand:
+        if card == "A":
+            num_aces += 1
+        else:
+            non_ace_cards.append(card)
+            current_sum += get_card_value(card)
+
+    # Then, add Aces, prioritizing 11 if possible, then reducing to 1
+    # This loop ensures Aces are handled optimally (either 11 or 1)
+    # in the context of the current sum and target.
+    for _ in range(num_aces):
+        if current_sum + 11 <= target:
+            current_sum += 11
+        else:
+            current_sum += 1
+            
+    return current_sum
+
+def calculate_hit_outcome_probabilities(hand: list[str], current_hand_value: int, target: int) -> tuple[float, float, float]:
+    """
+    Calculates the probabilities of busting, hitting the target exactly,
+    or improving the hand (getting a score < target) if the player hits.
+    This function tracks which cards are no longer available in the deck.
+    
+    Returns (prob_bust, prob_target, prob_improve), where:
+    - prob_bust: probability of sum > target
+    - prob_target: probability of sum == target
+    - prob_improve: probability of sum < target
+    """
+    card_ranks_full_deck = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    card_base_values = { 
+        "A": 11, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, 
+        "10": 10, "J": 10, "Q": 10, "K": 10 
+    }
+
+    # Determine cards remaining in the deck
+    remaining_deck_cards = list(card_ranks_full_deck)
+    for card_in_hand in hand:
+        # Remove the card from the available deck.
+        # This assumes cards in the hand are unique and from the initial 13-card deck.
+        if card_in_hand in remaining_deck_cards:
+            remaining_deck_cards.remove(card_in_hand)
+
+    total_possible_draws = len(remaining_deck_cards)
+
+    # If no cards are left to draw, hitting is impossible/meaningless.
+    if total_possible_draws == 0:
+        return 0.0, 0.0, 0.0 # No chance to bust, hit target, or improve
+
+    busting_count = 0
+    target_count = 0
+    improving_count = 0 # Getting a score < target
+
+    for drawn_card_rank in remaining_deck_cards:
+        potential_card_value = card_base_values[drawn_card_rank]
+        
+        # Special handling for Ace: decide if it should be 11 or 1
+        if drawn_card_rank == "A":
+            # If current_hand_value + 11 would not exceed the target, use 11.
+            # Otherwise, it must be 1 to minimize risk/value.
+            if current_hand_value + 11 <= target:
+                actual_drawn_card_value = 11
+            else:
+                actual_drawn_card_value = 1
+        else:
+            actual_drawn_card_value = potential_card_value
+
+        new_sum_if_hit = current_hand_value + actual_drawn_card_value
+
+        if new_sum_if_hit > target:
+            busting_count += 1
+        elif new_sum_if_hit == target:
+            target_count += 1
+        else: # new_sum_if_hit < target
+            improving_count += 1
+
+    prob_bust = busting_count / total_possible_draws
+    prob_target = target_count / total_possible_draws
+    prob_improve = improving_count / total_possible_draws
+    
+    return prob_bust, prob_target, prob_improve
+
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Implements the policy for the simplified Blackjack-like game.
+    The policy aims to get as close to the target as possible without busting.
+    It decides to "HIT" or "STAY" based on the probability of busting
+    if another card is drawn.
+    """
+    current_value = calculate_hand_value(hand, target)
+
+    # If the current hand value already equals the target, STAY.
+    # No improvement possible, only risk of busting.
+    if current_value == target:
+        return "STAY"
+
+    # If the current hand value is already greater than the target,
+    # the player has busted. In this scenario, the game should effectively
+    # be over. Returning "STAY" is a safe choice if the simulator
+    # calls the policy in this state (though it shouldn't for a new decision).
+    if current_value > target:
+        return "STAY" 
+
+    # Check if there are any cards left to draw from the deck.
+    # If not, the player must STAY as they cannot physically draw a card.
+    available_cards_in_deck = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    for card_in_hand in hand:
+        if card_in_hand in available_cards_in_deck:
+            available_cards_in_deck.remove(card_in_hand)
+    
+    if len(available_cards_in_deck) == 0:
+        return "STAY" 
+    
+    # Calculate the probabilities of different outcomes if the player chooses to HIT.
+    prob_bust, prob_target, prob_improve = calculate_hit_outcome_probabilities(hand, current_value, target)
+
+    # Decision Logic:
+    # A threshold for the probability of busting. If the risk of busting
+    # by hitting is above this threshold, the player should STAY.
+    # This value can be tuned; a higher value makes the policy more aggressive,
+    # a lower value makes it more conservative. 0.4 (40%) is chosen as a balance.
+    BUST_PROB_THRESHOLD = 0.40 
+    
+    if prob_bust > BUST_PROB_THRESHOLD:
+        return "STAY"
+    
+    # If the probability of busting is low enough, the player tries to improve their hand.
+    return "HIT"
+
+```

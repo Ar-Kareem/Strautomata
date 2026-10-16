@@ -1,0 +1,82 @@
+The strategy for this policy is to prioritize moves that are adjacent to the opponent's stones to potentially capture them and to secure strategic positions near the corners or edges of the board. This approach aims to aggressively attack the opponent's weak stones and establish influence in key areas. The policy evaluates each legal move based on the number of adjacent opponent stones and its proximity to the corners, which helps in making informed decisions quickly while adhering to Go's rules.
+
+```python
+from collections import deque
+
+def policy(me, opponent, memory):
+    me_set = set(me)
+    opponent_set = set(opponent)
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # up, down, left, right
+
+    legal_moves = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            cell = (r, c)
+            if cell in me_set or cell in opponent_set:
+                continue
+            # Check legality by flood fill to ensure no suicide
+            adj = set()
+            queue = deque([cell])
+            visited = set()
+            visited.add(cell)
+            while queue:
+                x, y = queue.popleft()
+                for dx, dy in directions:
+                    nx, ny = x + dx, y + dy
+                    if 1 <= nx <= 19 and 1 <= ny <= 19:
+                        if (nx, ny) in me_set or (nx, ny) == cell:
+                            if (nx, ny) not in visited:
+                                visited.add((nx, ny))
+                                queue.append((nx, ny))
+            # Check if there's at least one liberty
+            has_liberty = False
+            for (x, y) in visited:
+                for dx, dy in directions:
+                    tx, ty = x + dx, y + dy
+                    if 1 <= tx <= 19 and 1 <= ty <= 19:
+                        adj_cell = (tx, ty)
+                        if adj_cell not in me_set and adj_cell not in opponent_set and adj_cell != (r, c):
+                            has_liberty = True
+                            break
+                if has_liberty:
+                    break
+            if has_liberty:
+                legal_moves.append(cell)
+
+    if not legal_moves:
+        return ((0, 0), memory)  # Pass if no legal moves
+
+    # Evaluate each legal move based on heuristic
+    best_move = None
+    best_score = -float('inf')
+    for move in legal_moves:
+        rx, cx = move
+        score = 0
+        # Count adjacent opponent cells to prioritize attacking
+        for dx, dy in directions:
+            x, y = rx + dx, cx + dy
+            if (x, y) in opponent_set:
+                score += 2  # Attacking proximity
+        # Encourage corner and edge play
+        if rx <= 3 or rx >= 17 or cx <= 3 or cx >= 17:
+            score += 20  # Strategic corner/edge control
+        # Beat opponent's strong adjacent groups if possible
+        for dx, dy in directions:
+            ex, ey = rx + dx, cx + dy
+            if (ex, ey) in opponent_set:
+                # Check if adjacent opponent cell has no other liberties
+                liberties = 0
+                for ex_check, ey_check in directions:
+                    if dx == ex_check and dy == ey_check:
+                        continue  # Skip adjacent to new move
+                    nx, ny = ex + ex_check, ey + ey_check
+                    if 1 <= nx <= 19 and 1 <= ny <= 19 and (nx, ny) not in me_set and (nx, ny) not in opponent_set and (nx, ny) != (r, c):
+                        liberties += 1
+                if liberties == 0:
+                    score += 50  # High value for immediate capture potential
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return (best_move, {})  # Return the selected move (memory can be updated if needed)
+```

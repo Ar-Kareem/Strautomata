@@ -1,0 +1,107 @@
+
+import copy
+
+def check_winner(board):
+    """Check the winner of the board. Returns 1 if player 1 wins, -1 if player -1 wins, 0 for draw, None if game ongoing."""
+    # Check rows
+    for i in range(3):
+        if board[i][0] == board[i][1] == board[i][2] != 0:
+            return board[i][0]
+    # Check columns
+    for j in range(3):
+        if board[0][j] == board[1][j] == board[2][j] != 0:
+            return board[0][j]
+    # Check diagonals
+    if board[0][0] == board[1][1] == board[2][2] != 0:
+        return board[0][0]
+    if board[0][2] == board[1][1] == board[2][0] != 0:
+        return board[0][2]
+    # Check if board is full
+    for row in board:
+        for cell in row:
+            if cell == 0:
+                return None
+    return 0
+
+def minimax(board, current_player, memo):
+    """Minimax algorithm with memoization. Returns the best value for the current player."""
+    # Convert board to a hashable tuple for memoization
+    key = tuple(tuple(row) for row in board)
+    if key in memo:
+        return memo[key]
+    
+    winner = check_winner(board)
+    if winner is not None:
+        memo[key] = winner
+        return winner
+    
+    if current_player == 1:  # Maximizing player
+        best_value = -2
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    new_board = [row[:] for row in board]
+                    new_board[i][j] = 1
+                    value = minimax(new_board, -1, memo)
+                    if value == 1:  # Found a winning move
+                        memo[key] = 1
+                        return 1
+                    if value > best_value:
+                        best_value = value
+        memo[key] = best_value
+        return best_value
+    else:  # Minimizing player
+        best_value = 2
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    new_board = [row[:] for row in board]
+                    new_board[i][j] = -1
+                    value = minimax(new_board, 1, memo)
+                    if value == -1:  # Opponent can win
+                        memo[key] = -1
+                        return -1
+                    if value < best_value:
+                        best_value = value
+        memo[key] = best_value
+        return best_value
+
+def policy(board):
+    """Determine the next move for player 1."""
+    # Check for immediate winning move
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                new_board = [row[:] for row in board]
+                new_board[i][j] = 1
+                if check_winner(new_board) == 1:
+                    return (i, j)
+    
+    # Check for blocking move against opponent's immediate win
+    blocking_moves = []
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                new_board = [row[:] for row in board]
+                new_board[i][j] = -1
+                if check_winner(new_board) == -1:
+                    blocking_moves.append((i, j))
+    
+    if blocking_moves:
+        return blocking_moves[0]  # Choose the first blocking move
+    
+    # Use minimax to find the best move
+    empty_cells = [(i, j) for i in range(3) for j in range(3) if board[i][j] == 0]
+    best_move = None
+    best_value = -2
+    memo = {}  # Memoization dictionary shared across minimax calls
+    
+    for i, j in empty_cells:
+        new_board = [row[:] for row in board]
+        new_board[i][j] = 1
+        value = minimax(new_board, -1, memo)
+        if value > best_value:
+            best_value = value
+            best_move = (i, j)
+    
+    return best_move

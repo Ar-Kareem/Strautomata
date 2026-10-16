@@ -1,0 +1,228 @@
+The strategy for this policy is based on a depth-limited Minimax search with Alpha-Beta pruning. The game state is represented using two 64-bit integers (bitboards), one for the current player and one for the opponent. This allows for extremely fast operations for move generation, rotation, and win-checking.
+
+Key components:
+1.  **Bitboard Representation**: The 6x6 board fits into the lower 36 bits of an integer. This makes copying the state trivial and operations fast.
+2.  **Precomputation**: Win masks (checking 5-in-a-row) and rotation permutation tables are precomputed at module load time.
+3.  **Search Algorithm**: A standard Minimax with Alpha-Beta pruning. It searches to a depth of 2 (My move -> Opponent move -> Evaluate). This depth is chosen to stay well within the 1-second time limit while being smart enough to avoid immediate blunders.
+4.  **Evaluation Function**: A simple heuristic based on counting the number of marbles in potential winning lines (rows, columns, diagonals). It prioritizes lines with more marbles and penalizes lines blocked by the opponent.
+5.  **Immediate Win Check**: Before the deep search, the policy checks if an immediate win is possible. If found, it plays it instantly.
+
+<code>
+import sys
+
+# Precomputed data for Pentago logic
+WIN_MASKS = []
+QUAD_BITS = [[] for _ in range(4)]
+QUAD_MASK = [0] * 4
+ROT_L_TBL = [0] * 512
+ROT_R_TBL = [0] * 512
+
+def init_constants():
+    if WIN_MASKS: return
+    
+    # 1. Generate Win Masks (5-in-a-row)
+    # Horizontal
+    for r in range(6):
+        for c in range(2):
+            mask = 0
+            for k in range(5):
+                mask |= 1 << (r * 6 + c + k)
+            WIN_MASKS.append(mask)
+    # Vertical
+    for c in range(6):
+        for r in range(2):
+            mask = 0
+            for k in range(5):
+                mask |= 1 << ((r + k) * 6 + c)
+            WIN_MASKS.append(mask)
+    # Diagonal (Top-Left to Bottom-Right)
+    for r in range(2):
+        for c in range(2):
+            mask = 0
+            for k in range(5):
+                mask |= 1 << ((r + k) * 6 + (c + k))
+            WIN_MASKS.append(mask)
+    # Diagonal (Top-Right to Bottom-Left)
+    for r in range(2):
+        for c in range(4, 6):
+            mask = 0
+            for k in range(5):
+                mask |= 1 << ((r + k) * 6 + (c - k))
+            WIN_MASKS.append(mask)
+
+    # 2. Quadrant Indices and Masks
+    # Quad 0: Top-Left (0..2, 0..2)
+    # Quad 1: Top-Right (0..2, 3..5)
+    # Quad 2: Bottom-Left (3..5, 0..2)
+    # Quad 3: Bottom-Right (3..5, 3..5)
+    q_coords = [(0, 0), (0, 3), (3, 0), (3, 3)]
+    for i in range(4):
+        sr, sc = q_coords[i]
+        for dr in range(3):
+            for dc in range(3):
+                idx = (sr + dr) * 6 + (sc + dc)
+                QUAD_BITS[i].append(idx)
+                QUAD_MASK[i] |= 1 << idx
+
+    # 3. Rotation Tables (Mapping 9-bit local quadrant state to rotated state)
+    for i in range(512):
+        res_r, res_l = 0, 0
+        for b in range(9):
+            if (i >> b) & 1:
+                r, c = divmod(b, 3)
+                # Clockwise (R): (r, c) -> (c, 2-r)
+                nr, nc = c, 2 - r
+                idx_r = nr * 3 + nc
+                res_r |= 1 << idx_r
+                # Counter-Clockwise (L): (r, c) -> (2-c, r)
+                nr, nc = 2 - c, r
+                idx_l = nr * 3 + nc
+                res_l |= 1 << idx_l
+        ROT_R_TBL[i] = res_r
+        ROT_L_TBL[i] = res_l
+
+init_constants()
+
+def rotate_board(board, q, d):
+    """Rotates a quadrant of the bitboard."""
+    bits = QUAD_BITS[q]
+    # Extract 9-bit local integer
+    val = 0
+    for i in range(9):
+        if (board >> bits[i]) & 1:
+            val |= 1 << i
+    
+    # Lookup rotation
+    if d == 'R':
+        new_val = ROT_R_TBL[val]
+    else:
+        new_val = ROT_L_TBL[val]
+        
+    # Reconstruct board
+    # Clear the quadrant bits
+    board &= ~QUAD_MASK[q]
+    # Set the new bits
+    for i in range(9):
+        if (new_val >> i) & 1:
+            board |= 1 << bits[i]
+    return board
+
+def check_win(board):
+    """Returns True if the board has 5 in a row."""
+    for m in WIN_MASKS:
+        if (board & m) == m:
+            return True
+    return False
+
+def evaluate(me, opp):
+    """Heuristic evaluation of the board state."""
+    if check_win(me): return 100000
+    if check_win(opp): return -100000
+    
+    score = 0
+    for m in WIN_MASKS:
+        my_count = (me & m).bit_count()
+        opp_count = (opp & m).bit_count()
+        
+        if opp_count == 0:
+            score += my_count ** 3
+        if my_count == 0:
+            score -= opp_count ** 3
+            
+    return score
+
+def minimax(me, opp, depth, alpha, beta, maximizing):
+    if check_win(me): return 100000
+    if check_win(opp): return -100000
+    if depth == 0: return evaluate(me, opp)
+    
+    occupied = me | opp
+    # Full board check (draw)
+    if occupied == (1 << 36) - 1:
+        return 0
+
+    if maximizing:
+        max_eval = -float('inf')
+        # Iterate through all moves
+        # Optimization: Iterate empty positions
+        for pos in range(36):
+            if not (occupied >> pos) & 1:
+                bit = 1 << pos
+                new_me = me | bit
+                for q in range(4):
+                    for d in ['L', 'R']:
+                        me_r = rotate_board(new_me, q, d)
+                        opp_r = rotate_board(opp, q, d)
+                        
+                        ev = minimax(me_r, opp_r, depth - 1, alpha, beta, False)
+                        if ev > max_eval: max_eval = ev
+                        if ev > alpha: alpha = ev
+                        if beta <= alpha: break
+                    if beta <= alpha: break
+            if beta <= alpha: break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for pos in range(36):
+            if not (occupied >> pos) & 1:
+                bit = 1 << pos
+                new_opp = opp | bit
+                for q in range(4):
+                    for d in ['L', 'R']:
+                        me_r = rotate_board(me, q, d)
+                        opp_r = rotate_board(new_opp, q, d)
+                        
+                        ev = minimax(me_r, opp_r, depth - 1, alpha, beta, True)
+                        if ev < min_eval: min_eval = ev
+                        if ev < beta: beta = ev
+                        if beta <= alpha: break
+                    if beta <= alpha: break
+            if beta <= alpha: break
+        return min_eval
+
+def policy(you, opponent):
+    # Convert to bitboards
+    me = 0
+    opp = 0
+    for r in range(6):
+        for c in range(6):
+            idx = r * 6 + c
+            if you[r][c]:
+                me |= 1 << idx
+            if opponent[r][c]:
+                opp |= 1 << idx
+    
+    best_score = -float('inf')
+    best_move = None
+    occupied = me | opp
+    
+    # Search Depth
+    DEPTH = 2
+    
+    # Iterate all legal moves
+    for pos in range(36):
+        if not (occupied >> pos) & 1:
+            bit = 1 << pos
+            new_me = me | bit
+            r, c = divmod(pos, 6)
+            
+            for q in range(4):
+                for d in ['L', 'R']:
+                    # Apply Move
+                    me_r = rotate_board(new_me, q, d)
+                    opp_r = rotate_board(opp, q, d)
+                    
+                    # Immediate Win Check
+                    if check_win(me_r):
+                        return f"{r+1},{c+1},{q},{d}"
+                    
+                    # Evaluate via Minimax
+                    # We are maximizing, next is minimizing (opponent)
+                    score = minimax(me_r, opp_r, DEPTH - 1, -float('inf'), float('inf'), False)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_move = f"{r+1},{c+1},{q},{d}"
+                        
+    return best_move
+</code>

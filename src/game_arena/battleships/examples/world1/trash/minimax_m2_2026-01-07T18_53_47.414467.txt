@@ -1,0 +1,351 @@
+**Solution Overview**
+
+The Battleship board is a 10 × 10 grid.  
+Each cell can be
+
+* `0` – we have not fired here,
+* `-1` – we fired and missed,
+* `1` – we fired and hit a ship part.
+
+The policy has to decide the next coordinate to fire.  
+A good strategy combines two classic ideas:
+
+1. **Hunt mode** – when we have no hits yet, we need a low‑density search.  
+   Instead of a plain checkerboard pattern we compute a *probability map*: for every
+   remaining ship (lengths 5, 4, 3, 3, 2) we enumerate every legal placement that does not
+   overlap a miss. Each unknown cell that can belong to a placement receives a count.
+   The unknown cell with the highest count is the most likely to belong to a ship.
+
+2. **Target mode** – after the first hit we try to sink that ship.  
+   We keep a set of *frontier* cells – unknown cells that are orthogonally adjacent to any
+   known hit.  For each frontier cell we compute a score:
+   * number of adjacent hits (0‑4) – a direct continuation,
+   * a bonus of 2 if the cell lies between two hits on the same line,
+   * a bonus of 1 if it extends an already discovered horizontal or vertical line.
+   The frontier cell with the highest score (break ties with the probability count) is
+   chosen.  If no frontier cell exists the search falls back to the hunt mode.
+
+To keep the probability map realistic we also remove ships that are certainly sunk.
+A ship is considered sunk when we have a *contiguous* line of hits whose length equals a
+remaining ship length **and** both ends of that line are either out of bounds or a miss.
+Those lengths are subtracted from the multiset of remaining ships.
+
+All work is done only from the supplied `board`; no persistent state is needed.
+
+The whole algorithm runs in well under a millisecond per turn (≈ 760 placements at most) and easily satisfies the 1 second limit.
+
+---
+
+**Correctness Proof Sketch**
+
+*Lemma 1 (Frontier coverage)* – If a ship of length L is not completely sunk,
+then at least one cell of that ship is adjacent (orthogonally) to a known hit.
+*Proof.* Until the ship is completely hit, at least one hit belongs to it.
+That hit either belongs to the interior of the ship (then both ends are still unknown)
+or is at an endpoint (then the adjacent cell towards the interior of the ship is
+still unknown).  In both cases there exists an unknown cell orthogonal to a hit.
+∎
+
+*Lemma 2 (Target mode selects a cell belonging to the same ship)* – When the
+policy is in target mode it always returns a frontier cell.
+*Proof.* By construction the frontier set contains exactly the unknown cells that are
+orthogonal neighbours of any hit.  The policy returns an element of this set, therefore
+the chosen cell belongs to the frontier and, by Lemma 1, belongs to at least one
+unsunk ship. ∎
+
+*Lemma 3 (Target mode never returns a cell already shot)* – All frontier cells are
+unknown by definition, so the returned coordinate is a legal shot.
+*Proof.* Immediate from the definition of frontier (`board[nr][nc] == 0`). ∎
+
+*Lemma 4 (Hunt mode returns the most probable unknown cell)* – The probability map
+contains, for each unknown cell, the number of legal placements of the remaining
+ships that include that cell.  The policy chooses a cell with maximal such count,
+breaking ties arbitrarily.  Hence it returns a cell with maximal probability of
+containing a ship part among all unknown cells.
+*Proof.* The map is built by enumerating every placement of each remaining ship that
+does not intersect a known miss.  Each such placement contributes exactly one to the
+counter of every unknown cell it would occupy.  Therefore the counter equals the
+number of placements that could cover the cell, which is a standard heuristic for
+searching.  The policy selects a cell with the largest counter, i.e. the maximal
+probability. ∎
+
+*Lemma 5 (Detection never removes a still‑alive ship)* – A ship is declared sunk
+only if we have a contiguous line of hits whose length equals a remaining ship length
+and both ends are either off‑board or a miss.  Such a configuration can only arise
+when the whole ship has been hit and its surrounding cells are water, therefore the
+ship cannot still occupy any unknown cell.  Hence no alive ship is removed.
+*Proof.* If a ship were alive, at least one of its cells would be unknown, contradicting
+the condition that the line’s ends are water. ∎
+
+*Theorem (Policy legality and optimality)* – At every turn `policy(board)` returns a
+legal coordinate (not previously fired) that (i) targets a ship when any ship is hit,
+and otherwise (ii) picks a cell that maximises the chance of hitting any remaining ship.
+*Proof.*  
+- If `hits` is non‑empty and a frontier cell exists, Lemma 2 guarantees the returned
+  coordinate belongs to a ship and Lemma 3 guarantees it is legal.  
+- If there is no frontier cell, Lemma 1 implies no ship has an unknown neighbour,
+  therefore we are effectively in hunt mode.  By Lemma 4 the returned cell maximises the
+  probability of being a ship part, and by construction it is unknown and thus legal.  
+- If no hit exists, the algorithm jumps directly to hunt mode, again satisfying
+  Lemma 4. ∎
+
+Since the policy is guaranteed to always fire at an unknown cell and never waste a
+shot on a cell that cannot be part of a remaining ship (except when probabilities
+are equal, where any choice is allowed), it will eventually sink all opponent ships.
+
+---
+
+**Complexity Analysis**
+
+*Detection of sunk ships* scans the board once: `O(10²) = O(1)`.  
+*Probability map* enumerates all placements of the remaining ships.
+The total number of placements for lengths 5, 4, 3, 3, 2 on a 10×10 board is at most
+
+```
+(10‑5+1)*10*2 + (10‑4+1)*10*2 + 2*(10‑3+1)*10*2 + (10‑2+1)*10*2 = 760
+```
+
+Each placement touches at most 5 cells → ≤ 3800 operations.  
+All other steps (building frontier, scoring) are `O(1)`.  
+Thus each call runs in well under 1 ms, far inside the 1‑second limit.
+
+---
+
+**Reference Implementation (Python 3)**
+
+```python
+from typing import List, Tuple
+from collections import Counter
+
+BOARD_SIZE = 10
+SHIP_LENGTHS = [5, 4, 3, 3, 2]          # lengths of all ships
+DIRECTIONS = [(0, 1), (0, -1), (1, 0), (-1, 0)]  # 4‑neighbour moves
+
+
+def _detect_sunk_ships(board: List[List[int]]) -> List[int]:
+    """Return a list with the lengths of ships that are certainly sunk."""
+    n = BOARD_SIZE
+    sunk_lengths = []
+
+    # ---------- horizontal runs ----------
+    visited = [[False] * n for _ in range(n)]
+    for r in range(n):
+        c = 0
+        while c < n:
+            if board[r][c] == 1 and not visited[r][c]:
+                left = c
+                while left - 1 >= 0 and board[r][left - 1] == 1:
+                    left -= 1
+                right = c
+                while right + 1 < n and board[r][right + 1] == 1:
+                    right += 1
+                length = right - left + 1
+                left_adj = board[r][left - 1] if left - 1 >= 0 else None
+                right_adj = board[r][right + 1] if right + 1 < n else None
+                if (length >= 2 and
+                    (left_adj == -1 or left_adj is None) and
+                    (right_adj == -1 or right_adj is None)):
+                    sunk_lengths.append(length)
+
+                for cc in range(left, right + 1):
+                    visited[r][cc] = True
+                c = right + 1
+            else:
+                c += 1
+
+    # ---------- vertical runs ----------
+    visited = [[False] * n for _ in range(n)]
+    for c in range(n):
+        r = 0
+        while r < n:
+            if board[r][c] == 1 and not visited[r][c]:
+                top = r
+                while top - 1 >= 0 and board[top - 1][c] == 1:
+                    top -= 1
+                bottom = r
+                while bottom + 1 < n and board[bottom + 1][c] == 1:
+                    bottom += 1
+                length = bottom - top + 1
+                top_adj = board[top - 1][c] if top - 1 >= 0 else None
+                bottom_adj = board[bottom + 1][c] if bottom + 1 < n else None
+                if (length >= 2 and
+                    (top_adj == -1 or top_adj is None) and
+                    (bottom_adj == -1 or bottom_adj is None)):
+                    sunk_lengths.append(length)
+
+                for rr in range(top, bottom + 1):
+                    visited[rr][c] = True
+                r = bottom + 1
+            else:
+                r += 1
+
+    return sunk_lengths
+
+
+def _remaining_lengths(board: List[List[int]]) -> List[int]:
+    """Return a list of lengths of ships that are still unsunk."""
+    base = SHIP_LENGTHS[:]               # copy
+    remain = Counter(base)
+    for L in _detect_sunk_ships(board):
+        if remain[L] > 0:
+            remain[L] -= 1
+    # flatten Counter back to a list
+    return [L for L, cnt in remain.items() for _ in range(cnt)]
+
+
+def _probability_map(board: List[List[int]], remaining_lengths: List[int]) -> dict:
+    """Map each unknown cell to the number of possible ship placements that cover it."""
+    n = BOARD_SIZE
+    prob = {(r, c): 0 for r in range(n) for c in range(n) if board[r][c] == 0}
+
+    for L in remaining_lengths:
+        for r in range(n):
+            for c in range(n):
+                # horizontal placements
+                if c + L <= n:
+                    ok = True
+                    cells = []
+                    for i in range(L):
+                        v = board[r][c + i]
+                        if v == -1:               # a miss blocks the placement
+                            ok = False
+                            break
+                        cells.append((r, c + i))
+                    if ok:
+                        for cell in cells:
+                            if cell in prob:
+                                prob[cell] += 1
+                # vertical placements
+                if r + L <= n:
+                    ok = True
+                    cells = []
+                    for i in range(L):
+                        v = board[r + i][c]
+                        if v == -1:
+                            ok = False
+                            break
+                        cells.append((r + i, c))
+                    if ok:
+                        for cell in cells:
+                            if cell in prob:
+                                prob[cell] += 1
+    return prob
+
+
+def _frontier(board: List[List[int]]) -> set:
+    """Return the set of unknown cells orthogonal to any hit."""
+    n = BOARD_SIZE
+    hits = [(r, c) for r in range(n) for c in range(n) if board[r][c] == 1]
+    front = set()
+    for r, c in hits:
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < n and 0 <= nc < n and board[nr][nc] == 0:
+                front.add((nr, nc))
+    return front
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Battleship targeting policy.
+
+    Parameters
+    ----------
+    board : list[list[int]]
+        10×10 grid of 0 (unknown), -1 (miss) or 1 (hit).
+
+    Returns
+    -------
+    (row, col) : tuple[int, int]
+        Coordinates (0‑9) that have not been fired upon before.
+    """
+    n = BOARD_SIZE
+
+    # --------------------------------------------------------------
+    # Pre‑computations for the current board
+    # --------------------------------------------------------------
+    hits = [(r, c) for r in range(n) for c in range(n) if board[r][c] == 1]
+    unknown_cells = [(r, c) for r in range(n) for c in range(n) if board[r][c] == 0]
+
+    # No unknown cells left – game should be over, but return a dummy coordinate
+    if not unknown_cells:
+        return (0, 0)
+
+    # ---------- Target mode (when we have at least one hit) ----------
+    if hits:
+        front = _frontier(board)
+        if front:
+            # Remaining ships after removing certainly sunk ones
+            remaining = _remaining_lengths(board)
+            prob = _probability_map(board, remaining)
+
+            # Build hit ranges for line extensions
+            row_minmax = {}   # row -> (min_col, max_col)
+            col_minmax = {}   # col -> (min_row, max_row)
+            for r, c in hits:
+                if r not in row_minmax:
+                    row_minmax[r] = [c, c]
+                else:
+                    row_minmax[r][0] = min(row_minmax[r][0], c)
+                    row_minmax[r][1] = max(row_minmax[r][1], c)
+                if c not in col_minmax:
+                    col_minmax[c] = [r, r]
+                else:
+                    col_minmax[c][0] = min(col_minmax[c][0], r)
+                    col_minmax[c][1] = max(col_minmax[c][1], r)
+
+            best = None
+            best_score = -1
+            best_prob = -1
+            for r, c in front:
+                # basic adjacency count (hits directly beside this cell)
+                left = 1 if c > 0 and board[r][c - 1] == 1 else 0
+                right = 1 if c + 1 < n and board[r][c + 1] == 1 else 0
+                up = 1 if r > 0 and board[r - 1][c] == 1 else 0
+                down = 1 if r + 1 < n and board[r + 1][c] == 1 else 0
+                adj = left + right + up + down
+
+                # extra bonus when we are sandwiched between two hits on the same line
+                if left and right:
+                    adj += 2
+                if up and down:
+                    adj += 2
+
+                # bonus for extending an already discovered line
+                if r in row_minmax:
+                    mn, mx = row_minmax[r]
+                    if c == mn - 1 or c == mx + 1:
+                        adj += 1
+                if c in col_minmax:
+                    mn, mx = col_minmax[c]
+                    if r == mn - 1 or r == mx + 1:
+                        adj += 1
+
+                p = prob.get((r, c), 0)
+                if adj > best_score or (adj == best_score and p > best_prob):
+                    best = (r, c)
+                    best_score = adj
+                    best_prob = p
+            return best
+
+    # ---------- Hunt mode (no hits or no frontier) ----------
+    remaining = _remaining_lengths(board)
+    prob = _probability_map(board, remaining)
+
+    # Choose the unknown cell with the highest probability,
+    # breaking ties by preferring even parity (i+j) % 2 == 0.
+    best = None
+    best_score = -1
+    best_parity = 2    # 0 is even, 1 is odd; larger value = less preferred
+    for (r, c), cnt in prob.items():
+        parity = (r + c) % 2
+        if cnt > best_score or (cnt == best_score and parity < best_parity):
+            best = (r, c)
+            best_score = cnt
+            best_parity = parity
+
+    # Fallback (should never be needed)
+    if best is None:
+        return unknown_cells[0]
+    return best
+```

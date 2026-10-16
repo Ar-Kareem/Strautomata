@@ -1,0 +1,142 @@
+
+import heapq
+
+def policy(state, role):
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            board[(prop[1], prop[2])] = prop[3]
+    
+    cols, rows = 'abcdefg', '1234567'
+    legal = [(c, r) for c in cols for r in rows if (c, r) not in board]
+    
+    if not legal:
+        return "place(d,4)"
+    
+    opp = "black" if role == "red" else "red"
+    
+    # Check for immediate winning move
+    for move in legal:
+        b = board.copy()
+        b[move] = role
+        if has_winning_path(b, role):
+            return f"place({move[0]},{move[1]})"
+    
+    # Check for blocking moves (opponent would win)
+    for move in legal:
+        b = board.copy()
+        b[move] = opp
+        if has_winning_path(b, opp):
+            return f"place({move[0]},{move[1]})"
+    
+    # Evaluate all moves
+    best_move, best_score = legal[0], -1e9
+    
+    for move in legal:
+        b = board.copy()
+        b[move] = role
+        
+        my_dist = shortest_path(b, role)
+        opp_dist = shortest_path(b, opp)
+        
+        score = opp_dist - my_dist
+        
+        # Center preference
+        ci, ri = ord(move[0]) - 97, int(move[1]) - 1
+        score += (6 - abs(ci - 3) - abs(ri - 3)) * 0.1
+        
+        # Adjacency bonus - prefer connecting to existing pieces
+        for nb in neighbors(move[0], move[1]):
+            if nb in board and board[nb] == role:
+                score += 0.3
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return f"place({best_move[0]},{best_move[1]})"
+
+def neighbors(col, row):
+    ci, ri = ord(col) - 97, int(row) - 1
+    offsets = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+    result = []
+    for dc, dr in offsets:
+        nc, nr = ci + dc, ri + dr
+        if 0 <= nc < 7 and 0 <= nr < 7:
+            result.append((chr(97 + nc), str(nr + 1)))
+    return result
+
+def has_winning_path(board, player):
+    if player == "red":
+        starts = [('a', str(i)) for i in range(1, 8)]
+        is_goal = lambda c, r: c == 'g'
+    else:
+        starts = [(c, '1') for c in 'abcdefg']
+        is_goal = lambda c, r: r == '7'
+    
+    visited = set()
+    stack = [s for s in starts if s in board and board[s] == player]
+    
+    while stack:
+        cell = stack.pop()
+        c, r = cell
+        if cell in visited:
+            continue
+        visited.add(cell)
+        
+        if is_goal(c, r):
+            return True
+        
+        for nb in neighbors(c, r):
+            if nb in board and board[nb] == player and nb not in visited:
+                stack.append(nb)
+    
+    return False
+
+def shortest_path(board, player):
+    if player == "red":
+        starts = [('a', str(i)) for i in range(1, 8)]
+        is_goal = lambda c, r: c == 'g'
+    else:
+        starts = [(c, '1') for c in 'abcdefg']
+        is_goal = lambda c, r: r == '7'
+    
+    dist = {}
+    pq = []
+    
+    for cell in starts:
+        if cell in board:
+            if board[cell] == player:
+                d = 0
+            else:
+                continue
+        else:
+            d = 1
+        dist[cell] = d
+        heapq.heappush(pq, (d, cell))
+    
+    while pq:
+        d, cell = heapq.heappop(pq)
+        c, r = cell
+        
+        if is_goal(c, r):
+            return d
+        
+        if d > dist.get(cell, 1e9):
+            continue
+        
+        for nb in neighbors(c, r):
+            if nb in board:
+                if board[nb] == player:
+                    cost = 0
+                else:
+                    continue
+            else:
+                cost = 1
+            
+            nd = d + cost
+            if nd < dist.get(nb, 1e9):
+                dist[nb] = nd
+                heapq.heappush(pq, (nd, nb))
+    
+    return 100

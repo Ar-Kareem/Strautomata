@@ -1,0 +1,341 @@
+
+import random
+import time
+from collections import deque, defaultdict
+
+def policy(me, opp, valid_mask):
+    """
+    Policy(me, opp, valid_mask) -> (row, col)
+    - me, opp: lists of (r,c) tuples
+    - valid_mask: 2D array-like of booleans (True = playable)
+    Always returns a legal move (row, col).
+    """
+
+    # Convert valid_mask to a set of playable positions for quick checks
+    H = len(valid_mask)
+    W = len(valid_mask[0]) if H > 0 else 0
+    valid = set()
+    for r in range(H):
+        for c in range(W):
+            try:
+                if valid_mask[r][c]:
+                    valid.add((r, c))
+            except Exception:
+                # If valid_mask not subscriptable in that way, fall back
+                if bool(valid_mask[r][c]):
+                    valid.add((r, c))
+
+    # Offsets for hex neighbors in given 2D representation (per prompt example)
+    NEI_OFFS = [(-1, 0), (1, 0), (-1, -1), (0, -1), (0, 1), (-1, 1)]
+
+    # Precompute neighbors for all valid positions
+    neighbors = {}
+    for (r, c) in valid:
+        neigh = []
+        for dr, dc in NEI_OFFS:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in valid:
+                neigh.append((nr, nc))
+        neighbors[(r, c)] = neigh
+
+    # Identify boundary cells (degree < 6) and corners (degree == 2)
+    boundary = {p for p in valid if len(neighbors[p]) < 6}
+    corners = [p for p in boundary if len(neighbors[p]) == 2]
+
+    # If corners not exactly six (shouldn't happen on a standard board), try to heuristically pick six
+    if len(corners) != 6:
+        # pick six boundary cells that are local minima in degree or far apart
+        sorted_boundary = sorted(boundary, key=lambda x: (len(neighbors[x]), x))
+        corners = sorted_boundary[:6] if len(sorted_boundary) >= 6 else sorted_boundary
+
+    # Build boundary-adjacency graph (neighbors restricted to boundary)
+    boundary_adj = {p: [q for q in neighbors[p] if q in boundary] for p in boundary}
+
+    # Traverse boundary to get an ordered circuit: start from one corner and walk along boundary
+    boundary_seq = []
+    if corners:
+        start = corners[0]
+        cur = start
+        prev = None
+        visited = set()
+        # Walk until we loop back or cannot continue
+        while True:
+            boundary_seq.append(cur)
+            visited.add(cur)
+            nexts = [nbr for nbr in boundary_adj[cur] if nbr != prev]
+            if not nexts:
+                break
+            # prefer not-yet-visited neighbor if possible (to follow the perimeter)
+            nxt = None
+            for cand in nexts:
+                if cand not in visited:
+                    nxt = cand
+                    break
+            if nxt is None:
+                nxt = nexts[0]
+            prev, cur = cur, nxt
+            if cur == start:
+                break
+
+    # If we didn't obtain sequence (e.g., degenerate), fall back: use boundary list
+    if not boundary_seq:
+        boundary_seq = list(boundary)
+
+    # Get ordered corner indices by first occurrences in boundary sequence
+    corner_pos_to_index = {}
+    for idx, pos in enumerate(boundary_seq):
+        if pos in corners and pos not in corner_pos_to_index:
+            corner_pos_to_index[pos] = idx
+            if len(corner_pos_to_index) >= len(corners):
+                break
+    # If some corners weren't encountered, just append them
+    for c in corners:
+        if c not in corner_pos_to_index:
+            corner_pos_to_index[c] = len(boundary_seq) + len(corner_pos_to_index)
+
+    # Sort corners in boundary order
+    ordered_corners = sorted(corner_pos_to_index.items(), key=lambda x: x[1])
+    ordered_corners = [c for c, _ in ordered_corners]
+
+    # Assign edge index to each boundary cell by walking boundary_seq and splitting between corners
+    edge_of = {}
+    if ordered_corners:
+        # map corner to its first index on sequence
+        corner_to_seq_idx = {}
+        for i, pos in enumerate(boundary_seq):
+            if pos in ordered_corners and pos not in corner_to_seq_idx:
+                corner_to_seq_idx[pos] = i
+        # get corner positions in order by their sequence index
+        ordered_corner_positions = sorted(ordered_corners, key=lambda p: corner_to_seq_idx.get(p, 10**9))
+        # produce segments between successive corners
+        seq_len = len(boundary_seq)
+        # find indices of each ordered corner in the sequence
+        corner_indices = [corner_to_seq_idx.get(p, None) for p in ordered_corner_positions]
+        # If any corner index missing, fallback to simple split
+        if any(ci is None for ci in corner_indices):
+            # assign edges by splitting the boundary into 6 equal-ish parts
+            L = len(boundary_seq)
+            if L == 0:
+                edge_of = {}
+            else:
+                seg = max(1, L // 6)
+                for i, p in enumerate(boundary_seq):
+                    edge_of[p] = min(5, i // seg)
+        else:
+            # for each pair of corners define edge id
+            ccount = len(corner_indices)
+            for i in range(ccount):
+                a = corner_indices[i]
+                b = corner_indices[(i + 1) % ccount]
+                # walk from a to b (wrap-around)
+                j = a
+                while True:
+                    edge_of[boundary_seq[j]] = i
+                    if j == b:
+                        break
+                    j = (j + 1) % seq_len
+    else:
+        edge_of = {}
+
+    # utility: check win for a given player's stones (set of positions)
+    def check_win(stones_set):
+        if not stones_set:
+            return False
+        visited = set()
+        # precompute corner set and edge set for quick checks
+        corner_set = set(ordered_corners)
+        # iterate components
+        for pos in stones_set:
+            if pos in visited:
+                continue
+            # BFS component
+            queue = deque([pos])
+            comp = []
+            visited.add(pos)
+            while queue:
+                u = queue.popleft()
+                comp.append(u)
+                for v in neighbors.get(u, []):
+                    if v in stones_set and v not in visited:
+                        visited.add(v)
+                        queue.append(v)
+            # component nodes and edges among them
+            node_count = len(comp)
+            edge_count = 0
+            touched_corners = 0
+            touched_edges = set()
+            for u in comp:
+                for v in neighbors.get(u, []):
+                    if v in stones_set:
+                        edge_count += 1
+                if u in corner_set:
+                    touched_corners += 1
+                if u in edge_of:
+                    touched_edges.add(edge_of[u])
+            edge_count //= 2
+            # Ring: if a connected component has a cycle -> edges >= nodes
+            if edge_count >= node_count and node_count >= 6:
+                # require at least 6 nodes to form a meaningful loop (avoid tiny cycles)
+                return True
+            # Bridge: touches at least two distinct corners
+            if touched_corners >= 2:
+                return True
+            # Fork: touches at least three distinct edges
+            if len(touched_edges) >= 3:
+                return True
+        return False
+
+    # Convert me and opp to sets for quick checks
+    my_set = set(me)
+    opp_set = set(opp)
+    occupied = my_set | opp_set
+    empties = [p for p in valid if p not in occupied]
+    if not empties:
+        # no move possible (should not happen)
+        # pick some valid position anyway
+        for r in range(H):
+            for c in range(W):
+                if valid_mask[r][c] and (r, c) not in occupied:
+                    return (r, c)
+        # completely full: just return (0,0)
+        return (0, 0)
+
+    # 1) Immediate win for us?
+    for move in empties:
+        new_my = my_set | {move}
+        if check_win(new_my):
+            return move
+
+    # 2) Immediate threat by opponent? Block them.
+    opp_winning_moves = []
+    for move in empties:
+        new_opp = opp_set | {move}
+        if check_win(new_opp):
+            opp_winning_moves.append(move)
+    if opp_winning_moves:
+        # If there are multiple, try to play a move that also helps us: choose one that is legal
+        # Prefer one that is adjacent to our stones; otherwise pick first
+        best_block = None
+        best_adj = -1
+        for m in opp_winning_moves:
+            adj = sum(1 for nb in neighbors[m] if nb in my_set)
+            if adj > best_adj:
+                best_adj = adj
+                best_block = m
+        if best_block is not None:
+            return best_block
+
+    # Candidate selection: prefer empties that are near our stones or near opponent stones, and central
+    center_r = (H - 1) / 2.0
+    center_c = (W - 1) / 2.0
+    def score_cell(cell):
+        r, c = cell
+        # distance to center
+        dcenter = ((r - center_r) ** 2 + (c - center_c) ** 2) ** 0.5
+        # adjacency to my stones and opp stones
+        adj_my = sum(1 for nb in neighbors[cell] if nb in my_set)
+        adj_opp = sum(1 for nb in neighbors[cell] if nb in opp_set)
+        # prefer closer to center, prefer adjacency
+        return -dcenter + 1.5 * adj_my + 1.0 * adj_opp
+
+    empties_sorted = sorted(empties, key=lambda x: score_cell(x), reverse=True)
+
+    # Take top K candidates
+    K = min(len(empties_sorted), 20)
+    candidates = empties_sorted[:K]
+
+    # Monte-Carlo playouts per candidate
+    # Time-box total playouts to be conservative
+    sims_per_candidate = 18
+    total_budget = K * sims_per_candidate
+    # Randomness
+    rng = random.Random()
+    rng.seed((len(me), len(opp), int(time.time() * 1000) % 100000))
+
+    # helper to run a single playout from a given initial move (we play first)
+    def run_playout(move):
+        # local copies (sets)
+        my = set(my_set)
+        op = set(opp_set)
+        occ = set(occupied)
+        my.add(move)
+        occ.add(move)
+        if check_win(my):
+            return True
+        # prepare list of empty positions
+        rem = [p for p in valid if p not in occ]
+        # play until someone wins or no moves left
+        turn_my = False  # opponent moves next
+        # To bias moves toward interesting areas, compute frontier
+        while rem:
+            # pick move biased towards neighbor-of-stone
+            # build frontier
+            frontier = []
+            for p in rem:
+                for nb in neighbors[p]:
+                    if nb in my or nb in op:
+                        frontier.append(p)
+                        break
+            choice_pool = frontier if frontier else rem
+            m = rng.choice(choice_pool)
+            # apply move
+            if turn_my:
+                my.add(m)
+                occ.add(m)
+                if check_win(my):
+                    return True
+            else:
+                op.add(m)
+                occ.add(m)
+                if check_win(op):
+                    return False
+            # update remaining
+            # remove m from rem (pop by swapping)
+            # to keep it simple and fast, rebuild rem occasionally
+            # but here simply remove
+            try:
+                rem.remove(m)
+            except ValueError:
+                # already removed
+                pass
+            turn_my = not turn_my
+        # no one won -> treat as loss (conservative)
+        return False
+
+    # Run simulations and pick best candidate
+    wins = {c: 0 for c in candidates}
+    sims_done = {c: 0 for c in candidates}
+    start_time = time.time()
+    # time limit (conservative)
+    time_limit = 0.85
+    for c in candidates:
+        # small shuffle for fairness
+        for s in range(sims_per_candidate):
+            # time-check
+            if time.time() - start_time > time_limit:
+                break
+            res = run_playout(c)
+            sims_done[c] += 1
+            if res:
+                wins[c] += 1
+        if time.time() - start_time > time_limit:
+            break
+
+    # Select best candidate by win rate (fallback to highest score if no sims)
+    best_move = None
+    best_rate = -1.0
+    for c in candidates:
+        if sims_done[c] > 0:
+            rate = wins[c] / sims_done[c]
+        else:
+            # fallback score estimate if no sims for this candidate
+            rate = 0.0
+        if rate > best_rate:
+            best_rate = rate
+            best_move = c
+
+    if best_move is None:
+        # fallback: pick highest-scoring empty
+        best_move = empties_sorted[0]
+
+    return best_move

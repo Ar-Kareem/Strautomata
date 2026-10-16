@@ -1,0 +1,110 @@
+
+import heapq
+import math
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    # Generate all legal moves
+    all_cells = {(i, j) for i in range(11) for j in range(11)}
+    occupied = set(me) | set(opp)
+    legal_moves = list(all_cells - occupied)
+    if not legal_moves:
+        return (0, 0)  # Should never happen in valid game states
+    
+    # Create board representation (1 for me, -1 for opponent, 0 empty)
+    board = [[0]*11 for _ in range(11)]
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opp:
+        board[r][c] = -1
+    
+    opp_color = 'w' if color == 'b' else 'b'
+    original_my_distance = shortest_path_distance(board, color)
+    original_opp_distance = shortest_path_distance(board, opp_color)
+    
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        r, c = move
+        # Temporarily place our stone
+        board[r][c] = 1
+        new_my_distance = shortest_path_distance(board, color)
+        new_opp_distance = shortest_path_distance(board, opp_color)
+        board[r][c] = 0  # Revert change
+        
+        my_gain = original_my_distance - new_my_distance
+        opp_loss = new_opp_distance - original_opp_distance
+        total_score = my_gain + opp_loss
+        
+        # Calculate centrality score (distance from center)
+        centrality = (r - 5)**2 + (c - 5)**2
+        
+        # Update best move considering score and centrality as tiebreaker
+        if (total_score > best_score) or (total_score == best_score and centrality < (best_move[0]-5)**2 + (best_move[1]-5)**2):
+            best_score = total_score
+            best_move = (r, c)
+    
+    return best_move
+
+def shortest_path_distance(board: list[list[int]], color: str) -> float:
+    """Compute minimum connection cost using Dijkstra's algorithm."""
+    dirs = [(-1, 0), (-1, 1),
+            (0, -1), (0, 1),
+            (1, -1), (1, 0)]
+    
+    # Initialize distance grid
+    dist = [[float('inf')]*11 for _ in range(11)]
+    heap = []
+    
+    # Initialize starting positions
+    start_positions = []
+    is_black = color == 'b'
+    if is_black:
+        start_positions = [(0, c) for c in range(11)]  # Top row for black
+    else:
+        start_positions = [(r, 0) for r in range(11)]  # Left column for white
+    
+    for r, c in start_positions:
+        # Determine if cell is passable and calculate initial cost
+        if is_black:
+            if board[r][c] == -1:
+                continue  # Blocked by opponent
+            cost = 0 if board[r][c] == 1 else 1
+        else:
+            if board[r][c] == 1:
+                continue  # Blocked by opponent (black stones)
+            cost = 0 if board[r][c] == -1 else 1
+        
+        if cost < dist[r][c]:
+            dist[r][c] = cost
+            heapq.heappush(heap, (cost, r, c))
+    
+    # Process the priority queue
+    while heap:
+        d, r, c = heapq.heappop(heap)
+        if d > dist[r][c]:
+            continue
+        
+        # Check if reached target side
+        if (is_black and r == 10) or (not is_black and c == 10):
+            return d
+        
+        # Explore neighbors
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 11 and 0 <= nc < 11:
+                # Calculate neighbor cost
+                if is_black:
+                    if board[nr][nc] == -1:
+                        continue  # Blocked
+                    new_cost = d + (0 if board[nr][nc] == 1 else 1)
+                else:
+                    if board[nr][nc] == 1:
+                        continue  # Blocked (black stone)
+                    new_cost = d + (0 if board[nr][nc] == -1 else 1)
+                
+                if new_cost < dist[nr][nc]:
+                    dist[nr][nc] = new_cost
+                    heapq.heappush(heap, (new_cost, nr, nc))
+    
+    return float('inf')  # No path found

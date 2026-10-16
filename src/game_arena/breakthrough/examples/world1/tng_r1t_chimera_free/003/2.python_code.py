@@ -1,0 +1,80 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    my_pieces = set(me)
+    opp_pieces = set(opp)
+    all_pieces = my_pieces.union(opp_pieces)
+    direction = 1 if color == 'w' else -1
+    opponent_color = 'b' if color == 'w' else 'w'
+    
+    legal_moves = []
+    for (r, c) in me:
+        new_r = r + direction
+        if new_r < 0 or new_r >= 8:
+            continue
+        # Straight move
+        new_c = c
+        if (new_r, new_c) not in all_pieces:
+            legal_moves.append(((r, c), (new_r, new_c)))
+        # Diagonal left
+        new_c = c - 1
+        if new_c >= 0:
+            if (new_r, new_c) not in my_pieces:
+                if (new_r, new_c) in opp_pieces:
+                    legal_moves.append(((r, c), (new_r, new_c)))
+                else:
+                    legal_moves.append(((r, c), (new_r, new_c)))
+        # Diagonal right
+        new_c = c + 1
+        if new_c < 8:
+            if (new_r, new_c) not in my_pieces:
+                if (new_r, new_c) in opp_pieces:
+                    legal_moves.append(((r, c), (new_r, new_c)))
+                else:
+                    legal_moves.append(((r, c), (new_r, new_c)))
+    
+    def is_under_threat(new_r, new_c, opp_pieces, opponent_color):
+        if opponent_color == 'b':
+            if new_r + 1 < 8 and new_c - 1 >= 0 and (new_r + 1, new_c - 1) in opp_pieces:
+                return True
+            if new_r + 1 < 8 and new_c + 1 < 8 and (new_r + 1, new_c + 1) in opp_pieces:
+                return True
+        else:
+            if new_r - 1 >= 0 and new_c - 1 >=0 and (new_r - 1, new_c - 1) in opp_pieces:
+                return True
+            if new_r - 1 >=0 and new_c +1 <8 and (new_r -1, new_c +1) in opp_pieces:
+                return True
+        return False
+    
+    groups = [[] for _ in range(5)]
+    for move in legal_moves:
+        from_pos, to_pos = move
+        r, c = from_pos
+        new_r, new_c = to_pos
+        
+        is_winning = (color == 'w' and new_r == 7) or (color == 'b' and new_r == 0)
+        is_capture = to_pos in opp_pieces
+        progress = new_r if color == 'w' else (7 - new_r)
+        is_safe = not is_under_threat(new_r, new_c, opp_pieces, opponent_color)
+        
+        if is_winning:
+            group_idx = 0
+        elif is_capture and is_safe:
+            group_idx = 1
+        elif not is_capture and is_safe:
+            group_idx = 2
+        elif is_capture and not is_safe:
+            group_idx = 3
+        else:
+            group_idx = 4
+        
+        groups[group_idx].append((progress, move))
+    
+    for group in groups:
+        if group:
+            max_progress = max(p for p, m in group)
+            candidates = [m for p, m in group if p == max_progress]
+            return random.choice(candidates)
+    
+    return legal_moves[0]

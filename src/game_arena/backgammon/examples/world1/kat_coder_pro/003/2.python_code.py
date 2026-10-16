@@ -1,0 +1,61 @@
+
+import random
+
+def policy(state: dict) -> str:
+    # Get the current roll
+    dice = state['dice']
+    
+    # Get the possible moves
+    possible_moves = []
+    
+    # If there are no dice, return a pass
+    if not dice:
+        return "H:P,P"
+    
+    # If there are checkers on the bar, we must move them first
+    if state['my_bar'] > 0:
+        # Try to move from the bar
+        for i in range(24):
+            if state['opp_pts'][i] < 2:
+                possible_moves.append(f"B->{i}")
+    
+    # If there are no checkers on the bar, we can move any checker
+    else:
+        # Try to move any checker
+        for i in range(24):
+            if state['my_pts'][i] > 0:
+                for j in range(24):
+                    if state['opp_pts'][j] < 2:
+                        possible_moves.append(f"{i}->{j}")
+    
+    # If there are no possible moves, return a pass
+    if not possible_moves:
+        return "H:P,P"
+    
+    # Select a random move
+    move = random.choice(possible_moves)
+    
+    # Parse the move
+    from1, to1 = move.split("->")
+    
+    # If there is only one move, return it
+    if len(dice) == 1:
+        return f"H:{from1},{from1}"
+    
+    # If there are two moves, select a random second move
+    else:
+        # Try to move any checker
+        for i in range(24):
+            if state['my_pts'][i] > 0:
+                for j in range(24):
+                    if state['opp_pts'][j] < 2:
+                        possible_moves.append(f"{i}->{j}")
+        
+        # Select a random second move
+        move2 = random.choice(possible_moves)
+        
+        # Parse the second move
+        from2, to2 = move2.split("->")
+        
+        # Return the move
+        return f"H:{from1},{from2}"

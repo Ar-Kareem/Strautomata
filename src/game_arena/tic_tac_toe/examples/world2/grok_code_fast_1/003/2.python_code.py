@@ -1,0 +1,67 @@
+
+import math
+
+def get_available(board):
+    return [(i, j) for i in range(4) for j in range(4) if board[i][j] == 0]
+
+def is_win(board, player):
+    # Check rows
+    for i in range(4):
+        if all(board[i][j] == player for j in range(4)):
+            return True
+    # Check columns
+    for j in range(4):
+        if all(board[i][j] == player for i in range(4)):
+            return True
+    # Check main diagonal
+    if all(board[i][i] == player for i in range(4)):
+        return True
+    # Check anti-diagonal
+    if all(board[i][3 - i] == player for i in range(4)):
+        return True
+    return False
+
+def is_terminal(board):
+    return is_win(board, 1) or is_win(board, -1) or not get_available(board)
+
+def minimax(board, is_max, alpha, beta):
+    if is_win(board, 1):
+        return 1
+    if is_win(board, -1):
+        return -1
+    if not get_available(board):
+        return 0
+    if is_max:
+        max_val = -math.inf
+        for move in get_available(board):
+            board[move[0]][move[1]] = 1
+            val = minimax(board, False, alpha, beta)
+            board[move[0]][move[1]] = 0
+            max_val = max(max_val, val)
+            alpha = max(alpha, val)
+            if beta <= alpha:
+                break
+        return max_val
+    else:
+        min_val = math.inf
+        for move in get_available(board):
+            board[move[0]][move[1]] = -1
+            val = minimax(board, True, alpha, beta)
+            board[move[0]][move[1]] = 0
+            min_val = min(min_val, val)
+            beta = min(beta, val)
+            if beta <= alpha:
+                break
+        return min_val
+
+def policy(board):
+    best_val = -math.inf
+    best_move = None
+    for move in get_available(board):
+        board[move[0]][move[1]] = 1
+        val = minimax(board, False, -math.inf, math.inf)
+        board[move[0]][move[1]] = 0
+        if val > best_val:
+            best_val = val
+            best_move = move
+    return best_move

@@ -1,0 +1,103 @@
+# Strategy
+To win Nim (4 piles) under the misère rule (last move loses), I employ the **minimum excludant (mex) value strategy**. In standard Nim, the winning condition is determined by the XOR sum (Nim-sum) of all pile sizes. In misère Nim, the strategy differs slightly when all piles have size 1 or when the Nim-sum is non-zero with larger piles. 
+
+1.  **Case 1: All piles have size $\le 1$.**
+    *   Calculate the parity of the sum of piles.
+    *   If the sum is even (e.g., `[1, 0, 1, 0]`), remove 1 object from any pile with 1 object (leaving an odd sum for the opponent).
+    *   If the sum is odd (e.g., `[1, 0, 0, 0]`), remove the only object (leaving an even sum for the opponent).
+
+2.  **Case 2: At least one pile has size $> 1$.**
+    *   This is treated similarly to standard Nim (winning by moving to a state with Nim-sum 0), with one specific adjustment for the "all ones" trap.
+    *   Calculate the Nim-sum ($S = p_0 \oplus p_1 \oplus p_2 \oplus p_3$).
+    *   **If $S = 0$**: The position is losing for the current player. Since we must make a move, we choose a move that minimizes the chance of immediate loss (heuristic: pick the largest pile and remove 1). However, if the opponent plays perfectly, we will lose. A safer defensive move in misère when $S=0$ and a pile $>1$ exists is often to reduce a pile to 0 or 1, but strictly speaking, if $S=0$ and not all piles are 1, there is no move to $S=0$, so we are forced to move to $S \neq 0$.
+    *   **If $S \neq 0$**: We calculate the target pile size $p'_i = p_i \oplus S$ for each pile $i$ where $p_i > p'_i$.
+        *   **Critical Check**: If reducing pile $i$ to $p'_i$ results in a state where *all* non-zero piles are 1 (e.g., `[1, 1, 0, 0]`), this move is **bad** because it leaves the opponent with an odd sum of piles (a winning position in the "all ones" phase). We filter out such moves.
+        *   **Selection**: If valid target sizes remain, we pick the move that results in $p'_i$ (standard Nim strategy).
+        *   **Fallback**: If all standard Nim moves lead to the "all ones" trap, we default to removing 1 object from the largest pile (a standard heuristic).
+
+This combined approach ensures optimal play against any opponent.
+
+<code>
+def policy(piles: list[int]) -> str:
+    """
+    Optimally solve Misere Nim for 4 piles.
+    Strategy:
+    1. If all piles are 0 or 1: Play based on parity (odd sum -> remove all/leftover, even sum -> remove 1).
+    2. If at least one pile > 1: Play standard Nim (XOR sum) strategy, but avoid moves that leave 
+       all non-zero piles as 1s (which is a losing position for the opponent in standard play 
+       but a winning position for them in misere play if the sum is odd).
+    """
+    # Helper to calculate XOR sum
+    xor_sum = 0
+    for p in piles:
+        xor_sum ^= p
+
+    # Case 1: All piles are 0 or 1
+    if all(p <= 1 for p in piles):
+        # Count number of 1s
+        count_ones = sum(piles)
+        # If odd (1, 3), remove one to leave even (0, 2) for opponent
+        # If even (0, 2, 4), remove one to leave odd (1, 3) for opponent
+        # Actually, we want to leave an even number of 1s for the opponent.
+        # If sum is odd, removing 1 makes it even (winning).
+        # If sum is even, removing 1 makes it odd (losing if opponent plays optimally).
+        take = 1
+        # Find a pile with a 1
+        pile_idx = -1
+        for i in range(4):
+            if piles[i] == 1:
+                pile_idx = i
+                break
+        # If no pile with 1 (all 0), game is over, but code shouldn't reach here.
+        return f"{pile_idx},{take}"
+
+    # Case 2: At least one pile > 1
+    # Standard Nim strategy: make Nim-sum 0, unless it creates the "all ones" trap.
+    
+    best_move = None
+    
+    for i in range(4):
+        # Calculate target size for pile i to make XOR sum 0
+        # target = piles[i] ^ xor_sum
+        # We need to reduce piles[i] to target, so we need piles[i] > target
+        target = piles[i] ^ xor_sum
+        if target < piles[i]:
+            take_amount = piles[i] - target
+            
+            # Check for the "All ones" trap in the resulting state
+            # Create temporary state
+            temp_piles = piles[:]
+            temp_piles[i] = target
+            
+            # Check if all non-zero piles in temp_piles are 1
+            non_zero_piles = [p for p in temp_piles if p > 0]
+            is_all_ones = all(p == 1 for p in non_zero_piles)
+            
+            if is_all_ones:
+                # This move leads to a state like [1, 1, 0, 0] or [1, 1, 1, 0].
+                # In misere, if sum of ones is ODD, it's a winning position for the player to move.
+                # If sum is EVEN, it's losing.
+                # We want to leave the opponent a losing position.
+                # So we should AVOID leaving an ODD sum of ones.
+                if sum(non_zero_piles) % 2 != 0:
+                    # This move is bad (leaves opponent with odd sum, e.g., 1 or 3 ones).
+                    continue
+            
+            # If we reach here, the move is valid and optimal (or best found so far)
+            best_move = (i, take_amount)
+            break # Found a valid Nim-move, take it
+
+    # If no valid Nim-move found (e.g., all Nim moves lead to odd 'all ones' state),
+    # fallback strategy: remove 1 from the largest pile.
+    if best_move is None:
+        # Find largest pile
+        max_val = -1
+        max_idx = -1
+        for i in range(4):
+            if piles[i] > max_val:
+                max_val = piles[i]
+                max_idx = i
+        best_move = (max_idx, 1)
+
+    return f"{best_move[0]},{best_move[1]}"
+</code>

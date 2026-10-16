@@ -1,0 +1,160 @@
+The strategy for this policy is:
+- Prioritize immediate mate (moves that end the game).
+- Next prioritize promotions (especially to queen), then captures that win the most material (using the current board snapshot to estimate the captured piece).
+- Favor moves that give check.
+- As a tie-breaker, favor moves that land in central squares (d4, e4, d5, e5) and otherwise use a deterministic order (first best move).
+This gives a fast, robust heuristic that aims to win material, promote pawns, and finish the game when possible.
+
+<code>
+import re
+from typing import Dict, List
+
+# Policy: choose the best move from legal_moves based on heuristics:
+# 1) mate (#) -> immediate win
+# 2) promotions (prefer =Q), then captures with highest material gain
+# 3) checks (+)
+# 4) centralizing moves
+# Deterministic tie-breaking by original order.
+
+_piece_values = {
+    'P': 100,
+    'N': 320,
+    'B': 330,
+    'R': 500,
+    'Q': 900,
+    'K': 0
+}
+
+_central_squares = {'d4', 'e4', 'd5', 'e5', 'c3', 'f3', 'c6', 'f6'}
+
+def _last_square(move: str):
+    # Return last occurrence of a square like 'e4' in the SAN move, or None
+    matches = re.findall(r'([a-h][1-8])', move)
+    return matches[-1] if matches else None
+
+def _promotion_piece(move: str):
+    # Return promoted piece letter if any (Q,R,B,N)
+    m = re.search(r'=([QRBN])', move)
+    return m.group(1) if m else None
+
+def _capture_dest_from_pawn_en_passant(move: str, to_play_color: str):
+    # For en-passant captures like exd6, captured pawn is on same file as dest and
+    # on rank dest_rank-1 for white captures (moving to rank 6), dest_rank+1 for black.
+    m = re.match(r'([a-h])x([a-h][1-8])', move)
+    if not m:
+        return None
+    src_file = m.group(1)
+    dest = m.group(2)
+    dest_file = dest[0]
+    dest_rank = int(dest[1])
+    if to_play_color == 'white':
+        # white capturing en-passant moves to rank 6 capturing pawn on rank 5
+        cap_rank = dest_rank - 1
+    else:
+        cap_rank = dest_rank + 1
+    return dest_file + str(cap_rank)
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str]) -> str:
+    """
+    Choose a move string from legal_moves according to heuristic policy.
+    Always returns one of the legal_moves.
+    """
+    if not legal_moves:
+        # No legal moves: should not happen in this API, but handle gracefully
+        return ''
+
+    our_color = 'w' if to_play == 'white' else 'b'
+    opp_color = 'b' if our_color == 'w' else 'w'
+
+    best_score = None
+    best_index = 0
+    # deterministic: iterate in provided order
+    for idx, move in enumerate(legal_moves):
+        score = 0
+
+        # Immediate mate
+        if '#' in move:
+            score += 1_000_000
+
+        # Promotion handling
+        prom = _promotion_piece(move)
+        if prom:
+            # prefer queen > rook > bishop > knight
+            prom_vals = {'Q': 900, 'R': 500, 'B': 300, 'N': 250}
+            score += 50_000  # big bonus for promotion
+            score += prom_vals.get(prom, 0)
+
+        # Checks
+        if '+' in move and '#' not in move:
+            score += 60
+
+        # Captures
+        if 'x' in move:
+            # Determine destination square (last square in SAN)
+            dest = _last_square(move)
+            captured_value = 0
+            if dest and dest in pieces:
+                piece = pieces[dest]
+                if piece[0] == opp_color:
+                    captured_value = _piece_values.get(piece[1], 0)
+            else:
+                # Possibly en-passant capture: figure out captured pawn square
+                ep_sq = _capture_dest_from_pawn_en_passant(move, to_play)
+                if ep_sq and ep_sq in pieces:
+                    p = pieces[ep_sq]
+                    if p[0] == opp_color:
+                        captured_value = _piece_values.get(p[1], 0)
+                else:
+                    # Unknown captured piece - still reward captures moderately
+                    captured_value = 150
+
+            score += captured_value + 1000  # captures are very good
+
+            # Prefer captures that trade up: if attacker is pawn or low-value, give bonus
+            # Attacker estimation: first char indicates piece or pawn
+            attacker = None
+            if move.startswith(('N', 'B', 'R', 'Q', 'K')):
+                attacker = move[0]
+            else:
+                attacker = 'P'
+            attacker_val = _piece_values.get(attacker, 0)
+            # If captured_value > attacker_val, it's a winning capture
+            score += max(0, captured_value - attacker_val)
+
+        # Non-capture center control bonus: encourage centralization
+        dest = _last_square(move)
+        if dest and dest in _central_squares:
+            score += 25
+
+        # Slight bonus for developing pieces from back rank (encourage mobilization)
+        # If move indicates piece (not pawn or castle) and no destination, skip
+        if move and move[0] in 'RNBQK':
+            # try to detect origin rank in SAN for disambiguation like Nf3 or N1c3 - not always present
+            # As a light heuristic, prefer moves that move off rank 1 for white or rank 8 for black
+            # We can attempt to parse an origin square if present (like Nbd2 or N1c3 or Nd2)
+            origin_sq_match = re.search(r'([a-h][1-8])', move)
+            if origin_sq_match:
+                origin = origin_sq_match.group(1)
+                # If origin exists in pieces and is our piece, check rank
+                if origin in pieces and pieces[origin][0] == our_color:
+                    rank = int(origin[1])
+                    if our_color == 'white' and rank == 1:
+                        score += 5
+                    if our_color == 'black' and rank == 8:
+                        score += 5
+
+        # Slight deterministic tiebreaker: prefer earlier moves (lower idx)
+        # We'll incorporate idx negatively so smaller index wins ties
+        # But keep it small so other heuristics dominate
+        score -= idx * 1e-6
+
+        if best_score is None or score > best_score:
+            best_score = score
+            best_index = idx
+
+    # final fallback: ensure chosen move is in legal_moves
+    chosen = legal_moves[best_index]
+    if chosen not in legal_moves:
+        return legal_moves[0]
+    return chosen
+</code>

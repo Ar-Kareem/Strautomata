@@ -1,0 +1,409 @@
+The strategy for this policy is a fast tactical search with strong LOA-specific heuristics and a guaranteed-legal fallback.
+
+Key ideas:
+- Generate all legal moves exactly according to Lines of Action rules.
+- Immediately play a winning move if one exists.
+- Prefer moves that:
+  - reduce the number of connected components of our pieces,
+  - increase local connectivity/compactness,
+  - centralize pieces,
+  - capture valuable enemy pieces,
+  - avoid allowing the opponent an immediate win.
+- Use a shallow minimax search with alpha-beta pruning when the branching factor is manageable.
+- Always keep a legal fallback move, so the policy always returns a valid move string.
+
+This policy is designed to be robust under the 1-second constraint:
+- It uses efficient move generation.
+- It evaluates positions with LOA-aware features rather than generic material only.
+- It uses adaptive depth based on branching factor.
+- It includes emergency fallbacks if time runs low.
+
+<code>
+import math
+import time
+from collections import deque
+
+BOARD_N = 8
+DIRS8 = [(-1, -1), (-1, 0), (-1, 1),
+         (0, -1),           (0, 1),
+         (1, -1),  (1, 0),  (1, 1)]
+
+# Canonical directions for move generation (4 axes x 2 signs represented individually)
+MOVE_DIRS = [
+    (-1, 0), (1, 0),   # vertical
+    (0, -1), (0, 1),   # horizontal
+    (-1, -1), (1, 1),  # main diagonal
+    (-1, 1), (1, -1),  # anti diagonal
+]
+
+CENTER_WEIGHTS = [
+    [0, 1, 2, 2, 2, 2, 1, 0],
+    [1, 2, 3, 3, 3, 3, 2, 1],
+    [2, 3, 4, 4, 4, 4, 3, 2],
+    [2, 3, 4, 5, 5, 4, 3, 2],
+    [2, 3, 4, 5, 5, 4, 3, 2],
+    [2, 3, 4, 4, 4, 4, 3, 2],
+    [1, 2, 3, 3, 3, 3, 2, 1],
+    [0, 1, 2, 2, 2, 2, 1, 0],
+]
+
+def inside(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def board_copy(board):
+    return [row[:] for row in board]
+
+def pieces_of(board, player):
+    out = []
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            if row[c] == player:
+                out.append((r, c))
+    return out
+
+def count_line_pieces(board, r, c, dr, dc):
+    # Number of pieces on the whole line through (r,c) in direction (dr,dc)
+    count = 1  # the current piece itself is occupied by construction
+    rr, cc = r + dr, c + dc
+    while inside(rr, cc):
+        if board[rr][cc] != 0:
+            count += 1
+        rr += dr
+        cc += dc
+    rr, cc = r - dr, c - dc
+    while inside(rr, cc):
+        if board[rr][cc] != 0:
+            count += 1
+        rr -= dr
+        cc -= dc
+    return count
+
+def legal_moves(board, player=1):
+    moves = []
+    my_pieces = pieces_of(board, player)
+    for r, c in my_pieces:
+        for dr, dc in MOVE_DIRS:
+            dist = count_line_pieces(board, r, c, dr, dc)
+            tr, tc = r + dr * dist, c + dc * dist
+            if not inside(tr, tc):
+                continue
+            # Cannot land on own piece
+            if board[tr][tc] == player:
+                continue
+
+            # May jump over friendly pieces but not enemy pieces
+            ok = True
+            rr, cc = r + dr, c + dc
+            for _ in range(dist - 1):
+                if board[rr][cc] == -player:
+                    ok = False
+                    break
+                rr += dr
+                cc += dc
+            if not ok:
+                continue
+
+            moves.append((r, c, tr, tc))
+    return moves
+
+def apply_move(board, move, player=1):
+    r, c, tr, tc = move
+    nb = board_copy(board)
+    nb[tr][tc] = player
+    nb[r][c] = 0
+    return nb
+
+def component_info(board, player):
+    pts = pieces_of(board, player)
+    n = len(pts)
+    if n == 0:
+        return 0, [], 0
+    seen = set()
+    comp_sizes = []
+    largest = 0
+    ptset = set(pts)
+
+    for p in pts:
+        if p in seen:
+            continue
+        q = deque([p])
+        seen.add(p)
+        size = 0
+        while q:
+            r, c = q.popleft()
+            size += 1
+            for dr, dc in DIRS8:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in ptset and (nr, nc) not in seen:
+                    seen.add((nr, nc))
+                    q.append((nr, nc))
+        comp_sizes.append(size)
+        if size > largest:
+            largest = size
+    return len(comp_sizes), comp_sizes, largest
+
+def is_connected(board, player):
+    count, _, _ = component_info(board, player)
+    return count <= 1
+
+def adjacency_score(board, player):
+    pts = pieces_of(board, player)
+    s = 0
+    ptset = set(pts)
+    for r, c in pts:
+        local = 0
+        for dr, dc in DIRS8:
+            if (r + dr, c + dc) in ptset:
+                local += 1
+        s += local
+    return s
+
+def centralization_score(board, player):
+    pts = pieces_of(board, player)
+    return sum(CENTER_WEIGHTS[r][c] for r, c in pts)
+
+def bounding_box_score(board, player):
+    pts = pieces_of(board, player)
+    if not pts:
+        return 0
+    rs = [r for r, _ in pts]
+    cs = [c for _, c in pts]
+    height = max(rs) - min(rs) + 1
+    width = max(cs) - min(cs) + 1
+    area = height * width
+    return -area
+
+def pairwise_distance_score(board, player):
+    pts = pieces_of(board, player)
+    n = len(pts)
+    if n <= 1:
+        return 0
+    s = 0
+    for i in range(n):
+        r1, c1 = pts[i]
+        for j in range(i + 1, n):
+            r2, c2 = pts[j]
+            s += max(abs(r1 - r2), abs(c1 - c2))
+    return -s
+
+def immediate_winning_moves(board, player):
+    wins = []
+    for mv in legal_moves(board, player):
+        nb = apply_move(board, mv, player)
+        if is_connected(nb, player):
+            wins.append(mv)
+    return wins
+
+def move_heuristic(board, move, player=1):
+    r, c, tr, tc = move
+    target = board[tr][tc]
+    nb = apply_move(board, move, player)
+
+    my_comp_before, _, my_largest_before = component_info(board, player)
+    my_comp_after, _, my_largest_after = component_info(nb, player)
+    opp_comp_before, _, opp_largest_before = component_info(board, -player)
+    opp_comp_after, _, opp_largest_after = component_info(nb, -player)
+
+    score = 0.0
+
+    if is_connected(nb, player):
+        score += 1e9
+
+    # Strongly reduce our component count
+    score += (my_comp_before - my_comp_after) * 5000
+    score += (my_largest_after - my_largest_before) * 400
+
+    # Captures can be useful but not always dominant in LOA
+    if target == -player:
+        score += 700
+        # Capturing isolated / central enemy can be valuable
+        score += CENTER_WEIGHTS[tr][tc] * 25
+
+    # Improve adjacency and compactness
+    score += (adjacency_score(nb, player) - adjacency_score(board, player)) * 60
+    score += (centralization_score(nb, player) - centralization_score(board, player)) * 18
+    score += (bounding_box_score(nb, player) - bounding_box_score(board, player)) * 25
+    score += (pairwise_distance_score(nb, player) - pairwise_distance_score(board, player)) * 6
+
+    # Slight preference to worsen opponent connectivity
+    score += (opp_comp_after - opp_comp_before) * 180
+    score += (opp_largest_before - opp_largest_after) * 60
+
+    # Avoid edge hugging unless helpful
+    if tr in (0, 7) or tc in (0, 7):
+        score -= 20
+
+    # Prefer destination with friendly neighbors
+    local = 0
+    for dr, dc in DIRS8:
+        nr, nc = tr + dr, tc + dc
+        if inside(nr, nc) and nb[nr][nc] == player:
+            local += 1
+    score += local * 90
+
+    return score
+
+def evaluate(board):
+    # Terminal checks
+    my_conn = is_connected(board, 1)
+    opp_conn = is_connected(board, -1)
+    if my_conn and opp_conn:
+        # In standard LOA if both connected after a move, mover wins.
+        # During search positions are from side-to-move perspective fixed as board values,
+        # so approximate as favorable for current player if already connected.
+        return 1000000
+    if my_conn:
+        return 1000000
+    if opp_conn:
+        return -1000000
+
+    my_comp, _, my_largest = component_info(board, 1)
+    opp_comp, _, opp_largest = component_info(board, -1)
+
+    score = 0.0
+    score += (opp_comp - my_comp) * 4500
+    score += (my_largest - opp_largest) * 300
+    score += adjacency_score(board, 1) * 55
+    score -= adjacency_score(board, -1) * 45
+    score += centralization_score(board, 1) * 20
+    score -= centralization_score(board, -1) * 16
+    score += bounding_box_score(board, 1) * 30
+    score -= bounding_box_score(board, -1) * 24
+    score += pairwise_distance_score(board, 1) * 4
+    score -= pairwise_distance_score(board, -1) * 3
+
+    # Mobility
+    my_moves = len(legal_moves(board, 1))
+    opp_moves = len(legal_moves(board, -1))
+    score += (my_moves - opp_moves) * 8
+
+    return score
+
+def flip_board(board):
+    # Swap perspective so side to move is always +1 in search
+    return [[-board[r][c] for c in range(8)] for r in range(8)]
+
+def negamax(board, depth, alpha, beta, deadline):
+    if time.time() >= deadline:
+        return evaluate(board), None
+
+    if depth == 0:
+        return evaluate(board), None
+
+    moves = legal_moves(board, 1)
+    if not moves:
+        return -1000000, None
+
+    # Immediate winning move
+    best_win = None
+    for mv in moves:
+        nb = apply_move(board, mv, 1)
+        if is_connected(nb, 1):
+            return 1000000 - (10 - depth), mv
+        if best_win is None:
+            best_win = mv
+
+    moves.sort(key=lambda m: move_heuristic(board, m, 1), reverse=True)
+
+    best_val = -10**18
+    best_move = moves[0]
+
+    for mv in moves:
+        if time.time() >= deadline:
+            break
+        nb = apply_move(board, mv, 1)
+        child = flip_board(nb)
+        val, _ = negamax(child, depth - 1, -beta, -alpha, deadline)
+        val = -val
+
+        # If opponent has immediate win after our move, punish
+        if depth >= 1 and val < 1000000:
+            opp_wins = immediate_winning_moves(child, 1)
+            if opp_wins:
+                val -= 200000
+
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if best_val > alpha:
+            alpha = best_val
+        if alpha >= beta:
+            break
+
+    return best_val, best_move
+
+def move_to_str(mv):
+    r, c, tr, tc = mv
+    return f"{r},{c}:{tr},{tc}"
+
+def safe_best_move(board, moves):
+    # Deterministic heuristic fallback
+    scored = []
+    for mv in moves:
+        nb = apply_move(board, mv, 1)
+        # Avoid moves that allow opponent immediate win if possible
+        opp_can_win = False
+        child = flip_board(nb)
+        for omv in legal_moves(child, 1):
+            ob = apply_move(child, omv, 1)
+            if is_connected(ob, 1):
+                opp_can_win = True
+                break
+        s = move_heuristic(board, mv, 1)
+        if opp_can_win:
+            s -= 250000
+        scored.append((s, mv))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[0][1]
+
+def policy(board) -> str:
+    start = time.time()
+    deadline = start + 0.92
+
+    moves = legal_moves(board, 1)
+    if not moves:
+        # Should not happen in valid arena states, but return something syntactically valid.
+        return "0,0:0,0"
+
+    # Immediate win
+    for mv in moves:
+        nb = apply_move(board, mv, 1)
+        if is_connected(nb, 1):
+            return move_to_str(mv)
+
+    # Strong fallback prepared first
+    fallback = safe_best_move(board, moves)
+
+    # Adaptive search depth
+    branching = len(moves)
+    if branching <= 8:
+        max_depth = 4
+    elif branching <= 18:
+        max_depth = 3
+    else:
+        max_depth = 2
+
+    best_move = fallback
+    best_val = -10**18
+
+    # Iterative deepening
+    for depth in range(1, max_depth + 1):
+        if time.time() >= deadline:
+            break
+        try:
+            val, mv = negamax(board, depth, -10**18, 10**18, deadline)
+            if mv is not None:
+                best_val = val
+                best_move = mv
+        except Exception:
+            break
+
+    # Ensure legal
+    if best_move not in moves:
+        best_move = fallback
+    if best_move not in moves:
+        best_move = moves[0]
+
+    return move_to_str(best_move)
+</code>

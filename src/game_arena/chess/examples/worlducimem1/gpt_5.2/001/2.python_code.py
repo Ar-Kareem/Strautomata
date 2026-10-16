@@ -1,0 +1,908 @@
+
+# chess_policy.py
+# Implements: policy(pieces: dict[str,str], to_play: str, memory: dict) -> tuple[str, dict]
+#
+# Notes:
+# - If the arena provides legal moves, we try to read them from memory/globals/builtins.
+# - Root move chosen is always from that provided list when available (to avoid disqualification).
+# - Internally we also generate legal moves for search.
+
+from __future__ import annotations
+
+import time
+import math
+import random
+from dataclasses import dataclass
+from typing import Dict, Tuple, List, Optional, Iterable
+
+FILES = "abcdefgh"
+RANKS = "12345678"
+
+PIECE_VALUE = {
+    "P": 100,
+    "N": 320,
+    "B": 330,
+    "R": 500,
+    "Q": 900,
+    "K": 0,
+}
+
+# Simple PSTs (midgame-ish), from white perspective; mirrored for black.
+# Values are in centipawns and intentionally modest (material dominates).
+PST_P = [
+     0,  0,  0,  0,  0,  0,  0,  0,
+     5, 10, 10,-20,-20, 10, 10,  5,
+     5, -5,-10,  0,  0,-10, -5,  5,
+     0,  0,  0, 20, 20,  0,  0,  0,
+     5,  5, 10, 25, 25, 10,  5,  5,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    50, 50, 50, 50, 50, 50, 50, 50,
+     0,  0,  0,  0,  0,  0,  0,  0,
+]
+PST_N = [
+   -50,-40,-30,-30,-30,-30,-40,-50,
+   -40,-20,  0,  0,  0,  0,-20,-40,
+   -30,  0, 10, 15, 15, 10,  0,-30,
+   -30,  5, 15, 20, 20, 15,  5,-30,
+   -30,  0, 15, 20, 20, 15,  0,-30,
+   -30,  5, 10, 15, 15, 10,  5,-30,
+   -40,-20,  0,  5,  5,  0,-20,-40,
+   -50,-40,-30,-30,-30,-30,-40,-50,
+]
+PST_B = [
+   -20,-10,-10,-10,-10,-10,-10,-20,
+   -10,  0,  0,  0,  0,  0,  0,-10,
+   -10,  0,  5, 10, 10,  5,  0,-10,
+   -10,  5,  5, 10, 10,  5,  5,-10,
+   -10,  0, 10, 10, 10, 10,  0,-10,
+   -10, 10, 10, 10, 10, 10, 10,-10,
+   -10,  5,  0,  0,  0,  0,  5,-10,
+   -20,-10,-10,-10,-10,-10,-10,-20,
+]
+PST_R = [
+     0,  0,  0,  0,  0,  0,  0,  0,
+     5, 10, 10, 10, 10, 10, 10,  5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+     0,  0,  0,  5,  5,  0,  0,  0,
+]
+PST_Q = [
+   -20,-10,-10, -5, -5,-10,-10,-20,
+   -10,  0,  0,  0,  0,  0,  0,-10,
+   -10,  0,  5,  5,  5,  5,  0,-10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+     0,  0,  5,  5,  5,  5,  0, -5,
+   -10,  5,  5,  5,  5,  5,  0,-10,
+   -10,  0,  5,  0,  0,  0,  0,-10,
+   -20,-10,-10, -5, -5,-10,-10,-20,
+]
+PST_K = [
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -30,-40,-40,-50,-50,-40,-40,-30,
+   -20,-30,-30,-40,-40,-30,-30,-20,
+   -10,-20,-20,-20,-20,-20,-20,-10,
+    20, 20,  0,  0,  0,  0, 20, 20,
+    20, 30, 10,  0,  0, 10, 30, 20,
+]
+PST = {"P": PST_P, "N": PST_N, "B": PST_B, "R": PST_R, "Q": PST_Q, "K": PST_K}
+
+KNIGHT_DELTAS = [(1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2)]
+KING_DELTAS = [(1, 1), (1, 0), (1, -1), (0, 1), (0, -1), (-1, 1), (-1, 0), (-1, -1)]
+BISHOP_DIRS = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+ROOK_DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+QUEEN_DIRS = BISHOP_DIRS + ROOK_DIRS
+
+MATE_SCORE = 100000
+INF = 10**9
+
+def _sq_to_xy(sq: str) -> Tuple[int, int]:
+    return FILES.index(sq[0]), RANKS.index(sq[1])
+
+def _xy_to_sq(x: int, y: int) -> str:
+    return FILES[x] + RANKS[y]
+
+def _in_bounds(x: int, y: int) -> bool:
+    return 0 <= x < 8 and 0 <= y < 8
+
+def _color_of(code: str) -> str:
+    return code[0]  # 'w' or 'b'
+
+def _ptype_of(code: str) -> str:
+    return code[1]
+
+def _opp(c: str) -> str:
+    return "b" if c == "w" else "w"
+
+@dataclass(frozen=True)
+class Move:
+    fr: Tuple[int, int]
+    to: Tuple[int, int]
+    promo: Optional[str] = None  # 'q','r','b','n' (lowercase)
+    ep: bool = False
+    castle: bool = False
+
+    def uci(self) -> str:
+        s = _xy_to_sq(*self.fr) + _xy_to_sq(*self.to)
+        if self.promo:
+            s += self.promo
+        return s
+
+def _parse_uci(uci: str) -> Move:
+    fr = _sq_to_xy(uci[0:2])
+    to = _sq_to_xy(uci[2:4])
+    promo = uci[4].lower() if len(uci) > 4 else None
+    return Move(fr, to, promo=promo)
+
+def _board_from_pieces(pieces: Dict[str, str]) -> List[List[Optional[str]]]:
+    b = [[None for _ in range(8)] for __ in range(8)]
+    for sq, code in pieces.items():
+        x, y = _sq_to_xy(sq)
+        b[y][x] = code
+    return b
+
+def _pieces_from_board(board: List[List[Optional[str]]]) -> Dict[str, str]:
+    out = {}
+    for y in range(8):
+        for x in range(8):
+            p = board[y][x]
+            if p:
+                out[_xy_to_sq(x, y)] = p
+    return out
+
+def _find_king(board: List[List[Optional[str]]], color: str) -> Optional[Tuple[int, int]]:
+    target = color + "K"
+    for y in range(8):
+        for x in range(8):
+            if board[y][x] == target:
+                return (x, y)
+    return None
+
+def _pst_value(ptype: str, x: int, y: int, color: str) -> int:
+    # PST arrays indexed by [rank*8+file] from White perspective with rank 1 as y=0.
+    idx = y * 8 + x
+    if color == "w":
+        return PST[ptype][idx]
+    # Mirror vertically for black
+    my = 7 - y
+    idx2 = my * 8 + x
+    return PST[ptype][idx2]
+
+def _evaluate(board: List[List[Optional[str]]], to_move: str) -> int:
+    # Positive is good for side to_move (negamax convention applied by caller).
+    # We'll compute absolute eval from White then convert.
+    w = 0
+    b = 0
+    for y in range(8):
+        for x in range(8):
+            p = board[y][x]
+            if not p:
+                continue
+            c = p[0]
+            t = p[1]
+            val = PIECE_VALUE[t] + _pst_value(t, x, y, c)
+            if c == "w":
+                w += val
+            else:
+                b += val
+    score_white = w - b
+    return score_white if to_move == "w" else -score_white
+
+def _is_attacked(board: List[List[Optional[str]]], sq: Tuple[int, int], by_color: str) -> bool:
+    x, y = sq
+
+    # Pawns
+    if by_color == "w":
+        for dx in (-1, 1):
+            xx, yy = x - dx, y - 1  # from attacker to target: white pawns go +y, so attack from y-1
+            if _in_bounds(xx, yy) and board[yy][xx] == "wP":
+                return True
+    else:
+        for dx in (-1, 1):
+            xx, yy = x - dx, y + 1
+            if _in_bounds(xx, yy) and board[yy][xx] == "bP":
+                return True
+
+    # Knights
+    ncode = by_color + "N"
+    for dx, dy in KNIGHT_DELTAS:
+        xx, yy = x + dx, y + dy
+        if _in_bounds(xx, yy) and board[yy][xx] == ncode:
+            return True
+
+    # King
+    kcode = by_color + "K"
+    for dx, dy in KING_DELTAS:
+        xx, yy = x + dx, y + dy
+        if _in_bounds(xx, yy) and board[yy][xx] == kcode:
+            return True
+
+    # Sliders: bishops/queens
+    bcode = by_color + "B"
+    qcode = by_color + "Q"
+    for dx, dy in BISHOP_DIRS:
+        xx, yy = x + dx, y + dy
+        while _in_bounds(xx, yy):
+            p = board[yy][xx]
+            if p:
+                if p == bcode or p == qcode:
+                    return True
+                break
+            xx += dx
+            yy += dy
+
+    # Sliders: rooks/queens
+    rcode = by_color + "R"
+    for dx, dy in ROOK_DIRS:
+        xx, yy = x + dx, y + dy
+        while _in_bounds(xx, yy):
+            p = board[yy][xx]
+            if p:
+                if p == rcode or p == qcode:
+                    return True
+                break
+            xx += dx
+            yy += dy
+
+    return False
+
+def _in_check(board: List[List[Optional[str]]], color: str) -> bool:
+    ksq = _find_king(board, color)
+    if ksq is None:
+        # Should not happen, but treat as checked (losing).
+        return True
+    return _is_attacked(board, ksq, _opp(color))
+
+def _apply_move(board: List[List[Optional[str]]], mv: Move, color: str, ep_square: Optional[Tuple[int, int]]) -> Tuple[List[List[Optional[str]]], Optional[Tuple[int, int]]]:
+    # Returns (new_board, new_ep_square_candidate_from_this_move)
+    nb = [row[:] for row in board]
+    fx, fy = mv.fr
+    tx, ty = mv.to
+    piece = nb[fy][fx]
+    nb[fy][fx] = None
+
+    new_ep = None
+    # En passant capture
+    if piece and piece[1] == "P" and ep_square and (tx, ty) == ep_square and nb[ty][tx] is None:
+        # Captured pawn is behind the target square
+        cap_y = ty - 1 if color == "w" else ty + 1
+        if _in_bounds(tx, cap_y) and nb[cap_y][tx] == (_opp(color) + "P"):
+            nb[cap_y][tx] = None
+
+    # Castling rook move
+    if piece and piece[1] == "K" and abs(tx - fx) == 2:
+        # move rook accordingly
+        if tx == 6:  # king-side
+            rook_from = (7, fy)
+            rook_to = (5, fy)
+        else:  # tx == 2 queen-side
+            rook_from = (0, fy)
+            rook_to = (3, fy)
+        rx1, ry1 = rook_from
+        rx2, ry2 = rook_to
+        rook = nb[ry1][rx1]
+        nb[ry1][rx1] = None
+        nb[ry2][rx2] = rook
+
+    # Place moved piece (promotion)
+    if piece and piece[1] == "P" and (ty == 7 or ty == 0) and mv.promo:
+        promo_map = {"q": "Q", "r": "R", "b": "B", "n": "N"}
+        nb[ty][tx] = color + promo_map.get(mv.promo, "Q")
+    else:
+        nb[ty][tx] = piece
+
+    # Set en passant square if a pawn advanced two squares
+    if piece and piece[1] == "P" and fx == tx and abs(ty - fy) == 2:
+        mid_y = (fy + ty) // 2
+        new_ep = (fx, mid_y)
+
+    return nb, new_ep
+
+def _gen_pseudo_moves(board: List[List[Optional[str]]], color: str, rights: Dict[str, bool], ep_square: Optional[Tuple[int, int]]) -> Iterable[Move]:
+    their = _opp(color)
+
+    for y in range(8):
+        for x in range(8):
+            p = board[y][x]
+            if not p or p[0] != color:
+                continue
+            t = p[1]
+
+            if t == "P":
+                diry = 1 if color == "w" else -1
+                start_rank = 1 if color == "w" else 6
+                prom_rank = 7 if color == "w" else 0
+
+                # forward one
+                ny = y + diry
+                if _in_bounds(x, ny) and board[ny][x] is None:
+                    if ny == prom_rank:
+                        for pr in ("q", "r", "b", "n"):
+                            yield Move((x, y), (x, ny), promo=pr)
+                    else:
+                        yield Move((x, y), (x, ny))
+                    # forward two
+                    if y == start_rank:
+                        ny2 = y + 2 * diry
+                        if _in_bounds(x, ny2) and board[ny2][x] is None:
+                            yield Move((x, y), (x, ny2))
+
+                # captures
+                for dx in (-1, 1):
+                    nx = x + dx
+                    ny = y + diry
+                    if not _in_bounds(nx, ny):
+                        continue
+                    target = board[ny][nx]
+                    if target is not None and target[0] == their:
+                        if ny == prom_rank:
+                            for pr in ("q", "r", "b", "n"):
+                                yield Move((x, y), (nx, ny), promo=pr)
+                        else:
+                            yield Move((x, y), (nx, ny))
+                    # en passant
+                    if ep_square and (nx, ny) == ep_square:
+                        yield Move((x, y), (nx, ny), ep=True)
+
+            elif t == "N":
+                for dx, dy in KNIGHT_DELTAS:
+                    nx, ny = x + dx, y + dy
+                    if not _in_bounds(nx, ny):
+                        continue
+                    target = board[ny][nx]
+                    if target is None or target[0] == their:
+                        yield Move((x, y), (nx, ny))
+
+            elif t == "B":
+                for dx, dy in BISHOP_DIRS:
+                    nx, ny = x + dx, y + dy
+                    while _in_bounds(nx, ny):
+                        target = board[ny][nx]
+                        if target is None:
+                            yield Move((x, y), (nx, ny))
+                        else:
+                            if target[0] == their:
+                                yield Move((x, y), (nx, ny))
+                            break
+                        nx += dx
+                        ny += dy
+
+            elif t == "R":
+                for dx, dy in ROOK_DIRS:
+                    nx, ny = x + dx, y + dy
+                    while _in_bounds(nx, ny):
+                        target = board[ny][nx]
+                        if target is None:
+                            yield Move((x, y), (nx, ny))
+                        else:
+                            if target[0] == their:
+                                yield Move((x, y), (nx, ny))
+                            break
+                        nx += dx
+                        ny += dy
+
+            elif t == "Q":
+                for dx, dy in QUEEN_DIRS:
+                    nx, ny = x + dx, y + dy
+                    while _in_bounds(nx, ny):
+                        target = board[ny][nx]
+                        if target is None:
+                            yield Move((x, y), (nx, ny))
+                        else:
+                            if target[0] == their:
+                                yield Move((x, y), (nx, ny))
+                            break
+                        nx += dx
+                        ny += dy
+
+            elif t == "K":
+                for dx, dy in KING_DELTAS:
+                    nx, ny = x + dx, y + dy
+                    if not _in_bounds(nx, ny):
+                        continue
+                    target = board[ny][nx]
+                    if target is None or target[0] == their:
+                        yield Move((x, y), (nx, ny))
+
+                # Castling
+                # Only if king is on start square.
+                if color == "w" and (x, y) == (4, 0):
+                    # king-side
+                    if rights.get("wK", False):
+                        if board[0][5] is None and board[0][6] is None and board[0][7] == "wR":
+                            if not _is_attacked(board, (4, 0), "b") and not _is_attacked(board, (5, 0), "b") and not _is_attacked(board, (6, 0), "b"):
+                                yield Move((4, 0), (6, 0), castle=True)
+                    # queen-side
+                    if rights.get("wQ", False):
+                        if board[0][1] is None and board[0][2] is None and board[0][3] is None and board[0][0] == "wR":
+                            if not _is_attacked(board, (4, 0), "b") and not _is_attacked(board, (3, 0), "b") and not _is_attacked(board, (2, 0), "b"):
+                                yield Move((4, 0), (2, 0), castle=True)
+
+                if color == "b" and (x, y) == (4, 7):
+                    # king-side
+                    if rights.get("bK", False):
+                        if board[7][5] is None and board[7][6] is None and board[7][7] == "bR":
+                            if not _is_attacked(board, (4, 7), "w") and not _is_attacked(board, (5, 7), "w") and not _is_attacked(board, (6, 7), "w"):
+                                yield Move((4, 7), (6, 7), castle=True)
+                    # queen-side
+                    if rights.get("bQ", False):
+                        if board[7][1] is None and board[7][2] is None and board[7][3] is None and board[7][0] == "bR":
+                            if not _is_attacked(board, (4, 7), "w") and not _is_attacked(board, (3, 7), "w") and not _is_attacked(board, (2, 7), "w"):
+                                yield Move((4, 7), (2, 7), castle=True)
+
+def _gen_legal_moves(board: List[List[Optional[str]]], color: str, rights: Dict[str, bool], ep_square: Optional[Tuple[int, int]]) -> List[Move]:
+    moves = []
+    for mv in _gen_pseudo_moves(board, color, rights, ep_square):
+        nb, _ = _apply_move(board, mv, color, ep_square)
+        if not _in_check(nb, color):
+            moves.append(mv)
+    return moves
+
+def _mvv_lva_score(board: List[List[Optional[str]]], mv: Move) -> int:
+    fx, fy = mv.fr
+    tx, ty = mv.to
+    attacker = board[fy][fx]
+    victim = board[ty][tx]
+    # en passant victim
+    if attacker and attacker[1] == "P" and victim is None and fx != tx:
+        # likely en passant; approximate victim as pawn
+        victim = _opp(attacker[0]) + "P"
+    a = PIECE_VALUE[attacker[1]] if attacker else 0
+    v = PIECE_VALUE[victim[1]] if victim else 0
+    return (v * 10) - a
+
+def _is_capture(board: List[List[Optional[str]]], mv: Move, ep_square: Optional[Tuple[int, int]]) -> bool:
+    fx, fy = mv.fr
+    tx, ty = mv.to
+    attacker = board[fy][fx]
+    if not attacker:
+        return False
+    victim = board[ty][tx]
+    if victim:
+        return True
+    # en passant
+    if attacker[1] == "P" and ep_square and (tx, ty) == ep_square and fx != tx:
+        return True
+    return False
+
+def _gives_check(board: List[List[Optional[str]]], mv: Move, color: str, rights: Dict[str, bool], ep_square: Optional[Tuple[int, int]]) -> bool:
+    nb, _ = _apply_move(board, mv, color, ep_square)
+    return _in_check(nb, _opp(color))
+
+def _hash_position(board: List[List[Optional[str]]], color: str, rights: Dict[str, bool], ep_square: Optional[Tuple[int, int]]) -> str:
+    # Compact deterministic hash (string) sufficient for small TT.
+    parts = [color]
+    parts.append("K" if rights.get("wK", False) else "-")
+    parts.append("Q" if rights.get("wQ", False) else "-")
+    parts.append("k" if rights.get("bK", False) else "-")
+    parts.append("q" if rights.get("bQ", False) else "-")
+    if ep_square:
+        parts.append(_xy_to_sq(*ep_square))
+    else:
+        parts.append("--")
+    # board
+    for y in range(8):
+        for x in range(8):
+            p = board[y][x]
+            parts.append(p if p else "..")
+    return "|".join(parts)
+
+def _order_moves(board: List[List[Optional[str]]], moves: List[Move], color: str, rights: Dict[str, bool], ep_square: Optional[Tuple[int, int]]) -> List[Move]:
+    scored = []
+    for mv in moves:
+        score = 0
+        if mv.promo:
+            score += 800  # promotions are huge
+        if _is_capture(board, mv, ep_square):
+            score += 400 + _mvv_lva_score(board, mv)
+        # cheap check detection for ordering (can be pricy, keep modest use)
+        if (mv.promo or _is_capture(board, mv, ep_square)) and _gives_check(board, mv, color, rights, ep_square):
+            score += 120
+        # prefer castling slightly
+        if mv.castle:
+            score += 40
+        scored.append((score, mv))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [m for _, m in scored]
+
+def _negamax(board: List[List[Optional[str]]],
+             color: str,
+             rights: Dict[str, bool],
+             ep_square: Optional[Tuple[int, int]],
+             depth: int,
+             alpha: int,
+             beta: int,
+             start_time: float,
+             time_limit: float,
+             tt: Dict[str, Tuple[int, int]]) -> int:
+    # Returns evaluation from perspective of side `color` to move.
+    if time.time() - start_time > time_limit:
+        raise TimeoutError
+
+    key = _hash_position(board, color, rights, ep_square)
+    if key in tt:
+        tt_depth, tt_val = tt[key]
+        if tt_depth >= depth:
+            return tt_val
+
+    if depth == 0:
+        val = _quiescence(board, color, rights, ep_square, alpha, beta, start_time, time_limit, tt)
+        tt[key] = (depth, val)
+        return val
+
+    moves = _gen_legal_moves(board, color, rights, ep_square)
+    if not moves:
+        if _in_check(board, color):
+            return -MATE_SCORE + 1  # checkmated
+        return 0  # stalemate
+
+    moves = _order_moves(board, moves, color, rights, ep_square)
+
+    best = -INF
+    their = _opp(color)
+
+    for mv in moves:
+        nb, new_ep = _apply_move(board, mv, color, ep_square)
+        # Update rights approximately (sufficient for search)
+        nrights = rights.copy()
+        _update_rights_from_move_local(nrights, board, mv, color)
+
+        val = -_negamax(nb, their, nrights, new_ep, depth - 1, -beta, -alpha, start_time, time_limit, tt)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    tt[key] = (depth, best)
+    return best
+
+def _quiescence(board: List[List[Optional[str]]],
+                color: str,
+                rights: Dict[str, bool],
+                ep_square: Optional[Tuple[int, int]],
+                alpha: int,
+                beta: int,
+                start_time: float,
+                time_limit: float,
+                tt: Dict[str, Tuple[int, int]]) -> int:
+    if time.time() - start_time > time_limit:
+        raise TimeoutError
+
+    stand_pat = _evaluate(board, color)
+    if stand_pat >= beta:
+        return beta
+    if stand_pat > alpha:
+        alpha = stand_pat
+
+    moves = _gen_legal_moves(board, color, rights, ep_square)
+    # only "noisy" moves: captures and promotions
+    noisy = []
+    for mv in moves:
+        if mv.promo or _is_capture(board, mv, ep_square):
+            noisy.append(mv)
+    if not noisy:
+        return alpha
+
+    noisy = _order_moves(board, noisy, color, rights, ep_square)
+
+    their = _opp(color)
+    for mv in noisy:
+        nb, new_ep = _apply_move(board, mv, color, ep_square)
+        nrights = rights.copy()
+        _update_rights_from_move_local(nrights, board, mv, color)
+        score = -_quiescence(nb, their, nrights, new_ep, -beta, -alpha, start_time, time_limit, tt)
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+    return alpha
+
+def _update_rights_from_move_local(rights: Dict[str, bool], board: List[List[Optional[str]]], mv: Move, color: str) -> None:
+    # Conservative update for internal search: if king moves, remove both; if rook moves from corner, remove that side.
+    fx, fy = mv.fr
+    tx, ty = mv.to
+    piece = board[fy][fx]
+    if not piece:
+        return
+    t = piece[1]
+
+    if t == "K":
+        if color == "w":
+            rights["wK"] = False
+            rights["wQ"] = False
+        else:
+            rights["bK"] = False
+            rights["bQ"] = False
+    elif t == "R":
+        if color == "w":
+            if (fx, fy) == (0, 0):
+                rights["wQ"] = False
+            elif (fx, fy) == (7, 0):
+                rights["wK"] = False
+        else:
+            if (fx, fy) == (0, 7):
+                rights["bQ"] = False
+            elif (fx, fy) == (7, 7):
+                rights["bK"] = False
+
+    # If a rook is captured on its corner, rights for that side should be removed as well.
+    victim = board[ty][tx]
+    if victim and victim[1] == "R":
+        vcolor = victim[0]
+        if vcolor == "w":
+            if (tx, ty) == (0, 0):
+                rights["wQ"] = False
+            elif (tx, ty) == (7, 0):
+                rights["wK"] = False
+        else:
+            if (tx, ty) == (0, 7):
+                rights["bQ"] = False
+            elif (tx, ty) == (7, 7):
+                rights["bK"] = False
+
+def _infer_rights_from_position(board: List[List[Optional[str]]]) -> Dict[str, bool]:
+    rights = {"wK": False, "wQ": False, "bK": False, "bQ": False}
+    # Heuristic: allow if king and rook are on starting squares.
+    if board[0][4] == "wK":
+        if board[0][7] == "wR":
+            rights["wK"] = True
+        if board[0][0] == "wR":
+            rights["wQ"] = True
+    if board[7][4] == "bK":
+        if board[7][7] == "bR":
+            rights["bK"] = True
+        if board[7][0] == "bR":
+            rights["bQ"] = True
+    return rights
+
+def _diff_last_move(prev_pieces: Dict[str, str], pieces: Dict[str, str], last_color: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    # Try to infer opponent's last move (as UCI without promotion details sometimes).
+    # Returns (from_sq, to_sq, promo_char_lower_or_None)
+    prev = prev_pieces
+    curr = pieces
+
+    prev_sq = {sq for sq, pc in prev.items() if pc[0] == last_color}
+    curr_sq = {sq for sq, pc in curr.items() if pc[0] == last_color}
+
+    removed = [sq for sq in prev_sq if sq not in curr_sq]
+    added = [sq for sq in curr_sq if sq not in prev_sq]
+
+    # Castling: two pieces moved
+    if len(removed) == 2 and len(added) == 2:
+        # find king move among removed/added by matching 'K'
+        from_k = None
+        to_k = None
+        for sq in removed:
+            if prev.get(sq) == last_color + "K":
+                from_k = sq
+                break
+        for sq in added:
+            if curr.get(sq) == last_color + "K":
+                to_k = sq
+                break
+        if from_k and to_k:
+            return from_k, to_k, None
+
+    # Normal / capture / promotion / en passant: one piece moved
+    if len(removed) == 1 and len(added) == 1:
+        fr = removed[0]
+        to = added[0]
+        promo = None
+        prev_piece = prev.get(fr)
+        curr_piece = curr.get(to)
+        if prev_piece and prev_piece[1] == "P" and curr_piece and curr_piece[1] != "P":
+            promo = curr_piece[1].lower()
+        return fr, to, promo
+
+    # If ambiguous, give up
+    return None, None, None
+
+def _update_state_from_diff(memory: dict, pieces: Dict[str, str], to_play: str) -> None:
+    board = _board_from_pieces(pieces)
+
+    if "rights" not in memory:
+        memory["rights"] = _infer_rights_from_position(board)
+    if "ep" not in memory:
+        memory["ep"] = None
+
+    prev_pieces = memory.get("prev_pieces")
+    if not prev_pieces:
+        memory["prev_pieces"] = dict(pieces)
+        return
+
+    last_color = "w" if to_play == "black" else "b"  # opponent who just moved
+    fr, to, promo = _diff_last_move(prev_pieces, pieces, last_color)
+
+    # Update castling rights from inferred last move and from rook captured on corners
+    rights = memory.get("rights", _infer_rights_from_position(board)).copy()
+
+    # Remove rights if king/rook moved (inferred)
+    if fr and to:
+        moved_piece = prev_pieces.get(fr)
+        if moved_piece == last_color + "K":
+            if last_color == "w":
+                rights["wK"] = False
+                rights["wQ"] = False
+            else:
+                rights["bK"] = False
+                rights["bQ"] = False
+        elif moved_piece == last_color + "R":
+            if last_color == "w":
+                if fr == "a1":
+                    rights["wQ"] = False
+                elif fr == "h1":
+                    rights["wK"] = False
+            else:
+                if fr == "a8":
+                    rights["bQ"] = False
+                elif fr == "h8":
+                    rights["bK"] = False
+
+    # If a rook disappeared from a corner (captured), remove that side's right
+    for corner, key in (("a1", "wQ"), ("h1", "wK"), ("a8", "bQ"), ("h8", "bK")):
+        if prev_pieces.get(corner, None) in ("wR", "bR") and corner not in pieces:
+            # rook was on corner, now gone; disable corresponding right
+            rights[key] = False
+
+    memory["rights"] = rights
+
+    # Update en passant target from last move if it was a double pawn push
+    ep = None
+    if fr and to:
+        moved_piece = prev_pieces.get(fr)
+        if moved_piece == last_color + "P":
+            fx, fy = _sq_to_xy(fr)
+            tx, ty = _sq_to_xy(to)
+            if fx == tx and abs(ty - fy) == 2:
+                ep = (fx, (fy + ty) // 2)
+    memory["ep"] = ep
+
+    memory["prev_pieces"] = dict(pieces)
+
+def _get_provided_legal_moves(memory: dict) -> Optional[List[str]]:
+    # Try common locations: memory keys, globals, builtins.
+    for k in ("legal_moves", "moves", "actions", "valid_moves", "possible_moves"):
+        v = memory.get(k)
+        if isinstance(v, list) and v and all(isinstance(x, str) for x in v):
+            return v
+
+    # Globals set by harness
+    try:
+        g = globals().get("legal_moves", None)
+        if isinstance(g, list) and g and all(isinstance(x, str) for x in g):
+            return g
+    except Exception:
+        pass
+
+    # builtins injection
+    try:
+        import builtins  # allowed
+        b = getattr(builtins, "legal_moves", None)
+        if isinstance(b, list) and b and all(isinstance(x, str) for x in b):
+            return b
+    except Exception:
+        pass
+
+    return None
+
+def policy(pieces: Dict[str, str], to_play: str, memory: dict) -> Tuple[str, dict]:
+    # Update inferred state (castling rights / ep) using opponent's last move
+    _update_state_from_diff(memory, pieces, to_play)
+
+    color = "w" if to_play == "white" else "b"
+    board = _board_from_pieces(pieces)
+
+    provided = _get_provided_legal_moves(memory)
+    if provided is not None and len(provided) > 0:
+        root_moves_uci = provided
+    else:
+        # Fallback: generate our own legal moves (best effort).
+        rights = memory.get("rights", _infer_rights_from_position(board))
+        ep = memory.get("ep", None)
+        gen = _gen_legal_moves(board, color, rights, ep)
+        root_moves_uci = [m.uci() for m in gen]
+        if not root_moves_uci:
+            # Absolute last resort: return any syntactically plausible move (won't usually happen).
+            return ("a1a1", memory)
+
+    # Parse root moves and restrict search to these (ensures legality if provided list is correct)
+    root_moves: List[Move] = []
+    for u in root_moves_uci:
+        try:
+            root_moves.append(_parse_uci(u))
+        except Exception:
+            continue
+    if not root_moves:
+        # If parsing failed, just return first provided move string.
+        return (root_moves_uci[0], memory)
+
+    rights0 = memory.get("rights", _infer_rights_from_position(board))
+    ep0 = memory.get("ep", None)
+
+    # Move ordering at root (with checks/captures/promotions preference)
+    root_moves = _order_moves(board, root_moves, color, rights0, ep0)
+
+    # Iterative deepening under time budget
+    start = time.time()
+    # Keep time usage conservative under 1s constraint
+    time_limit = float(memory.get("time_limit", 0.90))
+    tt = memory.get("tt", {})
+    if not isinstance(tt, dict):
+        tt = {}
+    # Prune TT size
+    if len(tt) > 200000:
+        tt = {}
+
+    best_move = root_moves[0]
+    best_score = -INF
+
+    # If any move immediately checkmates, take it quickly.
+    try:
+        for mv in root_moves[:12]:
+            nb, new_ep = _apply_move(board, mv, color, ep0)
+            nrights = rights0.copy()
+            _update_rights_from_move_local(nrights, board, mv, color)
+            replies = _gen_legal_moves(nb, _opp(color), nrights, new_ep)
+            if not replies and _in_check(nb, _opp(color)):
+                best_move = mv
+                memory["tt"] = tt
+                return (mv.uci(), memory)
+    except Exception:
+        pass
+
+    max_depth = 4  # typically reaches 3-4 plies within budget
+    for depth in range(1, max_depth + 1):
+        if time.time() - start > time_limit:
+            break
+        local_best = None
+        local_score = -INF
+        alpha = -INF
+        beta = INF
+
+        try:
+            for mv in root_moves:
+                if time.time() - start > time_limit:
+                    break
+                nb, new_ep = _apply_move(board, mv, color, ep0)
+                nrights = rights0.copy()
+                _update_rights_from_move_local(nrights, board, mv, color)
+
+                val = -_negamax(nb, _opp(color), nrights, new_ep, depth - 1, -beta, -alpha, start, time_limit, tt)
+
+                if val > local_score:
+                    local_score = val
+                    local_best = mv
+                if val > alpha:
+                    alpha = val
+
+            if local_best is not None:
+                best_move = local_best
+                best_score = local_score
+        except TimeoutError:
+            break
+        except Exception:
+            # If something goes wrong, fall back to already-selected best.
+            break
+
+    memory["tt"] = tt
+
+    chosen = best_move.uci()
+    # Ensure we return a move string that is in provided list when available.
+    if provided is not None:
+        if chosen in provided:
+            return (chosen, memory)
+        # Try to find same move ignoring promo case
+        chosen_l = chosen.lower()
+        for u in provided:
+            if u.lower() == chosen_l:
+                return (u, memory)
+        # Otherwise return first legal move from provided list
+        return (provided[0], memory)
+
+    return (chosen, memory)

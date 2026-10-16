@@ -1,0 +1,134 @@
+
+#!/usr/bin/env python3
+from collections import deque, defaultdict
+from typing import List, Tuple, Dict
+
+BOARD_SIZE = 19
+
+def neighbors(r, c):
+    if r > 1: yield (r-1, c)
+    if r < BOARD_SIZE: yield (r+1, c)
+    if c > 1: yield (r, c-1)
+    if c < BOARD_SIZE: yield (r, c+1)
+
+def build_board(me_set, opp_set):
+    # 0 empty, 1 me, -1 opp
+    board = [[0]*(BOARD_SIZE+1) for _ in range(BOARD_SIZE+1)]
+    for (r,c) in me_set:
+        board[r][c] = 1
+    for (r,c) in opp_set:
+        board[r][c] = -1
+    return board
+
+def find_group(board, start_r, start_c):
+    color = board[start_r][start_c]
+    if color == 0:
+        return set()
+    visited = set()
+    q = deque()
+    q.append((start_r, start_c))
+    visited.add((start_r, start_c))
+    while q:
+        r,c = q.popleft()
+        for (nr,nc) in neighbors(r,c):
+            if (nr,nc) not in visited and board[nr][nc] == color:
+                visited.add((nr,nc))
+                q.append((nr,nc))
+    return visited
+
+def group_liberties(board, group):
+    libs = set()
+    for (r,c) in group:
+        for (nr,nc) in neighbors(r,c):
+            if board[nr][nc] == 0:
+                libs.add((nr,nc))
+    return libs
+
+def simulate_move_and_evaluate(board, move_r, move_c):
+    # Assumes board[move] == 0
+    # Return (legal:bool, capture_count:int, my_group_libs_after:int, my_group_size_after:int)
+    # Make a shallow copy of board (we will modify)
+    B = [row[:] for row in board]
+    B[move_r][move_c] = 1  # place our stone
+    captured = set()
+    # Check opponent neighbor groups for capture
+    for (nr,nc) in neighbors(move_r, move_c):
+        if B[nr][nc] == -1:
+            grp = find_group(B, nr, nc)
+            libs = group_liberties(B, grp)
+            if len(libs) == 0:
+                captured.update(grp)
+    # Remove captured stones
+    for (r,c) in captured:
+        B[r][c] = 0
+    # Now check liberties of our group containing the placed stone
+    my_group = find_group(B, move_r, move_c)
+    my_libs = group_liberties(B, my_group)
+    # Legal if capture occurred or our group has at least one liberty
+    legal = (len(captured) > 0) or (len(my_libs) > 0)
+    return legal, len(captured), len(my_libs), len(my_group)
+
+def policy(me: List[Tuple[int,int]], opponent: List[Tuple[int,int]], memory: Dict) -> Tuple[Tuple[int,int], Dict]:
+    me_set = set(me)
+    opp_set = set(opponent)
+    board = build_board(me_set, opp_set)
+
+    best_move = None
+    best_score = float('-inf')
+
+    center_r = (BOARD_SIZE+1) // 2
+    center_c = (BOARD_SIZE+1) // 2
+
+    # Precompute adjacency counts maybe
+    for r in range(1, BOARD_SIZE+1):
+        for c in range(1, BOARD_SIZE+1):
+            if board[r][c] != 0:
+                continue  # occupied
+            legal, cap_count, my_libs_after, my_group_size = simulate_move_and_evaluate(board, r, c)
+            if not legal:
+                continue
+            score = 0.0
+            # Big weight for captures
+            if cap_count > 0:
+                score += 1000 * cap_count
+            # Adjacent to my stones: connection
+            adj_my = 0
+            adj_opp = 0
+            for (nr,nc) in neighbors(r,c):
+                if board[nr][nc] == 1:
+                    adj_my += 1
+                elif board[nr][nc] == -1:
+                    adj_opp += 1
+            score += 50 * adj_my
+            score += 30 * adj_opp
+            # Increase for liberties gained
+            score += 10 * my_libs_after
+            # Penalize self-atari (leaves 1 liberty) unless capturing
+            if cap_count == 0 and my_libs_after == 1:
+                score -= 80
+            # Prefer larger resulting group (connection)
+            score += 5 * my_group_size
+            # Prefer proximity to opponent stones (pressure)
+            if opponent:
+                min_dist_opp = min(abs(r-orow)+abs(c-ocol) for (orow,ocol) in opponent)
+                # closer to opponent is better (but not too close if it's self-atari)
+                score += 20 * max(0, (BOARD_SIZE - min_dist_opp))
+            # Prefer center mildly
+            manh = abs(r - center_r) + abs(c - center_c)
+            score += 2 * (BOARD_SIZE - manh)
+            # Minor randomization via position parity to break ties deterministically
+            score += ((r * 31 + c * 17) % 7) * 0.01
+
+            if score > best_score:
+                best_score = score
+                best_move = (r,c)
+
+    if best_move is None:
+        # No legal move found: pass
+        return (0, 0), memory
+    return best_move, memory
+
+if __name__ == "__main__":
+    # Simple self-test: empty board should choose near center
+    mv, mem = policy([], [], {})
+    print("Chosen move on empty board:", mv)

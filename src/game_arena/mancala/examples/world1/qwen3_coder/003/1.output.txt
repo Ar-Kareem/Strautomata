@@ -1,0 +1,157 @@
+<thinking>
+I need to implement a Kalah move-selection policy. Let me break this down:
+
+1. **Game Understanding**: 
+   - 6 houses per side (indices 0-5), 1 store each (index 6)
+   - I choose a house with seeds, distribute seeds counterclockwise
+   - Special moves: landing last seed in my store = extra turn, landing in empty house = capture
+
+2. **Strategy Considerations**:
+   - Prioritize moves that give extra turns (land in store)
+   - Look for capture opportunities
+   - Avoid giving opponent good positions
+   - Consider long-term positional advantages
+
+3. **Implementation Approach**:
+   - Evaluate each legal move by simulating it
+   - Score moves based on:
+     - Extra turn opportunities
+     - Capture potential
+     - Seeds moved to my store
+     - Positional advantage
+
+4. **Move Evaluation**:
+   - Simulate each move to see outcomes
+   - Check for immediate extra turns
+   - Check for captures
+   - Count seeds moved to store
+   - Consider opponent's potential responses
+
+Let me trace through what happens in a move:
+1. Pick house i with you[i] > 0 seeds
+2. Distribute those seeds in order, skipping opponent's store
+3. Apply special rules based on final seed position
+
+I'll implement a simple but effective strategy that:
+- Prioritizes extra turn opportunities
+- Looks for capture opportunities  
+- Considers seed gain and positional factors
+</thinking>
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Select the best move for Kalah based on immediate gains and strategic positioning.
+    
+    Args:
+        you: Your side [h0,h1,h2,h3,h4,h5,store]
+        opponent: Opponent's side [h0,h1,h2,h3,h4,h5,store]
+        
+    Returns:
+        Index (0-5) of the house to play
+    """
+    
+    def simulate_move(you_state, opponent_state, move):
+        """Simulate a move and return the resulting state and if extra turn"""
+        # Create copies to avoid modifying originals
+        new_you = you_state[:]
+        new_opponent = opponent_state[:]
+        
+        seeds = new_you[move]
+        new_you[move] = 0
+        
+        # Distribute seeds
+        current_pos = move + 1
+        side = 'you'  # Start on our side
+        
+        for _ in range(seeds):
+            if side == 'you':
+                if current_pos == 6:  # Our store
+                    new_you[6] += 1
+                    current_pos += 1
+                    if current_pos == 7:
+                        side = 'opponent'
+                        current_pos = 0
+                elif current_pos < 6:  # Our houses
+                    new_you[current_pos] += 1
+                    current_pos += 1
+                else:  # Wrap around to opponent side
+                    side = 'opponent'
+                    current_pos = 0
+                    new_opponent[current_pos] += 1
+                    current_pos += 1
+            else:  # opponent side
+                if current_pos < 6:  # opponent houses
+                    new_opponent[current_pos] += 1
+                    current_pos += 1
+                else:  # wrap around to our side
+                    side = 'you'
+                    current_pos = 0
+                    new_you[current_pos] += 1
+                    current_pos += 1
+        
+        # Check for extra turn (last seed in our store)
+        extra_turn = (side == 'you' and current_pos - 1 == 6)
+        
+        # Check for capture
+        capture = False
+        if side == 'you' and 0 <= current_pos - 1 <= 5:
+            landing_pos = current_pos - 1
+            if new_you[landing_pos] == 1:  # Was empty before this drop
+                # Check if opponent house has seeds
+                opposite_pos = 5 - landing_pos
+                if new_opponent[opposite_pos] > 0:
+                    # Capture!
+                    captured_seeds = 1 + new_opponent[opposite_pos]
+                    new_you[6] += captured_seeds
+                    new_you[landing_pos] = 0
+                    new_opponent[opposite_pos] = 0
+                    capture = True
+        
+        return new_you, new_opponent, extra_turn, capture
+    
+    # Evaluate all legal moves
+    best_move = None
+    best_score = float('-inf')
+    
+    for i in range(6):
+        if you[i] > 0:  # Legal move
+            # Simulate the move
+            new_you, new_opponent, extra_turn, capture = simulate_move(you, opponent, i)
+            
+            # Score this move
+            score = 0
+            
+            # Immediate seed gain
+            seed_gain = new_you[6] - you[6]
+            score += seed_gain * 2  # Weight seeds in store highly
+            
+            # Extra turn is very valuable
+            if extra_turn:
+                score += 10
+            
+            # Capture is good
+            if capture:
+                score += 8
+                
+            # Consider how many seeds we're distributing (future potential)
+            score += you[i] * 0.5  # Slight preference for moving more seeds
+            
+            # Positional consideration: don't leave good capture opportunities for opponent
+            # Look at what the board looks like after our move
+            # If we don't get an extra turn, consider opponent's best response
+            if not extra_turn:
+                # Simple positional heuristic - try to keep our side with more seeds
+                our_houses_total = sum(new_you[0:6])
+                opp_houses_total = sum(new_opponent[0:5])  # Don't count their store
+                score += (our_houses_total - opp_houses_total) * 0.3
+            
+            # Prefer moves further right (more strategic? breaking ties)
+            score += i * 0.1
+            
+            if score > best_score:
+                best_score = score
+                best_move = i
+    
+    return best_move
+</code>

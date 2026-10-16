@@ -1,0 +1,130 @@
+<div class="rp-shell">
+  <div class="rp-head">
+    <div class="rp-title">
+      <h3>{{ gameLabel() }} · {{ labelA() }} <span class="rp-vs">vs</span> {{ labelB() }}</h3>
+      <div class="rp-meta">
+        <span class="rp-outcome" [attr.data-reason]="detail().reason">{{ outcomeText() }}</span>
+        <span class="rp-meta-item">{{ reasonLabel[detail().reason] }}</span>
+        <span class="rp-meta-item">{{ detail().moves.length }} recorded moves</span>
+        <span class="rp-meta-item">{{ formatSecs(detail().secs) }} wall time</span>
+        @if (detail().seed !== null) {
+          <span class="rp-meta-item">seed {{ detail().seed }}</span>
+        }
+      </div>
+    </div>
+    <button type="button" class="ghost-button" (click)="close.emit()">Close ✕</button>
+  </div>
+
+  <div class="rp-body">
+    <div class="rp-board">
+      @switch (status()) {
+        @case ('loading') {
+          <div class="rp-placeholder">
+            <span class="rp-spinner" aria-hidden="true"></span>
+            Replaying moves through the game engine…
+          </div>
+        }
+        @case ('error') {
+          <div class="rp-placeholder rp-error">
+            <p>Replay failed: {{ error() }}</p>
+            <button type="button" class="ghost-button" (click)="retry()">Retry</button>
+          </div>
+        }
+        @case ('unavailable') {
+          <div class="rp-placeholder">
+            <p>{{ error() || 'Backgammon and Battleships replays are currently broken due to an RNG issue. A fix will be implemented. The move list is shown on the right.' }}</p>
+          </div>
+        }
+        @default {
+          @if (guiComponent()) {
+            <div class="game-gui rp-gui">
+              <ng-container [ngComponentOutlet]="guiComponent()" [ngComponentOutletInputs]="guiInputs()"></ng-container>
+            </div>
+          } @else {
+            <pre class="rp-raw">{{ frame()?.state | json }}</pre>
+          }
+        }
+      }
+
+      @if (status() === 'ready') {
+        <div class="rp-transport">
+          <button type="button" class="ghost-button rp-btn" (click)="first()" [disabled]="turn() === 0" title="First (Home)">⏮</button>
+          <button type="button" class="ghost-button rp-btn" (click)="prev()" [disabled]="turn() === 0" title="Previous (←)">◀</button>
+          <button type="button" class="ghost-button rp-btn rp-play" (click)="togglePlay()" [title]="playing() ? 'Pause (space)' : 'Play (space)'">
+            {{ playing() ? '⏸' : '▶' }}
+          </button>
+          <button type="button" class="ghost-button rp-btn" (click)="next()" [disabled]="turn() >= lastTurn()" title="Next (→)">▶|</button>
+          <button type="button" class="ghost-button rp-btn" (click)="last()" [disabled]="turn() >= lastTurn()" title="Last (End)">⏭</button>
+          <input
+            class="rp-slider"
+            type="range"
+            min="0"
+            [max]="lastTurn()"
+            [value]="turn()"
+            (input)="onSlider($event)"
+            aria-label="Turn"
+          />
+          <span class="rp-turn">turn {{ turn() }} / {{ lastTurn() }}</span>
+          <label class="rp-speed">
+            speed
+            <input type="range" min="1" max="20" [value]="speed()" (input)="setSpeed($event)" aria-label="Moves per second" />
+            <span>{{ speed() }}/s</span>
+          </label>
+        </div>
+        @if (currentLine(); as line) {
+          <div class="rp-current" [class.is-failed]="line.failed">
+            Move {{ line.turn }} · {{ playerLabel(line.player) }} played <code>{{ line.text }}</code>
+            @if (line.think !== null) {
+              <span class="rp-current-think">after {{ formatSecs(line.think) }}</span>
+            }
+          </div>
+        } @else {
+          <div class="rp-current">Initial position · {{ labelA() }} moves first</div>
+        }
+      }
+    </div>
+
+    <aside class="rp-side">
+      <div class="rp-side-head">
+        <span>Moves</span>
+        <span class="rp-side-note">click a move to jump</span>
+      </div>
+      <ol class="rp-moves" #moveList>
+        @for (line of moveLines(); track line.index) {
+          <li
+            class="rp-move"
+            [class.is-current]="line.turn === turn()"
+            [class.is-failed]="line.failed"
+            [class.is-unapplied]="!line.applied && !line.failed"
+            [class.is-p0]="line.player === 0"
+            [class.is-p1]="line.player === 1"
+            [style]="thinkStyle(line)"
+            (click)="jumpTo(line)"
+          >
+            <span class="rp-move-turn">{{ line.turn }}</span>
+            <span class="rp-move-player" [title]="playerLabel(line.player)">{{ line.player === 0 ? 'A' : line.player === 1 ? 'B' : line.player }}</span>
+            <code class="rp-move-text">{{ line.text }}</code>
+            <span class="rp-move-think" [title]="'think time'">{{ line.think === null ? '' : formatSecs(line.think) }}</span>
+            @if (line.failed) {
+              <span class="rp-move-flag">illegal</span>
+            }
+          </li>
+        } @empty {
+          <li class="rp-move rp-move-empty">No moves recorded.</li>
+        }
+      </ol>
+      @if (exceptionText()) {
+        <div class="rp-exception">
+          <div class="rp-side-head"><span>Recorded failure</span></div>
+          <pre>{{ exceptionText() }}</pre>
+        </div>
+      }
+      @if (detail().returns || detail().other) {
+        <div class="rp-final">
+          <div class="rp-side-head"><span>Final stats</span></div>
+          <pre>{{ { returns: detail().returns, other: detail().other } | json }}</pre>
+        </div>
+      }
+    </aside>
+  </div>
+</div>

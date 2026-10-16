@@ -1,0 +1,466 @@
+The strategy for this policy is to evaluate the chess position based on material balance, piece mobility, king safety, and the potential for immediate tactical gains such as captures and checks. The policy prioritizes moves in the following order:
+
+1. **Checkmate**: If any legal move results in checkmate, choose it immediately.
+2. **Check**: Among moves that give check, prefer those that also threaten material gain.
+3. **Captures**: Prioritize captures, especially those that gain higher-value pieces with lower-value attackers (e.g., a pawn capturing a queen).
+4. **Promotion**: Promote pawns whenever possible, preferably to queens.
+5. **Positional improvement**: Encourage development and central control, especially for knights and bishops. Discourage king movement unless castling.
+6. **King safety**: Penalize moves that expose the king or move the king into open files/ranks.
+7. **Avoiding repetition and stale moves**: Use memory to detect repeated positions or discourage non-progress.
+
+To implement this, we use a simple evaluation function for each move based on:
+- Piece values: Queen=9, Rook=5, Bishop=3, Knight=3, Pawn=1.
+- Bonus for central control (e4, d4, e5, d5).
+- Heavy penalty for moving king early unless castling.
+- Bonus for castling.
+- Promotion evaluation.
+
+We simulate each legal move to assess its immediate consequence and then rank moves accordingly.
+
+<在玩家中>
+import numpy as np
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Map from piece type to value
+    piece_value = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    # Define colors
+    my_color = 'w' if to javacode:`to_play` == 'white' else 'b'
+    opp_color = 'b' if my_color == 'w' else 'w'
+    
+    # Helper: convert square to file and rank
+    def square_to_coords(sq):
+        return sq[0], int(sq[1])
+    
+    def coords_to_square(f, r):
+        return f'{f}{r}'
+    
+    # Get all squares
+    files = 'abcdefgh'
+    ranks = '12345678'
+    
+    # Get current king position
+    king_square = None
+    for sq, piece in pieces.items():
+        if piece == my_color + 'K':
+            king_square = sq
+            break
+    if not king_square:
+        # Should not happen, but fallback
+        king_square = 'e1' if my_color == 'w' else 'e8'
+    
+    # Evaluate a move: return a score (higher = better)
+    def evaluate_move(move):
+        score = 0.0
+        
+        from_sq = move[:2]
+        to_sq = move[2:4]
+        
+        # Check if this is a promotion
+        is_promotion = len(move) > 4
+        if is_promotion:
+            promo_piece = move[4].upper()
+            # Always prefer queen promotion unless knight gives checkmate?
+            # But for now, just promote to queen
+            if move[-1] == 'q':
+                score += 8  # Almost always best
+            else:
+                score += 0  # Knight or other promotions are rare
+        
+        # Check if this is castling
+        if from_sq == 'e1' or from_sq == 'e8':
+            if to_sq == 'g1' or to_sq == 'g8':
+                score += 10  # Kingside castling good
+            elif to_sq == 'c1' or to_sq == 'c8':
+                score += 8  # Queenside castling good
+        
+        # King safety: avoid moving king unnecessarily
+        if pieces.get(from_sq) == my_color + 'K':
+            # If not castling, penalize king movement
+            if not ((from_sq == 'e1' and to_sq in ['c1','g1']) or (from_sq == 'e8' and to_sq in ['c8','g8'])):
+                score -= 15
+        
+        # Central control bonus
+        central_squares = ['d4', 'd5', 'e4', 'e5']
+        if to_sq in central_squares:
+            piece_type = pieces.get(from_sq)[1] if pieces.get(from_sq) else ''
+            if piece_type in ['N', 'B', 'Q', 'P']:
+                score += 1.5
+        
+        # Penalize moving pawns to the back rank (unless promotion)
+        if pieces.get(from_sq) == my_color + 'P':
+            _, from_rank = square_to_coords(from_sq)
+            _, to_rank = square_to_coords(to_sq)
+            if (my_color == 'w' and to_rank == 8 and not is_promotion) or (my_color == 'b' and to_rank == 1 and not is_promotion):
+                score -= 10  # This should not happen
+        
+        # Check if this move is a capture
+        captured_piece = pieces.get(to_sq)
+        if captured_piece and captured_piece.startswith(opp_color):
+            value = piece_value[captured_piece[1]]
+            # If we capture with a low-value piece a high-value one, big bonus
+            attacker_value = piece_value[pieces[from_sq][1]]
+            score += value * 10 - attacker_value  # Reward favorable trades
+            if captured_piece[1] == 'K':
+                score += 10000  # Checkmate!
+        
+        # Simulate the board after the move
+        temp_pieces = pieces.copy()
+        moving_piece = temp_pieces.pop(from_sq)
+        temp_pieces[to_sq] = moving_piece
+        
+        # Check if this leaves our king in check (should be filtered by legal_moves, but just in case)
+        # But since legal_moves only gives legal moves, we assume no self-check
+        
+        # Count how many of opponent's pieces attack our king now
+        # This is expensive but approximate
+        king_in_danger = 0
+        for sq, piece in temp_pieces.items():
+            if piece.startswith(opp_color):
+                # Get attacks from this piece
+                attacks = get_attacked_squares(sq, temp_pieces, opp_color)
+                if king_square in attacks:
+                    king_in_danger += 1
+        if king_in_danger > 0:
+            score -= 20 * king_in_danger  # Heavy penalty for exposing king
+        
+        # Bonus if this move attacks opponent king
+        opp_king_sq = None
+        for sq, piece in temp_pieces.items():
+            if piece == opp_color + 'K':
+                opp_king_sq = sq
+                break
+        
+        if opp_king_sq:
+            my_attacks = get_attacked_squares(to_sq, temp_pieces, my_color)
+            if opp_king_sq in my_attacks:
+                score += 15  # Bonus for giving check
+        
+        # Avoid redundant moves: penalize moving same piece back and forth
+        if memory.get('last_move_piece') == moving_piece and memory.get('last_move_to') == from_sq:
+            score -= 5
+        
+        return score
+    
+    # Function to get attacked squares by a piece at a given square
+    def get_attacked_squares(sq, board, color):
+        attacks = set()
+        piece = board.get(sq)
+        if not piece or not piece.startswith(color):
+            return attacks
+        ptype = piece[1]
+        file, rank = square_to_coords(sq)
+        
+        if ptype == 'P':
+            advance = 1 if color == 'w' else -1
+            next_rank = rank + advance
+            if 'a' <= file < 'h':
+                new_file = chr(ord(file) + 1)
+                attacks.add(f'{new扫黑除}ttacking sq = {new_file}{next_rank}')
+            if 'a' < file <= 'h':
+                new_file = chr(ord(file) - 1}
+                attacks.add(f'{new_file}{next_rank}')
+        elif ptype == 'N':
+            knight_moves = [(2,1),(2,-1),(-2,1),(-2,-1),(1,2),(1,-2),(-1,2),(-1,-2)]
+            for df, dr in knight_moves:
+                nf = chr(ord(file) + df
+                nr = rank + dr
+                if nf in files and 1 <= nr <= 8:
+                    attacks.add(f'{nf}{nr}')
+        elif ptype == 'B':
+            for df, dr in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+                for i in range(1,8):
+                    nf = chr(ord(file) + i*df)
+                    nr = rank + i*dr
+                    if nf in files and 1 <= nr <= 8:
+                        attacks.add(f'{nf}{nr}')
+                        if f'{nf}{nr}' in board:
+                            break
+                    else:
+                        break
+        elif ptype == 'R':
+            for df, dr in [(1,0),(-1,0),(0,1),(0,-1)]:
+                for i in range(1,8):
+                    nf = chr(ord(file) + i*df)
+                    nr = rank + i*dr
+                    if nf in files and 1 <= nr <= 8:
+                        attacks.add(f'{nf}{nr}')
+                        if f'{nf}{nr}' in board:
+                            break
+                    else:
+                        break
+        elif ptype == 'Q':
+            for df, dr in [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]:
+                for i in range(1,8):
+                    nf = chr(ord(file) + i*df)
+                    nr = rank + i*dr
+                    if nf in files and 1 <= nr <= 8:
+                        attacks.add(f'{nf}{nr}')
+                        if f'{nf}{nr}' in board:
+                            break
+                    else:
+                        break
+        elif ptype == 'K':
+            for df in (-1,0,1):
+                for dr in (-1,0,1):
+                    if df == 0 and dr == 0:
+                        continue
+                    nf = chr(ord(file) + df)
+                    nr = rank + dr
+                    if nf in files and 1 <= nr <= 8:
+                        attacks.add(f'{nf}{nr}')
+        
+        # Remove any out-of-bounds
+        attacks = {sq for sq in attacks if sq[0] in files and sq[1] in ranks}
+        return attacks
+    
+    # Get legal_moves from memory or context (assumed passed externally but not shown in signature)
+    # Actually, legal_moves is not passed! This is a problem.
+    # Correction: the legal_moves must be passed but it's not in the function signature.
+    # But according to the problem, we are given legal_moves. However, the function signature doesn't include it.
+    # This is a critical issue.
+    
+    # Wait, the problem says: "You will be provided a list of legal moves" — but it's not in the signature.
+    # This must be a mistake. Looking back: the legal moves are available? But not passed.
+    
+    # Re-reading: "Do not return any extra text, commentary, or formatting—only the move string."
+    # But no legal_moves argument? That can't be.
+    
+    # Actually, the instruction says: "Return a move string that is an element of legal_moves"
+    # But legal_moves is not passed to the function.
+    
+    # This is an error in the prompt. But since we are in a simulated arena, perhaps the legal_moves are provided elsewhere?
+    # But the function only takes (pieces, to_play, memory).
+    
+    # This is a contradiction. However, in real competition systems, the legal moves are typically passed.
+    
+    # Given the ambiguity, I assume that the `memory` contains `legal_moves` from an external source.
+    # But that's not reliable.
+    
+    # Alternatively, perhaps we must generate the legal moves ourselves?
+    # But that is very complex without a library.
+    
+    # Since the problem says: "move selection from provided legal moves", the only logical conclusion is that `legal_moves` should be an input.
+    
+    # But it is not in the signature.
+    
+    # This appears to be an error in the prompt. However, to proceed, I will assume that `memory` contains a key 'legal_moves' from prior call.
+    # But that doesn't make sense because legal_moves change every turn.
+    
+    # Alternatively, perhaps the system injects `legal_moves` into the function's scope? Unlikely.
+    
+    # Given the constraints, I must generate pseudo-legal moves and validate them myself.
+    # But that is extremely complex.
+    
+    # But let me re-read: the example format of legal_moves is shown, but not passed as argument.
+    # This suggests a flaw in the problem statement.
+    
+    # However, to be competitive, I must have access to legal moves.
+    
+    # Therefore, I will assume that `memory` contains a key `'legal_moves'` that is updated by the environment before each call.
+    # If not present, we must generate moves — which is a big task.
+    
+    # Given time constraints, I will implement a minimal move generator just to avoid disqualification.
+    # But ideally, legal_moves should be provided.
+    
+    # Since the problem says "provided legal moves", but does not pass them, I conclude that the arena system must be injecting them via memory.
+    
+    # Let's assume the environment has placed the current legal moves in memory under key 'legal_moves'
+    legal_moves = memory.get('legal_moves', [])
+    
+    # If not, we generate all possible moves (pseudo-legal) and then validate them to avoid moving into check
+    if not legal_moves:
+        # Generate all pseudo-legal moves
+        legal_moves = generate_pseudo_legal_moves(pieces, my_color)
+        # But we must filter out moves that leave king in check
+        # We'll do a basic filter: simulate move, and see if king is attacked
+        safe_moves = []
+        for move in legal_moves:
+            from_sq = move[:2]
+            to_sq = move[2:4]
+            if from_sq not in pieces:
+                continue
+            temp_board = pieces.copy()
+            piece = temp_board.pop(from_sq)
+            captured = temp_board.pop(to_sq, None)
+            temp_board[to_sq] = piece
+            
+            # Find king
+            k_sq = None
+            for sq, p in temp_board.items():
+                if p == my_color + 'K':
+                    k_sq = sq
+                    break
+            if not k_sq:
+                continue
+            
+            # Is king attacked?
+            under_attack = False
+            for sq, p in temp_board.items():
+                if p.startswith(opp_color):
+                    attacks = get_attacked_squares(sq, temp_board, opp_color)
+                    if k_sq in attacks:
+                        under_attack = True
+                        break
+            if not under_attack:
+                safe_moves.append(move)
+        legal_moves = safe_moves
+        # Update memory, but careful not to overwrite user data
+        # We'll store only legal_moves in memory for next time
+        # But other policies may use memory, so we store under 'last_legal_moves'
+        memory['last_generated_legal_moves'] = legal_moves
+    
+    # If still no legal moves, return first move from a full generation with no check filtering (should not happen)
+    if not legal_moves:
+        legal_moves = generate_pseudo_legal_moves(pieces, my_color) or ['e1e2']  # fallback move
+    
+    # Score all legal moves
+    scored_moves = []
+    for move in legal_moves:
+        score = evaluate_move(move)
+        scored_moves.append((score, move))
+    
+    # Sort by score descending
+    scored_moves.sort(reverse=True)
+    
+    best_move = scored_moves[0][1]
+    
+    # Update memory for next call: remember last move's piece and destination
+    moving_piece = pieces.get(best_move[:2], '')
+    memory['last_move_piece'] = moving_piece
+    memory['last_move_to'] = best_move[:2]  # actually from_sq, and we want 'to' as new square?
+    # Actually, for detecting back-and-forth: we want to know where we moved from last
+    memory['last_move_from'] = best_move[:2]
+    memory['last_move'] = best_move
+    
+    return best_move, memory
+
+# Helper function to generate pseudo-legal moves (without considering check)
+def generate_pseudo_legal_moves(pieces, color):
+    moves = []
+    for sq, piece in pieces.items():
+        if not piece.startswith(color):
+            continue
+        ptype = piece[1]
+        file, rank = sq[0], int(sq[1])
+        
+        if ptype == 'P':
+            advance = 1 if color == 'w' else -1
+            next_rank = rank + advance
+            if 1 <= next_rank <= 8:
+                # Single move
+                next_sq = f'{file}{next_rank}'
+                if next_sq not in pieces:
+                    if next_rank == 8 or next_rank == 1:
+                        for promo in ['q','r','b','n']:
+                            moves.append(f'{sq}{next_sq}{promo}')
+                    else:
+                        moves.append(f'{sq}{next_sq}')
+                    # Double move if on starting rank
+                    if (color == 'w' and rank == 2) or (color == 'b' and rank == 7):
+                        next_rank2 = rank + 2*advance
+                        if next_rank2 <= 8 and next_rank2 >= 1:
+                            next_sq2 = f'{file}{next_rank2}'
+                            if next_sq2 not in pieces:
+                                moves.append(f'{sq}{next_sq2}')
+            # Captures
+            for df in [-1,1]:
+                nf = chr(ord(file) + df
+                if 'a' <= nf <= 'h':
+                    capture_sq = f'{nf}{next_rank}'
+                    # Capture only if occupied by opponent
+                    if capture_sq in pieces and pieces[capture_sq].startswith('w' if color == 'b' else 'b'):
+                        if next_rank == 8 or next_rank == 1:
+                            for promo in ['q','r','b','n']:
+                                moves.append(f'{sq}{capture_sq}{promo}')
+                        else:
+                            moves.append(f'{sq}{capture_sq}')
+                    # En passant? Not handled here for simplicity
+        
+        elif ptype == 'N':
+            knight_moves = [(2,1),(2,-1),(-2,1),(-2,-1),(1,2),(1,-2),(-1,2),(-1,-2)]
+            for df, dr in knight_moves:
+                nf = chr(ord(file) + df
+                nr = rank + dr
+                if nf in 'abcdefgh' and 1 <= nr <= 8:
+                    to_sq = f'{nf}{nr}'
+                    if to_sq not in pieces or not pieces[to_sq].startswith(color):
+                        moves.append(f'{sq}{to_sq}')
+        
+        elif ptype == 'B':
+            for df, dr in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+                for i in range(1,8):
+                    nf = chr(ord(file) + i*df
+                    nr = rank + i*dr
+                    if nf in 'abcdefgh' and 1 <= nr <= 8:
+                        to_sq = f'{nf}{nr}'
+                        if to_sq not in pieces:
+                            moves.append(f'{sq}{to_sq}')
+                        elif not pieces[to_sq].startswith(color):
+                            moves.append(f'{sq}{to_sq}')
+                            break
+                        else:
+                            break
+                    else:
+                        break
+        
+        elif ptype == 'R':
+            for df, dr in [(1,0),(-1,0),(0,1),(0,-1)]:
+                for i in range(1,8):
+                    nf = chr(ord(file) + i*df if df else 0)
+                    nr = rank + i*dr if dr else 0
+                    if nf in 'abcdefgh' and 1 <= nr <= 8:
+                        to_sq = f'{nf}{nr}'
+                        if to_sq not in pieces:
+                            moves.append(f'{sq}{to_sq}')
+                        elif not pieces[to_sq].startswith(color):
+                            moves.append(f'{sq}{to_sq}')
+                            break
+                        else:
+                            break
+                    else:
+                        break
+        
+        elif ptype == 'Q':
+            for df, dr in [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]:
+                for i in range(1,8):
+                    nf = chr(ord(file) + i*df if df else 0)
+                    nr = rank + i*dr if dr else 0
+                    if nf in 'abcdefgh' and 1 <= nr <= 8:
+                        to_sq = f'{nf}{nr}'
+                        if to_sq not in pieces:
+                            moves.append(f'{sq}{to_sq}')
+                        elif not pieces[to_sq].startswith(coulor):
+                            moves.append(f'{sq}{to_sq}')
+                            break
+                        else:
+                            break
+                    else:
+                        break
+        
+        elif ptype == 'K':
+            # Castling
+            if color == 'w' and rank == 1 and file == 'e':
+                if 'h1' in pieces and pieces['h1'] == 'wR' and 'f1' not in pieces and 'g1' not in pieces:
+                    moves.append('e1g1')
+                if 'a1' in pieces and pieces['a1'] == 'wR' and 'b1' not in pieces and 'c1' not in pieces and 'd1' not in pieces:
+                    moves.append('e1c1')
+            elif color == 'b' and rank == 8 and file == 'e':
+                if 'h8' in pieces and pieces['h8'] == 'bR' and 'f8' not in pieces and 'g8' not in pieces:
+                    moves.append('e8g8')
+                if 'a8' in pieces and pieces['a8'] == 'bR' and 'b8' not in pieces and 'c8' not in pieces and 'd8' not in pieces:
+                    moves.append('e8c8')
+            # Normal king moves
+            for df in (-1,0,1):
+                for dr in (-1,0,1):
+                    if df == 0 and dr == 0:
+                        continue
+                    nf = chr(ord(file) + df)
+                    nr = rank + dr
+                    if nf in 'abcdefgh' and  <= nr <= 8:
+                        to_sq = f'{nf}{nr}'
+                        if to_sq not in pieces or not pieces[to_sq].startswith(color):
+                            moves.append(f'{sq}{to_sq}')
+    
+    return moves
+</code>

@@ -1,0 +1,137 @@
+The strategy for this policy is to prioritize winning moves first, then block potential opponent wins, and finally select the best available move based on game theory principles for imperfect information. Since we cannot see opponent marks directly, we assume that any cell that is not confirmed as ours (i.e., board[row][col] == 0) may be occupied by the opponent or empty. We use the following approach:
+
+1. **Win Detection**: Look for any row, column, or diagonal where we have 2 marks and the third cell is legal — prioritize playing there to win immediately.
+2. **Block Detection**: Since opponent can also be close to winning, we treat any cell with 2 zeros (unknowns) in a line with one of our marks as potentially dangerous. However, without seeing opponent placements, we assume that any pair of zeros in a line (with our mark) might mean the opponent has two in a row. We block those lines if possible.
+3. **Center Priority**: The center (1,1) is the most valuable square in Tic Tac Toe — prioritize it if available.
+4. **Corner Preference**: After center, prefer corners (0,0), (0,2), (2,0), (2,2) as they are part of more potential lines.
+5. **Edge Avoidance**: Avoid edges (0,1), (1,0), (1,2), (2,1) unless no other moves are available.
+6. **Fallback**: If multiple legal moves remain, choose randomly from those that are not already ours but weighted by strategic value.
+
+We use a score-based system to rank all legal moves (excluding our own confirmed cells). We assign higher scores to center and corners, and we prioritize moves that complete our lines or block opponent lines.
+
+<code>
+import numpy as np
+
+def policy(board: list[list[int]], legal_moves: list[int]) -> int:
+    # Convert legal moves to (row, col) tuples
+    move_to_coords = {move: (move // 3, move % 3) for move in legal_moves}
+    
+    # Convert board to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # Step 1: Check for immediate win moves
+    for move in legal_moves:
+        row, col = move // 3, move % 3
+        # Temporarily assume we place our mark here
+        board_np[row, col] = 1
+        
+        # Check if this move completes a line of 3
+        if check_win(board_np, row, col):
+            # Restore board state (we don't modify original)
+            board_np[row, col] = 0
+            return move
+        
+        # Restore board state
+        board_np[row, col] = 0
+    
+    # Step 2: Check for opponent threat - try to block
+    # Since we don't know opponent's marks, we assume:
+    # Any line with two 0's and one 1 is dangerous (opponent might have two)
+    # We interpret "0" as either empty or opponent. We want to block if there's a line with two 0's and one of ours? 
+    # Actually, if a line has two 0's and one 1, we suspect opponent has two 0's (which are their marks). 
+    # But wait: 0 is "not confirmed yours" — meaning it could be empty OR opponent. 
+    # So we interpret: if a line has two cells that are 0 (unknown) and one cell that is 1 (ours), 
+    # then the opponent might have two in a row. We want to play the third.
+    
+    # However, note: we cannot directly know if opponent has two — it’s uncertain. 
+    # But if we don’t block, they might win next turn. So we assume best-case for opponent.
+    
+    # We look for lines with exactly one 1 and two 0's — we should block the third one
+    for move in legal_moves:
+        row, col = move // 3, move % 3
+        # Temporarily assume we place mark here to see if removing it would break a threat
+        board_np[row, col] = 1
+        # Check if the *opponent* had two in a row and this blocks it?
+        # Better: check the line *without* our mark — if two 0's and one 1 elsewhere, then this move might complete the block?
+        # Actually, we don’t need to simulate placement. We look for lines that have:
+        # - One of our marks (1) and two unknowns (0) — then if we don't play one of the 0's, opponent might have two there.
+        # But since we can't see, we treat any 0 as potentially opponent.
+        # So: if a line has two 0s and one 1, then we must play the third position to block, if it's legal.
+        
+        # Let's check line types without assuming our move
+        # For this move, we are considering playing here. We want to see if this square is *one* of two 0s in a line with a 1
+        # But we are already iterating over all legal moves. Let's check each line this move belongs to.
+        
+        # Check row
+        row_line = board_np[row, :]
+        if np.sum(row_line == 1) == 1 and np.sum(row_line == 0) == 2:
+            if board_np[row, col] == 0:  # if this is one of the 0s, then playing here blocks
+                # But wait — we're already iterating over legal moves (which are 0s). So if this move is legal and
+                # the row has one 1 and two 0s, and we play here, we complete the row to 1 1 0? — then we didn't win, but blocked?
+                # Actually, we are playing in a 0 — so after we play, that line becomes 1 1 0 (if the other 0 is still 0) — 
+                # the opponent still has one 0? So we didn't block unless we fill the last 0.
+                # We need to see if by playing here, we are the third in a line that already has one of our marks? No — 
+                # actually, we are placing our mark on a cell that is currently 0 (unknown). 
+                # The threat is: opponent already has two 0s (meaning their marks) in the line. But we don't know which 0 is theirs.
+                # So if a line has one 1 (ours) and two 0s (unknowns), then it's possible opponent controls both 0s — so if we don't play one now, 
+                # they will win on their next turn. So we must play in one of those positions.
+                # So any legal move that is in a line with one of our marks and two unknowns is a block candidate.
+                # So we can use this move to block.
+                board_np[row, col] = 0
+                return move
+        
+        # Check column
+        col_line = board_np[:, col]
+        if np.sum(col_line == 1) == 1 and np.sum(col_line == 0) == 2:
+            if board_np[row, col] == 0:
+                board_np[row, col] = 0
+                return move
+        
+        # Check main diagonal
+        if row == col:
+            diag_line = np.diag(board_np)
+            if np.sum(diag_line == 1) == 1 and np.sum(diag_line == 0) == 2:
+                if board_np[row, col] == 0:
+                    board_np[row, col] = 0
+                    return move
+        
+        # Check anti-diagonal
+        if row + col == 2:
+            anti_diag_line = np.diag(np.fliplr(board_np))
+            if np.sum(anti_diag_line == 1) == 1 and np.sum(anti_diag_line == 0) == 2:
+                if board_np[row, col] == 0:
+                    board_np[row, col] = 0
+                    return move
+        
+        # Restore
+        board_np[row, col] = 0
+    
+    # Step 3: Prioritize center if available
+    if 4 in legal_moves:  # center is index 4
+        return 4
+    
+    # Step 4: Prioritize corners (0,2,6,8) over edges
+    corners = [0, 2, 6, 8]
+    available_corners = [m for m in legal_moves if m in corners]
+    if available_corners:
+        return available_corners[0]  # return first available corner (any is fine)
+    
+    # Step 5: Pick any legal move — should be edges
+    return legal_moves[0]
+
+def check_win(board, row, col):
+    """Check if placing a mark at (row, col) results in a win."""
+    # Check row
+    if all(board[row, :] == 1):
+        return True
+    # Check column
+    if all(board[:, col] == 1):
+        return True
+    # Check main diagonal
+    if row == col and all(np.diag(board) == 1):
+        return True
+    # Check anti-diagonal
+    if row + col == 2 and all(np.diag(np.fliplr(board)) == 1):
+        return True
+    return False
+</code>

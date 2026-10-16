@@ -1,0 +1,171 @@
+
+import numpy as np
+
+# Directions: 8 cardinal and ordinal directions
+_DIRECTIONS = [
+    (0, 1), (1, 1), (1, 0), (1, -1), 
+    (0, -1), (-1, -1), (-1, 0), (-1, 1)
+]
+
+def _get_moves(board, r, c):
+    """
+    Generator yielding valid queen moves from (r, c).
+    """
+    for dr, dc in _DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 6 and 0 <= nc < 6:
+            if board[nr, nc] == 0:
+                yield nr, nc
+            else:
+                break
+            nr += dr
+            nc += dc
+
+def _evaluate(board):
+    """
+    Evaluation function based on mobility difference.
+    """
+    my_moves = 0
+    opp_moves = 0
+    
+    # Iterate through all cells to find amazons
+    for r in range(6):
+        for c in range(6):
+            piece = board[r, c]
+            if piece == 1: # My Amazon
+                for _ in _get_moves(board, r, c):
+                    my_moves += 1
+            elif piece == 2: # Opponent Amazon
+                for _ in _get_moves(board, r, c):
+                    opp_moves += 1
+                    
+    return my_moves - opp_moves
+
+def _minimax(board, depth, alpha, beta, maximizing_player):
+    """
+    Minimax algorithm with alpha-beta pruning.
+    """
+    if depth == 0:
+        return _evaluate(board)
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        pieces = np.argwhere(board == 1)
+        
+        for p in pieces:
+            r, c = p[0], p[1]
+            # Iterate all moves for this piece
+            for tr, tc in _get_moves(board, r, c):
+                # Make move
+                board[r, c] = 0
+                board[tr, tc] = 1
+                
+                # Iterate all arrow shots
+                for ar, ac in _get_moves(board, tr, tc):
+                    board[ar, ac] = -1 # Shoot arrow
+                    
+                    val = _minimax(board, depth - 1, alpha, beta, False)
+                    
+                    board[ar, ac] = 0 # Undo arrow
+                    
+                    if val > max_eval:
+                        max_eval = val
+                    alpha = max(alpha, val)
+                    if beta <= alpha:
+                        break
+                
+                # Undo move
+                board[tr, tc] = 0
+                board[r, c] = 1
+                
+                if beta <= alpha:
+                    break
+            if beta <= alpha:
+                break
+        
+        return max_eval
+    else:
+        min_eval = float('inf')
+        pieces = np.argwhere(board == 2)
+        
+        for p in pieces:
+            r, c = p[0], p[1]
+            for tr, tc in _get_moves(board, r, c):
+                board[r, c] = 0
+                board[tr, tc] = 2
+                
+                for ar, ac in _get_moves(board, tr, tc):
+                    board[ar, ac] = -1
+                    
+                    val = _minimax(board, depth - 1, alpha, beta, True)
+                    
+                    board[ar, ac] = 0
+                    
+                    if val < min_eval:
+                        min_eval = val
+                    beta = min(beta, val)
+                    if beta <= alpha:
+                        break
+                
+                board[tr, tc] = 0
+                board[r, c] = 2
+                
+                if beta <= alpha:
+                    break
+            if beta <= alpha:
+                break
+                
+        return min_eval
+
+def policy(board):
+    """
+    Main policy function to determine the best move.
+    """
+    # Ensure board is a mutable numpy array of integers
+    board = np.array(board, dtype=int)
+    
+    best_move = None
+    max_eval = -float('inf')
+    
+    # We are player 1 (Maximizing)
+    pieces = np.argwhere(board == 1)
+    
+    # Depth 2 search (My move -> Opponent move -> Evaluate)
+    search_depth = 1 
+    
+    for p in pieces:
+        r, c = p[0], p[1]
+        for tr, tc in _get_moves(board, r, c):
+            # Make move
+            board[r, c] = 0
+            board[tr, tc] = 1
+            
+            for ar, ac in _get_moves(board, tr, tc):
+                board[ar, ac] = -1
+                
+                # Start minimax for opponent (minimizing player)
+                current_eval = _minimax(board, search_depth, -float('inf'), float('inf'), False)
+                
+                board[ar, ac] = 0
+                
+                if current_eval > max_eval:
+                    max_eval = current_eval
+                    best_move = f"{r},{c}:{tr},{tc}:{ar},{ac}"
+            
+            # Undo move
+            board[tr, tc] = 0
+            board[r, c] = 1
+            
+    # Fallback: if somehow no move was selected (should not happen in a valid game state)
+    if best_move is None:
+        for p in pieces:
+            r, c = p[0], p[1]
+            for tr, tc in _get_moves(board, r, c):
+                board[r, c] = 0
+                board[tr, tc] = 1
+                for ar, ac in _get_moves(board, tr, tc):
+                    board[tr, tc] = 0
+                    board[r, c] = 1
+                    return f"{r},{c}:{tr},{tc}:{ar},{ac}"
+
+    return best_move

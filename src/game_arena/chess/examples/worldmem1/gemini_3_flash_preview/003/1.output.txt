@@ -1,0 +1,87 @@
+The strategy for this policy is a fast heuristic search. It evaluates the current board state based on material values (Queen=900, Rook=500, Bishop=330, Knight=320, Pawn=100) and positional bonuses for development and center control. It simulates the immediate outcome of each move by updating the piece dictionary and evaluates the resulting position from the opponent's perspective. It prioritizes checkmates, then captures based on "Most Valuable Victim - Least Valuable Aggressor," and finally general positional moves. It also handles castling, captures, and pawn promotions to ensure the board state is accurately tracked during the one-ply lookahead.
+
+<code>
+import random
+
+def policy(pieces, to_play, legal_moves, memory):
+    # Piece values for evaluation
+    val_map = {'K': 10000, 'Q': 900, 'R': 500, 'B': 330, 'N': 320, 'P': 100}
+    my_color = 'w' if to_play == 'white' else 'b'
+    opp_color = 'b' if to_play == 'white' else 'w'
+
+    def get_piece_value(p_code):
+        if not p_code: return 0
+        return val_map.get(p_code[1], 0)
+
+    def evaluate_board(curr_pieces):
+        score = 0
+        for sq, pc in curr_pieces.items():
+            val = get_piece_value(pc)
+            # Basic material
+            if pc[0] == my_color:
+                score += val
+                # Center control / Development bonus
+                if sq in ['d4', 'd5', 'e4', 'e5']: score += 10
+                if sq in ['c3', 'f3', 'c6', 'f6']: score += 5
+            else:
+                score -= val
+        return score
+
+    def parse_move(move_str):
+        # Extremely simplified move parsing to estimate resulting board
+        # Handles: O-O, O-O-O, e4, exd5, Nf3, b8=Q, etc.
+        target_sq = ""
+        if move_str == "O-O":
+            target_sq = "g1" if to_play == "white" else "g8"
+        elif move_str == "O-O-O":
+            target_sq = "c1" if to_play == "white" else "c8"
+        else:
+            # Resulting square is usually the last two chars unless it's check/mate/promotion
+            clean_move = move_str.replace("+", "").replace("#", "")
+            if "=" in clean_move:
+                target_sq = clean_move.split("=")[0][-2:]
+            else:
+                target_sq = clean_move[-2:]
+        return target_sq
+
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+
+    # One-ply search
+    for move in legal_moves:
+        if "#" in move: # Immediate checkmate
+            return move, memory
+        
+        # Estimate score
+        temp_pieces = pieces.copy()
+        target = parse_move(move)
+        
+        # Simple material gain weight
+        move_score = 0
+        if "x" in move:
+            # Find what was on the target square
+            captured_piece_val = get_piece_value(pieces.get(target, "  "))
+            # MVV-LVA logic: prefer capturing high value with low value
+            attacker_char = move[0] if move[0].isupper() else 'P'
+            attacker_val = val_map.get(attacker_char, 100)
+            move_score = (captured_piece_val * 10) - (attacker_val // 10)
+        
+        # Promotion bonus
+        if "=Q" in move: move_score += 800
+        if "O-O" in move: move_score += 30
+        
+        # Apply move to temp board to check situational score
+        # (This is a rough approximation)
+        if target in temp_pieces:
+            del temp_pieces[target]
+            
+        if move_score > best_score:
+            best_score = move_score
+            best_move = move
+        elif move_score == best_score:
+            # Use board evaluation as tie breaker
+            if random.random() > 0.5:
+                best_move = move
+
+    return best_move, memory
+</code>

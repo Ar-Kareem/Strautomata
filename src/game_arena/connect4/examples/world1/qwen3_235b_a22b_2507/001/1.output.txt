@@ -1,0 +1,215 @@
+<thinking>
+I need to implement a Connect 4 AI that can compete effectively. For this, I'll use the minimax algorithm with alpha-beta pruning, which is well-suited for deterministic, perfect-information games like Connect 4. I'll add a depth limit to ensure the AI runs within 1 second.
+
+Key considerations:
+- The AI needs to evaluate board positions and search ahead.
+- I'll use a heuristic evaluation function that rewards potential for winning.
+- The minimax search will look several moves ahead, prioritizing terminal states (wins/losses).
+- To optimize performance, I'll use numpy for efficient board operations.
+
+The evaluation function will consider:
+- Immediate win detection
+- Open 3s, 2s, and 1s that could lead to wins
+- Center column preference
+- Blocking opponent's threats
+
+I'll limit the search depth to 6-7 to stay within time constraints, but prioritize checking for immediate wins or losses.
+</thinking>
+<code>
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    # Convert to numpy array for easier manipulation
+    grid = np.array(board)
+    
+    def is_valid_move(col):
+        return grid[0, col] == 0
+    
+    def make_move(col, player):
+        # Find the lowest empty row in the column
+        for row in range(5, -1, -1):
+            if grid[row, col] == 0:
+                grid[row, col] = player
+                return row
+        return -1
+    
+    def undo_move(col):
+        # Remove the disc from the top of the column
+        for row in range(6):
+            if grid[row, col] != 0:
+                grid[row, col] = 0
+                return
+    
+    def check_winner():
+        # Check horizontal
+        for row in range(6):
+            for col in range(4):
+                if abs(sum(grid[row, col:col+4])) == 4 and len(set(grid[row, col:col+4])) == 1:
+                    return grid[row, col]
+        
+        # Check vertical
+        for col in range(7):
+            for row in range(3):
+                if abs(sum(grid[row:row+4, col])) == 4 and len(set(grid[row:row+4, col])) == 1:
+                    return grid[row, col]
+        
+        # Check diagonal (top-left to bottom-right)
+        for row in range(3):
+            for col in range(4):
+                if abs(sum(grid[row+i, col+i] for i in range(4))) == 4 and len(set(grid[row+i, col+i] for i in range(4))) == 1:
+                    return grid[row, col]
+        
+        # Check diagonal (top-right to bottom-left)
+        for row in range(3):
+            for col in range(3, 7):
+                if abs(sum(grid[row+i, col-i] for i in range(4))) == 4 and len(set(grid[row+i, col-i] for i in range(4))) == 1:
+                    return grid[row, col]
+        
+        return 0
+    
+    def evaluate():
+        # Immediate win check
+        winner = check_winner()
+        if winner == 1:
+            return 1000
+        elif winner == -1:
+            return -1000
+        
+        score = 0
+        
+        # Evaluate all possible lines of 4
+        lines = []
+        
+        # Horizontal
+        for row in range(6):
+            for col in range(4):
+                lines.append([(row, col+i) for i in range(4)])
+        
+        # Vertical
+        for col in range(7):
+            for row in range(3):
+                lines.append([(row+i, col) for i in range(4)])
+        
+        # Diagonal (top-left to bottom-right)
+        for row in range(3):
+            for col in range(4):
+                lines.append([(row+i, col+i) for i in range(4)])
+        
+        # Diagonal (top-right to bottom-left)
+        for row in range(3):
+            for col in range(3, 7):
+                lines.append([(row+i, col-i) for i in range(4)])
+        
+        for line in lines:
+            cells = [grid[r, c] for r, c in line]
+            my_count = cells.count(1)
+            opp_count = cells.count(-1)
+            empty_count = cells.count(0)
+            
+            # Score based on potential
+            if opp_count == 0:
+                # Only my pieces or empty
+                if my_count == 3:
+                    score += 100  # Open three - very valuable
+                elif my_count == 2:
+                    score += 10   # Open two
+                elif my_count == 1:
+                    score += 1    # Open one
+            elif my_count == 0:
+                # Only opponent pieces or empty
+                if opp_count == 3:
+                    score -= 90   # Opponent has open three - block!
+                elif opp_count == 2:
+                    score -= 8    # Opponent open two
+        
+        # Bonus for center column control
+        for row in range(6):
+            if grid[row, 3] == 1:
+                score += 3
+            elif grid[row, 3] == -1:
+                score -= 3
+                
+        return score
+    
+    def minimax(depth, alpha, beta, maximizing_player):
+        # Terminal conditions
+        winner = check_winner()
+        if winner == 1:
+            return 1000 - depth  # Prefer quicker wins
+        elif winner == -1:
+            return -1000 + depth  # Prefer slower losses
+        
+        if depth == 0:
+            return evaluate()
+        
+        valid_moves = [col for col in range(7) if is_valid_move(col)]
+        
+        # Prioritize center columns for better performance
+        valid_moves.sort(key=lambda x: abs(x - 3))
+        
+        if maximizing_player:
+            max_eval = -float('inf')
+            for col in valid_moves:
+                row = make_move(col, 1)
+                eval_score = minimax(depth - 1, alpha, beta, False)
+                undo_move(col)
+                
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break  # Beta cutoff
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in valid_moves:
+                row = make_move(col, -1)
+                eval_score = minimax(depth - 1, alpha, beta, True)
+                undo_move(col)
+                
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break  # Alpha cutoff
+            return min_eval
+    
+    # First, check if we can win immediately
+    for col in range(7):
+        if is_valid_move(col):
+            row = make_move(col, 1)
+            if check_winner() == 1:
+                undo_move(col)
+                return col
+            undo_move(col)
+    
+    # Check if opponent will win next move - block it
+    for col in range(7):
+        if is_valid_move(col):
+            row = make_move(col, -1)
+            if check_winner() == -1:
+                undo_move(col)
+                return col
+            undo_move(col)
+    
+    # Use iterative deepening to stay within time limit
+    best_col = 3  # Default to center if all else fails
+    try:
+        # Try different depths, using the best we can complete
+        for depth in range(1, 8):  # Try up to depth 7
+            best_value = -float('inf')
+            valid_moves = [col for col in range(7) if is_valid_move(col)]
+            valid_moves.sort(key=lambda x: abs(x - 3))  # Prefer center
+            
+            for col in valid_moves:
+                row = make_move(col, 1)
+                value = minimax(depth - 1, -float('inf'), float('inf'), False)
+                undo_move(col)
+                
+                if value > best_value:
+                    best_value = value
+                    best_col = col
+    except:
+        # If we run out of time, return the best we've found so far
+        pass
+    
+    return best_col
+</code>

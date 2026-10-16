@@ -1,0 +1,260 @@
+
+from __future__ import annotations
+
+from collections import deque
+from typing import List, Tuple, Set, Dict, Optional
+
+N = 19
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    # Board: 0 empty, 1 me, -1 opp
+    board = [[0] * N for _ in range(N)]
+    for r, c in me:
+        if 1 <= r <= N and 1 <= c <= N:
+            board[r - 1][c - 1] = 1
+    for r, c in opponent:
+        if 1 <= r <= N and 1 <= c <= N:
+            board[r - 1][c - 1] = -1
+
+    total_stones = len(me) + len(opponent)
+
+    def inb(r: int, c: int) -> bool:
+        return 0 <= r < N and 0 <= c < N
+
+    def neighbors(r: int, c: int):
+        if r > 0: yield r - 1, c
+        if r + 1 < N: yield r + 1, c
+        if c > 0: yield r, c - 1
+        if c + 1 < N: yield r, c + 1
+
+    def group_and_liberties(bd, sr: int, sc: int) -> tuple[Set[tuple[int, int]], Set[tuple[int, int]]]:
+        color = bd[sr][sc]
+        q = deque([(sr, sc)])
+        stones: Set[tuple[int, int]] = set([(sr, sc)])
+        libs: Set[tuple[int, int]] = set()
+        while q:
+            r, c = q.popleft()
+            for nr, nc in neighbors(r, c):
+                v = bd[nr][nc]
+                if v == 0:
+                    libs.add((nr, nc))
+                elif v == color and (nr, nc) not in stones:
+                    stones.add((nr, nc))
+                    q.append((nr, nc))
+        return stones, libs
+
+    def remove_stones(bd, stones: Set[tuple[int, int]]):
+        for r, c in stones:
+            bd[r][c] = 0
+
+    # Precompute groups and atari liberties for urgency.
+    def compute_groups_info(color: int):
+        visited = [[False] * N for _ in range(N)]
+        groups = []
+        for r in range(N):
+            for c in range(N):
+                if bd[r][c] == color and not visited[r][c]:
+                    stones, libs = group_and_liberties(bd, r, c)
+                    for (sr, sc) in stones:
+                        visited[sr][sc] = True
+                    groups.append((stones, libs))
+        return groups
+
+    bd = board
+    my_groups = compute_groups_info(1)
+    opp_groups = compute_groups_info(-1)
+
+    my_atari_libs: Set[tuple[int, int]] = set()
+    for stones, libs in my_groups:
+        if len(libs) == 1:
+            my_atari_libs |= libs
+
+    opp_atari_libs: Set[tuple[int, int]] = set()
+    for stones, libs in opp_groups:
+        if len(libs) == 1:
+            opp_atari_libs |= libs
+
+    # Positional preference (mild): star points and center-ish.
+    star_points = {(3, 3), (3, 15), (15, 3), (15, 15), (9, 9), (3, 9), (9, 3), (9, 15), (15, 9)}
+    # Precompute a small positional weight: prefer distance ~3-4 from edge early, center midgame.
+    pos_w = [[0.0] * N for _ in range(N)]
+    for r in range(N):
+        for c in range(N):
+            dr = min(r, N - 1 - r)
+            dc = min(c, N - 1 - c)
+            edge_dist = min(dr, dc)
+            # Gentle shape: mid edge distance is slightly preferred in opening
+            w = 0.0
+            if (r, c) in star_points:
+                w += 2.0
+            # Center preference later: inverse of manhattan to center
+            center = 9
+            w += 0.15 * (18 - (abs(r - center) + abs(c - center)))
+            # Early game: prefer not too close to edge (but not huge)
+            w += 0.25 * edge_dist
+            pos_w[r][c] = w
+
+    def apply_move_and_score(r: int, c: int) -> Optional[float]:
+        """Return score if legal, else None. (r,c) are 0-indexed."""
+        if bd[r][c] != 0:
+            return None
+
+        # Copy board locally (cheap enough for candidate count).
+        nb = [row[:] for row in bd]
+        nb[r][c] = 1
+
+        captured = 0
+        atari_created = 0
+        checked_opp: Set[tuple[int, int]] = set()
+
+        # Captures: check neighboring opponent groups that might lose last liberty.
+        for nr, nc in neighbors(r, c):
+            if nb[nr][nc] == -1 and (nr, nc) not in checked_opp:
+                stones, libs = group_and_liberties(nb, nr, nc)
+                checked_opp |= stones
+                if len(libs) == 0:
+                    captured += len(stones)
+                    remove_stones(nb, stones)
+
+        # Check our new group liberties (suicide illegal unless captures made it live).
+        my_stones, my_libs = group_and_liberties(nb, r, c)
+        if len(my_libs) == 0:
+            return None  # suicide
+
+        # Count opponent groups put in atari around the move after captures.
+        checked_opp2: Set[tuple[int, int]] = set()
+        for nr, nc in neighbors(r, c):
+            if nb[nr][nc] == -1 and (nr, nc) not in checked_opp2:
+                stones, libs = group_and_liberties(nb, nr, nc)
+                checked_opp2 |= stones
+                if len(libs) == 1:
+                    atari_created += 1
+
+        # Self-atari penalty (unless we captured a lot).
+        self_atari = 1 if len(my_libs) == 1 else 0
+
+        # Connection / shape: adjacent own stones
+        adj_own = 0
+        adj_opp = 0
+        for nr, nc in neighbors(r, c):
+            if nb[nr][nc] == 1:
+                adj_own += 1
+            elif nb[nr][nc] == -1:
+                adj_opp += 1
+
+        # Urgency bonuses
+        defend_bonus = 0.0
+        if (r, c) in my_atari_libs:
+            defend_bonus += 250.0
+        capture_urgent_bonus = 0.0
+        if (r, c) in opp_atari_libs:
+            # If it actually captures (or at least keeps pressure), reward strongly.
+            capture_urgent_bonus += 300.0
+
+        # Tactical score
+        score = 0.0
+        score += 120.0 * captured
+        score += 35.0 * atari_created
+        score += defend_bonus + capture_urgent_bonus
+
+        # Shape / connection: prefer connecting, but avoid heavy contact early unless tactical.
+        score += 6.0 * adj_own
+        if total_stones < 18 and captured == 0 and atari_created == 0:
+            score -= 3.5 * adj_opp
+        else:
+            score -= 1.0 * adj_opp
+
+        # Penalize self-atari (unless capture)
+        if self_atari:
+            score -= 90.0
+            if captured > 0:
+                score += 50.0  # capturing often justifies
+
+        # Positional preference depending on stage.
+        stage_factor = 1.0 if total_stones < 20 else (0.7 if total_stones < 80 else 0.4)
+        score += stage_factor * pos_w[r][c]
+
+        # Mild preference for moves that increase liberties of new group beyond 2
+        score += 1.5 * min(6, len(my_libs))
+
+        return score
+
+    # Candidate generation
+    stones_all = [(r - 1, c - 1) for (r, c) in me + opponent if 1 <= r <= N and 1 <= c <= N]
+
+    candidates: Set[tuple[int, int]] = set()
+
+    # Always include urgent liberties
+    candidates |= my_atari_libs
+    candidates |= opp_atari_libs
+
+    if total_stones == 0:
+        # Prefer 4-4 (3,3 in 0-index), then other star points
+        for p in [(3, 3), (3, 15), (15, 3), (15, 15), (9, 9)]:
+            if bd[p[0]][p[1]] == 0:
+                return (p[0] + 1, p[1] + 1)
+        # Fallback to first empty
+        for r in range(N):
+            for c in range(N):
+                if bd[r][c] == 0:
+                    return (r + 1, c + 1)
+        return (0, 0)
+
+    # If early game, allow broader search.
+    radius = 3 if total_stones < 30 else 2
+    for (sr, sc) in stones_all:
+        for dr in range(-radius, radius + 1):
+            rr = sr + dr
+            if rr < 0 or rr >= N:
+                continue
+            rem = radius - abs(dr)
+            for dc in range(-rem, rem + 1):
+                cc = sc + dc
+                if 0 <= cc < N and bd[rr][cc] == 0:
+                    candidates.add((rr, cc))
+
+    # If candidates too small, add some star/center points
+    if len(candidates) < 25:
+        for p in star_points:
+            if bd[p[0]][p[1]] == 0:
+                candidates.add(p)
+
+    # If still empty (shouldn't happen), consider all empties.
+    if not candidates:
+        for r in range(N):
+            for c in range(N):
+                if bd[r][c] == 0:
+                    candidates.add((r, c))
+
+    best_move = None
+    best_score = -1e18
+
+    # If we have an atari to answer, strongly prefer those responses (but still ensure legal).
+    prefer_defense_only = (len(my_atari_libs) > 0)
+
+    cand_list = list(candidates)
+    if prefer_defense_only:
+        # Keep also urgent captures if they exist; otherwise restrict to defense liberties.
+        restricted = set(my_atari_libs) | set(opp_atari_libs)
+        cand_list = [m for m in cand_list if m in restricted] or cand_list
+
+    for (r, c) in cand_list:
+        sc = apply_move_and_score(r, c)
+        if sc is None:
+            continue
+        if sc > best_score:
+            best_score = sc
+            best_move = (r, c)
+
+    if best_move is not None:
+        return (best_move[0] + 1, best_move[1] + 1)
+
+    # Fallback: find any legal move on the board.
+    for r in range(N):
+        for c in range(N):
+            if bd[r][c] != 0:
+                continue
+            if apply_move_and_score(r, c) is not None:
+                return (r + 1, c + 1)
+
+    return (0, 0)

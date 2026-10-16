@@ -1,0 +1,157 @@
+I'll create a competitive Clobber game policy. Let me analyze the game mechanics and develop a strong strategy.
+
+## Strategy
+
+My policy uses a combination of tactical and strategic elements:
+
+1. **Mobility-focused evaluation**: Prioritize moves that maximize our mobility while minimizing opponent's mobility
+2. **Aggressive positioning**: Favor moves that create clustering of our pieces and isolate opponent pieces
+3. **Endgame awareness**: As the game progresses, ensure we maintain more legal moves than the opponent
+4. **Minimax with alpha-beta pruning**: Look ahead 2-3 plies to evaluate position strength
+5. **Heuristic evaluation**: 
+   - Count legal moves for both players (main factor)
+   - Evaluate piece connectivity and positioning
+   - Prefer central control
+   - Consider piece count differential as a tiebreaker
+
+The key insight is that Clobber is ultimately about maintaining mobility - the player who runs out of moves first loses. Therefore, maximizing our legal moves while minimizing opponent's legal moves is the primary objective.
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> str:
+    import numpy as np
+    
+    you = np.array(you)
+    opponent = np.array(opponent)
+    
+    def get_legal_moves(player, other):
+        """Get all legal moves for a player."""
+        moves = []
+        directions = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+        
+        for r in range(5):
+            for c in range(6):
+                if player[r, c] == 1:
+                    for dr, dc, direction in directions:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 5 and 0 <= nc < 6 and other[nr, nc] == 1:
+                            moves.append((r, c, direction))
+        return moves
+    
+    def apply_move(player, other, move):
+        """Apply a move and return new board states."""
+        new_player = player.copy()
+        new_other = other.copy()
+        r, c, direction = move
+        
+        dr, dc = {'U': (-1, 0), 'R': (0, 1), 'D': (1, 0), 'L': (0, -1)}[direction]
+        nr, nc = r + dr, c + dc
+        
+        new_player[r, c] = 0
+        new_player[nr, nc] = 1
+        new_other[nr, nc] = 0
+        
+        return new_player, new_other
+    
+    def evaluate_position(player, other):
+        """Evaluate the position from player's perspective."""
+        player_moves = len(get_legal_moves(player, other))
+        opponent_moves = len(get_legal_moves(other, player))
+        
+        # If no moves, it's a terminal position
+        if player_moves == 0:
+            return -10000
+        if opponent_moves == 0:
+            return 10000
+        
+        # Mobility difference is the primary factor
+        mobility_score = (player_moves - opponent_moves) * 100
+        
+        # Secondary factors
+        piece_diff = np.sum(player) - np.sum(other)
+        
+        # Connectivity bonus - pieces with friendly neighbors are stronger
+        connectivity = 0
+        for r in range(5):
+            for c in range(6):
+                if player[r, c] == 1:
+                    for dr, dc in [(-1, 0), (0, 1), (1, 0), (0, -1)]:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 5 and 0 <= nc < 6 and player[nr, nc] == 1:
+                            connectivity += 1
+        
+        # Central control bonus
+        center_bonus = 0
+        for r in range(1, 4):
+            for c in range(2, 4):
+                if player[r, c] == 1:
+                    center_bonus += 2
+        
+        return mobility_score + piece_diff * 10 + connectivity * 2 + center_bonus
+    
+    def minimax(player, other, depth, alpha, beta, maximizing):
+        """Minimax with alpha-beta pruning."""
+        if depth == 0:
+            return evaluate_position(player, other), None
+        
+        moves = get_legal_moves(player, other)
+        
+        if not moves:
+            return -10000 if maximizing else 10000, None
+        
+        best_move = moves[0]
+        
+        if maximizing:
+            max_eval = float('-inf')
+            for move in moves:
+                new_player, new_other = apply_move(player, other, move)
+                eval_score, _ = minimax(new_player, new_other, depth - 1, alpha, beta, False)
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_other, new_player = apply_move(other, player, move)
+                eval_score, _ = minimax(new_player, new_other, depth - 1, alpha, beta, True)
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return min_eval, best_move
+    
+    # Get legal moves
+    legal_moves = get_legal_moves(you, opponent)
+    
+    # Always return a legal move if available
+    if not legal_moves:
+        # Should never happen in a valid game state, but return something
+        return "0,0,R"
+    
+    # Use minimax to find best move
+    total_pieces = np.sum(you) + np.sum(opponent)
+    
+    # Adjust depth based on game state
+    if total_pieces > 20:
+        depth = 2
+    else:
+        depth = 3
+    
+    _, best_move = minimax(you, opponent, depth, float('-inf'), float('inf'), True)
+    
+    if best_move is None:
+        best_move = legal_moves[0]
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+</code>

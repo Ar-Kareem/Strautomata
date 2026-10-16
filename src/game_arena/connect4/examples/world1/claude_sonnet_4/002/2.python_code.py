@@ -1,0 +1,161 @@
+
+def policy(board: list[list[int]]) -> int:
+    def is_valid_move(board, col):
+        return board[0][col] == 0
+    
+    def get_valid_moves(board):
+        return [col for col in range(7) if is_valid_move(board, col)]
+    
+    def make_move(board, col, player):
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                board[row][col] = player
+                return row
+        return -1
+    
+    def check_four_in_line(board, row, col, player, dr, dc):
+        count = 1  # Count the piece we just placed
+        
+        # Check in positive direction
+        r, c = row + dr, col + dc
+        while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+            count += 1
+            r += dr
+            c += dc
+        
+        # Check in negative direction
+        r, c = row - dr, col - dc
+        while 0 <= r < 6 and 0 <= c < 7 and board[r][c] == player:
+            count += 1
+            r -= dr
+            c -= dc
+        
+        return count >= 4
+    
+    def check_win(board, player):
+        for row in range(6):
+            for col in range(7):
+                if board[row][col] == player:
+                    # Check all 4 directions: horizontal, vertical, diagonal
+                    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+                    for dr, dc in directions:
+                        if check_four_in_line(board, row, col, player, dr, dc):
+                            return True
+        return False
+    
+    def evaluate_window(window, player):
+        score = 0
+        opponent = -player
+        
+        player_count = window.count(player)
+        empty_count = window.count(0)
+        opponent_count = window.count(opponent)
+        
+        if player_count == 4:
+            score += 100
+        elif player_count == 3 and empty_count == 1:
+            score += 10
+        elif player_count == 2 and empty_count == 2:
+            score += 2
+        
+        if opponent_count == 3 and empty_count == 1:
+            score -= 80
+        elif opponent_count == 2 and empty_count == 2:
+            score -= 2
+        
+        return score
+    
+    def evaluate_position(board, player):
+        score = 0
+        
+        # Center column preference
+        center_col = [board[row][3] for row in range(6)]
+        score += center_col.count(player) * 3
+        
+        # Horizontal score
+        for row in range(6):
+            for col in range(4):
+                window = board[row][col:col+4]
+                score += evaluate_window(window, player)
+        
+        # Vertical score
+        for col in range(7):
+            for row in range(3):
+                window = [board[row+i][col] for i in range(4)]
+                score += evaluate_window(window, player)
+        
+        # Diagonal score (positive slope)
+        for row in range(3):
+            for col in range(4):
+                window = [board[row+i][col+i] for i in range(4)]
+                score += evaluate_window(window, player)
+        
+        # Diagonal score (negative slope)
+        for row in range(3, 6):
+            for col in range(4):
+                window = [board[row-i][col+i] for i in range(4)]
+                score += evaluate_window(window, player)
+        
+        return score
+    
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        valid_moves = get_valid_moves(board)
+        
+        # Terminal conditions
+        if check_win(board, 1):
+            return (None, 1000000)
+        elif check_win(board, -1):
+            return (None, -1000000)
+        elif len(valid_moves) == 0 or depth == 0:
+            return (None, evaluate_position(board, 1))
+        
+        if maximizing_player:
+            value = float('-inf')
+            best_col = valid_moves[0]
+            for col in valid_moves:
+                temp_board = [row[:] for row in board]
+                make_move(temp_board, col, 1)
+                new_score = minimax(temp_board, depth-1, alpha, beta, False)[1]
+                if new_score > value:
+                    value = new_score
+                    best_col = col
+                alpha = max(alpha, value)
+                if beta <= alpha:
+                    break
+            return best_col, value
+        else:
+            value = float('inf')
+            best_col = valid_moves[0]
+            for col in valid_moves:
+                temp_board = [row[:] for row in board]
+                make_move(temp_board, col, -1)
+                new_score = minimax(temp_board, depth-1, alpha, beta, True)[1]
+                if new_score < value:
+                    value = new_score
+                    best_col = col
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break
+            return best_col, value
+    
+    # Main strategy
+    valid_moves = get_valid_moves(board)
+    
+    # 1. Check for immediate win
+    for col in valid_moves:
+        temp_board = [row[:] for row in board]
+        make_move(temp_board, col, 1)
+        if check_win(temp_board, 1):
+            return col
+    
+    # 2. Block opponent win
+    for col in valid_moves:
+        temp_board = [row[:] for row in board]
+        make_move(temp_board, col, -1)
+        if check_win(temp_board, -1):
+            return col
+    
+    # 3. Use minimax with limited depth
+    best_col, _ = minimax(board, 4, float('-inf'), float('inf'), True)
+    
+    return best_col if best_col is not None else valid_moves[0]

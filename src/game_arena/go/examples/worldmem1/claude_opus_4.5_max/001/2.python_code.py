@@ -1,0 +1,151 @@
+
+import random
+from collections import deque
+
+def policy(me, opponent, memory):
+    SIZE = 19
+    my_set = set(me)
+    opp_set = set(opponent)
+    all_set = my_set | opp_set
+    
+    def valid(r, c):
+        return 1 <= r <= SIZE and 1 <= c <= SIZE
+    
+    def adj_valid(pos):
+        r, c = pos
+        return [(nr, nc) for nr, nc in [(r-1,c),(r+1,c),(r,c-1),(r,c+1)] if valid(nr, nc)]
+    
+    def group_libs(start, stones, blocked):
+        grp, libs = {start}, set()
+        q = deque([start])
+        while q:
+            p = q.popleft()
+            for n in adj_valid(p):
+                if n in grp:
+                    continue
+                if n in stones:
+                    grp.add(n)
+                    q.append(n)
+                elif n not in blocked:
+                    libs.add(n)
+        return grp, libs
+    
+    def play(move, my, opp):
+        if move in my or move in opp:
+            return None
+        new_my = my | {move}
+        new_opp = opp.copy()
+        cap = set()
+        for n in adj_valid(move):
+            if n in new_opp and n not in cap:
+                g, l = group_libs(n, new_opp, new_my | new_opp)
+                if not l:
+                    cap |= g
+        new_opp -= cap
+        g, l = group_libs(move, new_my, new_my | new_opp)
+        if not l:
+            return None
+        return new_my, new_opp, cap
+    
+    prev_my = memory.get('pm', set())
+    ko = None
+    lost = prev_my - my_set
+    if len(lost) == 1:
+        lp = list(lost)[0]
+        res = play(lp, my_set, opp_set)
+        if res and len(res[2]) == 1:
+            ko = lp
+    
+    best, best_sc, best_st = None, float('-inf'), None
+    tot = len(all_set)
+    
+    for r in range(1, SIZE + 1):
+        for c in range(1, SIZE + 1):
+            mv = (r, c)
+            if mv in all_set or mv == ko:
+                continue
+            res = play(mv, my_set, opp_set)
+            if not res:
+                continue
+            nm, no, cap = res
+            sc = len(cap) * 100
+            ta = nm | no
+            
+            for n in adj_valid(mv):
+                if n in no:
+                    g, l = group_libs(n, no, ta)
+                    if len(l) == 1:
+                        sc += len(g) * 20
+            
+            for n in adj_valid(mv):
+                if n in my_set:
+                    g, l = group_libs(n, my_set, all_set)
+                    if len(l) == 1:
+                        ng, nl = group_libs(mv, nm, ta)
+                        if len(nl) >= 2:
+                            sc += len(g) * 70
+                    elif 2 <= len(l) <= 3 and len(g) >= 3:
+                        ng, nl = group_libs(mv, nm, ta)
+                        if len(nl) > len(l):
+                            sc += len(g) * 8
+            
+            g, l = group_libs(mv, nm, ta)
+            if len(l) == 1 and not cap and len(g) > 1:
+                sc -= len(g) * 80
+            
+            if tot < 60:
+                if mv in [(4,4),(4,16),(16,4),(16,16)]:
+                    sc += max(0, 50 - tot)
+                elif mv in [(4,10),(10,4),(10,16),(16,10)]:
+                    sc += max(0, 30 - tot)
+                elif mv == (10,10):
+                    sc += max(0, 25 - tot)
+                elif mv in [(3,4),(4,3),(3,16),(4,17),(16,3),(17,4),(16,17),(17,16)]:
+                    sc += max(0, 40 - tot)
+                
+                apps = {(4,4):[(3,4),(4,3),(6,3),(3,6)], (4,16):[(3,16),(4,17),(6,17),(3,14)],
+                        (16,4):[(17,4),(16,3),(14,3),(17,6)], (16,16):[(17,16),(16,17),(14,17),(17,14)]}
+                for cor, al in apps.items():
+                    if cor in opp_set and mv in al:
+                        sc += 30
+            
+            if tot < 30:
+                quads = [sum(1 for s in my_set if s[0]<=10 and s[1]<=10),
+                         sum(1 for s in my_set if s[0]<=10 and s[1]>10),
+                         sum(1 for s in my_set if s[0]>10 and s[1]<=10),
+                         sum(1 for s in my_set if s[0]>10 and s[1]>10)]
+                mq = (0 if r <= 10 else 2) + (0 if c <= 10 else 1)
+                if quads[mq] == 0:
+                    sc += 15
+            
+            ln = min(r, c, 20-r, 20-c)
+            sc += {1:-15, 2:-7, 3:5, 4:7}.get(ln, 0)
+            
+            sc += sum(1 for n in adj_valid(mv) if n in my_set) * 5
+            
+            for dr in range(-4, 5):
+                for dc in range(-4, 5):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if valid(nr, nc):
+                        d = abs(dr) + abs(dc)
+                        if (nr, nc) in my_set:
+                            sc += 3.0 / d
+                        elif (nr, nc) in opp_set:
+                            sc += 2.0 / d
+            
+            surr = adj_valid(mv)
+            if all(n in my_set for n in surr):
+                sc -= 100
+            
+            sc += random.random() * 0.3
+            
+            if sc > best_sc:
+                best_sc = sc
+                best = mv
+                best_st = nm
+    
+    if best is None:
+        return ((0, 0), {})
+    return (best, {'pm': best_st})

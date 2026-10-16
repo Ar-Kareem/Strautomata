@@ -1,0 +1,147 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Determine the next move for 3D Tic Tac Toe using a simple heuristic.
+    
+    The strategy prioritizes:
+    1. Winning moves
+    2. Blocking opponent wins
+    3. Taking the center if available
+    4. Taking a corner
+    5. Any available move
+    
+    Args:
+        board: 3x3x3 list representing the game state
+        
+    Returns:
+        Tuple of (x, y, z) coordinates for the next move
+    """
+    # Flatten the board to make it easier to work with
+    board_3d = np.array(board)
+    
+    # Check if we have a winning move
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board_3d[x, y, z] == 0:  # Empty space
+                    # Try placing our piece there
+                    board_3d[x, y, z] = 1
+                    
+                    # Check for win
+                    if check_win(board_3d, 1):
+                        board_3d[x, y, z] = 0  # Restore
+                        return (x, y, z)
+                    
+                    # Restore the board
+                    board_3d[x, y, z] = 0
+    
+    # Check if we need to block the opponent
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board_3d[x, y, z] == 0:  # Empty space
+                    # Try placing opponent's piece there
+                    board_3d[x, y, z] = -1
+                    
+                    # Check if opponent would win
+                    if check_win(board_3d, -1):
+                        board_3d[x, y, z] = 0  # Restore
+                        return (x, y, z)
+                    
+                    # Restore the board
+                    board_3d[x, y, z] = 0
+    
+    # Try to take the center
+    if board_3d[1, 1, 1] == 0:
+        return (1, 1, 1)
+    
+    # Try to take a corner
+    corners = [(0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+               (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)]
+    
+    for x, y, z in corners:
+        if board_3d[x, y, z] == 0:
+            return (x, y, z)
+    
+    # If no strategic move, take any available space
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board_3d[x, y, z] == 0:
+                    return (x, y, z)
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """
+    Check if the given player has won on the board.
+    
+    Args:
+        board: 3x3x3 numpy array representing the game state
+        player: The player to check for (1 for self, -1 for opponent)
+        
+    Returns:
+        True if player has won, False otherwise
+    """
+    # Check all rows, columns, and diagonals
+    # Along each axis
+    
+    # Check horizontal lines in each layer
+    for x in range(3):
+        for y in range(3):
+            if all(board[x, y, z] == player for z in range(3)):
+                return True
+    
+    # Check vertical lines in each layer
+    for x in range(3):
+        for z in range(3):
+            if all(board[x, y, z] == player for y in range(3)):
+                return True
+    
+    # Check depth-wise lines
+    for y in range(3):
+        for z in range(3):
+            if all(board[x, y, z] == player for x in range(3)):
+                return True
+    
+    # Check face diagonals (2D diagonals)
+    for x in range(3):
+        # Diagonals in the xy plane
+        if all(board[x, i, i] == player for i in range(3)):
+            return True
+        if all(board[x, i, 2-i] == player for i in range(3)):
+            return True
+    
+    for y in range(3):
+        # Diagonals in the xz plane
+        if all(board[i, y, i] == player for i in range(3)):
+            return True
+        if all(board[i, y, 2-i] == player for i in range(3)):
+            return True
+    
+    for z in range(3):
+        # Diagonals in the yz plane
+        if all(board[i, i, z] == player for i in range(3)):
+            return True
+        if all(board[i, 2-i, z] == player for i in range(3)):
+            return True
+    
+    # Check 3D diagonals
+    # From (0,0,0) to (2,2,2)
+    if all(board[i, i, i] == player for i in range(3)):
+        return True
+    
+    # From (0,0,2) to (2,2,0)
+    if all(board[i, i, 2-i] == player for i in range(3)):
+        return True
+    
+    # From (0,2,0) to (2,0,2)
+    if all(board[i, 2-i, i] == player for i in range(3)):
+        return True
+    
+    # From (0,2,2) to (2,0,0)
+    if all(board[i, 2-i, 2-i] == player for i in range(3)):
+        return True
+    
+    return False

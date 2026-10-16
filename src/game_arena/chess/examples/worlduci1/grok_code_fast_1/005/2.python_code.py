@@ -1,0 +1,345 @@
+
+from collections import defaultdict
+import copy
+
+# Piece values
+piece_value = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+
+# Piece-square tables (flipped for board indices: row 0=rank8, col0=a)
+pawn_table = [
+    0, 0, 0, 0, 0, 0, 0, 0,
+    5, 10, 10, -20, -20, 10, 10, 5,
+    5, -5, -10, 0, 0, -10, -5, 5,
+    0, 0, 0, 20, 20, 0, 0, 0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    100, 100, 100, 100, 100, 100, 100, 100,
+    200, 200, 200, 200, 200, 200, 200, 200,
+    0, 0, 0, 0, 0, 0, 0, 0
+]
+
+king_mid = [
+    20, 30, 10, 0, 0, 10, 30, 20,
+    20, 20, 0, 0, 0, 0, 20, 20,
+    -10, -20, -20, -30, -30, -20, -20, -10,
+    -20, -30, -30, -40, -40, -30, -30, -20,
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -30, -40, -40, -50, -50, -40, -40, -30,
+    -30, -40, -40, -50, -50, -40, -40, -30
+]
+
+king_end = [
+    -50, -40, -30, -20, -20, -30, -40, -50,
+    -30, -20, -10, 0, 0, -10, -20, -30,
+    -30, -10, 20, 30, 30, 20, -10, -30,
+    -30, -10, 30, 40, 40, 30, -10, -30,
+    -30, -10, 30, 40, 40, 30, -10, -30,
+    -30, -10, 20, 30, 30, 20, -10, -30,
+    -30, -30, 0, 0, 0, 0, -30, -30,
+    -50, -30, -30, -30, -30, -30, -30, -50
+]
+
+def eval_board(board, maximizing_color):
+    score = 0
+    for row in range(8):
+        for col in range(8):
+            piece = board[row][col]
+            if piece:
+                color = piece[0]
+                p = piece[1]
+                mult = 1 if color == maximizing_color else -1
+                score += piece_value[p] * mult
+                index = row * 8 + col
+                if p == 'P':
+                    score += pawn_table[index] * mult
+                elif p == 'K':
+                    if is_endgame(board):
+                        score += king_end[index] * mult
+                    else:
+                        score += king_mid[index] * mult
+    return score
+
+def is_endgame(board):
+    queens = rooks = 0
+    for r in range(8):
+        for c in range(8):
+            piece = board[r][c]
+            if piece:
+                if piece[1] == 'Q':
+                    queens += 1
+                elif piece[1] == 'R':
+                    rooks += 1
+    return queens <= 2 and rooks <= 4
+
+def find_king(board, color):
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == color + 'K':
+                return r, c
+    return None
+
+def is_attacked(board, r, c, by_color):
+    for orow in range(8):
+        for ocol in range(8):
+            piece = board[orow][ocol]
+            if piece and piece[0] == by_color:
+                p = piece[1]
+                if p == 'P':
+                    dr = orow - r
+                    dc = ocol - c
+                    if by_color == 'w' and dr == -1 and abs(dc) == 1:
+                        return True
+                    elif by_color == 'b' and dr == 1 and abs(dc) == 1:
+                        return True
+                elif p == 'N':
+                    if abs(orow - r) * abs(ocol - c) == 2:
+                        return True
+                elif p == 'R':
+                    if r == orow or c == ocol:
+                        if r == orow:
+                            step = 1 if ocol < c else -1
+                            for x in range(ocol + step, c, step):
+                                if board[r][x]:
+                                    return False
+                        else:
+                            step = 1 if orow < r else -1
+                            for y in range(orow + step, r, step):
+                                if board[y][c]:
+                                    return False
+                        return True
+                elif p == 'B':
+                    if abs(orow - r) == abs(ocol - c):
+                        dr = 1 if r > orow else -1
+                        dc = 1 if c > ocol else -1
+                        for i in range(1, abs(orow - r)):
+                            if board[orow + i * -dr][ocol + i * -dc]:  # careful direction
+                                return False
+                        return True
+                elif p == 'Q':
+                    if r == orow or c == ocol or abs(orow - r) == abs(ocol - c):
+                        if abs(orow - r) == abs(ocol - c):
+                            dr = 1 if r > orow else -1
+                            dc = 1 if c > ocol else -1
+                            for i in range(1, abs(orow - r)):
+                                if board[orow + i * -dr][ocol + i * -dc]:
+                                    return False
+                        else:
+                            if r == orow:
+                                step = 1 if ocol < c else -1
+                                for x in range(ocol + step, c, step):
+                                    if board[r][x]:
+                                        return False
+                            else:
+                                step = 1 if orow < r else -1
+                                for y in range(orow + step, r, step):
+                                    if board[y][c]:
+                                        return False
+                        return True
+                elif p == 'K':
+                    if max(abs(orow - r), abs(ocol - c)) <= 1:
+                        return True
+    return False
+
+def get_legal_moves(board, color):
+    moves = []
+    opponent = 'w' if color == 'b' else 'b'
+    kr, kc = find_king(board, color)
+    for r in range(8):
+        for c in range(8):
+            piece = board[r][c]
+            if piece and piece[0] == color:
+                p = piece[1]
+                if p == 'N':
+                    for dr, dc in [(-2,-1),(-2,1),(2,-1),(2,1),(-1,-2),(-1,2),(1,-2),(1,2)]:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8 and (not board[nr][nc] or board[nr][nc][0] != color):
+                            new_board = make_move(board, to_uci(r, c, nr, nc))
+                            if not is_attacked(new_board, find_king(new_board, color)[0], find_king(new_board, color)[1], opponent):
+                                moves.append(to_uci(r, c, nr, nc))
+                elif p == 'R':
+                    for dr, dc in [(0,1),(0,-1),(1,0),(-1,0)]:
+                        for dist in range(1,8):
+                            nr, nc = r + dr * dist, c + dc * dist
+                            if not (0 <= nr < 8 and 0 <= nc < 8):
+                                break
+                            target = board[nr][nc]
+                            if target and target[0] == color:
+                                break
+                            new_board = make_move(board, to_uci(r, c, nr, nc))
+                            if not is_attacked(new_board, find_king(new_board, color)[0], find_king(new_board, color)[1], opponent):
+                                moves.append(to_uci(r, c, nr, nc))
+                            if target:
+                                break
+                elif p == 'B':
+                    for dr, dc in [(-1,-1),(-1,1),(1,-1),(1,1)]:
+                        for dist in range(1,8):
+                            nr, nc = r + dr * dist, c + dc * dist
+                            if not (0 <= nr < 8 and 0 <= nc < 8):
+                                break
+                            target = board[nr][nc]
+                            if target and target[0] == color:
+                                break
+                            new_board = make_move(board, to_uci(r, c, nr, nc))
+                            if not is_attacked(new_board, find_king(new_board, color)[0], find_king(new_board, color)[1], opponent):
+                                moves.append(to_uci(r, c, nr, nc))
+                            if target:
+                                break
+                elif p == 'Q':
+                    for dr, dc in [(-1,-1),(-1,1),(1,-1),(1,1),(0,1),(0,-1),(1,0),(-1,0)]:
+                        for dist in range(1,8):
+                            nr, nc = r + dr * dist, c + dc * dist
+                            if not (0 <= nr < 8 and 0 <= nc < 8):
+                                break
+                            target = board[nr][nc]
+                            if target and target[0] == color:
+                                break
+                            new_board = make_move(board, to_uci(r, c, nr, nc))
+                            if not is_attacked(new_board, find_king(new_board, color)[0], find_king(new_board, color)[1], opponent):
+                                moves.append(to_uci(r, c, nr, nc))
+                            if target:
+                                break
+                elif p == 'K':
+                    for dr in [-1,0,1]:
+                        for dc in [-1,0,1]:
+                            if dr == 0 and dc == 0: continue
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < 8 and 0 <= nc < 8 and (not board[nr][nc] or board[nr][nc][0] != color):
+                                new_board = make_move(board, to_uci(r, c, nr, nc))
+                                if not is_attacked(new_board, nr, nc, opponent):
+                                    moves.append(to_uci(r, c, nr, nc))
+                    # Castling (simplified, assume no checks)
+                    if color == 'w' and r == 7 and c == 4 and kr == 7 and kc == 4:
+                        if board[7][7] == 'wR' and not board[7][5] and not board[7][6] and not is_attacked(board,7,4,opponent):
+                            if not is_attacked(board,7,5,opponent) and not is_attacked(board,7,6,opponent):
+                                new_board = copy.deepcopy(board)
+                                new_board[7][4] = ''
+                                new_board[7][6] = 'wK'
+                                new_board[7][7] = ''
+                                new_board[7][5] = 'wR'
+                                moves.append('e1g1')
+                        if board[7][0] == 'wR' and not board[7][1] and not board[7][2] and not board[7][3]:
+                            if not is_attacked(board,7,4,opponent) and not is_attacked(board,7,3,opponent) and not is_attacked(board,7,2,opponent):
+                                new_board = copy.deepcopy(board)
+                                new_board[7][4] = ''
+                                new_board[7][2] = 'wK'
+                                new_board[7][0] = ''
+                                new_board[7][3] = 'wR'
+                                moves.append('e1c1')
+                    if color == 'b' and r == 0 and c == 4 and kr == 0 and kc == 4:
+                        if board[0][7] == 'bR' and not board[0][5] and not board[0][6]:
+                            if not is_attacked(board,0,4,opponent) and not is_attacked(board,0,5,opponent) and not is_attacked(board,0,6,opponent):
+                                new_board = copy.deepcopy(board)
+                                new_board[0][4] = ''
+                                new_board[0][6] = 'bK'
+                                new_board[0][7] = ''
+                                new_board[0][5] = 'bR'
+                                moves.append('e8g8')
+                        if board[0][0] == 'bR' and not board[0][1] and not board[0][2] and not board[0][3]:
+                            if not is_attacked(board,0,4,opponent) and not is_attacked(board,0,3,opponent) and not is_attacked(board,0,2,opponent):
+                                new_board = copy.deepcopy(board)
+                                new_board[0][4] = ''
+                                new_board[0][2] = 'bK'
+                                new_board[0][0] = ''
+                                new_board[0][3] = 'bR'
+                                moves.append('e8c8')
+                elif p == 'P':
+                    direction = -1 if color == 'w' else 1
+                    start_row = 6 if color == 'w' else 1
+                    promo_row = 0 if color == 'w' else 7
+                    # Move forward
+                    if r + direction >= 0 and r + direction <= 7 and not board[r + direction][c]:
+                        if r + direction == promo_row:
+                            for promo in 'qrn':
+                                new_board = make_move(board, to_uci(r, c, r + direction, c) + promo)
+                                if not is_attacked(new_board, find_king(new_board, color)[0], find_king(new_board, color)[1], opponent):
+                                    moves.append(to_uci(r, c, r + direction, c) + promo)
+                        else:
+                            new_board = make_move(board, to_uci(r, c, r + direction, c))
+                            if not is_attacked(new_board, find_king(new_board, color)[0], find_king(new_board, color)[1], opponent):
+                                moves.append(to_uci(r, c, r + direction, c))
+                    # Double move
+                    if r == start_row and not board[r + direction][c] and not board[r + 2 * direction][c]:
+                        new_board = make_move(board, to_uci(r, c, r + 2 * direction, c))
+                        if not is_attacked(new_board, find_king(new_board, color)[0], find_king(new_board, color)[1], opponent):
+                            moves.append(to_uci(r, c, r + 2 * direction, c))
+                    # Captures
+                    for dc in [-1, 1]:
+                        nc = c + dc
+                        if 0 <= nc < 8:
+                            target = board[r + direction][nc]
+                            if target and target[0] != color:
+                                if r + direction == promo_row:
+                                    for promo in 'qrn':
+                                        new_board = make_move(board, to_uci(r, c, r + direction, nc) + promo)
+                                        if not is_attacked(new_board, find_king(new_board, color)[0], find_king(new_board, color)[1], opponent):
+                                            moves.append(to_uci(r, c, r + direction, nc) + promo)
+                                else:
+                                    new_board = make_move(board, to_uci(r, c, r + direction, nc))
+                                    if not is_attacked(new_board, find_king(new_board, color)[0], find_king(new_board, color)[1], opponent):
+                                        moves.append(to_uci(r, c, r + direction, nc))
+                    # En passant (omitted for simplicity, assuming not needed in shallow search)
+    return moves
+
+def to_uci(fr, fc, tr, tc):
+    return chr(ord('a') + fc) + str(8 - fr) + chr(ord('a') + tc) + str(8 - tr)
+
+def make_move(board, uci):
+    new_board = copy.deepcopy(board)
+    fr = 8 - int(uci[1])
+    fc = ord(uci[0]) - ord('a')
+    to = 8 - int(uci[3])
+    tc = ord(uci[2]) - ord('a')
+    piece = new_board[fr][fc]
+    new_board[fr][fc] = ''
+    promo = uci[4:] if len(uci) > 4 else ''
+    if promo:
+        piece = piece[0] + promo.upper()
+    new_board[to][tc] = piece
+    return new_board
+
+def minimax(board, depth, maximizing, color, alpha, beta):
+    if depth == 0:
+        return eval_board(board, color), None
+    moves = get_legal_moves(board, color if maximizing else ('w' if color == 'b' else 'b'))
+    if not moves:
+        return -float('inf') if maximizing else float('inf'), None  # Checkmate or stalemate
+    best_move = None
+    if maximizing:
+        max_e = -float('inf')
+        for uci in moves:
+            nb = make_move(board, uci)
+            e, _ = minimax(nb, depth - 1, False, color, alpha, beta)
+            if e > max_e:
+                max_e = e
+                best_move = uci
+            alpha = max(alpha, e)
+            if beta <= alpha:
+                break
+        return max_e, best_move
+    else:
+        min_e = float('inf')
+        for uci in moves:
+            nb = make_move(board, uci)
+            e, _ = minimax(nb, depth - 1, True, color, alpha, beta)
+            if e < min_e:
+                min_e = e
+                best_move = uci
+            beta = min(beta, e)
+            if beta <= alpha:
+                break
+        return min_e, best_move
+
+def policy(pieces, to_play):
+    color = 'w' if to_play == 'white' else 'b'
+    board = [[''] * 8 for _ in range(8)]
+    for sq, piece in pieces.items():
+        col = ord(sq[0]) - ord('a')
+        row = 8 - int(sq[1])
+        board[row][col] = piece
+    depth = 3
+    if is_endgame(board):
+        depth = 4
+    _, best_move = minimax(board, depth, True, color, -float('inf'), float('inf'))
+    if not best_move:
+        best_move = get_legal_moves(board, color)[0]  # Fallback to first legal move if error
+    return best_move

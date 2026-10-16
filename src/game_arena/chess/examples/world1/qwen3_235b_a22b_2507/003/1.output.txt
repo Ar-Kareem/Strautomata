@@ -1,0 +1,365 @@
+The strategy for this policy is to prioritize strong tactical moves using a handcrafted evaluation function that ranks each legal move based on hierarchical criteria:
+
+1. **Checkmate**: If a move delivers checkmate, it is selected immediately.
+2. **Check**: Moves that give check are preferred, especially if they limit the opponent’s responses.
+3. **Captures**: Prioritize captures by value difference (e.g. capturing a queen with a pawn is very good, capturing a pawn with a queen is risky unless the queen is protected).
+4. **Promotions**: Pawn promotions, especially to queen, are highly valued.
+5. **Non-capture improvements**: Develop pieces toward central squares, avoid meaningless pawn moves, and favor castling early.
+6. **King safety**: Avoid unnecessary king moves in early/mid game unless castling or out of danger.
+7. **Avoid hanging pieces**: If a move results in a valuable piece being captured for free on the next turn (based on static lookahead), it is downgraded.
+8. **Tapered piece-square tables**: Use positional evaluation (e.g. knights are better in center, rooks on open files, pawns advanced).
+
+To stay within 1 second, we use fast heuristic evaluation without search trees. We simulate the position after each move, assess material and positional gains, and pick the highest-scoring legal move.
+
+<code>
+import numpy as np
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # Utility mappings
+    color_char = 'w' if to_play == 'white' else 'b'
+    opp_color_char = 'b' if to_play == 'white' else 'w'
+    
+    piece_values = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 0}
+    
+    # Piece-square tables (centipawn advantage), symmetric for white/black with flip for pawns
+    # These are simplified; full tables would be 8x8. Here we define central bonus only.
+    def get_pst_score(square: str, piece_type: str, color: str) -> int:
+        file, rank = ord(square[0]) - ord('a'), int(square[1])
+        rank_idx = rank - 1
+        if color == 'b':  # black, flip vertically
+            rank_idx = 7 - rank_idx
+        center_files = [3, 4]
+        center_ranks = [3, 4]
+        # Pawn: prefer pushing forward, central pawns better
+        if piece_type == 'P':
+            file_bonus = 2 if file in [3, 4] else 0
+            rank_bonus = rank if color == 'w' else (7 - rank + 1)
+            return file_bonus + min(rank_bonus * 3, 30)
+        # Knight: prefer center
+        elif piece_type == 'N':
+            return 6 if (file in center_files and rank_idx in center_ranks) else 0
+        # Bishop: prefer open diagonals (approximated by center)
+        elif piece_type == 'B':
+            return 4 if (file in center_files and rank in center_ranks) else 0
+        # Rook: prefer 7th rank (2nd for black) and open files
+        elif piece_type == 'R':
+            if color == 'w' and rank == 7:
+                return 10
+            elif color == 'b' and rank == 2:
+                return 10
+            return 0
+        # Queen: modest center bonus
+        elif piece_type == 'Q':
+            return 3 if (file in center_files and rank in center_ranks) else 0
+        # King: early-mid game prefer safety (corners), endgame prefer center
+        elif piece_type == 'K':
+            # Roughly: if few queens/rooks left, go active
+            enemy_major = any(p[1] in 'QR' and p[0] == opp_color_char for p in pieces.values())
+            if not enemy_major:  # endgame
+                center_bonus = 8 - (abs(file - 3.5) + abs(rank - 4.5))
+                return int(center_bonus * 2)
+            else:  # opening/midgame: prefer edges
+                if color == 'w' and rank <= 2 and file in [4, 5]:
+                    return 8
+                elif color == 'b' and rank >= 7 and file in [4, 5]:
+                    return 8
+                return 0
+        return 0
+
+    def parse_move(move: str) -> tuple:
+        # Simplified parsing: returns (from, to, is_capture, is_promo, promo_piece, is_castle, is_check)
+        move_clean = move.rstrip('+#')
+        is_check = '+' in move or '#' in move
+        is_capture = 'x' in move_clean
+        is_promo = '=' in move_clean
+        is_castle = move_clean in ['O-O', 'O-O-O']
+        
+        if is_castle:
+            if move_clean == 'O-O':
+                return ('e1' if color_char == 'w' else 'e8', 'g1' if color_char == 'w' else 'g8', False, False, None, True, is_check)
+            else:
+                return ('e1' if color_char == 'w' else 'e8', 'c1' if color_char == 'w' else 'c8', False, False, None, True, is_check)
+        
+        # Find last two squares in move
+        sq_part = move_clean.replace('x', '').replace('=', '')
+        # Strip any piece char at start (K, Q, R, B, N)
+        if sq_part[0] in 'KQRBN':
+            sq_part = sq_part[1:]
+        # Any remaining letters should be disambiguation
+        # Extract square-like: file(a-h) + rank(1-8)
+        squares = []
+        for i in range(len(sq_part) - 1):
+            if sq_part[i] in 'abcdefgh' and sq_part[i+1] in '12345678':
+                squares.append(sq_part[i:i+2])
+        if len(squares) < 2:
+            # For pawn moves, from square might be inferable
+            if move_clean[-2] in 'abcdefgh' and move_clean[-1] in '12345678':
+                to_sq = move_clean[-2:]
+                # guess from: same file, or one left/right if capture
+                # not needed for evaluation since we have current pieces
+                return (None, to_sq, is_capture, is_promo, move_clean[-1] if is_promo else None, False, is_check)
+            return (None, None, is_capture, is_promo, move_clean[-1] if is_promo else None, False, is_check)
+        
+        from_sq, to_sq = squares[-2], squares[-1]
+        promo_piece = move_clean[-1] if is_promo else None
+        return (from_sq, to_sq, is_capture, is_promo, promo_piece, False, is_check)
+
+    def evaluate_move(move: str) -> float:
+        score = 0.0
+        from_sq, to_sq, is_capture, is_promo, promo_piece, is_castle, is_check = parse_move(move)
+        
+        # Immediate priorities
+        if '#' in move:
+            return 100000  # Mate: highest priority
+        if '+' in move:
+            score += 50  # Check bonus
+        
+        # Castling: big bonus early if king hasn't moved
+        if is_castle:
+            if len(pieces) > 28:  # early game
+                score += 70
+            else:
+                score += 30  # midgame still good
+        
+        # Promotion: huge bonus, especially queen
+        if is_promo:
+            promo_val = piece_values.get(promo_piece, 0)
+            score += promo_val
+            if promo_piece == 'Q':
+                score += 20  # extra for queen
+            elif promo_piece == 'N':
+                score += 10  # fork potential
+        
+        # Capture: gain material minus likely loss (hanging)
+        if is_capture:
+            captured_piece = pieces.get(to_sq)
+            if captured_piece:
+                captured_value = piece_values[captured_piece[1]]
+                capturing_piece_char = pieces.get(from_sq, '?')[1] if from_sq else 'P'  # assume pawn if from_sq unknown
+                capturing_value = piece_values[capturing_piece_char]
+                # Exchange evaluation: only capture if winning or equal
+                exchange_score = captured_value - capturing_value
+                score += exchange_score
+                # Bonus if capture attacks something else
+                if attacks_opponent_king(pieces, to_sq, color_char):
+                    score += 30
+        
+        # If no capture, encourage developing non-pawn pieces early
+        if not is_capture and not is_promo and not is_castle:
+            piece_on_from = pieces.get(from_sq) if from_sq else None
+            if piece_on_from and piece_on_from[0] == color_char:
+                piece_type = piece_on_from[1]
+                if piece_type == 'P':
+                    # Avoid moving pawns too much early, but central pushes ok
+                    if from_sq and to_sq[1] in '456' and to_sq[0] in 'dfe':
+                        score += 5
+                    elif len(pieces) < 20:  # endgame
+                        # Advancing pawns is good
+                        rank_diff = int(to_sq[1]) - int(from_sq[1]) if color_char == 'w' else int(from_sq[1]) - int(to_sq[1])
+                        score += rank_diff * 4
+                elif piece_type in 'NBR':
+                    if len(pieces) > 24:  # opening: develop
+                        score += 15
+                    score += get_pst_score(to_sq, piece_type, color_char)
+                elif piece_type == 'Q':
+                    # Queen out too early? penalize
+                    if len(pieces) > 28:
+                        score -= 20
+                    else:
+                        score += get_pst_score(to_sq, piece_type, color_char)
+                elif piece_type == 'K':
+                    # Avoid unnecessary king moves
+                    score -= 40
+        
+        # Encourage castling if possible
+        if move == 'O-O' or move == 'O-O-O':
+            score += 50
+        
+        # Penalize moving into attack (hanging)
+        if to_sq:
+            if is_attacked_by_opponent(pieces, to_sq, color_char, opp_color_char):
+                # If the piece is not defended, it's hanging
+                if not is_defended(pieces, to_sq, color_char):
+                    piece_moved = pieces.get(from_sq) if from_sq else None
+                    if piece_moved:
+                        val = piece_values[piece_moved[1]]
+                        score -= val * 0.8  # heavy penalty if hanging
+        
+        return score
+
+    def attacks_opponent_king(pcs: dict, sq: str, color: str) -> bool:
+        # Very simple: only knight-style and queen-line attacks. Not complete but fast.
+        king_pos = None
+        opp_king = 'bK' if color == 'w' else 'wK'
+        for k, v in pcs.items():
+            if v == opp_king:
+                king_pos = k
+                break
+        if not king_pos:
+            return False
+        kf, kr = ord(king_pos[0]) - ord('a'), int(king_pos[1])
+        sf, sr = ord(sq[0]) - ord('a'), int(sq[1])
+        dx, dy = abs(kf - sf), abs(kr - sr)
+        # Knight?
+        if (dx == 2 and dy == 1) or (dx == 1 and dy == 2):
+            return True
+        # Rook / queen / bishop line?
+        if dx == 0 or dy == 0 or dx == dy:
+            # Check if path is clear and piece type covers it
+            # Here we skip full path validation for speed
+            piece = pcs.get(sq, '')
+            if len(piece) == 2 and piece[0] == color:
+                pt = piece[1]
+                if pt in 'QR' and (dx == 0 or dy == 0):
+                    return True
+                if pt in 'QB' and dx == dy:
+                    return True
+        return False
+
+    def is_attacked_by_opponent(pcs: dict, square: str, my_color: str, opp_color: str) -> bool:
+        opp_pieces = {k: v for k, v in pcs.items() if v[0] == opp_color}
+        sf, sr = ord(square[0]) - ord('a'), int(square[1])
+        for pos, piece in opp_pieces.items():
+            pf, pr = ord(pos[0]) - ord('a'), int(pos[1])
+            ptype = piece[1]
+            dx, dy = sf - pf, sr - pr
+            adx, ady = abs(dx), abs(dy)
+            if ptype == 'P':
+                # Pawn attack direction depends on color
+                if opp_color == 'w':
+                    if dx in (-1, 1) and dy == 1:  # from below
+                        return True
+                else:
+                    if dx in (-1, 1) and dy == -1:  # from above
+                        return True
+            elif ptype == 'N':
+                if (adx == 2 and ady == 1) or (adx == 1 and ady == 2):
+                    return True
+            elif ptype == 'B':
+                if adx == ady and adx > 0:
+                    # Check path is clear (simplified: no pieces in between on diagonal)
+                    step_x, step_y = dx // adx, dy // ady
+                    x, y = pf + step_x, pr + step_y
+                    blocked = False
+                    while (x, y) != (sf, sr):
+                        sq_check = f"{chr(ord('a')+x)}{y}"
+                        if sq_check in pcs:
+                            blocked = True
+                            break
+                        x, y = x + step_x, y + step_y
+                    if not blocked:
+                        return True
+            elif ptype == 'R':
+                if (adx > 0 and ady == 0) or (ady > 0 and adx == 0):
+                    step_x = 1 if dx > 0 else (-1 if dx < 0 else 0)
+                    step_y = 1 if dy > 0 else (-1 if dy < 0 else 0)
+                    x, y = pf + step_x, pr + step_y
+                    blocked = False
+                    while (x, y) != (sf, sr):
+                        sq_check = f"{chr(ord('a')+x)}{y}"
+                        if sq_check in pcs:
+                            blocked = True
+                            break
+                        x, y = x + step_x, y + step_y
+                    if not blocked:
+                        return True
+            elif ptype == 'Q':
+                if (adx == ady and adx > 0) or ((adx > 0 and ady == 0) or (ady > 0 and adx == 0)):
+                    step_x = 1 if dx > 0 else (-1 if dx < 0 else 0)
+                    step_y = 1 if dy > 0 else (-1 if dy < 0 else 0)
+                    x, y = pf + step_x, pr + step_y
+                    blocked = False
+                    while (x, y) != (sf, sr):
+                        sq_check = f"{chr(ord('a')+x)}{y}"
+                        if sq_check in pcs:
+                            blocked = True
+                            break
+                        x, y = x + step_x, y + step_y
+                    if not blocked:
+                        return True
+            elif ptype == 'K':
+                if adx <= 1 and ady <= 1:
+                    return True
+        return False
+
+    def is_defended(pcs: dict, square: str, color: str) -> bool:
+        # Check if any of own pieces attack this square
+        sf, sr = ord(square[0]) - ord('a'), int(square[1])
+        for pos, piece in pcs.items():
+            if piece[0] != color:
+                continue
+            pf, pr = ord(pos[0]) - ord('a'), int(pos[1])
+            ptype = piece[1]
+            dx, dy = sf - pf, sr - pr
+            adx, ady = abs(dx), abs(dy)
+            if ptype == 'P':
+                if color == 'w' and dx in (-1,1) and dy == -1:
+                    return True
+                elif color == 'b' and dx in (-1,1) and dy == 1:
+                    return True
+            elif ptype == 'N':
+                if (adx == 2 and ady == 1) or (adx == 1 and ady == 2):
+                    return True
+            elif ptype == 'B':
+                if adx == ady and adx > 0:
+                    step_x, step_y = dx // adx, dy // ady
+                    x, y = pf + step_x, pr + step_y
+                    blocked = False
+                    while (x, y) != (sf, sr):
+                        sq_check = f"{chr(ord('a')+x)}{y}"
+                        if sq_check in pcs:
+                            blocked = True
+                            break
+                        x, y = x + step_x, y + step_y
+                    if not blocked:
+                        return True
+            elif ptype == 'R':
+                if (adx > 0 and ady == 0) or (ady > 0 and adx == 0):
+                    step_x = 1 if dx > 0 else (-1 if dx < 0 else 0)
+                    step_y = 1 if dy > 0 else (-1 if dy < 0 else 0)
+                    x, y = pf + step_x, pr + step_y
+                    blocked = False
+                    while (x, y) != (sf, sr):
+                        sq_check = f"{chr(ord('a')+x)}{y}"
+                        if sq_check in pcs:
+                            blocked = True
+                            break
+                        x, y = x + step_x, y + step_y
+                    if not blocked:
+                        return True
+            elif ptype == 'Q':
+                if (adx == ady and adx > 0) or ((adx > 0 and ady == 0) or (ady > 0 and adx == 0)):
+                    step_x = 1 if dx > 0 else (-1 if dx < 0 else 0)
+                    step_y = 1 if dy > 0 else (-1 if dy < 0 else 0)
+                    x, y = pf + step_x, pr + step_y
+                    blocked = False
+                    while (x, y) != (sf, sr):
+                        sq_check = f"{chr(ord('a')+x)}{y}"
+                        if sq_check in pcs:
+                            blocked = True
+                            break
+                        x, y = x + step_x, y + step_y
+                    if not blocked:
+                        return True
+            elif ptype == 'K':
+                if adx <= 1 and ady <= 1:
+                    return True
+        return False
+
+    # Evaluate each move
+    scores = []
+    for move in legal_moves:
+        score = evaluate_move(move)
+        scores.append((score, np.random.rand() * 0.01, move))  # tie-breaking randomness
+    
+    # Choose highest score
+    scores.sort(reverse=True)
+    best_move = scores[0][2]
+    
+    # Safety check: ensure move is legal
+    if best_move not in legal_moves:
+        # Fallback: return first legal move
+        return legal_moves[0]
+    
+    return best_move
+</code>

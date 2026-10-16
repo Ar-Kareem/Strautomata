@@ -1,0 +1,321 @@
+
+from typing import List, Tuple, Dict
+
+def policy(state: dict) -> str:
+    try:
+        return _policy_impl(state)
+    except Exception:
+        # Last-resort fallback; should be legal if no moves exist.
+        # If there are moves, engine may reject this, so try a tiny safe recovery first.
+        try:
+            acts = generate_legal_actions(state)
+            if acts:
+                return acts[0][0]
+        except Exception:
+            pass
+        return "H:P,P"
+
+
+# ---------- Core policy ----------
+
+def _policy_impl(state: dict) -> str:
+    actions = generate_legal_actions(state)
+    if not actions:
+        return "H:P,P"
+
+    best_action = None
+    best_score = None
+
+    for action_str, next_state, meta in actions:
+        score = evaluate_state(next_state, meta)
+        # deterministic tie-break by move string for stability
+        key = (score, _tie_break_key(action_str))
+        if best_score is None or key > best_score:
+            best_score = key
+            best_action = action_str
+
+    return best_action if best_action is not None else "H:P,P"
+
+
+# ---------- Move generation ----------
+
+def generate_legal_actions(state: dict):
+    dice = list(state.get("dice", []))
+    if len(dice) == 0:
+        return [("H:P,P", clone_state(state), {"used": 0, "hits": 0, "entered": 0})]
+
+    if len(dice) == 1:
+        d = dice[0]
+        h_first = ("H", [d])
+        l_first = ("L", [d])
+        # identical in effect, but H is canonical for one die
+        options = []
+        options.extend(generate_for_order(state, h_first[1], h_first[0], [d], [d]))
+        # dedupe by action string
+        by_action = {}
+        for a in options:
+            by_action[a[0]] = a
+        if by_action:
+            return list(by_action.values())
+        return [("H:P,P", clone_state(state), {"used": 0, "hits": 0, "entered": 0})]
+
+    d1, d2 = dice[0], dice[1]
+    high = max(d1, d2)
+    low = min(d1, d2)
+
+    options = []
+    options.extend(generate_for_order(state, [high, low], "H", [high, low], [high, low]))
+    options.extend(generate_for_order(state, [low, high], "L", [high, low], [low, high]))
+
+    # Deduplicate identical action strings, keep best meta arbitrarily first
+    by_action = {}
+    for a in options:
+        by_action[a[0]] = a
+    actions = list(by_action.values())
+
+    if actions:
+        return actions
+
+    return [("H:P,P", clone_state(state), {"used": 0, "hits": 0, "entered": 0})]
+
+
+def generate_for_order(state: dict, ordered_dice: List[int], order_char: str,
+                       dice_pair_hl: List[int], actual_order: List[int]):
+    """
+    Generate legal actions for a specific die-use order.
+    Return list of (action_str, next_state, meta).
+    Enforces:
+      - move from bar first
+      - blocked points
+      - bearing off
+      - use both dice if possible
+      - if only one die can be played with two different dice, must use higher die
+    """
+    initial = clone_state(state)
+
+    # DFS over up to len(ordered_dice) plies, but action format only has 2 slots.
+    # Engine state spec says dice list has 0,1,2 ints. So max 2.
+    results = []
+
+    def rec(cur_state, idx, froms, used_count, hits, entered):
+        if idx == len(ordered_dice):
+            action = format_action(order_char, froms)
+            results.append((action, cur_state, {"used": used_count, "hits": hits, "entered": entered}))
+            return
+
+        die = ordered_dice[idx]
+        moves = legal_single_moves(cur_state, die)
+
+        if not moves:
+            # can only stop early; later die cannot be used if current ordered die unavailable in this ordering
+            # final legality filtering occurs after generation
+            action = format_action(order_char, froms + ["P"] * (2 - len(froms)))
+            results.append((action, cur_state, {"used": used_count, "hits": hits, "entered": entered}))
+            return
+
+        for src, ns, was_hit, was_enter in moves:
+            rec(ns, idx + 1, froms + [src], used_count + 1, hits + (1 if was_hit else 0), entered + (1 if was_enter else 0))
+
+    rec(initial, 0, [], 0, 0, 0)
+
+    # Enforce global dice-usage rules for this turn across both orderings later? We can enforce partly here.
+    # We must keep only max number of dice used for this specific ordering.
+    if not results:
+        return []
+
+    max_used = max(meta["used"] for _, _, meta in results)
+    results = [r for r in results if r[2]["used"] == max_used]
+
+    # For two dice and only one checker move possible overall, must use higher die when possible.
+    # This ordering-specific generation may produce one-die plays with low die even when high playable.
+    # Filter accordingly using original state.
+    if len(actual_order) == 2 and max_used == 1 and dice_pair_hl[0] != dice_pair_hl[1]:
+        high, low = dice_pair_hl
+        any_high = len(legal_single_moves(state, high)) > 0
+        any_low = len(legal_single_moves(state, low)) > 0
+        if any_high:
+            # keep only action/order combinations whose sole used die is the high die
+            # For order_char H, used die is high if first slot non-pass.
+            # For order_char L, if used_count==1, used die is low.
+            if order_char == "H":
+                pass
+            else:
+                results = []
+
+    return results
+
+
+def legal_single_moves(state: dict, die: int):
+    """
+    Return list of (src_token, next_state, was_hit, was_enter)
+    """
+    my_pts = state["my_pts"]
+    opp_pts = state["opp_pts"]
+    my_bar = state["my_bar"]
+
+    out = []
+
+    if my_bar > 0:
+        dest = 24 - die
+        if 0 <= dest <= 23 and opp_pts[dest] <= 1:
+            ns = clone_state(state)
+            ns["my_bar"] -= 1
+            was_hit = False
+            if ns["opp_pts"][dest] == 1:
+                ns["opp_pts"][dest] = 0
+                ns["opp_bar"] += 1
+                was_hit = True
+            ns["my_pts"][dest] += 1
+            out.append(("B", ns, was_hit, True))
+        return out
+
+    can_bear = all_in_home(my_pts, state["my_off"])
+
+    for src in range(24):
+        if my_pts[src] <= 0:
+            continue
+
+        dest = src - die
+
+        # Normal move on board
+        if dest >= 0:
+            if opp_pts[dest] <= 1:
+                ns = clone_state(state)
+                ns["my_pts"][src] -= 1
+                was_hit = False
+                if ns["opp_pts"][dest] == 1:
+                    ns["opp_pts"][dest] = 0
+                    ns["opp_bar"] += 1
+                    was_hit = True
+                ns["my_pts"][dest] += 1
+                out.append((f"A{src}", ns, was_hit, False))
+        else:
+            # Bearing off
+            if not can_bear:
+                continue
+            # Exact bear off
+            if dest == -1 or src == die - 1:
+                ns = clone_state(state)
+                ns["my_pts"][src] -= 1
+                ns["my_off"] += 1
+                out.append((f"A{src}", ns, False, False))
+            else:
+                # Oversized die: allowed only if no checker on higher point than src
+                # Since we move 23 -> 0 and home is 0..5, "higher point" within home means larger index than src.
+                if src < die - 1:
+                    if not any(my_pts[j] > 0 for j in range(src + 1, 6)):
+                        ns = clone_state(state)
+                        ns["my_pts"][src] -= 1
+                        ns["my_off"] += 1
+                        out.append((f"A{src}", ns, False, False))
+
+    return out
+
+
+# ---------- Evaluation ----------
+
+def evaluate_state(state: dict, meta: dict) -> float:
+    my_pts = state["my_pts"]
+    opp_pts = state["opp_pts"]
+
+    score = 0.0
+
+    # Primary race/contact features
+    score += 120.0 * state["my_off"]
+    score -= 115.0 * state["opp_off"]
+
+    score -= 90.0 * state["my_bar"]
+    score += 75.0 * state["opp_bar"]
+
+    score -= 1.6 * pip_count(my_pts)
+    score += 1.35 * opp_pip_count(opp_pts)
+
+    # Structure
+    made = sum(1 for x in my_pts if x >= 2)
+    opp_made = sum(1 for x in opp_pts if x >= 2)
+    blots = sum(1 for x in my_pts if x == 1)
+    opp_blots = sum(1 for x in opp_pts if x == 1)
+
+    score += 9.0 * made
+    score -= 6.0 * opp_made
+    score -= 7.5 * blots
+    score += 4.0 * opp_blots
+
+    # Home board strength
+    my_home_made = sum(1 for i in range(6) if my_pts[i] >= 2)
+    opp_home_made = sum(1 for i in range(18, 24) if opp_pts[i] >= 2)
+    score += 11.0 * my_home_made
+    score -= 8.0 * opp_home_made
+
+    # Anchors in opponent home board (our points 18..23)
+    anchors = sum(1 for i in range(18, 24) if my_pts[i] >= 2)
+    score += 5.0 * anchors
+
+    # Advanced checkers bonus in race, but avoid overstacking
+    score += 0.8 * sum(my_pts[i] * (23 - i) for i in range(24)) / 15.0
+    score -= 0.3 * sum(max(0, my_pts[i] - 3) for i in range(24))
+
+    # Immediate tactical move bonuses
+    score += 18.0 * meta.get("hits", 0)
+    score += 6.0 * meta.get("entered", 0)
+    score += 2.0 * meta.get("used", 0)
+
+    # Slight preference for not leaving direct shots in outer board
+    score -= 0.7 * direct_shot_risk(my_pts, opp_pts)
+
+    return score
+
+
+def pip_count(my_pts: List[int]) -> int:
+    # Our borne-off distance to goal at 0/off: checker on point i needs i+1 pips
+    return sum((i + 1) * n for i, n in enumerate(my_pts))
+
+
+def opp_pip_count(opp_pts: List[int]) -> int:
+    # Opponent moves 0 -> 23/off, so distance is 24-i
+    return sum((24 - i) * n for i, n in enumerate(opp_pts))
+
+
+def direct_shot_risk(my_pts: List[int], opp_pts: List[int]) -> int:
+    risk = 0
+    opp_positions = [i for i, n in enumerate(opp_pts) if n > 0]
+    for i, n in enumerate(my_pts):
+        if n == 1:
+            # Opponent can hit if they have checker at i-k for k in 1..6, considering their direction 0->23
+            for k in range(1, 7):
+                j = i - k
+                if 0 <= j <= 23 and opp_pts[j] > 0:
+                    risk += 1
+                    break
+    return risk
+
+
+# ---------- Helpers ----------
+
+def all_in_home(my_pts: List[int], my_off: int) -> bool:
+    # All remaining on-board checkers must be in points 0..5
+    return sum(my_pts[6:]) == 0
+
+
+def clone_state(state: dict) -> dict:
+    return {
+        "my_pts": list(state["my_pts"]),
+        "opp_pts": list(state["opp_pts"]),
+        "my_bar": int(state["my_bar"]),
+        "opp_bar": int(state["opp_bar"]),
+        "my_off": int(state["my_off"]),
+        "opp_off": int(state["opp_off"]),
+        "dice": list(state.get("dice", [])),
+    }
+
+
+def format_action(order_char: str, froms: List[str]) -> str:
+    fs = list(froms[:2])
+    while len(fs) < 2:
+        fs.append("P")
+    return f"{order_char}:{fs[0]},{fs[1]}"
+
+
+def _tie_break_key(action_str: str):
+    # deterministic stable tie-break
+    return action_str

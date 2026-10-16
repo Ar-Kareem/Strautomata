@@ -1,0 +1,154 @@
+The strategy for this policy is to generate all legal moves and evaluate them based on a positional scoring function. Key strategic elements include:
+
+1. **Move Generation**: Correctly handling bar entry (must enter first), blocked points, and bearing off rules
+2. **Position Evaluation**: Considering pip count (progress toward home), made points for safety, penalties for blots in dangerous positions, and rewards for sending opponents to the bar
+3. **Rule Compliance**: Always playing both dice when possible, preferring the higher die when only one can be played
+
+The evaluation function rewards forward progress, making points (pairs for safety), and penalizes leaving blots in opponent's territory. The policy systematically tries both die orderings (high-first and low-first) and selects the best legal move sequence.
+
+<code>
+def policy(state: dict) -> str:
+    my_pts = list(state['my_pts'])
+    opp_pts = list(state['opp_pts'])
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    dice = list(state['dice'])
+    
+    if not dice:
+        return "H:P,P"
+    
+    high = max(dice)
+    low = min(dice) if len(dice) > 1 else high
+    two_dice = len(dice) == 2
+    
+    def all_home(pts, bar):
+        if bar > 0:
+            return False
+        return all(pts[i] == 0 for i in range(6, 24))
+    
+    def blocked(pt, opp):
+        return 0 <= pt < 24 and opp[pt] >= 2
+    
+    def furthest_home(pts):
+        for p in range(5, -1, -1):
+            if pts[p] > 0:
+                return p
+        return -1
+    
+    def legal_froms(die, pts, bar, opp):
+        result = []
+        if bar > 0:
+            dest = 24 - die
+            if 0 <= dest < 24 and not blocked(dest, opp):
+                result.append(('B', dest))
+            return result
+        
+        can_off = all_home(pts, bar)
+        furthest = furthest_home(pts) if can_off else -1
+        
+        for p in range(24):
+            if pts[p] == 0:
+                continue
+            dest = p - die
+            if dest < 0:
+                if can_off and (die == p + 1 or (die > p + 1 and p == furthest)):
+                    result.append((f'A{p}', dest))
+            elif not blocked(dest, opp):
+                result.append((f'A{p}', dest))
+        return result
+    
+    def apply(frm, die, pts, bar, opp, obar, off):
+        pts = pts[:]
+        opp = opp[:]
+        if frm == 'B':
+            dest = 24 - die
+            bar -= 1
+            if opp[dest] == 1:
+                opp[dest] = 0
+                obar += 1
+            pts[dest] += 1
+        else:
+            p = int(frm[1:])
+            dest = p - die
+            pts[p] -= 1
+            if dest >= 0:
+                if opp[dest] == 1:
+                    opp[dest] = 0
+                    obar += 1
+                pts[dest] += 1
+            else:
+                off += 1
+        return pts, bar, opp, obar, off
+    
+    def eval_pos(pts, bar, opp, obar, off):
+        score = 0.0
+        # Progress toward home
+        for p in range(24):
+            if pts[p] > 0:
+                score += (23 - p) * pts[p] * 1.0
+        # Made points (safety)
+        for p in range(24):
+            if pts[p] >= 2:
+                score += 5
+                if p >= 18:  # Anchor bonus
+                    score += 4
+        # Blot penalty in dangerous area
+        for p in range(12, 24):
+            if pts[p] == 1:
+                score -= 6
+        # Bar effects
+        score -= bar * 30
+        score += obar * 20
+        # Borne off
+        score += off * 15
+        return score
+    
+    # Single die case
+    if not two_dice:
+        moves = legal_froms(dice[0], my_pts, my_bar, opp_pts)
+        if moves:
+            best = max(moves, key=lambda m: eval_pos(*apply(m[0], dice[0], my_pts, my_bar, opp_pts, opp_bar, my_off)))
+            return f"H:{best[0]},P"
+        return "H:P,P"
+    
+    # Two dice case - generate all candidates
+    candidates = []
+    
+    # H-order: high die first
+    for f1, _ in legal_froms(high, my_pts, my_bar, opp_pts):
+        pts2, bar2, opp2, obar2, off2 = apply(f1, high, my_pts, my_bar, opp_pts, opp_bar, my_off)
+        seconds = legal_froms(low, pts2, bar2, opp2)
+        if seconds:
+            for f2, _ in seconds:
+                pts3, bar3, opp3, obar3, off3 = apply(f2, low, pts2, bar2, opp2, obar2, off2)
+                candidates.append((f"H:{f1},{f2}", eval_pos(pts3, bar3, opp3, obar3, off3), 2))
+        else:
+            candidates.append((f"H:{f1},P", eval_pos(pts2, bar2, opp2, obar2, off2), 1))
+    
+    # L-order: low die first
+    for f1, _ in legal_froms(low, my_pts, my_bar, opp_pts):
+        pts2, bar2, opp2, obar2, off2 = apply(f1, low, my_pts, my_bar, opp_pts, opp_bar, my_off)
+        seconds = legal_froms(high, pts2, bar2, opp2)
+        if seconds:
+            for f2, _ in seconds:
+                pts3, bar3, opp3, obar3, off3 = apply(f2, high, pts2, bar2, opp2, obar2, off2)
+                candidates.append((f"L:{f1},{f2}", eval_pos(pts3, bar3, opp3, obar3, off3), 2))
+        else:
+            candidates.append((f"L:{f1},P", eval_pos(pts2, bar2, opp2, obar2, off2), 1))
+    
+    if not candidates:
+        return "H:P,P"
+    
+    # Must play both dice if possible
+    two_mv = [(m, s) for m, s, n in candidates if n == 2]
+    if two_mv:
+        return max(two_mv, key=lambda x: x[1])[0]
+    
+    # Must play higher die when only one can be played
+    high_mv = [(m, s) for m, s, n in candidates if n == 1 and m[0] == 'H']
+    if high_mv:
+        return max(high_mv, key=lambda x: x[1])[0]
+    
+    return max(candidates, key=lambda x: x[1])[0]
+</code>

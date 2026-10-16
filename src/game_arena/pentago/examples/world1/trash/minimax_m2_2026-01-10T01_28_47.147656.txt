@@ -1,0 +1,145 @@
+To solve this problem, we need to implement a move-selection policy for the game Pentago. The policy must always return a legal move string that involves placing a marble on an empty cell and rotating one of the four 3x3 quadrants either left (anticlockwise) or right (clockwise). The goal is to maximize the player's chances of winning while minimizing the opponent's chances.
+
+### Approach
+1. **Problem Analysis**: The game Pentago is played on a 6x6 board divided into four 3x3 quadrants. Players take turns placing marbles and rotating quadrants. The player who first achieves 5 marbles in a row (horizontal, vertical, or diagonal) wins.
+2. **Key Insights**:
+   - **Win Detection**: After each move, check if the current player has achieved a 5-in-a-row. If so, this move is optimal.
+   - **Heuristic Evaluation**: For non-winning moves, evaluate the board using a heuristic that scores consecutive marbles for both players. The heuristic assigns higher scores to longer consecutive marbles (5-in-a-row is the highest).
+   - **Move Simulation**: Simulate each possible move (placing a marble and rotating a quadrant) and evaluate the resulting board state.
+   - **Optimal Move Selection**: Choose the move that maximizes the heuristic score for the current player while minimizing the opponent's score.
+
+### Solution Code
+```python
+def check_win(board, player):
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == player:
+                for dx, dy in [(0,1), (1,0), (1,1), (1,-1)]:
+                    count = 1
+                    x, y = r, c
+                    while 0 <= x - dx < 6 and 0 <= y - dy < 6 and board[x - dx][y - dy] == player:
+                        count += 1
+                        x -= dx
+                        y -= dy
+                    x, y = r + dx, c + dy
+                    while 0 <= x < 6 and 0 <= y < 6 and board[x][y] == player:
+                        count += 1
+                        x += dx
+                        y += dy
+                    if count >= 5:
+                        return True
+    return False
+
+def evaluate(board, player):
+    visited = set()
+    score = 0
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for dx, dy in directions:
+        for r in range(6):
+            for c in range(6):
+                if (r, c) not in visited and board[r][c] == player:
+                    segment = []
+                    x, y = r, c
+                    while 0 <= x < 6 and 0 <= y < 6 and board[x][y] == player:
+                        segment.append((x, y))
+                        x -= dx
+                        y -= dy
+                    x, y = r + dx, c + dy
+                    while 0 <= x < 6 and 0 <= y < 6 and board[x][y] == player:
+                        segment.append((x, y))
+                        x += dx
+                        y += dy
+                    for (x, y) in segment:
+                        visited.add((x, y))
+                    n = len(segment)
+                    if n >= 5:
+                        value = 10000
+                    elif n == 4:
+                        value = 100
+                    elif n == 3:
+                        value = 10
+                    elif n == 2:
+                        value = 1
+                    else:
+                        value = 0.1
+                    score += value
+    return score
+
+def policy(you, opponent):
+    board = [[0] * 6 for _ in range(6)]
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 1:
+                board[r][c] = 1
+            elif opponent[r][c] == 1:
+                board[r][c] = -1
+            else:
+                board[r][c] = 0
+
+    best_move = None
+    best_score = -float('inf')
+    
+    for r in range(1, 7):
+        for c in range(1, 7):
+            if you[r-1][c-1] == 0 and opponent[r-1][c-1] == 0:
+                for quad in range(4):
+                    for d in ['L', 'R']:
+                        new_board = [row[:] for row in board]
+                        new_board[r-1][c-1] = 1
+                        
+                        if quad == 0:
+                            sub = [[new_board[i][j] for j in range(0,3)] for i in range(0,3)]
+                        elif quad == 1:
+                            sub = [[new_board[i][j] for j in range(3,6)] for i in range(0,3)]
+                        elif quad == 2:
+                            sub = [[new_board[i][j] for j in range(0,3)] for i in range(3,6)]
+                        else:
+                            sub = [[new_board[i][j] for j in range(3,6)] for i in range(3,6)]
+                        
+                        if d == 'L':
+                            new_sub = [[sub[j][2 - i] for j in range(3)] for i in range(3)]
+                        else:
+                            new_sub = [[sub[2 - j][i] for j in range(3)] for i in range(3)]
+                        
+                        if quad == 0:
+                            for i in range(3):
+                                for j in range(3):
+                                    new_board[i][j] = new_sub[i][j]
+                        elif quad == 1:
+                            for i in range(3):
+                                for j in range(3):
+                                    new_board[i][j+3] = new_sub[i][j]
+                        elif quad == 2:
+                            for i in range(3):
+                                for j in range(3):
+                                    new_board[i+3][j] = new_sub[i][j]
+                        else:
+                            for i in range(3):
+                                for j in range(3):
+                                    new_board[i+3][j+3] = new_sub[i][j]
+                        
+                        if check_win(new_board, 1):
+                            return f"{r},{c},{quad},{d}"
+                        
+                        my_score = evaluate(new_board, 1)
+                        opp_score = evaluate(new_board, -1)
+                        total_score = my_score - opp_score * 1.1
+                        
+                        if total_score > best_score:
+                            best_score = total_score
+                            best_move = f"{r},{c},{quad},{d}"
+    
+    return best_move
+```
+
+### Explanation
+1. **check_win(board, player)**: Checks if the current player has 5 consecutive marbles in any direction (horizontal, vertical, or diagonal).
+2. **evaluate(board, player)**: Evaluates the board state for a player by counting consecutive marbles in segments and assigning scores based on the segment length (longer segments get higher scores).
+3. **policy(you, opponent)**:
+   - **Board Initialization**: Converts the input grids into a single 6x6 board where 1 represents the current player's marbles, -1 the opponent's, and 0 empty cells.
+   - **Move Simulation**: For each empty cell, simulates placing a marble and rotating each quadrant in both directions.
+   - **Win Check**: If a move results in a win for the current player, it immediately returns that move.
+   - **Heuristic Evaluation**: For non-winning moves, computes a score based on the player's and opponent's consecutive marbles. The move with the highest score is selected.
+4. **Optimal Move Selection**: The move that maximizes the heuristic score (favoring longer player segments while penalizing opponent segments) is chosen as the final move.
+
+This approach ensures that the policy always returns a legal move and efficiently evaluates potential moves to maximize the player's winning chances.

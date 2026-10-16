@@ -1,0 +1,177 @@
+
+import random
+from functools import lru_cache
+
+# Game Constants
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+RANK_TO_IDX = {r: i for i, r in enumerate(RANKS)}
+# Base values: A=11, 2-10=face, JQK=10. Aces are adjusted dynamically.
+BASE_VALUES = [11, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10]
+
+# Precompute transitions: for every possible hand mask (0..8191), 
+# list the masks resulting from hitting any remaining card.
+TRANSITION_MASKS = [[] for _ in range(1 << 13)]
+for mask in range(1 << 13):
+    for i in range(13):
+        if not (mask & (1 << i)):
+            TRANSITION_MASKS[mask].append(mask | (1 << i))
+
+# Cache for solved strategies: target -> list[bool] (is_hit for each mask)
+SOLVED_STRATEGIES = {}
+
+def get_hand_score(mask, target):
+    """
+    Calculates the best possible score for a given hand mask and target.
+    Handles Aces dynamically (11 if fits, else 1).
+    Returns > target if bust.
+    """
+    val = 0
+    aces = 0
+    m = mask
+    for i in range(13):
+        if m & 1:
+            val += BASE_VALUES[i]
+            if i == 0:  # Ace
+                aces += 1
+        m >>= 1
+    
+    while val > target and aces > 0:
+        val -= 10
+        aces -= 1
+    return val
+
+def simulate_policy(target, is_hit_array, n_sims=10000):
+    """
+    Simulates 'n_sims' games using the provided is_hit_array policy
+    to generate the probability distribution of the opponent's final scores.
+    Returns: list of probabilities where index s holds prob(score=s), 
+             and index target+1 holds prob(bust).
+    """
+    counts = [0] * (target + 2)
+    
+    for _ in range(n_sims):
+        mask = 0
+        while True:
+            score = get_hand_score(mask, target)
+            
+            # Check Bust
+            if score > target:
+                counts[target+1] += 1
+                break
+            
+            # Check Action
+            if not is_hit_array[mask]:
+                counts[score] += 1
+                break
+            
+            # HIT
+            next_masks = TRANSITION_MASKS[mask]
+            if not next_masks:
+                # No cards left, forced stay
+                counts[score] += 1
+                break
+            
+            mask = random.choice(next_masks)
+            
+    total = sum(counts)
+    return [c / total for c in counts]
+
+def compute_best_response(target, dist):
+    """
+    Computes the optimal strategy (HIT/STAY) for every hand state 
+    given the opponent's score distribution 'dist'.
+    Returns: list[bool] indicating whether to HIT for each mask.
+    """
+    # Precompute utility of staying at score S against 'dist'
+    # Utility = P(Opponent Bust) + Sum_{s < S} P(Opponent = s) + 0.5 * P(Opponent = S)
+    p_opp_bust = dist[target + 1]
+    utility = [0.0] * (target + 1)
+    
+    cum_prob = 0.0
+    for s in range(target + 1):
+        utility[s] = p_opp_bust + cum_prob + 0.5 * dist[s]
+        cum_prob += dist[s]
+
+    @lru_cache(maxsize=None)
+    def solve_state(mask):
+        score = get_hand_score(mask, target)
+        
+        if score > target:
+            return 0.0, False # Terminal bust state, value 0
+        
+        v_stay = utility[score]
+        
+        next_masks = TRANSITION_MASKS[mask]
+        if not next_masks:
+            return v_stay, False # Terminal no-cards state
+            
+        # Calculate expected value of hitting
+        v_hit_sum = 0.0
+        for nm in next_masks:
+            v, _ = solve_state(nm)
+            v_hit_sum += v
+        
+        v_hit = v_hit_sum / len(next_masks)
+        
+        # Determine action
+        if v_hit > v_stay:
+            return v_hit, True
+        else:
+            return v_stay, False
+
+    # Compute action for all masks
+    is_hit = [False] * (1 << 13)
+    for mask in range(1 << 13):
+        _, action = solve_state(mask)
+        is_hit[mask] = action
+        
+    return is_hit
+
+def get_initial_distribution(target):
+    """Generates a rough initial distribution using a greedy strategy."""
+    counts = [0] * (target + 2)
+    for _ in range(5000):
+        mask = 0
+        while True:
+            score = get_hand_score(mask, target)
+            if score >= target or not TRANSITION_MASKS[mask]:
+                if score > target: counts[target+1] += 1
+                else: counts[score] += 1
+                break
+            # Greedy hit
+            mask = random.choice(TRANSITION_MASKS[mask])
+    total = sum(counts)
+    return [c / total for c in counts]
+
+def solve_target(target):
+    """
+    Iteratively finds the equilibrium strategy for the given target.
+    """
+    if target in SOLVED_STRATEGIES:
+        return SOLVED_STRATEGIES[target]
+        
+    # Start with a heuristic distribution
+    dist = get_initial_distribution(target)
+    
+    # Fictitious Play: Iterate best response and simulation
+    for _ in range(6): # 6 iterations is sufficient for convergence
+        is_hit = compute_best_response(target, dist)
+        dist = simulate_policy(target, is_hit)
+        
+    SOLVED_STRATEGIES[target] = is_hit
+    return is_hit
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Returns the optimal move ("HIT" or "STAY") for the given hand and target.
+    """
+    # 1. Ensure the strategy for this target is computed/solved
+    is_hit_map = solve_target(target)
+    
+    # 2. Convert hand to a bitmask
+    mask = 0
+    for card in hand:
+        mask |= (1 << RANK_TO_IDX[card])
+        
+    # 3. Return the corresponding action
+    return "HIT" if is_hit_map[mask] else "STAY"

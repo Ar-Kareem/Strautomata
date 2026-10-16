@@ -1,0 +1,580 @@
+
+import sys
+import copy
+
+# Increase recursion depth for deep search if necessary
+sys.setrecursionlimit(20000)
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Kalah AI Policy.
+    Uses iterative deepening alpha-beta search with a specialized evaluation function.
+    Assumes 6 houses per side.
+    """
+    
+    # --- Configuration ---
+    MAX_DEPTH = 20  # Maximum search depth
+    TIME_LIMIT = 0.95 # Seconds
+    
+    # --- Utility Functions ---
+    
+    def get_opposite(idx: int) -> int:
+        """Returns the index of the opposite house."""
+        return 5 - idx
+
+    def is_store(idx: int) -> bool:
+        return idx == 6
+
+    def is_house(idx: int) -> bool:
+        return 0 <= idx <= 5
+
+    def simulate_move(ayou: list, aopp: list, move_idx: int, is_maximizing: bool, player_idx: int):
+        """
+        Returns (terminal, new_you, new_opponent, is_extra_turn)
+        Note: The board is always passed as [You, Opponent] relative to the mover.
+        If we are simulating, 'ayou' is always the player who moves.
+        """
+        
+        # Make copies to not mutate input during simulation
+        board = [list(ayou), list(aopp)]
+        
+        # Identify board mapping
+        # If is_maximizing (Current Agent) -> self is board[0], opp is board[1]
+        # If is_minimizing (Opponent Response) -> self is board[1], opp is board[0] relative to us,
+        # but logic should treat board[0] as the mover.
+        
+        # Let's map strictly: board[0] = mover, board[1] = other
+        if not is_maximizing:
+            # If we are simulating opponent, the inputs ayou/aopp are actually
+            # (Opponent, Us) respectively.
+            # We must re-assemble board so board[0] is Opponent.
+            board = [list(aopp), list(ayou)] 
+        else:
+            board = [list(ayou), list(aopp)]
+
+        seeds = board[0][move_idx]
+        board[0][move_idx] = 0
+        curr = move_idx
+        
+        # Sowing
+        while seeds > 0:
+            curr += 1
+            # Wrap around logic
+            if curr == 7: # Wrapped past own store
+                curr = 0
+            elif curr == 14: # Wrapped full board
+                curr = 0
+            
+            # Logic to determine whose pit:
+            # Mover's pits: 0-5. Mover's store: 6.
+            # Other's pits: 0-5. Other's store: 6.
+            # We can't just index board[0] and board[1] directly if curr > 6.
+            # Let's use a unified coordinate system 0..13.
+            # 0..5: Mover's houses
+            # 6: Mover's store
+            # 7..12: Other's houses
+            # 13: Other's store (Skipped)
+            
+            # But simpler: Just count steps and distribute
+            
+            # Let's do direct index mapping for the simulation loop
+            # We need to track whose turn it is to drop
+            
+            # Resetting for clearer logic:
+            # Calculate drop coordinates relative to 'board' list structure
+            # board[0] is Mover, board[1] is Other.
+            
+            # Current absolute index logic
+            # We just need to increment 'curr' and map to board indices
+            
+            pass
+
+        # --- Re-implementing Sowing Logic for Clarity and Speed ---
+        
+        # Calculate effective index (0..13) purely for position
+        # move_idx is 0..6 (relative to mover)
+        effective_start = move_idx 
+        
+        # 0..5: Mover Houses
+        # 6: Mover Store
+        # 7..12: Opponent Houses
+        # 13: Opponent Store (Skipped)
+        
+        # We will iterate through the distribution
+        current_effective = effective_start
+        
+        # Store the last effective index for Capture/Extra turn check
+        last_effective = -1
+        
+        # Sowing Loop
+        # We need to handle the fact that the starting pit is emptied
+        # So the first increment moves to the next pit
+        
+        s = seeds
+        pit_idx = move_idx
+        
+        # We need a generic way to access pits from effective index
+        def get_pit(eff_idx, b):
+            # b is [mover, other]
+            if eff_idx <= 5: return b[0][eff_idx]
+            if eff_idx == 6: return b[0][6]
+            if eff_idx <= 12: return b[1][eff_idx - 7]
+            return -1 # 13 (opponent store) should be skipped
+
+        def set_pit(eff_idx, b, val):
+            if eff_idx <= 5: b[0][eff_idx] = val
+            elif eff_idx == 6: b[0][6] = val
+            elif eff_idx <= 12: b[1][eff_idx - 7] = val
+
+        # To handle the skipping of opponent's store (index 13) and wrapping:
+        # We loop based on count.
+        
+        # Optimization: batch processing to avoid loop overhead for large seeds
+        # But with standard Kalah seeds, max usually < 100.
+        
+        # Loop:
+        # We must skip opponent's store (13).
+        # We must wrap around from 13 to 0.
+        
+        # Standard distribution loop:
+        # 1. Move to next pit
+        # 2. Check if it's opponent's store (index 13). If so, skip again (move to 0).
+        # 3. Place seed.
+        
+        # To make this efficient:
+        # We know the range 0..12 (houses + my store) are valid.
+        # 13 is invalid.
+        
+        # Let's just iterate.
+        # Note: The starting pit was emptied manually.
+        
+        # We need to actually decrement seeds in the loop.
+        # The loop continues until s == 0.
+        
+        # Reset loop variables for clarity
+        idx = move_idx
+        count = seeds
+        
+        # We place seeds one by one to easily track the "last seed" location
+        while count > 0:
+            idx += 1
+            if idx == 7: # Passed Mover Store (Index 6), going to Opponent House 0
+                idx = 7
+            if idx == 13: # Passed Opponent House 5 (Index 12), now at Opponent Store
+                idx = 0 # Skip Opponent Store, wrap to Mover House 0
+                # Wait, logic: 0->1->...->6(MoverStore)->7(OppH0)->...->12(OppH5)->13(OppStore)->0
+                # My previous logic: idx=7 is correct start of opp row.
+                # When idx increments to 13 (Opponent Store), we must skip it.
+            if idx == 13: # Double check because we might have just set idx=0
+                idx = 0 
+                # But if we just set to 0, we are placing a seed there.
+                # This correctly skips Opponent Store.
+            
+            # Now idx is the valid target 0..12.
+            # Map to board
+            if idx == 6:
+                board[0][6] += 1
+            elif idx < 6:
+                board[0][idx] += 1
+            else: # 7..12
+                board[1][idx - 7] += 1
+            
+            count -= 1
+            last_effective = idx
+
+        # --- Post-Move Effects ---
+        
+        is_extra_turn = False
+        if last_effective == 6: # Landed in Mover's Store
+            is_extra_turn = True
+            
+        # Capture
+        # Condition: Last seed lands in Mover's Empty House (0..5)
+        # AND Opposite House (relative to Mover) has seeds.
+        
+        if 0 <= last_effective <= 5:
+            if board[0][last_effective] == 1: # Was empty before (now has 1)
+                opp_idx = get_opposite(last_effective)
+                # Check if Opponent's corresponding house has seeds
+                # Opponent's house corresponds to last_effective (0..5)
+                # So we check board[1][opp_idx]
+                if board[1][opp_idx] > 0:
+                    # Capture!
+                    # Move the seed from current house + opponent seeds to store
+                    captured = board[1][opp_idx]
+                    board[1][opp_idx] = 0
+                    # Remove the seed that triggered capture from current house
+                    board[0][last_effective] = 0
+                    # Add to store
+                    board[0][6] += (1 + captured)
+
+        # --- Determine Terminal State ---
+        # If Mover has no seeds in houses (0..5)
+        if sum(board[0][:6]) == 0:
+            # Game ends. Remaining seeds in opponent houses go to opponent
+            remaining = sum(board[1][:6])
+            board[1][6] += remaining
+            board[1][:6] = [0]*6
+            return True, board[0], board[1], is_extra_turn
+        
+        # If Opponent has no seeds in houses (0..5)
+        if sum(board[1][:6]) == 0:
+            # Game ends. Remaining seeds in mover houses go to mover
+            remaining = sum(board[0][:6])
+            board[0][6] += remaining
+            board[0][:6] = [0]*6
+            return True, board[0], board[1], is_extra_turn
+
+        return False, board[0], board[1], is_extra_turn
+
+    def evaluate(state_you, state_opp, depth, max_depth, terminal=False):
+        """
+        Heuristic evaluation of the board.
+        Returns a score relative to the maximizing player (the one who just moved).
+        """
+        if terminal:
+            # We are at a terminal node (Game Over)
+            # This means the move just made ended the game.
+            # The mover is the one who receives the points or loses.
+            # But wait, `evaluate` is usually called on the state *after* a move.
+            # So `state_you` is the player who made the move.
+            
+            # If Mover (state_you) won:
+            if state_you[6] > state_opp[6]:
+                return 100000 + (state_you[6] - state_opp[6])
+            elif state_opp[6] > state_you[6]:
+                return -100000 - (state_opp[6] - state_you[6])
+            else:
+                return 0
+
+        # Standard Heuristics
+        
+        # 1. Score Difference (most important)
+        score_diff = state_you[6] - state_opp[6]
+        
+        # 2. Move Advantage (Potential for extra turns)
+        # Count how many houses lead to a store (sow seeds ending in store)
+        # This is a cheap look-ahead.
+        
+        # 3. Potential Captures
+        # Count how many houses have seeds that could capture (landing on 1, opp has seeds)
+        
+        # 4. Safety
+        # Count how many houses are safe (not capturable)
+        
+        # 5. Seed Count (Total seeds under control)
+        
+        # Weights
+        w_score = 100
+        w_moves = 5
+        w_cap = 8
+        w_safe = 2
+        w_seed = 1
+        
+        moves_adv = 0
+        caps_pot = 0
+        safe = 0
+        seeds_control = 0
+        
+        # Precompute op house sums for speed
+        # We need to check `opponent[5-i]`
+        
+        for i in range(6):
+            seeds = state_you[i]
+            if seeds == 0:
+                continue
+            seeds_control += seeds
+            
+            # Calculate landing spot
+            # The last seed lands at (i + seeds) % 13 if skipping store?
+            # No, we skip opponent store.
+            # Let's simulate just the landing index for heuristic
+            
+            # Simplified landing index logic for heuristics
+            # 0..5: You
+            # 6: Store
+            # 7..12: Opp
+            # 13: Skip
+            
+            # Distance to store:
+            # If i <= 6: distance to store is 6 - i
+            # If seeds == distance -> lands in store
+            
+            dist_to_store = 6 - i
+            if seeds == dist_to_store:
+                moves_adv += 1
+            
+            # Check capture potential
+            # Last seed lands in your house `last = i + seeds` (relative to start)
+            # But wrapping makes it messy.
+            
+            # Let's do exact calculation for heuristics
+            # We need the effective index of the last seed
+            temp_seeds = seeds
+            temp_idx = i
+            last_eff = -1
+            while temp_seeds > 0:
+                temp_idx += 1
+                if temp_idx == 7: temp_idx = 7 # Move to opp row
+                if temp_idx == 13: temp_idx = 0 # Wrap, skipping opp store
+                temp_seeds -= 1
+                if temp_seeds == 0:
+                    last_eff = temp_idx
+            
+            # Check Extra Turn
+            if last_eff == 6:
+                moves_adv += 2 # Heavily weight extra turns
+                
+            # Check Capture Potential
+            if 0 <= last_eff <= 5:
+                # Landed in your house
+                if state_you[last_eff] == 1: # Must be exactly 1 (since we added 1 there)
+                    opp_idx = 5 - last_eff
+                    if state_opp[opp_idx] > 0:
+                        caps_pot += state_opp[opp_idx] + 1
+                        
+            # Safety
+            # A house is safe if it's empty (0 seeds) or it has > 1 and doesn't allow capture
+            # Actually, safety means if opponent hits our house, they don't capture much.
+            # Or if we have > 1, we can't be captured by a single seed.
+            if state_you[i] > 1:
+                safe += 1
+            elif state_you[i] == 1:
+                # Check if opposite house has many seeds
+                opp_idx = 5 - i
+                if state_opp[opp_idx] > 0:
+                    safe -= state_opp[opp_idx] # Unsafe if opp can capture
+                
+        # Total seeds
+        seeds_opp = sum(state_opp[:6])
+        
+        # Combine
+        # If we are winning heavily, protect the lead. If losing, try risky moves (implied by search)
+        # This heuristic should guide the search.
+        h = (score_diff * w_score) + (moves_adv * w_moves) + (caps_pot * w_cap) + (safe * w_safe) + ((seeds_control - seeds_opp) * w_seed)
+        
+        return h
+
+    def alpha_beta(a_you, a_opp, depth, alpha, beta, maximizing, turn_count):
+        """
+        Alpha-Beta Search.
+        Returns (score, best_move)
+        """
+        # Check time
+        if (time.time() - start_time) > TIME_LIMIT:
+            raise TimeoutError
+
+        # Base Case: Check if game is over (should have been caught in parent, but safe to check)
+        if sum(a_you[:6]) == 0 or sum(a_opp[:6]) == 0:
+            # It's a terminal state. 
+            # If maximizing player (current turn) has no stones, the previous player finished the game.
+            # But here a_you is the current player.
+            # If a_you has no stones, the game ended on the previous move.
+            # We shouldn't be here unless we are simulating a move that empties our stones.
+            # If we emptied our stones, the game ends immediately.
+            # We need to calculate the final score.
+            # Wait, the logic in `simulate_move` handles the "empty stones" check.
+            # If simulate_move returns terminal=True, we handle it in the recursive call below.
+            # This block handles the case where we enter a node and it's already terminal
+            # (e.g. after extra turn or pass).
+            pass 
+
+        # If depth is 0, evaluate
+        if depth == 0:
+            return evaluate(a_you, a_opp, 0, 0, terminal=False), -1
+
+        # Generate Moves
+        # We need to generate moves for the current player (a_you)
+        
+        # Optimization: Move ordering
+        # Try moves that lead to Store first, then Captures, then others.
+        moves = []
+        for i in range(6):
+            if a_you[i] > 0:
+                # Check effect
+                # We need a cheap check for "Lands in Store" or "Capture"
+                # Let's just compute it once
+                seeds = a_you[i]
+                idx = i
+                last = -1
+                s = seeds
+                while s > 0:
+                    idx += 1
+                    if idx == 7: idx = 7
+                    if idx == 13: idx = 0
+                    s -= 1
+                    if s == 0: last = idx
+                
+                score_bonus = 0
+                if last == 6: score_bonus = 2 # Extra turn
+                elif 0 <= last <= 5:
+                    if a_you[last] == 0: # Was empty
+                         # Check capture
+                         opp_idx = 5 - last
+                         if a_opp[opp_idx] > 0: score_bonus = 1 # Capture
+                
+                moves.append((i, score_bonus))
+        
+        # Sort moves by heuristic bonus (Good moves first -> better pruning)
+        moves.sort(key=lambda x: x[1], reverse=True)
+        moves = [x[0] for x in moves]
+
+        if maximizing:
+            max_eval = -float('inf')
+            best_move = moves[0] if moves else -1
+            
+            for move in moves:
+                terminal, n_you, n_opp, is_extra = simulate_move(a_you, a_opp, move, True, 0)
+                
+                if terminal:
+                    val = evaluate(n_you, n_opp, depth, depth, terminal=True)
+                else:
+                    if is_extra:
+                        # Extra turn: Recurse with same player, same depth (or depth-1 to prevent infinite loops)
+                        # Usually depth-1 to limit search width
+                        val, _ = alpha_beta(n_you, n_opp, depth - 1, alpha, beta, True, turn_count + 1)
+                    else:
+                        val, _ = alpha_beta(n_opp, n_you, depth - 1, alpha, beta, False, turn_count + 1)
+                
+                if val > max_eval:
+                    max_eval = val
+                    best_move = move
+                
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best_move
+            
+        else: # Minimizing (Simulating Opponent)
+            min_eval = float('inf')
+            # Opponent moves are generated inside simulate_move calls, 
+            # but we need to iterate possible opponent responses here.
+            # Wait, standard alpha-beta: the minimizing player picks the move that minimizes the score.
+            # So we need to generate opponent moves here.
+            
+            opp_moves = []
+            for i in range(6):
+                if a_opp[i] > 0: # a_opp is the minimizer's houses
+                    # Check if opponent gets extra turn
+                    seeds = a_opp[i]
+                    idx = i
+                    last = -1
+                    s = seeds
+                    while s > 0:
+                        idx += 1
+                        if idx == 7: idx = 7
+                        if idx == 13: idx = 0
+                        s -= 1
+                        if s == 0: last = idx
+                    score_bonus = 0
+                    if last == 6: score_bonus = 2
+                    elif 0 <= last <= 5:
+                        if a_opp[last] == 0:
+                             opp_idx = 5 - last
+                             if a_you[opp_idx] > 0: score_bonus = 1
+                    opp_moves.append((i, score_bonus))
+            
+            # Order opponent moves too (for alpha-beta efficiency)
+            # Minimizer: try to find low score. We should try moves that are good for minimizer (bad for us)
+            # So sort descending by bonus (minimizer likes extra turns/captures)
+            opp_moves.sort(key=lambda x: x[1], reverse=True)
+            opp_moves = [x[0] for x in opp_moves]
+            
+            for move in opp_moves:
+                # Simulate move: Input is (Minimizer, Maximizer) -> (a_opp, a_you)
+                terminal, n_opp, n_you, is_extra = simulate_move(a_opp, a_you, move, False, 1)
+                # Note: simulate_move returns (new_you, new_opponent)
+                # If is_extra=False, then (n_opp, n_you) is correct for next turn (Maximizer's turn)
+                # If is_extra=True, then (n_opp, n_you) is the state, and it's still Minimizer's turn.
+                
+                if terminal:
+                    # Evaluate relative to Maximizer (us)
+                    val = evaluate(n_you, n_opp, depth, depth, terminal=True)
+                else:
+                    if is_extra:
+                        # Opponent gets extra turn
+                        val, _ = alpha_beta(n_opp, n_you, depth - 1, alpha, beta, False, turn_count + 1)
+                    else:
+                        # Our turn
+                        val, _ = alpha_beta(n_you, n_opp, depth - 1, alpha, beta, True, turn_count + 1)
+                
+                if val < min_eval:
+                    min_eval = val
+                
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            
+            return min_eval, -1
+
+    # --- Main Execution ---
+    import time
+    start_time = time.time()
+    
+    best_move = -1
+    
+    # Identify valid moves
+    valid_moves = [i for i in range(6) if you[i] > 0]
+    
+    # If only one move, return it
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+    
+    # Iterative Deepening
+    # We start at depth 1 and increase until time runs out
+    # We store the best move from the previous iteration to use first in the next
+    
+    try:
+        # Initial move ordering guess
+        # Just sort by number of seeds descending (usually good)
+        # But we can do better with a depth 0 check
+        def quick_score(idx):
+            seeds = you[idx]
+            # Heuristic: extra turn or capture is good
+            idx_s = idx
+            last = -1
+            s = seeds
+            while s > 0:
+                idx_s += 1
+                if idx_s == 7: idx_s = 7
+                if idx_s == 13: idx_s = 0
+                s -= 1
+                if s == 0: last = idx_s
+            bonus = 0
+            if last == 6: bonus = 100
+            elif 0 <= last <= 5:
+                if you[last] == 0 and opponent[5-last] > 0: bonus = 50
+            return bonus + seeds
+        
+        valid_moves.sort(key=quick_score, reverse=True)
+        
+        best_move = valid_moves[0]
+        
+        # Start iterative deepening
+        for depth in range(1, MAX_DEPTH + 1):
+            # Alpha-Beta Init
+            # We need to pass the root node correctly
+            # Policy is called with `you` (current player) and `opponent`
+            # Root is Maximizer.
+            
+            score, move = alpha_beta(you, opponent, depth, -float('inf'), float('inf'), True, 0)
+            
+            # If search completed for this depth, update best_move
+            if move != -1:
+                best_move = move
+            
+            # Check if time is up
+            if (time.time() - start_time) > TIME_LIMIT:
+                break
+                
+            # If we found a forced win, stop early?
+            # Not necessary for this code size constraint
+            
+    except TimeoutError:
+        pass # Return the best move found so far
+    except Exception:
+        # Fallback for safety
+        return valid_moves[0]
+
+    return best_move

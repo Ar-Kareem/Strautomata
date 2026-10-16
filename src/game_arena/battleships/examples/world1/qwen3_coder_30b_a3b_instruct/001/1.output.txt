@@ -1,0 +1,115 @@
+<thinking>
+To solve this Battleship targeting problem, I need to create a policy that intelligently selects the next cell to fire at based on the current board state. This is essentially a strategic search problem where I want to:
+
+1. Favor cells that are more likely to contain ships based on hit patterns
+2. Avoid firing at cells I've already shot at
+3. Be efficient with computational complexity
+
+My approach:
+1. First, I'll scan the board to find any existing hits (`1`) and their adjacent cells
+2. For each hit, I'll prioritize adjacent cells (up, down, left, right) since ships are placed in straight lines
+3. If I've already hit a section and made hits in all adjacent directions, it's time to find another unhit cell
+4. For un-hit cells, I'll consider the probability that they contain ships based on ship placement constraints
+
+However, a more robust approach might be to:
+1. Look for existing hit sequences and fire adjacent to those to complete ship detection
+2. Use a probability-based approach where I favor cells that could still be part of a ship
+3. If there are no obvious hit patterns, just choose a random unshot cell
+
+Actually, let me simplify my thinking:
+- The key is to focus on strategic areas (near existing hits) first
+- If I hit a ship, I should try to find the full ship by searching the adjacent cells
+- I can make a list of possible ship locations and then fire at those locations (or their surrounding areas) 
+
+But that's too complex. I'll implement a simpler heuristic:
+1. Look at all currently hit cells that are part of the same ship (adjacent hits, or new hit that connects to a chain)
+2. Fire adjacent to those to find the full ship
+3. If there are no connected hits, fire randomly
+
+Actually looking at this more carefully - I could be more systematic:
+1. I can mark all cells that have been shot at (`-1` or `1`)
+2. I can check for already-hit cells with un-hit neighbors
+3. Select an unshot neighbor of a hit cell
+
+But let's go simple and effective:
+1. Find all cells with `1` (hits) 
+2. For each such cell, identify its unshots neighbors
+3. Fire at the unshot neighbor of a recent hit to try to sink the ship
+4. If no such candidate, randomly select an unshot cell
+
+The key is avoiding random shots and focusing on where recent hits could lead to sunk ships.
+
+Let me implement a two-phase approach:
+- Phase 1: Given existing hits, fire adjacent cells to try to sink the ship
+- Phase 2: Select random unshot cell
+
+I'll prioritize the phase 1 if there's potential.
+
+I think I'm overcomplicating. Let's go with a more elegant solution:
+
+1. Find all cells that are not already fired (value != -1 and != 1) 
+2. Prefer unshot cells that are adjacent to some existing hit - because ships are likely to be there
+3. Otherwise, pick a random unshot cell
+
+Let me define the logic cleanly:
+1. Iterate through the board to find all '1' cells (hits)
+2. For each hit, check its 4 adjacent cells (up, down, left, right)
+3. If any adjacent cell has value `0` (unknown), fire there
+4. If no such cells exist, randomly pick an `0` cell from the board
+
+But there's a subtle issue with that - what if that adjacent "0" cell was already part of a hit sequence?
+
+Actually, let me just go with the cleanest and most straightforward strategy:
+- Maintain a list of unshot cells
+- Check if any unshot cells are adjacent to existing hits
+- Prioritize shooting adjacent cells to hits, because ships lie in straight lines
+</thinking>
+<code>
+import random
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Find all unshot cells (0) and cells that are hits (1)
+    unshot_cells = []
+    hit_cells = []
+    
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                unshot_cells.append((i, j))
+            elif board[i][j] == 1:
+                hit_cells.append((i, j))
+    
+    # If there are any hit cells, try to fire adjacent to them first
+    if hit_cells:
+        # Get the last hit cell, and check its adjacent unshot cells
+        # This is a simple heuristic: expand around last hit to sink ships
+        # But to be more systematic:
+        # Go through each unshot cell that is adjacent to a hit cell
+        adjacent_unshot = []
+        for hit_row, hit_col in hit_cells:
+            # Check four adjacent cells (up, down, left, right)
+            neighbors = [(hit_row-1, hit_col), (hit_row+1, hit_col), (hit_row, hit_col-1), (hit_row, hit_col+1)]
+            for r, c in neighbors:
+                if 0 <= r < 10 and 0 <= c < 10:
+                    if board[r][c] == 0:
+                        adjacent_unshot.append((r, c))
+        
+        # If adjacent unshot cells exist, pick one at random
+        if adjacent_unshot:
+            return random.choice(adjacent_unshot)
+    
+    # If no adjacency logic applies or no hits yet, shoot randomly at unshot cells
+    if unshot_cells:
+        return random.choice(unshot_cells)
+
+    # Fallback (should rarely happen)
+    # Pick any unshot cell (this is for safety; normally we won't get here)
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                return (i, j)
+    
+    # Should not reach here if board is valid, but for completeness
+    raise ValueError("No valid cells to fire at")
+</code>

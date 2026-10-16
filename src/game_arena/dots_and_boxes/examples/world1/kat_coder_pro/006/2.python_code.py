@@ -1,0 +1,310 @@
+
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Dots and Boxes policy for 4x4 grid using double-cross strategy.
+    
+    Args:
+        horizontal: 5x5 array, 0 = empty edge, nonzero = drawn edge
+        vertical: 5x5 array, 0 = empty edge, nonzero = drawn edge  
+        capture: 5x5 array, 0 = unclaimed, 1 = claimed by us, -1 = claimed by opponent
+    
+    Returns:
+        String in format 'row,col,dir' where dir is 'H' or 'V'
+    """
+    
+    # Get all legal moves
+    legal_moves = get_legal_moves(horizontal, vertical)
+    
+    # First, check for immediate box completions (greedy scoring)
+    immediate_scores = []
+    for move in legal_moves:
+        if would_complete_box(move, horizontal, vertical, capture):
+            immediate_scores.append(move)
+    
+    if immediate_scores:
+        # If multiple scoring moves, choose one that scores the most boxes
+        best_score = -1
+        best_move = None
+        for move in immediate_scores:
+            score = count_boxes_completed(move, horizontal, vertical, capture)
+            if score > best_score:
+                best_score = score
+                best_move = move
+        return format_move(best_move)
+    
+    # If no immediate scores, evaluate all moves using heuristic
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        score = evaluate_move(move, horizontal, vertical, capture, legal_moves)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    if best_move is None:
+        # Fallback: just pick a random legal move
+        best_move = legal_moves[0]
+    
+    return format_move(best_move)
+
+def get_legal_moves(horizontal: np.ndarray, vertical: np.ndarray) -> List[Tuple[int, int, str]]:
+    """Get all legal moves as (row, col, dir) tuples."""
+    moves = []
+    
+    # Check horizontal edges (4 rows, 5 cols)
+    for row in range(4):
+        for col in range(5):
+            if horizontal[row, col] == 0:
+                moves.append((row, col, 'H'))
+    
+    # Check vertical edges (5 rows, 4 cols)  
+    for row in range(5):
+        for col in range(4):
+            if vertical[row, col] == 0:
+                moves.append((row, col, 'V'))
+    
+    return moves
+
+def would_complete_box(move: Tuple[int, int, str], horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> bool:
+    """Check if making this move would complete any boxes."""
+    row, col, dir = move
+    
+    if dir == 'H':
+        # Horizontal edge at (row, col)
+        # Check box above (row-1, col) and box below (row, col)
+        
+        # Box above
+        if row > 0 and capture[row-1, col] == 0:
+            # Check if other 3 sides are filled
+            left = vertical[row, col] != 0
+            right = vertical[row, col+1] != 0 if col < 4 else False
+            top = horizontal[row-1, col] != 0
+            if left and right and top:
+                return True
+        
+        # Box below  
+        if row < 4 and capture[row, col] == 0:
+            # Check if other 3 sides are filled
+            left = vertical[row+1, col] != 0
+            right = vertical[row+1, col+1] != 0 if col < 4 else False
+            bottom = horizontal[row+1, col] != 0 if row < 3 else False
+            if left and right and bottom:
+                return True
+                
+    else:  # dir == 'V'
+        # Vertical edge at (row, col)
+        # Check box to left (row, col-1) and box to right (row, col)
+        
+        # Box to left
+        if col > 0 and capture[row, col-1] == 0:
+            # Check if other 3 sides are filled
+            top = horizontal[row, col-1] != 0
+            bottom = horizontal[row+1, col-1] != 0 if row < 4 else False
+            left = vertical[row, col-1] != 0
+            if top and bottom and left:
+                return True
+        
+        # Box to right
+        if col < 4 and capture[row, col] == 0:
+            # Check if other 3 sides are filled
+            top = horizontal[row, col] != 0
+            bottom = horizontal[row+1, col] != 0 if row < 4 else False
+            right = vertical[row, col+1] != 0
+            if top and bottom and right:
+                return True
+    
+    return False
+
+def count_boxes_completed(move: Tuple[int, int, str], horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> int:
+    """Count how many boxes this move would complete."""
+    count = 0
+    row, col, dir = move
+    
+    if dir == 'H':
+        # Check box above
+        if row > 0 and capture[row-1, col] == 0:
+            left = vertical[row, col] != 0
+            right = vertical[row, col+1] != 0 if col < 4 else False
+            top = horizontal[row-1, col] != 0
+            if left and right and top:
+                count += 1
+        
+        # Check box below
+        if row < 4 and capture[row, col] == 0:
+            left = vertical[row+1, col] != 0
+            right = vertical[row+1, col+1] != 0 if col < 4 else False
+            bottom = horizontal[row+1, col] != 0 if row < 3 else False
+            if left and right and bottom:
+                count += 1
+                
+    else:  # dir == 'V'
+        # Check box to left
+        if col > 0 and capture[row, col-1] == 0:
+            top = horizontal[row, col-1] != 0
+            bottom = horizontal[row+1, col-1] != 0 if row < 4 else False
+            left = vertical[row, col-1] != 0
+            if top and bottom and left:
+                count += 1
+        
+        # Check box to right
+        if col < 4 and capture[row, col] == 0:
+            top = horizontal[row, col] != 0
+            bottom = horizontal[row+1, col] != 0 if row < 4 else False
+            right = vertical[row, col+1] != 0
+            if top and bottom and right:
+                count += 1
+    
+    return count
+
+def evaluate_move(move: Tuple[int, int, str], horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray, legal_moves: List[Tuple[int, int, str]]) -> float:
+    """Evaluate a move using heuristic scoring."""
+    row, col, dir = move
+    
+    score = 0.0
+    
+    # Check if this move creates a dangerous box (3 sides filled)
+    dangerous_penalty = check_dangerous_boxes(move, horizontal, vertical, capture)
+    score -= dangerous_penalty * 2.0
+    
+    # Prefer moves that don't give opponent easy scoring opportunities
+    isolation_score = evaluate_isolation(move, horizontal, vertical, capture)
+    score += isolation_score
+    
+    # Prefer moves in the center (more connectivity)
+    center_bonus = evaluate_center_proximity(row, col, dir)
+    score += center_bonus
+    
+    # Prefer moves that maintain flexibility
+    flexibility_score = evaluate_flexibility(move, horizontal, vertical, capture, legal_moves)
+    score += flexibility_score
+    
+    return score
+
+def check_dangerous_boxes(move: Tuple[int, int, str], horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> int:
+    """Count how many boxes would have 3 sides filled after this move."""
+    count = 0
+    row, col, dir = move
+    
+    # We need to simulate the move to check
+    h_copy = horizontal.copy()
+    v_copy = vertical.copy()
+    
+    if dir == 'H':
+        h_copy[row, col] = 1  # Simulate our move
+    else:
+        v_copy[row, col] = 1
+    
+    # Check all boxes for 3-filled condition
+    for r in range(4):
+        for c in range(4):
+            if capture[r, c] != 0:
+                continue
+                
+            # Count filled sides for box (r, c)
+            sides = 0
+            sides += 1 if h_copy[r, c] != 0 else 0      # top
+            sides += 1 if h_copy[r+1, c] != 0 else 0    # bottom
+            sides += 1 if v_copy[r, c] != 0 else 0      # left
+            sides += 1 if v_copy[r, c+1] != 0 else 0    # right
+            
+            if sides == 3:
+                count += 1
+    
+    return count
+
+def evaluate_isolation(move: Tuple[int, int, str], horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> float:
+    """Evaluate how isolated this move makes our position."""
+    row, col, dir = move
+    score = 0.0
+    
+    # Prefer moves that connect to our existing edges
+    if dir == 'H':
+        # Check adjacent horizontal edges
+        if col > 0 and horizontal[row, col-1] != 0:
+            score += 0.5
+        if col < 4 and horizontal[row, col+1] != 0:
+            score += 0.5
+        
+        # Check adjacent vertical edges that might form boxes
+        if row > 0:
+            score += 0.2 if vertical[row, col] != 0 else 0
+            score += 0.2 if col < 4 and vertical[row, col+1] != 0 else 0
+        
+        if row < 4:
+            score += 0.2 if vertical[row+1, col] != 0 else 0
+            score += 0.2 if col < 4 and vertical[row+1, col+1] != 0 else 0
+            
+    else:  # 'V'
+        # Check adjacent vertical edges
+        if row > 0 and vertical[row-1, col] != 0:
+            score += 0.5
+        if row < 4 and vertical[row+1, col] != 0:
+            score += 0.5
+        
+        # Check adjacent horizontal edges
+        if col > 0:
+            score += 0.2 if horizontal[row, col-1] != 0 else 0
+            score += 0.2 if row < 4 and horizontal[row+1, col-1] != 0 else 0
+        
+        if col < 4:
+            score += 0.2 if horizontal[row, col] != 0 else 0
+            score += 0.2 if row < 4 and horizontal[row+1, col] != 0 else 0
+    
+    return score
+
+def evaluate_center_proximity(row: int, col: int, dir: str) -> float:
+    """Prefer moves closer to the center of the board."""
+    # Center is around (2, 2) for a 4x4 grid
+    center_row, center_col = 2.0, 2.0
+    
+    if dir == 'H':
+        # Horizontal edge position
+        pos_row, pos_col = row + 0.5, col
+    else:
+        # Vertical edge position  
+        pos_row, pos_col = row, col + 0.5
+    
+    distance = abs(pos_row - center_row) + abs(pos_col - center_col)
+    
+    # Inverse distance score (closer to center = higher score)
+    return max(0, 2.0 - distance * 0.5)
+
+def evaluate_flexibility(move: Tuple[int, int, str], horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray, legal_moves: List[Tuple[int, int, str]]) -> float:
+    """Evaluate how much flexibility this move preserves."""
+    # This is a simplified version - in a full implementation we'd look ahead
+    # For now, just prefer moves that don't corner us
+    
+    row, col, dir = move
+    score = 0.0
+    
+    # Avoid moves that leave us with few options in adjacent areas
+    if dir == 'H':
+        # Check if this creates a "dead end" situation
+        adjacent_moves = 0
+        for r in range(max(0, row-1), min(5, row+2)):
+            for c in range(max(0, col-1), min(5, col+2)):
+                if (r, c, 'H') in legal_moves or (r, c, 'V') in legal_moves:
+                    adjacent_moves += 1
+        
+        if adjacent_moves < 3:
+            score -= 1.0
+    else:  # 'V'
+        adjacent_moves = 0
+        for r in range(max(0, row-1), min(5, row+2)):
+            for c in range(max(0, col-1), min(5, col+2)):
+                if (r, c, 'H') in legal_moves or (r, c, 'V') in legal_moves:
+                    adjacent_moves += 1
+        
+        if adjacent_moves < 3:
+            score -= 1.0
+    
+    return score
+
+def format_move(move: Tuple[int, int, str]) -> str:
+    """Format move as 'row,col,dir' string."""
+    row, col, dir = move
+    return f"{row},{col},{dir}"

@@ -1,0 +1,96 @@
+The strategy for this policy is a fast alpha‑beta negamax search (depth 3) with a strong heuristic: material, advancement toward the goal, and mobility. It always generates legal moves and prioritizes immediate wins or blocks, while still being efficient enough for the 1‑second limit.
+
+<code>
+import math
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    def opp_color(c: str) -> str:
+        return 'b' if c == 'w' else 'w'
+
+    def gen_moves(my: List[Tuple[int,int]], their: List[Tuple[int,int]], c: str):
+        moves = []
+        my_set = set(my)
+        opp_set = set(their)
+        direction = 1 if c == 'w' else -1
+        for (r, col) in my:
+            nr = r + direction
+            if 0 <= nr < 8:
+                # forward move
+                if (nr, col) not in my_set and (nr, col) not in opp_set:
+                    moves.append(((r, col), (nr, col)))
+                # diagonal moves
+                for dc in (-1, 1):
+                    nc = col + dc
+                    if 0 <= nc < 8 and (nr, nc) not in my_set:
+                        moves.append(((r, col), (nr, nc)))
+        return moves
+
+    def apply_move(my, their, move):
+        fr, to = move
+        new_my = [p for p in my if p != fr]
+        new_my.append(to)
+        new_their = [p for p in their if p != to]
+        return new_my, new_their
+
+    def progress(c, r):
+        return r if c == 'w' else 7 - r
+
+    def evaluate(my, their, c):
+        oc = opp_color(c)
+        goal_row = 7 if c == 'w' else 0
+        home_row = 0 if c == 'w' else 7
+
+        if any(r == goal_row for r, _ in my):
+            return 100000
+        if not their:
+            return 100000
+        if any(r == home_row for r, _ in their):
+            return -100000
+        if not my:
+            return -100000
+
+        score = (len(my) - len(their)) * 100
+        adv = sum(progress(c, r) for r, _ in my) - sum(progress(oc, r) for r, _ in their)
+        score += adv * 10
+        score += (len(gen_moves(my, their, c)) - len(gen_moves(their, my, oc))) * 2
+        return score
+
+    def negamax(my, their, c, depth, alpha, beta):
+        if depth == 0:
+            return evaluate(my, their, c)
+        # terminal check inside evaluate
+        eval_now = evaluate(my, their, c)
+        if abs(eval_now) >= 100000:
+            return eval_now
+
+        best = -math.inf
+        for mv in gen_moves(my, their, c):
+            nmy, nopp = apply_move(my, their, mv)
+            score = -negamax(nopp, nmy, opp_color(c), depth - 1, -beta, -alpha)
+            if score > best:
+                best = score
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return best
+
+    moves = gen_moves(me, opp, color)
+    if not moves:
+        # Should not happen in valid games, but return any dummy legal-looking move.
+        return (me[0], me[0])
+
+    best_move = moves[0]
+    best_score = -math.inf
+    depth = 3
+
+    for mv in moves:
+        nme, nopp = apply_move(me, opp, mv)
+        score = -negamax(nopp, nme, opp_color(color), depth - 1, -math.inf, math.inf)
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    return best_move
+</code>

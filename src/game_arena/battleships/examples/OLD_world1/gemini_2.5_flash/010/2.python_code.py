@@ -1,0 +1,97 @@
+
+import random
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    board = np.array(board)
+    n = board.shape[0]
+
+    # 1. Hunt mode: If no current hits, try to find a ship
+    # We'll use a checkerboard pattern for efficiency
+    if not np.any(board == 1):
+        # Prefer "even" cells (row + col is even) to optimize search
+        empty_even_cells = []
+        for r in range(n):
+            for c in range(n):
+                if board[r, c] == 0 and (r + c) % 2 == 0:
+                    empty_even_cells.append((r, c))
+
+        if empty_even_cells:
+            return random.choice(empty_even_cells)
+        else:
+            # Fallback if no empty even cells (e.g., all fired upon)
+            empty_cells = np.argwhere(board == 0)
+            if len(empty_cells) > 0:
+                target = random.choice(empty_cells)
+                return tuple(target)
+
+    # 2. Target mode: If there are hits, try to sink the ship
+    hit_cells = np.argwhere(board == 1)
+
+    # If there's only one hit cell, try surrounding cells
+    if len(hit_cells) == 1:
+        r, c = hit_cells[0]
+        possible_targets = []
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < n and 0 <= nc < n and board[nr, nc] == 0:
+                possible_targets.append((nr, nc))
+        if possible_targets:
+            return random.choice(possible_targets)
+
+    # If there are multiple hit cells, try to extend the ship
+    if len(hit_cells) > 1:
+        # Check for alignment (horizontal or vertical)
+        rows = [h[0] for h in hit_cells]
+        cols = [h[1] for h in hit_cells]
+
+        min_row, max_row = min(rows), max(rows)
+        min_col, max_col = min(cols), max(cols)
+
+        # Horizontal ship
+        if len(set(rows)) == 1:  # All hits are on the same row
+            r = rows[0]
+            possible_targets = []
+            # Try to extend left
+            if min_col > 0 and board[r, min_col - 1] == 0:
+                possible_targets.append((r, min_col - 1))
+            # Try to extend right
+            if max_col < n - 1 and board[r, max_col + 1] == 0:
+                possible_targets.append((r, max_col + 1))
+            if possible_targets:
+                return random.choice(possible_targets)
+
+        # Vertical ship
+        if len(set(cols)) == 1:  # All hits are on the same column
+            c = cols[0]
+            possible_targets = []
+            # Try to extend up
+            if min_row > 0 and board[min_row - 1, c] == 0:
+                possible_targets.append((min_row - 1, c))
+            # Try to extend down
+            if max_row < n - 1 and board[max_row + 1, c] == 0:
+                possible_targets.append((max_row + 1, c))
+            if possible_targets:
+                return random.choice(possible_targets)
+        
+        # If hits are not aligned yet, or we've sunk part of a ship, 
+        # try to shoot around existing hits
+        possible_targets = []
+        for r, c in hit_cells:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < n and 0 <= nc < n and board[nr, nc] == 0:
+                    possible_targets.append((nr, nc))
+        if possible_targets:
+            return random.choice(possible_targets)
+
+    # 3. Fallback: If for some reason we missed all specific logic (shouldn't happen often)
+    # just pick a random un-fired cell.
+    empty_cells = np.argwhere(board == 0)
+    if len(empty_cells) > 0:
+        target = random.choice(empty_cells)
+        return tuple(target)
+
+    # If all cells have been fired upon (game should be over)
+    raise ValueError("No valid moves left on the board.")
+

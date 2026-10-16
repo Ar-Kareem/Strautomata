@@ -1,0 +1,192 @@
+**Strategy**
+
+The policy follows a three‑stage plan:
+
+1. **Safety first – block opponent’s forced win.**  
+   If the opponent already has three marks in a line (three ‑1) and a single empty cell, any move not occupying that empty cell lets them win on the next turn. We therefore scan all such “threat” lines and pick a random empty cell that belongs to them.
+
+2. **Look for our own forced win.**  
+   If we have three marks (three 1) in a line with exactly one empty cell, playing that empty cell wins the game. We select a random winning cell if several exist.
+
+3. **Search deeper with a limited minimax.**  
+   When no immediate win/block exists we run a depth‑limited minimax (alpha‑beta pruning) up to a maximum of 5 plies (or fewer if the board is almost full).  
+   The evaluation heuristic rewards completed rows, forks (cells that belong to two “two‑in‑a‑row” lines), and discourages the opponent’s two‑in‑a‑row patterns.  
+   If several moves yield the same score we break ties randomly; this makes the AI nondeterministic and less predictable for opponents that rely on fixed patterns.
+
+All legal moves are guaranteed to be returned, so the function always satisfies the arena requirements.
+
+```python
+<code>
+import random
+import math
+from typing import List, Tuple
+
+# Constants ---------------------------------------------------------
+WIN_LINES = [
+    # horizontal rows
+    [(r, c) for c in range(4) for r in (0,)],
+    [(r, c) for r in range(4) for c in (0,)],
+    # vertical columns
+    [(r, c) for c in range(4) for r in (0,)],
+    [(r, c) for r in range(4) for c in (0,)],
+    # main diagonal
+    [(0, 0), (1, 1), (2, 2), (3, 3)],
+    # anti‑diagonal
+    [(0, 3), (1, 2), (2, 1), (3, 0)],
+]
+
+MAX_DEPTH = 5
+
+# Helper functions --------------------------------------------------
+def empty_cells(board: List[List[int]]) -> List[Tuple[int, int]]:
+    """Return a list of (row, col) for all empty squares."""
+    return [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+
+def win_counts(line: List[Tuple[int, int]], board: List[List[int]]) -> Tuple[int, int]:
+    """Count how many of player 1 and -1 are in a given line."""
+    player1 = sum(board[r][c] == 1 for (r, c) in line)
+    player_minus1 = sum(board[r][c] == -1 for (r, c) in line)
+    return player1, player_minus1
+
+def has_player_win(board: List[List[int]], player: int) -> bool:
+    """Detect if player (1 or -1) already has four in a line."""
+    for line in WIN_LINES:
+        p1, pm1 = win_counts(line, board)
+        if player == 1 and p1 == 4:
+            return True
+        if player == -1 and pm1 == 4:
+            return True
+    return False
+
+# Immediate win detection -------------------------------------------
+def our_immediate_win(board: List[List[int]]) -> List[Tuple[int, int]]:
+    """List of empty cells that complete a winning line for player 1."""
+    threats = []
+    for line in WIN_LINES:
+        p1, pm1 = win_counts(line, board)
+        if p1 == 3 and pm1 == 0:
+            for (r, c) in line:
+                if board[r][c] == 0:
+                    threats.append((r, c))
+    return threats
+
+def opponent_immediate_win(board: List[List[int]]) -> List[Tuple[int, int]]:
+    """List of empty cells that the opponent (player -1) can win in the next move."""
+    threats = []
+    for line in WIN_LINES:
+        p1, pm1 = win_counts(line, board)
+        if pm1 == 3 and p1 == 0:
+            for (r, c) in line:
+                if board[r][c] == 0:
+                    threats.append((r, c))
+    return threats
+
+# Evaluation heuristic -----------------------------------------------
+def evaluate(board: List[List[int]]) -> float:
+    """Static score that captures win conditions, forks, and threats."""
+    score = 0
+
+    for line in WIN_LINES:
+        p1, pm1 = win_counts(line, board)
+        empty = 4 - p1 - pm1
+
+        if p1 == 4:
+            score += 1000
+        elif pm1 == 4:
+            score -= 1000
+
+        if p1 == 3 and pm1 == 0:
+            score += 50
+        elif pm1 == 3 and p1 == 0:
+            score -= 50
+
+        if p1 == 2 and pm1 == 0:
+            score += 10
+        elif pm1 == 2 and p1 == 0:
+            score -= 10
+
+        # Small bonus for two‑in‑a‑row with one opponent mark (potential fork)
+        if p1 == 2 and pm1 == 1:
+            score += 5
+        elif pm1 == 2 and p1 == 1:
+            score -= 5
+
+    # Fork bonus – how many “two‑in‑a‑row” lines (ours only) each empty cell belongs to.
+    for (r, c) in empty_cells(board):
+        fork_cnt = 0
+        for line in WIN_LINES:
+            if (r, c) in line:
+                p1_line, pm1_line = win_counts(line, board)
+                if p1_line == 2 and pm1_line == 0:
+                    fork_cnt += 1
+        score += fork_cnt * 2   # extra weight for double‑threat cells
+    return score
+
+# Minimax with alpha‑beta pruning ------------------------------------
+def minimax(board: List[List[int]], player: int, depth: int,
+           alpha: float, beta: float) -> Tuple[float, Tuple[int, int] | None]:
+    """
+    Returns (score, best_move) for the given player at the given depth.
+    `best_move` is None at leaf nodes (depth == 0) and is the move that
+    achieved the highest/lowest score deeper in the tree.
+    """
+    # Terminal checks
+    if player == 1 and has_player_win(board, 1):
+        return (1000, None)
+    if player == -1 and has_player_win(board, -1):
+        return (-1000, None)
+    if not empty_cells(board):
+        return (0, None)
+
+    if depth == 0:
+        return (evaluate(board), None)
+
+    legal = empty_cells(board)
+    if player == 1:
+        best_score = -float('inf')
+        best_move: Tuple[int, int] | None = None
+        for (r, c) in legal:
+            nb = [row[:] for row in board]
+            nb[r][c] = 1
+            child_score, _ = minimax(nb, -1, depth - 1, alpha, beta)
+            if child_score > best_score:
+                best_score = child_score
+                best_move = (r, c)
+            alpha = max(alpha, best_score)
+            if alpha >= beta:
+                break
+        return (best_score, best_move)
+    else:  # player == -1 (minimizing)
+        best_score = float('inf')
+        best_move: Tuple[int, int] | None = None
+        for (r, c) in legal:
+            nb = [row[:] for row in board]
+            nb[r][c] = -1
+            child_score, _ = minimax(nb, 1, depth - 1, alpha, beta)
+            if child_score < best_score:
+                best_score = child_score
+                best_move = (r, c)
+            beta = min(beta, best_score)
+            if beta <= alpha:
+                break
+        return (best_score, best_move)
+
+# Public API ---------------------------------------------------------
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """Select the next move for player 1 (value 1) on a 4x4 board."""
+    # 1️⃣ Block opponent’s forced win
+    opp_threats = opponent_immediate_win(board)
+    if opp_threats:
+        return random.choice(opp_threats)
+
+    # 2️⃣ Take our own forced win
+    our_threats = our_immediate_win(board)
+    if our_threats:
+        return random.choice(our_threats)
+
+    # 3️⃣ Run limited minimax
+    depth = min(MAX_DEPTH, len(empty_cells(board)))
+    _, move = minimax(board, 1, depth, -float('inf'), float('inf'))
+    return move
+</code>
+```

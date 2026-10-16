@@ -1,0 +1,150 @@
+# Strategy
+
+In "Minorities," the game is won by achieving majority control (2+ out of 3) of directions. Each direction consists of parallel lines, and a direction is won by having majorities in more lines than the opponent.
+
+## Key Strategic Insights:
+
+1. **Direction Prioritization**: The game ends when a player achieves majorities in 2 out of 3 directions. We should focus on:
+   - Completing lines where we already have presence
+   - Blocking opponent's promising lines
+   - Building parallel lines in a single direction to secure that direction
+
+2. **Line Control**: A line is won with a majority of stones. On a hexagonal board with multiple lines, we need strategic placement to create majorities.
+
+3. **Early Game**: Build presence in multiple lines simultaneously to create optionality. The center columns tend to be more valuable.
+
+4. **Mid Game**: Identify which directions we can realistically win and commit resources there while blocking opponent's advances.
+
+5. **Late Game**: Once we have majorities in 1-2 directions, focus on either:
+   - Securing the 2nd direction victory if close
+   - Blocking opponent's path to 2 directions
+
+## Policy Approach:
+
+1. **Parse state** to identify:
+   - All occupied cells and their colors
+   - Current line counts for each line and player
+   - Direction scores (how many lines won in each direction)
+
+2. **Evaluate positions** based on:
+   - Lines where we can secure majority (our count > opponent + remaining space)
+   - Lines where opponent is close to winning (block them)
+   - Potential to complete directions (2+ majorities)
+
+3. **Prioritize moves**:
+   - First priority: Complete a direction we're leading in
+   - Second priority: Block opponent from completing their 2nd direction
+   - Third priority: Build majority in promising lines
+   - Default: Play central/valuable positions
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the state
+    cells = {}  # (letter, number) -> color
+    line_counts = {}  # (line_id, role) -> count
+    num_letter_lines = {}  # role -> count
+    num_number_lines = {}  # role -> count
+    num_vertical_lines = {}  # role -> count
+    
+    for prop in state:
+        if prop[0] == "cell":
+            cells[(prop[1], prop[2])] = prop[3]
+        elif prop[0] == "line_count":
+            line_counts[(prop[1], prop[2])] = prop[3]
+        elif prop[0] == "num_letter_lines":
+            num_letter_lines[prop[1]] = prop[2]
+        elif prop[0] == "num_number_lines":
+            num_number_lines[prop[1]] = prop[2]
+        elif prop[0] == "num_vertical_lines":
+            num_vertical_lines[prop[1]] = prop[2]
+    
+    opponent = "blue" if role == "red" else "red"
+    
+    # Get current direction scores
+    my_letters = num_letter_lines.get(role, 0)
+    my_numbers = num_number_lines.get(role, 0)
+    my_vertical = num_vertical_lines.get(role, 0)
+    
+    opp_letters = num_letter_lines.get(opponent, 0)
+    opp_numbers = num_number_lines.get(opponent, 0)
+    opp_vertical = num_vertical_lines.get(opponent, 0)
+    
+    # Generate all possible moves (empty cells)
+    all_cells = set()
+    for letter in "abcdefghi":
+        for number in "123456789":
+            if (letter, number) not in cells:
+                all_cells.add((letter, number))
+    
+    # Evaluate moves
+    best_moves = []
+    best_score = -float('inf')
+    
+    for letter, number in all_cells:
+        score = 0
+        
+        # Check if this move completes a winning position
+        my_count = 0
+        opp_count = 0
+        
+        # Count in this letter line
+        for n in "123456789":
+            if (letter, n) in cells:
+                if cells[(letter, n)] == role:
+                    my_count += 1
+                else:
+                    opp_count += 1
+        
+        my_count_letter = my_count + (1 if (letter, number) else 0)
+        
+        # Count in this number line
+        my_count_num = 0
+        opp_count_num = 0
+        for l in "abcdefghi":
+            if (l, number) in cells:
+                if cells[(l, number)] == role:
+                    my_count_num += 1
+                else:
+                    opp_count_num += 1
+        my_count_num += 1
+        
+        # Vertical lines (diagonals) - simplified check
+        # Priority: block opponent from winning, then secure our wins
+        
+        if my_count_letter >= 3 or my_count_num >= 3:
+            score += 1000
+        
+        # Block opponent
+        if opp_count >= 2:
+            score += 500
+        
+        if opp_count_num >= 2:
+            score += 500
+        
+        # Build toward majority
+        if my_count >= 2 or my_count_num >= 2:
+            score += 100
+        
+        # Prefer center positions
+        center_score = 5 - abs(ord(letter) - ord('e'))
+        center_score += 5 - abs(int(number) - 5)
+        score += center_score
+        
+        if score > best_score:
+            best_score = score
+            best_moves = [(letter, number)]
+        elif score == best_score:
+            best_moves.append((letter, number))
+    
+    # Return first best move
+    if best_moves:
+        letter, number = best_moves[0]
+        return f"place({letter},{number})"
+    
+    # Fallback: play any legal move
+    if all_cells:
+        letter, number = next(iter(all_cells))
+        return f"place({letter},{number})"
+    
+    return "place(a,5)"
+</code>

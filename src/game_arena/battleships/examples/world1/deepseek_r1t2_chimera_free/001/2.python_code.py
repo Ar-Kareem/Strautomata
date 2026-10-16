@@ -1,0 +1,114 @@
+
+import numpy as np
+
+def generate_heatmap(board):
+    heat = np.zeros((10, 10), dtype=int)
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    for length in ship_lengths:
+        # Horizontal placements
+        for row in range(10):
+            for start_col in range(11 - length):
+                end_col = start_col + length - 1
+                # Check if placement is valid (no misses in the segment)
+                valid = True
+                for col in range(start_col, end_col + 1):
+                    if board[row][col] == -1:
+                        valid = False
+                        break
+                if valid:
+                    for col in range(start_col, end_col + 1):
+                        heat[row][col] += 1
+        
+        # Vertical placements
+        for col in range(10):
+            for start_row in range(11 - length):
+                end_row = start_row + length - 1
+                valid = True
+                for row in range(start_row, end_row + 1):
+                    if board[row][col] == -1:
+                        valid = False
+                        break
+                if valid:
+                    for row in range(start_row, end_row + 1):
+                        heat[row][col] += 1
+    return heat
+
+def get_targets(board):
+    targets = set()
+    processed = set()
+    
+    # Find all hits
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    
+    # Process horizontal segments
+    for r, c in hits:
+        if (r, c) in processed:
+            continue
+        left = c
+        while left > 0 and board[r][left-1] == 1:
+            left -= 1
+        right = c
+        while right < 9 and board[r][right+1] == 1:
+            right += 1
+        # Check continuity
+        if all(board[r][col] == 1 for col in range(left, right+1)):
+            # Mark processed
+            for col in range(left, right+1):
+                processed.add((r, col))
+            # Check ends
+            if left > 0 and board[r][left-1] == 0:
+                targets.add((r, left-1))
+            if right < 9 and board[r][right+1] == 0:
+                targets.add((r, right+1))
+    
+    # Process vertical segments
+    for r, c in hits:
+        if (r, c) in processed:
+            continue
+        top = r
+        while top > 0 and board[top-1][c] == 1:
+            top -= 1
+        bottom = r
+        while bottom < 9 and board[bottom+1][c] == 1:
+            bottom += 1
+        if all(board[row][c] == 1 for row in range(top, bottom+1)):
+            for row in range(top, bottom+1):
+                processed.add((row, c))
+            if top > 0 and board[top-1][c] == 0:
+                targets.add((top-1, c))
+            if bottom < 9 and board[bottom+1][c] == 0:
+                targets.add((bottom+1, c))
+    
+    # Add adjacent cells of unprocessed hits
+    for r, c in hits:
+        if (r, c) in processed:
+            continue
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                targets.add((nr, nc))
+    
+    return list(targets)
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    targets = get_targets(board)
+    if targets:
+        heatmap = generate_heatmap(board)
+        max_heat = -1
+        best_target = targets[0]
+        for r, c in targets:
+            if heatmap[r][c] > max_heat:
+                max_heat = heatmap[r][c]
+                best_target = (r, c)
+        return best_target
+    else:
+        heatmap = generate_heatmap(board)
+        max_heat = -1
+        best_cell = (0, 0)
+        for r in range(10):
+            for c in range(10):
+                if board[r][c] == 0 and heatmap[r][c] > max_heat:
+                    max_heat = heatmap[r][c]
+                    best_cell = (r, c)
+        return best_cell

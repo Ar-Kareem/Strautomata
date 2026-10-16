@@ -1,0 +1,209 @@
+# Strategy for Havannah AI
+
+This policy implements a strategic approach to Havannah that balances offense and defense while prioritizing winning conditions. The key components are:
+
+1. **Winning Move Detection**: First checks if the current player can win immediately by completing a ring, bridge, or fork.
+
+2. **Opponent Blocking**: If no immediate win is available, checks if the opponent is about to win and blocks their winning move.
+
+3. **Strategic Positioning**: Uses a scoring system to evaluate potential moves based on:
+   - Proximity to corners (for bridge potential)
+   - Proximity to edges (for fork potential)
+   - Central control (for ring potential)
+   - Connectivity to existing stones
+   - Potential to create multiple threats
+
+4. **Hexagonal Neighbor Analysis**: Properly handles the hexagonal grid structure to evaluate connections and potential winning paths.
+
+5. **Defensive Play**: Prioritizes blocking opponent's potential winning paths when they're close to completion.
+
+The policy uses a combination of immediate win/loss detection and positional scoring to make intelligent moves while ensuring it always returns a legal move.
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    # Convert to sets for faster lookups
+    me_set = set(me)
+    opp_set = set(opp)
+    board_size = len(valid_mask)
+
+    # Hexagonal directions (6 neighbors)
+    directions = [
+        (0, 1), (1, 0), (1, -1),
+        (0, -1), (-1, 0), (-1, 1)
+    ]
+
+    # Corner cells for bridge detection
+    corners = [(0, 0), (0, board_size-1), (board_size-1, 0), (board_size-1, board_size-1),
+               (board_size//2, 0), (board_size//2, board_size-1)]
+
+    def get_neighbors(pos):
+        row, col = pos
+        neighbors = []
+        for dr, dc in directions:
+            r, c = row + dr, col + dc
+            if 0 <= r < board_size and 0 <= c < board_size:
+                neighbors.append((r, c))
+        return neighbors
+
+    def is_connected(pos1, pos2, player_stones):
+        if pos1 == pos2:
+            return True
+        visited = set()
+        queue = deque([pos1])
+        visited.add(pos1)
+
+        while queue:
+            current = queue.popleft()
+            for neighbor in get_neighbors(current):
+                if neighbor == pos2:
+                    return True
+                if neighbor in player_stones and neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        return False
+
+    def check_bridge(player_stones):
+        # Check if any two corners are connected
+        for i in range(len(corners)):
+            for j in range(i+1, len(corners)):
+                if corners[i] in player_stones and corners[j] in player_stones:
+                    if is_connected(corners[i], corners[j], player_stones):
+                        return True
+        return False
+
+    def check_fork(player_stones):
+        # Check for connections to three different edges
+        edge_groups = [
+            [(0, c) for c in range(board_size)],  # top edge
+            [(board_size-1, c) for c in range(board_size)],  # bottom edge
+            [(r, 0) for r in range(1, board_size-1)],  # left edge (excluding corners)
+            [(r, board_size-1) for r in range(1, board_size-1)]  # right edge (excluding corners)
+        ]
+
+        connected_edges = set()
+        for edge in edge_groups:
+            for cell in edge:
+                if cell in player_stones:
+                    # Check if this cell connects to any other edge
+                    for other_edge in edge_groups:
+                        if other_edge == edge:
+                            continue
+                        for other_cell in other_edge:
+                            if other_cell in player_stones and is_connected(cell, other_cell, player_stones):
+                                connected_edges.add(tuple(sorted([edge_groups.index(edge), edge_groups.index(other_edge)])))
+
+        # If we have connections between at least 3 different edge pairs
+        if len(connected_edges) >= 3:
+            return True
+
+        # Alternative check: count unique edges connected to the player's stones
+        unique_edges = set()
+        for edge_idx, edge in enumerate(edge_groups):
+            for cell in edge:
+                if cell in player_stones:
+                    unique_edges.add(edge_idx)
+                    if len(unique_edges) >= 3:
+                        return True
+        return False
+
+    def check_ring(player_stones):
+        # Simplified ring detection - look for cycles in the graph
+        visited = set()
+        parent = {}
+
+        for stone in player_stones:
+            if stone not in visited:
+                stack = [(stone, None)]
+                while stack:
+                    current, prev = stack.pop()
+                    if current in visited:
+                        continue
+                    visited.add(current)
+                    parent[current] = prev
+
+                    for neighbor in get_neighbors(current):
+                        if neighbor in player_stones:
+                            if neighbor not in visited:
+                                stack.append((neighbor, current))
+                            elif neighbor != prev and parent.get(current) != neighbor:
+                                # Found a cycle
+                                return True
+        return False
+
+    def check_win(player_stones):
+        return check_bridge(player_stones) or check_fork(player_stones) or check_ring(player_stones)
+
+    def evaluate_move(move, player_stones, opponent_stones):
+        # Score based on various strategic factors
+        row, col = move
+        score = 0
+
+        # Proximity to corners (good for bridges)
+        for corner in corners:
+            dist = abs(row - corner[0]) + abs(col - corner[1])
+            score += 10 / (dist + 1)
+
+        # Proximity to edges (good for forks)
+        edge_dist = min(row, board_size-1-row, col, board_size-1-col)
+        score += 5 / (edge_dist + 1)
+
+        # Central control (good for rings)
+        center_dist = abs(row - board_size//2) + abs(col - board_size//2)
+        score += 3 / (center_dist + 1)
+
+        # Connectivity to existing stones
+        for neighbor in get_neighbors(move):
+            if neighbor in player_stones:
+                score += 20
+
+        # Potential to create multiple connections
+        connections = 0
+        for neighbor in get_neighbors(move):
+            if neighbor in player_stones:
+                connections += 1
+        if connections >= 2:
+            score += 30
+
+        # Blocking opponent's potential connections
+        for neighbor in get_neighbors(move):
+            if neighbor in opponent_stones:
+                score += 15
+
+        return score
+
+    # First check if we can win immediately
+    for move in [(r, c) for r in range(board_size) for c in range(board_size) if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set]:
+        new_stones = me_set | {(move)}
+        if check_win(new_stones):
+            return move
+
+    # Then check if opponent can win and block them
+    for move in [(r, c) for r in range(board_size) for c in range(board_size) if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set]:
+        new_opp_stones = opp_set | {(move)}
+        if check_win(new_opp_stones):
+            return move
+
+    # If no immediate win/loss, evaluate all possible moves
+    best_move = None
+    best_score = -float('inf')
+
+    for r in range(board_size):
+        for c in range(board_size):
+            if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                score = evaluate_move((r, c), me_set, opp_set)
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+
+    # Fallback: if no move found (shouldn't happen), return first valid move
+    if best_move is None:
+        for r in range(board_size):
+            for c in range(board_size):
+                if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                    return (r, c)
+
+    return best_move
+</code>

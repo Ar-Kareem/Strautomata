@@ -1,0 +1,159 @@
+<thinking>
+I need to implement a targeting policy for a Connect 4 game. The goal is to write a complete Python file with a function `policy(board)` that returns a column index to drop a disc. The strategy involves checking for immediate winning moves, blocking opponent's winning moves, and using a heuristic evaluation for remaining moves.
+
+The approach is as follows:
+1. **Winning Move Check**: For each column, simulate dropping my disc and check if it results in a win. If yes, return that column.
+2. **Blocking Move Check**: For each column, simulate my move and then check if the opponent has a winning move. If not, return that column to block the opponent.
+3. **Heuristic Evaluation**: If no immediate wins or blocks are available, use a window scoring heuristic to evaluate the board after my move and choose the best column.
+
+The helper functions include:
+- `is_winning`: Check for a win in any direction.
+- `drop_disc`: Simulate dropping a disc by finding the lowest empty row in a column.
+- `column_full`: Check if a column is full by looking at the top row.
+- `evaluate_board`: Score the board based on windows of 4 cells for potential wins.
+
+The evaluation function uses a common Connect 4 heuristic where windows with more of my discs are scored higher, and windows with opponent's discs are scored negatively.
+
+This implementation should be efficient for a 6x7 board within the time constraints.
+</thinking>
+
+<code>
+import copy
+
+def is_winning(board, player):
+    """Check if the player has a winning line on the board."""
+    # Check horizontal
+    for row in range(6):
+        for col in range(4):
+            if (board[row][col] == player and board[row][col+1] == player and 
+                board[row][col+2] == player and board[row][col+3] == player):
+                return True
+    
+    # Check vertical
+    for col in range(7):
+        for row in range(3):
+            if (board[row][col] == player and board[row+1][col] == player and 
+                board[row+2][col] == player and board[row+3][col] == player):
+                return True
+    
+    # Check diagonal down-right (from top-left to bottom-right)
+    for row in range(3):
+        for col in range(4):
+            if (board[row][col] == player and board[row+1][col+1] == player and 
+                board[row+2][col+2] == player and board[row+3][col+3] == player):
+                return True
+    
+    # Check diagonal up-right (from bottom-left to top-right)
+    for row in range(3, 6):
+        for col in range(4):
+            if (board[row][col] == player and board[row-1][col+1] == player and 
+                board[row-2][col+2] == player and board[row-3][col+3] == player):
+                return True
+    
+    return False
+
+def drop_disc(board, col, player):
+    """Simulate dropping a disc in the specified column. Returns the new board or None if column is full."""
+    for row in range(5, -1, -1):  # Start from bottom row (5) to top (0)
+        if board[row][col] == 0:
+            new_board = copy.deepcopy(board)
+            new_board[row][col] = player
+            return new_board
+    return None  # Column is full
+
+def column_full(board, col):
+    """Check if a column is full by looking at the top cell."""
+    return board[0][col] != 0  # Top cell is filled if column is full
+
+def score_window(window, player):
+    """Score a window of 4 cells based on the number of discs for the player."""
+    count_my = window.count(player)
+    count_opp = window.count(-player)
+    count_empty = window.count(0)
+    
+    if count_my == 4:
+        return 100000
+    elif count_my == 3 and count_empty == 1:
+        return 100
+    elif count_my == 2 and count_empty == 2:
+        return 10
+    elif count_my == 1 and count_empty == 3:
+        return 1
+    elif count_opp == 4:
+        return -100000
+    elif count_opp == 3 and count_empty == 1:
+        return -100
+    elif count_opp == 2 and count_empty == 2:
+        return -10
+    elif count_opp == 1 and count_empty == 3:
+        return -1
+    else:
+        return 0
+
+def evaluate_board(board, player):
+    """Evaluate the board by scoring all possible windows of 4 cells."""
+    score = 0
+    # Horizontal windows
+    for row in range(6):
+        for col in range(4):
+            window = [board[row][col], board[row][col+1], board[row][col+2], board[row][col+3]]
+            score += score_window(window, player)
+    
+    # Vertical windows
+    for col in range(7):
+        for row in range(3):
+            window = [board[row][col], board[row+1][col], board[row+2][col], board[row+3][col]]
+            score += score_window(window, player)
+    
+    # Diagonal down-right windows
+    for row in range(3):
+        for col in range(4):
+            window = [board[row][col], board[row+1][col+1], board[row+2][col+2], board[row+3][col+3]]
+            score += score_window(window, player)
+    
+    # Diagonal up-right windows
+    for row in range(3, 6):
+        for col in range(4):
+            window = [board[row][col], board[row-1][col+1], board[row-2][col+2], board[row-3][col+3]]
+            score += score_window(window, player)
+    
+    return score
+
+def policy(board):
+    """Main policy function to choose a column for the current player (1)."""
+    # Check for immediate winning move
+    for col in range(7):
+        if not column_full(board, col):
+            new_board = drop_disc(board, col, 1)
+            if new_board is not None and is_winning(new_board, 1):
+                return col
+    
+    # Check for move that blocks opponent's immediate win
+    for col in range(7):
+        if not column_full(board, col):
+            new_board = drop_disc(board, col, 1)
+            if new_board is not None:
+                opponent_can_win = False
+                for opp_col in range(7):
+                    if not column_full(new_board, opp_col):
+                        opp_new_board = drop_disc(new_board, opp_col, -1)
+                        if opp_new_board is not None and is_winning(opp_new_board, -1):
+                            opponent_can_win = True
+                            break
+                if not opponent_can_win:
+                    return col  # This move blocks opponent's immediate win
+    
+    # If no winning or blocking move, use heuristic to choose best column
+    best_col = -1
+    best_score = -float('inf')
+    for col in range(7):
+        if not column_full(board, col):
+            new_board = drop_disc(board, col, 1)
+            if new_board is not None:
+                score = evaluate_board(new_board, 1)
+                if score > best_score:
+                    best_score = score
+                    best_col = col
+    
+    return best_col
+</code>

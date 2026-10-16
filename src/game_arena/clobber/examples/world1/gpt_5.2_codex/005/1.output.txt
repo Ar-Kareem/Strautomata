@@ -1,0 +1,138 @@
+The strategy for this policy is a fast alpha‑beta negamax search with iterative deepening. It represents the 5x6 board as compact bitboards, generates all legal capture moves, and evaluates positions by combining mobility (number of legal moves) and material. The search is time‑bounded (≈0.9s) and always returns the best fully explored move so far, ensuring a legal move output.
+
+<code>
+import time
+
+# Precompute neighbor directions on a 5x6 board
+ROWS, COLS = 5, 6
+DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+NEIGHBORS = [[] for _ in range(ROWS * COLS)]
+for r in range(ROWS):
+    for c in range(COLS):
+        idx = r * COLS + c
+        for dr, dc, dch in DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < ROWS and 0 <= nc < COLS:
+                nidx = nr * COLS + nc
+                NEIGHBORS[idx].append((nidx, dch))
+
+def to_bitboard(arr):
+    # Accepts nested 5x6 or flat length-30
+    if len(arr) == 5 and hasattr(arr[0], "__len__"):
+        bits = 0
+        for r in range(ROWS):
+            for c in range(COLS):
+                if arr[r][c]:
+                    bits |= 1 << (r * COLS + c)
+        return bits
+    else:
+        bits = 0
+        for i, v in enumerate(arr):
+            if v:
+                bits |= 1 << i
+        return bits
+
+def generate_moves(you, opp):
+    moves = []
+    y = you
+    while y:
+        lsb = y & -y
+        idx = (lsb.bit_length() - 1)
+        for nidx, dch in NEIGHBORS[idx]:
+            if opp & (1 << nidx):
+                moves.append((idx, nidx, dch))
+        y -= lsb
+    return moves
+
+def count_moves(you, opp):
+    cnt = 0
+    y = you
+    while y:
+        lsb = y & -y
+        idx = (lsb.bit_length() - 1)
+        for nidx, _ in NEIGHBORS[idx]:
+            if opp & (1 << nidx):
+                cnt += 1
+        y -= lsb
+    return cnt
+
+def evaluate(you, opp):
+    # Mobility + material
+    my_moves = count_moves(you, opp)
+    op_moves = count_moves(opp, you)
+    material = you.bit_count() - opp.bit_count()
+    return 3 * (my_moves - op_moves) + material
+
+class Timeout(Exception):
+    pass
+
+def policy(you, opponent):
+    you_b = to_bitboard(you)
+    opp_b = to_bitboard(opponent)
+
+    moves = generate_moves(you_b, opp_b)
+    if not moves:
+        # No legal moves; return some legal-looking string (engine shouldn't call here)
+        return "0,0,U"
+
+    # If only one legal move, return immediately
+    if len(moves) == 1:
+        f, t, d = moves[0]
+        return f"{f//COLS},{f%COLS},{d}"
+
+    # Iterative deepening negamax with alpha-beta
+    start_time = time.perf_counter()
+    time_limit = 0.9  # seconds
+    best_move = moves[0]
+    trans = {}
+
+    def negamax(you, opp, depth, alpha, beta):
+        if time.perf_counter() - start_time > time_limit:
+            raise Timeout()
+        key = (you, opp, depth)
+        if key in trans:
+            return trans[key]
+
+        mvs = generate_moves(you, opp)
+        if not mvs:
+            val = -10000 + depth  # losing
+            trans[key] = val
+            return val
+        if depth == 0:
+            val = evaluate(you, opp)
+            trans[key] = val
+            return val
+
+        best = -10**9
+        for f, t, dch in mvs:
+            new_you = (you & ~(1 << f)) | (1 << t)
+            new_opp = opp & ~(1 << t)
+            score = -negamax(new_opp, new_you, depth - 1, -beta, -alpha)
+            if score > best:
+                best = score
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        trans[key] = best
+        return best
+
+    depth = 1
+    max_depth = 6
+    while depth <= max_depth:
+        try:
+            best_score = -10**9
+            for f, t, dch in moves:
+                new_you = (you_b & ~(1 << f)) | (1 << t)
+                new_opp = opp_b & ~(1 << t)
+                score = -negamax(new_opp, new_you, depth - 1, -10**9, 10**9)
+                if score > best_score:
+                    best_score = score
+                    best_move = (f, t, dch)
+            depth += 1
+        except Timeout:
+            break
+
+    f, t, d = best_move
+    return f"{f//COLS},{f%COLS},{d}"
+</code>

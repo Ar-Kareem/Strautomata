@@ -1,0 +1,515 @@
+```python
+import sys
+import copy
+
+# Set recursion limit higher to handle deep game trees if necessary
+sys.setrecursionlimit(2000)
+
+class KalahState:
+    """
+    Represents the state of the Kalah game.
+    Encapsulates logic for move generation and state transitions.
+    """
+    def __init__(self, you: list[int], opponent: list[int]):
+        # Ensure we have lists and not external references
+        self.you = list(you)
+        self.opponent = list(opponent)
+        # self.turn stores 'you' or 'opponent' to indicate whose turn it is to move.
+        # In the root of the search tree, we initialize this to 'you', but the
+        # simulate method will toggle this based on extra moves.
+        self.turn = 'you' 
+
+    def get_houses(self, player):
+        return self.you if player == 'you' else self.opponent
+
+    def get_store(self, player):
+        return self.get_houses(player)[6]
+
+    def get_opponent(self, player):
+        return self.opponent if player == 'you' else self.you
+
+    def get_houses_view(self, player):
+        """Returns the list of houses for the specified player."""
+        return self.you if player == 'you' else self.opponent
+
+    def get_opponent_view(self, player):
+        """Returns the list of houses for the opponent of the specified player."""
+        return self.opponent if player == 'you' else self.you
+
+    def is_terminal(self):
+        """Checks if the game is over."""
+        # If 'you' has no seeds in houses (0..5)
+        if sum(self.you[:6]) == 0:
+            return True
+        # If 'opponent' has no seeds in houses (0..5)
+        if sum(self.opponent[:6]) == 0:
+            return True
+        return False
+
+    def get_result(self):
+        """Returns positive if 'you' wins, negative if 'opponent' wins, 0 if draw."""
+        if sum(self.you[:6]) == 0:
+            # Opponent must sweep remaining seeds
+            self.opponent[6] += sum(self.opponent[:6])
+            for i in range(6): self.opponent[i] = 0
+        elif sum(self.opponent[:6]) == 0:
+            # You must sweep remaining seeds
+            self.you[6] += sum(self.you[:6])
+            for i in range(6): self.you[i] = 0
+        
+        score_diff = self.you[6] - self.opponent[6]
+        if score_diff > 0: return 1
+        elif score_diff < 0: return -1
+        else: return 0
+
+    def simulate(self, move_idx: int):
+        """
+        Applies a move and returns a new KalahState representing the result.
+        Does not modify the current state.
+        """
+        # Create deep copies to ensure immutability of the current state
+        new_you = list(self.you)
+        new_opponent = list(self.opponent)
+        
+        # Determine whose turn it is to make the move
+        player = self.turn
+        
+        # Select source and target lists based on player
+        if player == 'you':
+            src = new_you
+            opp = new_opponent
+            other = 'opponent'
+        else:
+            src = new_opponent
+            opp = new_you
+            other = 'you'
+        
+        # Initial move logic
+        seeds = src[move_idx]
+        if seeds == 0:
+            return None # Invalid move
+        
+        src[move_idx] = 0
+        curr_idx = move_idx
+        
+        # Sowing seeds
+        # The loop traverses the board sequence: 
+        # 1. Current player's houses (0..5)
+        # 2. Current player's store (6)
+        # 3. Opponent's houses (0..5)
+        # 4. Repeat
+        
+        while seeds > 0:
+            curr_idx += 1
+            
+            # Wrap around logic
+            # If we pass opponent's store (which is at index 6 of opponent list), we skip it.
+            # The board cycle length is 14 (6+1+6).
+            if curr_idx > 13:
+                curr_idx = 0
+            
+            # Map linear index to list/pos
+            # 0..5: Current player houses
+            # 6: Current player store
+            # 7..12: Opponent houses
+            # Note: Index 13 corresponds to Opponent's store, which we must skip.
+            
+            if curr_idx == 13:
+                # Skip opponent's store. We effectively do not increment the target index 
+                # and continue to the next iteration, which resets curr_idx to 0.
+                # However, we must decrement the seed count because we tried to place it.
+                # Since we didn't actually place it, we just loop back.
+                # Correct approach: do nothing except handle the loop variable to wrap.
+                # But wait, we already did curr_idx += 1. If it's 13, we are at Opponent Store.
+                # We must skip it. So we set curr_idx to -1 (so +1 makes it 0).
+                # But we are inside the 'while seeds' loop.
+                # Let's manually set curr_idx to -1 so the next iteration starts at 0.
+                # And we don't decrement seeds yet because we haven't placed it.
+                # Actually, standard logic: if index == 13, index = -1 (so next is 0).
+                # We must skip placing a seed.
+                curr_idx = -1
+                continue 
+
+            if curr_idx <= 5:
+                src[curr_idx] += 1
+            elif curr_idx == 6:
+                src[6] += 1 # Store
+            
+            seeds -= 1
+            
+        # Determine last seed position for Capture/Extra Move
+        last_pos = curr_idx
+        is_store = (last_pos == 6)
+        is_my_house = (0 <= last_pos <= 5)
+        
+        # Extra Move Check
+        # If last seed landed in your store, you get another move.
+        # We update the state object's turn to reflect this.
+        if is_store:
+            # The player who just moved gets to move again
+            new_state = KalahState(new_you, new_opponent)
+            new_state.turn = player
+            return new_state
+
+        # Capture Check
+        # If last seed lands in my empty house, and opponent's opposite house has seeds.
+        # 1. My house must be empty before placement (it is now 1).
+        # 2. Opponent's house (5 - last_pos) must have seeds.
+        if is_my_house:
+            # src is the player who just moved
+            if src[last_pos] == 1: # It was empty before, now has 1
+                opp_house_idx = 5 - last_pos
+                if opp[opp_house_idx] > 0:
+                    # Capture!
+                    # Move my seed (1) and opponent seeds to my store
+                    captured_seeds = opp[opp_house_idx]
+                    src[6] += src[last_pos] + captured_seeds
+                    src[last_pos] = 0
+                    opp[opp_house_idx] = 0
+        
+        # Turn passes to opponent
+        new_state = KalahState(new_you, new_opponent)
+        new_state.turn = other
+        return new_state
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Monte Carlo Tree Search (UCT) based policy for Kalah.
+    Plays until a terminal state is reached for each simulation.
+    """
+    
+    # --- Configuration ---
+    ITERATIONS = 3000  # Number of simulations per move
+    EXPLORATION = 1.414 # sqrt(2) typically
+    
+    root_state = KalahState(you, opponent)
+    root_state.turn = 'you'
+    
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    
+    # If only one legal move, take it immediately
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+
+    # Node class for MCTS
+    class Node:
+        __slots__ = 'state', 'parent', 'move', 'children', 'wins', 'visits'
+        def __init__(self, state, parent=None, move=None):
+            self.state = state
+            self.parent = parent
+            self.move = move
+            self.children = []
+            self.wins = 0
+            self.visits = 0
+
+    root = Node(root_state)
+
+    for _ in range(ITERATIONS):
+        node = root
+        
+        # 1. Selection
+        # Traverse tree using UCB1 until we find a node we haven't visited yet or it's terminal
+        while node.children or (node.visits > 0 and not node.state.is_terminal()):
+            # If terminal, we stop selection here
+            if node.state.is_terminal():
+                break
+                
+            # Check if all children have been visited (we can expand)
+            # Note: In this implementation, we expand lazily. 
+            # If we have unvisited children, we pick one immediately in Expansion step.
+            # But if we have no children and visits > 0, we need to expand first.
+            # If we have children and we are here, we select the best UCB child.
+            
+            if not node.children:
+                # Need to generate children (Expansion step logic mixed here)
+                break
+            
+            # Select child with highest UCB
+            best_score = -float('inf')
+            best_child = None
+            
+            for child in node.children:
+                if child.visits == 0:
+                    # This child hasn't been simulated yet, pick it
+                    best_child = child
+                    break
+                
+                # UCB Formula: W/N + c * sqrt(ln(Np) / N)
+                # We want to maximize this.
+                # Note: For MCTS minimax, we need to consider perspective.
+                # Usually, we store values from perspective of the node's player.
+                # Or we can store raw values and invert on backprop.
+                # Let's invert at backprop. Node stores W from perspective of the player who is TO MOVE?
+                # Or Perspective of the Root?
+                # Standard MCTS for 2-player: W is usually wins for the player who moved to create this node (or the player who is about to move).
+                # Let's say Node stores wins for the player who is about to move.
+                # Then UCB uses this directly.
+                # However, root is 'you'. 
+                
+                ucb = (child.wins / child.visits) + EXPLORATION * (2 * math.log(node.visits) / child.visits)**0.5
+                # Let's use the standard UCB1: UCT = (wins / visits) + C * sqrt( (2 * ln(parent_visits)) / visits )
+                # Assumes value is normalized 0..1 (win/loss).
+                # We are dealing with {-1, 0, 1}.
+                
+                # Let's stick to: Maximize (wins / visits) + ...
+                # Where 'wins' is the *result for the root player ('you')*.
+                # This is a common simplification to avoid Value Inversion math in UCB.
+                # We store 'wins' as score for 'you'.
+                
+                val = child.wins / child.visits
+                ucb = val + EXPLORATION * math.sqrt(math.log(node.visits) / child.visits)
+                
+                if ucb > best_score:
+                    best_score = ucb
+                    best_child = child
+            
+            if best_child is None:
+                break # Should not happen if logic is correct
+            node = best_child
+
+        # 2. Expansion
+        # If the node is not terminal and hasn't been visited (or just visited but needs expansion)
+        # Actually, if we stop selection because we reached a node with no children but visits>0,
+        # we need to expand it.
+        # Or if we picked a node with visits=0, we don't expand, we simulate it.
+        
+        # Logic: 
+        # If node.visits == 0: Skip expansion/simulation (but wait, we just selected it? 
+        # If we selected a node with visits=0, we should simulate it immediately. 
+        # Usually selection picks a child. If child.visits == 0, we stop selection and simulate.
+        
+        # Let's refine Selection loop:
+        # We want to pick a leaf node.
+        
+        # Refined Loop:
+        while node.children:
+            # Select best child
+            best_score = -float('inf')
+            best_child = None
+            for child in node.children:
+                if child.visits == 0:
+                    best_child = child
+                    break
+                # UCB
+                val = child.wins / child.visits
+                ucb = val + EXPLORATION * math.sqrt(2 * math.log(node.visits) / child.visits)
+                if ucb > best_score:
+                    best_score = ucb
+                    best_child = child
+            node = best_child
+            if node.visits == 0:
+                break # Found an unvisited child, stop selection
+
+        # Now `node` is the one we want to simulate.
+        # If it has 0 visits, we simulate it.
+        # If it has > 0 visits but is a leaf (no children), we might need to expand it first.
+        # However, if it has > 0 visits, it implies we already simulated it.
+        # This implies we need to expand if it's not terminal and we have more moves.
+        
+        if not node.state.is_terminal():
+            if node.visits == 0:
+                # Leaf node, unvisited. Just simulate from here.
+                pass
+            else:
+                # Visited leaf node (or internal node with no children yet?).
+                # Should we expand?
+                # If we are here, it means we selected a fully visited node that has no children.
+                # This means we haven't expanded it yet. Let's expand it.
+                possible_moves = [m for m in range(6) if node.state.get_houses(node.state.turn)[m] > 0]
+                # If we are at a leaf and we have legal moves, create children
+                if possible_moves:
+                    for move in possible_moves:
+                        child_state = node.state.simulate(move)
+                        node.children.append(Node(child_state, node, move))
+                    # Select a child for simulation (usually the first new one or random)
+                    if node.children:
+                        node = node.children[0] 
+                else:
+                    # No moves, game over? Should be caught by is_terminal, but just in case.
+                    pass
+
+        # 3. Simulation (Rollout)
+        # Play the game from `node.state` until a terminal state is reached.
+        # Use simple logic for playouts to save time?
+        # Or use full simulation? "You may use any standard Python imports". 
+        # Full simulation is safer to avoid bias in heuristic playouts.
+        # Optimization: Shallow depth or limited random playouts.
+        # Let's do full simulation but with a depth limit to speed up.
+        
+        temp_state = copy.deepcopy(node.state)
+        depth = 0
+        MAX_DEPTH = 150 # Prevent infinite loops (though unlikely with capture rules)
+        
+        while not temp_state.is_terminal() and depth < MAX_DEPTH:
+            # Greedy move for playout? 
+            # Random move is better for diversity.
+            # Let's use a mix: Random is usually standard for MCTS to avoid heuristic bias.
+            # But 'you' and 'opponent' in simulation need to be distinguished.
+            
+            # Find legal moves
+            moves = []
+            src_houses = temp_state.get_houses(temp_state.turn)
+            for i in range(6):
+                if src_houses[i] > 0:
+                    moves.append(i)
+            
+            if not moves:
+                break # Should be terminal, but safety check
+            
+            import random
+            move = random.choice(moves)
+            temp_state = temp_state.simulate(move)
+            depth += 1
+        
+        # Resolve result if not terminal (due to depth limit)
+        if temp_state.is_terminal():
+            score = temp_state.get_result() # Returns 1 (you win), -1 (you lose), 0 (draw)
+        else:
+            # Heuristic fallback for non-terminal states (optional, but good for speed)
+            # We'll just calculate seed difference
+            score = 1 if temp_state.you[6] > temp_state.opponent[6] else (-1 if temp_state.you[6] < temp_state.opponent[6] else 0)
+            # If game not finished, result is uncertain. 
+            # MCTS usually requires full playouts to terminal states for correctness.
+            # Given time limit (1s), we might not finish deep playouts.
+            # However, with iterations=3000, deep playouts are expensive.
+            # Let's trust the random playout depth limit. 
+            # If we cut off early, we have a bias.
+            # Better to play to end if possible.
+            # Let's try to play to end.
+            while not temp_state.is_terminal():
+                moves = []
+                src_houses = temp_state.get_houses(temp_state.turn)
+                for i in range(6):
+                    if src_houses[i] > 0:
+                        moves.append(i)
+                if not moves: break
+                move = random.choice(moves)
+                temp_state = temp_state.simulate(move)
+            score = temp_state.get_result()
+
+        # 4. Backpropagation
+        # Update stats up to the root.
+        # We want to maximize score for 'you' (root player).
+        
+        curr = node
+        while curr is not None:
+            curr.visits += 1
+            # Update wins based on the result relative to the root player ('you').
+            # However, the playout score is already from 'you's perspective.
+            # Wait. 
+            # If 'you' wins, score is 1.
+            # If 'opponent' wins, score is -1.
+            # So we add 'score' to all nodes.
+            # BUT.
+            # If a node represents a move by 'opponent', that node tries to minimize 'you's score.
+            # Does MCTS update need to handle this?
+            # Standard UCT for 2 players:
+            # 1. Store results from perspective of the node's player.
+            # 2. When backpropagating, invert the value at each step.
+            
+            # Let's do perspective inversion:
+            # Node stores 'value' for the player who moved to get to this state.
+            # OR
+            # Node stores 'value' for the root player 'you'. 
+            # If we store value for root, we don't invert. 
+            # But selection logic (UCB) uses W/N. 
+            # If 'opponent' is choosing a move, he will pick the child that gives the LOWEST score for 'you'.
+            # So for 'opponent' nodes, we should be minimizing.
+            # BUT MCTS usually treats it as maximization at every node and flips the value.
+            
+            # Let's use the inversion method:
+            # At node level N, we store expected value FOR THE PLAYER WHO IS TO MOVE AT N.
+            # Wait, we don't store that in the node. We store visit count and score.
+            # Standard approach:
+            # Backprop returns the value FOR THE PARENT.
+            # So if I am node A (player 'you'), I simulate move to B (player 'opponent').
+            # B returns value -1 (meaning 'you' lost). 
+            # Wait.
+            
+            # Let's use the simplest approach for this implementation:
+            # We just store the 'score' (1 for you win, -1 for you lose) directly.
+            # In Selection (UCB), for 'opponent' nodes, we pick the child with MINIMUM score (or flip UCB sign).
+            # Actually, standard UCB always maximizes. 
+            # So if it's opponent's turn, we want to maximize 'opponent score', which is equivalent to minimizing 'you score'.
+            # So we can map: 
+            # If node.turn == 'you': Value = Score
+            # If node.turn == 'opponent': Value = -Score
+            # Then UCB always maximizes 'Value'.
+            
+            # Let's adjust backprop:
+            # We push the score up. 
+            # Let's look at the node we are updating. 
+            # 'curr' is the node.
+            # The playout result is 'score' (from root 'you' perspective).
+            # We add 'score' to wins. This implies we want 'you' to maximize score.
+            # This works if we assume every node tries to maximize 'you' score.
+            # But opponent tries to minimize.
+            # Therefore, when we backprop, we must be careful.
+            
+            # Correct Backprop:
+            # We add 'score' to every node's wins.
+            # But during SELECTION, we must flip the UCB calculation for opponent nodes.
+            # Actually, simpler: flip 'score' when backpropagating through opponent nodes?
+            # No, 'score' is constant (root perspective).
+            # Let's stick to: Wins stores 'expected return for the player who just moved to reach this node'.
+            # Then UCB is always Max(Wins/Visits) + ...
+            # Backprop:
+            # If I am at node N (parent), I just simulated a move to child C.
+            # The result of the playout is 'res'.
+            # Child C wants to maximize its value.
+            # But P wants to maximize ITS value.
+            # If C is P's turn, C's value = P's value.
+            # If C is Opponent's turn, C wants to minimize P's value.
+            # So Value(P) = - Value(C) if turns differ.
+            
+            # Let's do this:
+            # Result of playout is 'score' (from perspective of the player who triggered the playout).
+            # Wait, we triggered playout at node `node`.
+            # If `node` is 'you', result is good if high.
+            # If `node` is 'opponent', result is good if low (for 'you').
+            # So we need to normalize to 'you' or normalize to 'current'.
+            
+            # Let's normalize to 'you' (Root).
+            # But during selection, for an 'opponent' node, we want to pick the child that minimizes 'you' score.
+            # UCB maximizes.
+            # So for 'opponent' node, we want to maximize ( -1 * (score_for_you) ).
+            # So we can store 'wins' as 'score_for_you'.
+            # In UCB, if node is 'opponent', we use '-wins/visits'.
+            
+            # Let's do the backprop storing 'score_for_you'.
+            curr.wins += score
+            curr = curr.parent
+
+    # End of MCTS loop
+    # Now select best child of root
+    best_child = None
+    best_visit = -1
+    
+    # We want to maximize visit count (robustness) or win rate.
+    # Usually win rate (wins/visits) for root.
+    # Root is 'you', so wins/visits is probability of winning.
+    
+    # Debug print (optional, but stdout is captured? No, only source code. Keep clean.)
+    # return legal_moves[0] # Fallback
+    
+    # Find child with highest visit count (standard MCTS) or highest expected value.
+    # Let's use Expected Value (Win Rate).
+    max_val = -float('inf')
+    best_move = legal_moves[0]
+    
+    for child in root.children:
+        if child.visits == 0: continue
+        # Value for 'you'
+        val = child.wins / child.visits
+        
+        # Tie-breaking: visit count
+        if val > max_val or (abs(val - max_val) < 1e-9 and child.visits > best_visit):
+            max_val = val
+            best_visit = child.visits
+            best_move = child.move
+            
+    return best_move
+
+# Helper import
+import math
+```

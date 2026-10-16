@@ -1,0 +1,224 @@
+
+import sys
+sys.setrecursionlimit(10000)
+
+# ----------------------------------------------------------------------
+# 1. Winning patterns for a 4x4 board (rows, columns, the two diagonals)
+# ----------------------------------------------------------------------
+WIN_PATTERNS = []
+
+# rows
+for r in range(4):
+    pat = 0
+    for c in range(4):
+        idx = r * 4 + c
+        pat |= 1 << idx
+    WIN_PATTERNS.append(pat)
+
+# columns
+for c in range(4):
+    pat = 0
+    for r in range(4):
+        idx = r * 4 + c
+        pat |= 1 << idx
+    WIN_PATTERNS.append(pat)
+
+# main diagonal (top‑left → bottom‑right)
+pat = 0
+for i in range(4):
+    idx = i * 4 + i
+    pat |= 1 << idx
+WIN_PATTERNS.append(pat)
+
+# other diagonal (top‑right → bottom‑left)
+pat = 0
+for i in range(4):
+    idx = i * 4 + (3 - i)
+    pat |= 1 << idx
+WIN_PATTERNS.append(pat)
+
+# ----------------------------------------------------------------------
+# 2. Move ordering (center → corners → edges)
+# ----------------------------------------------------------------------
+CENTER_IDX = [5, 6, 9, 10]          # (1,1),(1,2),(2,1),(2,2)
+CORNER_IDX = [0, 3, 12, 15]         # (0,0),(0,3),(3,0),(3,3)
+EDGE_IDX   = [i for i in range(16) if i not in CENTER_IDX and i not in CORNER_IDX]
+MOVE_ORDER = CENTER_IDX + CORNER_IDX + EDGE_IDX
+
+# ----------------------------------------------------------------------
+# 3. Helper functions for bit‑board handling
+# ----------------------------------------------------------------------
+def board_to_bits(board):
+    """Convert list‑of‑lists board to (p1_bits, p2_bits)."""
+    p1 = p2 = 0
+    for r in range(4):
+        row = board[r]
+        for c in range(4):
+            v = row[c]
+            idx = r * 4 + c
+            if v == 1:
+                p1 |= 1 << idx
+            elif v == -1:
+                p2 |= 1 << idx
+    return p1, p2
+
+def idx_to_rc(idx):
+    """Turn a linear index 0‑15 into (row, col)."""
+    return (idx // 4, idx % 4)
+
+def check_winner_bits(p1_bits, p2_bits):
+    """Return 1 if player 1 has a four‑in‑a‑row, -1 if player -1 has it, else 0."""
+    for pat in WIN_PATTERNS:
+        if (p1_bits & pat) == pat:
+            return 1
+        if (p2_bits & pat) == pat:
+            return -1
+    return 0
+
+def heuristic_bits(p1_bits, p2_bits):
+    """
+    Evaluate a non‑terminal position from the perspective of player 1.
+    For each winning pattern that is not already blocked we count the
+    number of marks belonging to each player and add a score:
+        3 marks → ±1000, 2 marks → ±10, 1 mark → ±1.
+    """
+    score = 0
+    for pat in WIN_PATTERNS:
+        p1_cnt = bin(p1_bits & pat).count('1')
+        p2_cnt = bin(p2_bits & pat).count('1')
+        # blocked pattern – ignore
+        if p1_cnt > 0 and p2_cnt > 0:
+            continue
+        if p1_cnt > 0:
+            if p1_cnt == 3:
+                score += 1000
+            elif p1_cnt == 2:
+                score += 10
+            elif p1_cnt == 1:
+                score += 1
+        if p2_cnt > 0:
+            if p2_cnt == 3:
+                score -= 1000
+            elif p2_cnt == 2:
+                score -= 10
+            elif p2_cnt == 1:
+                score -= 1
+    return score
+
+# ----------------------------------------------------------------------
+# 4. Minimax with α‑β pruning
+# ----------------------------------------------------------------------
+def minimax(p1_bits, p2_bits, depth, alpha, beta, player):
+    """
+    Negamax‑style minimax using the bit‑board representation.
+    player =  1 → our turn (maximising),
+    player = -1 → opponent’s turn (minimising).
+    Returns (score, move_idx) from our perspective.
+    """
+    # terminal tests
+    w = check_winner_bits(p1_bits, p2_bits)
+    if w == 1:
+        return (float('inf'), None)
+    if w == -1:
+        return (-float('inf'), None)
+    if (p1_bits | p2_bits) == 0xFFFF:          # board full
+        return (0, None)
+
+    if depth == 0:
+        return (heuristic_bits(p1_bits, p2_bits), None)
+
+    empty_mask = ~(p1_bits | p2_bits) & 0xFFFF
+
+    if player == 1:                     # we are maximizing
+        best_val = -float('inf')
+        best_move = None
+        for idx in MOVE_ORDER:
+            if not (empty_mask >> idx) & 1:
+                continue
+            new_p1 = p1_bits | (1 << idx)
+            # immediate win – no need to search deeper
+            if check_winner_bits(new_p1, p2_bits) == 1:
+                return (float('inf'), idx)
+            val, _ = minimax(new_p1, p2_bits, depth - 1, alpha, beta, -1)
+            if val > best_val:
+                best_val = val
+                best_move = idx
+            alpha = max(alpha, best_val)
+            if beta <= alpha:
+                break
+        return (best_val, best_move)
+
+    else:                                 # opponent is minimizing
+        best_val = float('inf')
+        best_move = None
+        for idx in MOVE_ORDER:
+            if not (empty_mask >> idx) & 1:
+                continue
+            new_p2 = p2_bits | (1 << idx)
+            if check_winner_bits(p1_bits, new_p2) == -1:
+                return (-float('inf'), idx)
+            val, _ = minimax(p1_bits, new_p2, depth - 1, alpha, beta, 1)
+            if val < best_val:
+                best_val = val
+                best_move = idx
+            beta = min(beta, best_val)
+            if beta <= alpha:
+                break
+        return (best_val, best_move)
+
+# ----------------------------------------------------------------------
+# 5. The public API required by the arena
+# ----------------------------------------------------------------------
+def policy(board):
+    """
+    Return a legal move (row, col) for the current board.
+    The algorithm follows the steps described in the strategy section.
+    """
+    p1_bits, p2_bits = board_to_bits(board)
+
+    # ----- 1) look for an immediate winning move -----
+    empty_cells = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    for r, c in empty_cells:
+        idx = r * 4 + c
+        new_p1 = p1_bits | (1 << idx)
+        if check_winner_bits(new_p1, p2_bits) == 1:
+            return (r, c)
+
+    # ----- 2) block an opponent's immediate win -----
+    for r, c in empty_cells:
+        idx = r * 4 + c
+        new_p2 = p2_bits | (1 << idx)
+        if check_winner_bits(p1_bits, new_p2) == -1:
+            return (r, c)
+
+    # ----- 3) otherwise search the game tree (depth = 5 plies) -----
+    depth_limit = 5
+    best_idx = None
+    best_score = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+
+    empty_mask = ~(p1_bits | p2_bits) & 0xFFFF
+    for idx in MOVE_ORDER:
+        if not (empty_mask >> idx) & 1:
+            continue
+        new_p1 = p1_bits | (1 << idx)
+        # if this move already wins we have handled it above;
+        # keep the check for safety in case the earlier loops missed a rare case.
+        if check_winner_bits(new_p1, p2_bits) == 1:
+            return idx_to_rc(idx)
+        score, _ = minimax(new_p1, p2_bits, depth_limit - 1, alpha, beta, -1)
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+        alpha = max(alpha, best_score)
+        if beta <= alpha:               # β‑cutoff
+            break
+
+    # fallback (should never happen while there is an empty cell)
+    if best_idx is None:
+        for i in range(16):
+            if (empty_mask >> i) & 1:
+                return idx_to_rc(i)
+
+    return idx_to_rc(best_idx)

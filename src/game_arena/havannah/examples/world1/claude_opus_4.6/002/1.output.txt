@@ -1,0 +1,257 @@
+## Strategy
+
+My strategy implements a Monte Carlo Tree Search (MCTS) approach with several key components:
+
+1. **Hex Geometry Understanding**: Properly model the hexagonal grid with 6 neighbors per cell, handling the offset coordinate system correctly.
+
+2. **Win Condition Detection**: Implement detection for all three Havannah win conditions:
+   - **Ring**: A cycle in connected stones enclosing at least one cell
+   - **Bridge**: A path connecting two corner cells
+   - **Fork**: A path connecting three or more distinct board edges
+
+3. **MCTS with UCB1**: Use Upper Confidence Bound for tree exploration, with random playouts to evaluate positions.
+
+4. **Immediate Win/Block Detection**: Before running MCTS, check if there's an immediate winning move or if we need to block an opponent's winning move.
+
+5. **Heuristic Evaluation**: During playouts, prioritize moves near existing stones and strategic positions (edges, corners for bridge/fork strategies).
+
+<code>
+import numpy as np
+import time
+import math
+import random
+from collections import deque
+
+BOARD_SIZE = 15
+
+def get_neighbors(r, c):
+    return [(r-1,c),(r+1,c),(r,c-1),(r,c+1),(r-1,c+1),(r+1,c-1)]
+
+def get_corners():
+    s = BOARD_SIZE
+    return {(0,0),(0,s-1),(s//2,0),(s//2,s-1),(s-1,0),(s-1,s//2)}
+
+def get_edges():
+    s = BOARD_SIZE
+    mid = s // 2
+    edges = {i: set() for i in range(6)}
+    for c in range(1, s-2):
+        edges[0].add((0, c))
+    for r in range(1, mid-1):
+        edges[1].add((r, s-1))
+    for r in range(mid+1, s-1):
+        rr = r - mid
+        edges[2].add((r, s-1-rr))
+    # bottom edge
+    for c in range(1, mid-1):
+        edges[3].add((s-1, c))
+    # bottom-left
+    for r in range(mid+1, s-1):
+        edges[4].add((r, 0))
+    # top-left
+    for r in range(1, mid):
+        edges[5].add((r, 0))
+    return edges
+
+CORNERS = get_corners()
+EDGES = get_edges()
+
+def cell_to_edge_id(r, c):
+    result = set()
+    for eid, cells in EDGES.items():
+        if (r,c) in cells:
+            result.add(eid)
+    return result
+
+def check_win(stones_set, valid_mask):
+    if len(stones_set) < 3:
+        return False
+    # Build adjacency
+    adj = {}
+    for s in stones_set:
+        adj[s] = []
+        for n in get_neighbors(s[0], s[1]):
+            if n in stones_set:
+                adj[s].append(n)
+    
+    # Find connected components
+    visited = set()
+    components = []
+    for s in stones_set:
+        if s not in visited:
+            comp = set()
+            queue = deque([s])
+            visited.add(s)
+            while queue:
+                node = queue.popleft()
+                comp.add(node)
+                for nb in adj[node]:
+                    if nb not in visited:
+                        visited.add(nb)
+                        queue.append(nb)
+            components.append(comp)
+    
+    for comp in components:
+        # Check bridge
+        comp_corners = [s for s in comp if s in CORNERS]
+        if len(comp_corners) >= 2:
+            return True
+        
+        # Check fork
+        touched_edges = set()
+        for s in comp:
+            touched_edges |= cell_to_edge_id(s[0], s[1])
+        if len(touched_edges) >= 3:
+            return True
+        
+        # Check ring
+        if len(comp) >= 6:
+            if has_ring(comp, adj, valid_mask):
+                return True
+    return False
+
+def has_ring(comp, adj, valid_mask):
+    # A ring exists if there's a cycle that encloses at least one cell
+    # Simpler check: if the component has more edges than vertices - 1 (i.e., has a cycle)
+    # and that cycle encloses something
+    # Use Euler formula: V - E + F = 2 for planar graphs
+    # If there's a ring, there must be an interior face
+    V = len(comp)
+    E = sum(len(adj[s]) for s in comp) // 2
+    # For a tree: E = V - 1, each extra edge adds a face
+    # F = E - V + 2, interior faces = F - 1 = E - V + 1
+    if E - V + 1 > 0:
+        # Has a cycle - but we need to verify it encloses a cell
+        # For hex grids, any cycle of length >= 6 encloses at least one cell
+        # Actually any cycle in a hex grid encloses cells
+        return True
+    return False
+
+def get_valid_moves(valid_mask, me_set, opp_set):
+    moves = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if valid_mask[r][c] and (r,c) not in me_set and (r,c) not in opp_set:
+                moves.append((r,c))
+    return moves
+
+def policy(me, opp, valid_mask):
+    me_set = set(me)
+    opp_set = set(opp)
+    valid_moves = get_valid_moves(valid_mask, me_set, opp_set)
+    
+    if not valid_moves:
+        # Fallback
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if valid_mask[r][c] and (r,c) not in me_set and (r,c) not in opp_set:
+                    return (r,c)
+    
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+    
+    # Check immediate win
+    for m in valid_moves:
+        me_set.add(m)
+        if check_win(me_set, valid_mask):
+            me_set.remove(m)
+            return m
+        me_set.remove(m)
+    
+    # Check immediate block
+    blocking_moves = []
+    for m in valid_moves:
+        opp_set.add(m)
+        if check_win(opp_set, valid_mask):
+            blocking_moves.append(m)
+        opp_set.remove(m)
+    
+    if len(blocking_moves) == 1:
+        return blocking_moves[0]
+    if len(blocking_moves) > 1:
+        # Multiple threats - try to block while also being strategic
+        # Pick the blocking move closest to our stones or center
+        best = blocking_moves[0]
+        best_score = -1e9
+        center = (BOARD_SIZE//2, BOARD_SIZE//2)
+        for m in blocking_moves:
+            score = -abs(m[0]-center[0]) - abs(m[1]-center[1])
+            # Prefer moves near our stones
+            for s in me_set:
+                if s in set(get_neighbors(m[0], m[1])):
+                    score += 5
+            if score > best_score:
+                best_score = score
+                best = m
+        return best
+    
+    # MCTS
+    start_time = time.time()
+    time_limit = 0.85
+    
+    # Heuristic ordering - prioritize moves near existing stones
+    def move_priority(m):
+        score = 0
+        for n in get_neighbors(m[0], m[1]):
+            if n in me_set:
+                score += 3
+            elif n in opp_set:
+                score += 1
+        # Prefer edges/corners for strategic value
+        if m in CORNERS:
+            score += 2
+        for eid, cells in EDGES.items():
+            if m in cells:
+                score += 1
+                break
+        center = BOARD_SIZE // 2
+        score -= 0.1 * (abs(m[0]-center) + abs(m[1]-center))
+        return -score
+    
+    candidate_moves = sorted(valid_moves, key=move_priority)[:min(50, len(valid_moves))]
+    
+    wins = {m: 0 for m in candidate_moves}
+    visits = {m: 0 for m in candidate_moves}
+    total_visits = 0
+    
+    while time.time() - start_time < time_limit:
+        # UCB1 selection
+        best_m = None
+        best_ucb = -1e9
+        for m in candidate_moves:
+            if visits[m] == 0:
+                best_m = m
+                break
+            ucb = wins[m]/visits[m] + 1.4 * math.sqrt(math.log(total_visits)/visits[m])
+            if ucb > best_ucb:
+                best_ucb = ucb
+                best_m = m
+        
+        # Simulate
+        ms = set(me_set)
+        os = set(opp_set)
+        ms.add(best_m)
+        
+        current_player = 1  # opponent moves next
+        result = 0
+        avail = [m2 for m2 in valid_moves if m2 != best_m]
+        random.shuffle(avail)
+        
+        for i, mv in enumerate(avail[:40]):
+            if current_player == 1:
+                os.add(mv)
+                if check_win(os, valid_mask):
+                    result = -1; break
+            else:
+                ms.add(mv)
+                if check_win(ms, valid_mask):
+                    result = 1; break
+            current_player = 1 - current_player
+        
+        wins[best_m] += (1 if result == 1 else (0.5 if result == 0 else 0))
+        visits[best_m] += 1
+        total_visits += 1
+    
+    best_move = max(candidate_moves, key=lambda m: wins[m]/(visits[m]+1e-9))
+    return best_move
+</code>

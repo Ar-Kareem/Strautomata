@@ -1,0 +1,374 @@
+<thinking>
+Let me think through this Kalah game implementation. I need to create a policy function that selects the best move.
+
+First, let me understand the game mechanics:
+1. I pick a house (0-5) with seeds
+2. I distribute seeds counter-clockwise, skipping opponent's store
+3. If last seed lands in my store, I get another turn
+4. If last seed lands in an empty house on my side, and the opposite house has seeds, I capture both
+
+For a good policy, I should:
+1. Simulate moves to see outcomes
+2. Use minimax with alpha-beta pruning to search the game tree
+3. Prioritize moves that give extra turns or captures
+
+Let me implement this step by step:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Simulate a move and return (new_you, new_opponent, extra_turn)
+    def simulate_move(you, opponent, move):
+        you = you.copy()
+        opponent = opponent.copy()
+        
+        seeds = you[move]
+        you[move] = 0
+        
+        pos = move + 1  # Start distributing from the next position
+        side = 0  # 0 = my side, 1 = opponent side
+        
+        while seeds > 0:
+            if side == 0:
+                if pos <= 6:  # My houses (0-5) and my store (6)
+                    you[pos] += 1
+                    seeds -= 1
+                    last_pos = pos
+                    last_side = 0
+                    pos += 1
+                else:
+                    side = 1
+                    pos = 0
+            else:  # Opponent's side
+                if pos <= 5:  # Opponent's houses only (skip their store)
+                    opponent[pos] += 1
+                    seeds -= 1
+                    last_pos = pos
+                    last_side = 1
+                    pos += 1
+                else:
+                    side = 0
+                    pos = 0
+        
+        extra_turn = (last_side == 0 and last_pos == 6)
+        
+        # Check for capture
+        if last_side == 0 and last_pos < 6 and you[last_pos] == 1:
+            opposite = 5 - last_pos
+            if opponent[opposite] > 0:
+                you[6] += you[last_pos] + opponent[opposite]
+                you[last_pos] = 0
+                opponent[opposite] = 0
+        
+        return you, opponent, extra_turn
+```
+
+Wait, I need to be more careful. The capture happens when the last seed lands in an empty house - but after placing the seed, that house has 1 seed. So I should check if it was empty before (i.e., now has exactly 1).
+
+Let me also implement the minimax search with alpha-beta pruning:
+
+```python
+def minimax(you, opponent, depth, alpha, beta, maximizing):
+    # Check if game is over
+    if sum(you[:6]) == 0:
+        opponent[6] += sum(opponent[:6])
+        return you[6] - opponent[6], None
+    if sum(opponent[:6]) == 0:
+        you[6] += sum(you[:6])
+        return you[6] - opponent[6], None
+    
+    if depth == 0:
+        return evaluate(you, opponent), None
+    
+    if maximizing:
+        max_eval = float('-inf')
+        best_move = None
+        for move in range(6):
+            if you[move] > 0:
+                new_you, new_opp, extra = simulate_move(you, opponent, move)
+                if extra:
+                    eval_score, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+        return max_eval, best_move
+    else:
+        # When it's opponent's turn, they try to minimize our score
+        min_eval = float('inf')
+        best_move = None
+        for move in range(6):
+            if you[move] > 0:  # Now 'you' is actually opponent
+                new_you, new_opp, extra = simulate_move(you, opponent, move)
+                if extra:
+                    eval_score, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                else:
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+        return min_eval, best_move
+```
+
+Actually, the perspective switching is getting confusing. Let me restructure. When it's opponent's turn after my move, from their perspective, they're 'you'. But for the evaluation, I always want to evaluate from my (original) perspective.
+
+Let me simplify - I'll keep track of whose turn it is explicitly and always evaluate from the perspective of the original caller.
+
+Actually, let me reconsider the approach. I'll use a negamax-style approach where the score is always from the perspective of the player to move.
+
+Let me rewrite more carefully:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate(you, opponent, move):
+        # Returns (new_you, new_opponent, extra_turn)
+        you = you[:]
+        opponent = opponent[:]
+        
+        seeds = you[move]
+        you[move] = 0
+        pos = move
+        
+        # Total positions: 13 (6 my houses + 1 my store + 6 opp houses, skip opp store)
+        while seeds > 0:
+            pos = (pos + 1) % 13
+            if pos < 6:
+                you[pos] += 1
+            elif pos == 6:
+                you[6] += 1
+            else:  # 7-12 are opponent houses 0-5
+                opponent[pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = (pos == 6)
+        
+        # Capture
+        if pos < 6 and you[pos] == 1:
+            opp_pos = 5 - pos
+            if opponent[opp_pos] > 0:
+                you[6] += 1 + opponent[opp_pos]
+                you[pos] = 0
+                opponent[opp_pos] = 0
+        
+        return you, opponent, extra_turn
+    
+    def evaluate(you, opponent):
+        return you[6] - opponent[6]
+    
+    def is_terminal(you, opponent):
+        return sum(you[:6]) == 0 or sum(opponent[:6]) == 0
+    
+    def terminal_score(you, opponent):
+        my_score = you[6] + sum(you[:6])
+        opp_score = opponent[6] + sum(opponent[:6])
+        return my_score - opp_score
+    
+    def minimax(you, opponent, depth, alpha, beta, my_turn):
+        if is_terminal(you, opponent):
+            return terminal_score(you, opponent), None
+        
+        if depth == 0:
+            return evaluate(you, opponent), None
+        
+        if my_turn:
+            best_score = float('-inf')
+            best_move = None
+            for m in range(6):
+                if you[m] > 0:
+                    new_you, new_opp, extra = simulate(you, opponent, m)
+                    if extra:
+                        score, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                    else:
+                        score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                    if score > best_score:
+                        best_score = score
+                        best_move = m
+                    alpha = max(alpha, score)
+                    if beta <= alpha:
+                        break
+            return best_score, best_move
+        else:
+            # Opponent's turn - they try to maximize their score (minimize ours)
+            best_score = float('inf')
+            best_move = None
+            for m in range(6):
+                if you[m] > 0:  # 'you' here is the opponent's board
+                    new_you, new_opp, extra = simulate(you, opponent, m)
+                    if extra:
+                        score, _ = minimax(new_you, new_opp, depth, alpha, beta, False)
+                    else:
+                        score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+                    if score < best_score:
+                        best_score = score
+                        best_move = m
+                    beta = min(beta, score)
+                    if beta <= alpha:
+                        break
+            return best_score, best_move
+    
+    _, best = minimax(you, opponent, 8, float('-inf'), float('inf'), True)
+    return best
+```
+
+Wait, there's an issue. When opponent plays and doesn't get an extra turn, we swap perspectives. So `new_opp, new_you` becomes the new `you, opponent` from my perspective. But the score should still be from my perspective.
+
+Let me think again... After opponent plays (no extra turn), the state becomes (new_opp, new_you) from my perspective. That's correct - opponent's state becomes mine, my state becomes theirs. And since it's my turn again, my_turn = True.
+
+Actually wait, that's wrong. After opponent plays without extra turn, it becomes MY turn. And the board state:
+- From opponent's simulation: new_you is opponent's updated board, new_opp is my updated board
+- From my perspective: opponent = new_you, you = new_opp
+
+So when I call minimax again, I should pass (new_opp, new_you, ..., True) which gives me my board as 'you' and opponent's as 'opponent'. That looks correct.
+
+But the issue is during the opponent's turn, when my_turn=False. The 'you' parameter is actually the opponent's board. Let me trace through:
+
+1. minimax(my_board, opp_board, depth, ..., True) - I'm choosing
+2. I pick move m, simulate(my_board, opp_board, m) returns (new_my, new_opp, extra)
+3. If no extra turn: minimax(new_opp, new_my, depth-1, ..., False) - opponent is choosing
+4. In that call, 'you' = new_opp (opponent's board), 'opponent' = new_my (my board)
+5. Opponent picks move, simulate(new_opp, new_my, move) returns (opp_after, my_after, extra)
+6. If no extra turn: minimax(my_after, opp_after, depth-1, ..., True)
+
+This seems correct! The terminal_score and evaluate functions need to be adjusted though because they're always from my original perspective, but the boards are swapped during opponent's turn.
+
+Hmm, this is getting complicated. Let me use a cleaner approach where I always track whose turn it is but evaluate from a consistent perspective.
+
+Let me rewrite with clearer variable names:
+</thinking>
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate(player_pits, opponent_pits, move):
+        """Simulate a move. Returns (new_player_pits, new_opponent_pits, extra_turn)"""
+        player_pits = player_pits[:]
+        opponent_pits = opponent_pits[:]
+        
+        seeds = player_pits[move]
+        player_pits[move] = 0
+        pos = move
+        
+        while seeds > 0:
+            pos += 1
+            if pos < 6:
+                player_pits[pos] += 1
+                seeds -= 1
+            elif pos == 6:
+                player_pits[6] += 1
+                seeds -= 1
+            elif pos < 13:
+                opponent_pits[pos - 7] += 1
+                seeds -= 1
+            else:
+                pos = -1
+        
+        extra_turn = (pos == 6)
+        
+        # Capture: last seed in empty house on player's side
+        if 0 <= pos < 6 and player_pits[pos] == 1:
+            opp_idx = 5 - pos
+            if opponent_pits[opp_idx] > 0:
+                player_pits[6] += 1 + opponent_pits[opp_idx]
+                player_pits[pos] = 0
+                opponent_pits[opp_idx] = 0
+        
+        return player_pits, opponent_pits, extra_turn
+    
+    def game_over(my_pits, opp_pits):
+        return sum(my_pits[:6]) == 0 or sum(opp_pits[:6]) == 0
+    
+    def final_score(my_pits, opp_pits):
+        my_total = my_pits[6] + sum(my_pits[:6])
+        opp_total = opp_pits[6] + sum(opp_pits[:6])
+        return my_total - opp_total
+    
+    def evaluate(my_pits, opp_pits):
+        # Heuristic: score difference plus small bonus for seeds on my side
+        score = my_pits[6] - opp_pits[6]
+        # Bonus for having more seeds available
+        score += 0.1 * (sum(my_pits[:6]) - sum(opp_pits[:6]))
+        return score
+    
+    def minimax(my_pits, opp_pits, depth, alpha, beta, is_my_turn):
+        """
+        Always evaluates from original 'my' perspective.
+        my_pits/opp_pits are always from original my perspective.
+        is_my_turn indicates whose turn it is.
+        """
+        if game_over(my_pits, opp_pits):
+            return final_score(my_pits, opp_pits), None
+        
+        if depth == 0:
+            return evaluate(my_pits, opp_pits), None
+        
+        if is_my_turn:
+            if sum(my_pits[:6]) == 0:
+                return final_score(my_pits, opp_pits), None
+            best_score = float('-inf')
+            best_move = None
+            for m in range(6):
+                if my_pits[m] > 0:
+                    new_my, new_opp, extra = simulate(my_pits, opp_pits, m)
+                    if extra:
+                        score, _ = minimax(new_my, new_opp, depth, alpha, beta, True)
+                    else:
+                        score, _ = minimax(new_my, new_opp, depth - 1, alpha, beta, False)
+                    if score > best_score:
+                        best_score = score
+                        best_move = m
+                    alpha = max(alpha, score)
+                    if beta <= alpha:
+                        break
+            return best_score, best_move
+        else:
+            if sum(opp_pits[:6]) == 0:
+                return final_score(my_pits, opp_pits), None
+            best_score = float('inf')
+            best_move = None
+            for m in range(6):
+                if opp_pits[m] > 0:
+                    # Opponent makes move - simulate from their perspective
+                    new_opp, new_my, extra = simulate(opp_pits, my_pits, m)
+                    if extra:
+                        score, _ = minimax(new_my, new_opp, depth, alpha, beta, False)
+                    else:
+                        score, _ = minimax(new_my, new_opp, depth - 1, alpha, beta, True)
+                    if score < best_score:
+                        best_score = score
+                        best_move = m
+                    beta = min(beta, score)
+                    if beta <= alpha:
+                        break
+            return best_score, best_move
+    
+    # Iterative deepening with time limit awareness
+    import time
+    start = time.time()
+    best_move = None
+    
+    # Find any legal move as fallback
+    for m in range(6):
+        if you[m] > 0:
+            best_move = m
+            break
+    
+    # Try increasing depths
+    for depth in range(1, 15):
+        if time.time() - start > 0.8:
+            break
+        try:
+            _, move = minimax(you[:], opponent[:], depth, float('-inf'), float('inf'), True)
+            if move is not None:
+                best_move = move
+        except:
+            break
+        if time.time() - start > 0.8:
+            break
+    
+    return best_move
+</code>

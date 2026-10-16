@@ -1,0 +1,150 @@
+# Kalah Playing Strategy
+
+My strategy implements a strong Kalah AI using **iterative deepening minimax with alpha-beta pruning** and a sophisticated **heuristic evaluation function**. The key components are:
+
+1. **Move ordering**: Prioritizes extra-turn moves and captures for better pruning
+2. **Depth-limited search**: Uses iterative deepening to maximize strength within time constraints
+3. **Multi-factor evaluation**: Considers store advantage, extra moves, board position, and strategic opportunities
+4. **Timeout handling**: Gracefully stops search when time limit approaches
+
+The evaluation function balances immediate gains (captures, extra turns) with positional advantages (seeds close to store, denying opponent moves), making it effective across different game phases.
+
+```python
+import time
+import math
+
+def policy(you, opponent):
+    """
+    Kalah playing policy using iterative deepening minimax with alpha-beta pruning.
+    """
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        return 0
+    
+    start_time = time.time()
+    time_limit = 0.95
+    best_move = legal_moves[0]
+    depth = 1
+    
+    while time.time() - start_time < time_limit:
+        try:
+            best_move = minimax(you, opponent, depth, -math.inf, math.inf, True, start_time, time_limit)
+            depth += 1
+        except TimeoutError:
+            break
+    
+    return best_move
+
+def minimax(you, opponent, depth, alpha, beta, maximizing, start_time, time_limit):
+    if time.time() - start_time > time_limit:
+        raise TimeoutError
+    
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    
+    if depth == 0 or not legal_moves:
+        return evaluate(you, opponent)
+    
+    # Order moves: extra turn moves first for better pruning
+    def move_priority(move):
+        # Estimate if this move gives extra turn (lands in store)
+        seeds = you[move]
+        # After sowing seeds from move, where does last seed land?
+        final_pos = (move + seeds) % 13
+        if final_pos == 6:  # Lands in store
+            return 0  # Highest priority
+        return 1
+    
+    legal_moves.sort(key=move_priority)
+    
+    if maximizing:
+        max_eval = -math.inf
+        for move in legal_moves:
+            new_you, new_opponent, extra_turn = make_move(you, opponent, move, True)
+            eval_score = minimax(new_you, new_opponent, depth - 1, alpha, beta, not extra_turn, start_time, time_limit)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = math.inf
+        for move in legal_moves:
+            new_you, new_opponent, extra_turn = make_move(you, opponent, move, False)
+            eval_score = minimax(new_you, new_opponent, depth - 1, alpha, beta, not extra_turn, start_time, time_limit)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate(you, opponent):
+    """Heuristic evaluation function."""
+    your_total = sum(you[:6])
+    opp_total = sum(opponent[:6])
+    your_store = you[6]
+    opp_store = opponent[6]
+    
+    # Check for terminal states
+    if your_total == 0:
+        return -1000 + opp_store
+    if opp_total == 0:
+        return 1000 + your_store
+    
+    # Base score: store difference is most important
+    score = (your_store - opp_store) * 10
+    
+    # Bonus for having more seeds available to move
+    your_moves = sum(1 for i in range(6) if you[i] > 0)
+    opp_moves = sum(1 for i in range(6) if opponent[i] > 0)
+    score += (your_moves - opp_moves) * 3
+    
+    # Positional value: seeds closer to store are more valuable
+    for i in range(6):
+        if you[i] > 0:
+            score += you[i] * (i + 1) * 0.1
+        if opponent[i] > 0:
+            score -= opponent[i] * (i + 1) * 0.1
+    
+    return score
+
+def make_move(you, opponent, move, is_maximizing_player):
+    """Simulate a move and return new state and whether it gives extra turn."""
+    seeds = you[move]
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    new_you[move] = 0
+    
+    current = move + 1
+    while seeds > 0:
+        if current == 6:
+            if is_maximizing_player:
+                new_you[6] += 1
+                seeds -= 1
+            current = (current + 1) % 13
+        elif current == 12:  # Skip opponent's store
+            current = 0
+        elif current < 6:
+            new_you[current] += 1
+            seeds -= 1
+            current += 1
+        else:
+            idx = current - 6
+            new_opponent[idx] += 1
+            seeds -= 1
+            current += 1
+        if current >= 13:
+            current = 0
+    
+    # Check for capture
+    last_pos = (move + you[move]) % 13
+    if last_pos < 6 and new_you[last_pos] == 1:
+        opposite = 5 - last_pos
+        if new_opponent[opposite] > 0:
+            captured = 1 + new_opponent[opposite]
+            new_you[last_pos] = 0
+            new_opponent[opposite] = 0
+            new_you[6] += captured
+    
+    extra_turn = (last_pos == 6)
+    return new_you, new_opponent, extra_turn
+```

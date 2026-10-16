@@ -1,0 +1,150 @@
+
+import numpy as np
+from collections import deque
+
+def policy(board):
+    """
+    Implements a smart move-selection policy for Lines of Action.
+    
+    Strategy:
+    1. Generate all legal moves.
+    2. For each move, simulate it and compute the number of connected components of our pieces.
+    3. Choose the move that minimizes the number of connected components.
+    4. As tie-breakers, prefer moves that capture enemy pieces and/or move towards the center.
+    """
+    # Convert board to numpy array for easier manipulation
+    board = np.array(board, dtype=int)
+    n = 8
+    player = 1  # current player's pieces are 1
+    opponent = -1
+
+    # Get all legal moves
+    legal_moves = generate_legal_moves(board, player)
+
+    if not legal_moves:
+        # Should not happen in a valid game, but fallback
+        return "0,0:0,0"
+
+    # If only one legal move, return it
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+
+    # Evaluate each move: we want to minimize the number of connected components
+    best_move = None
+    best_score = float('-inf')
+
+    for move in legal_moves:
+        # Parse move
+        from_str, to_str = move.split(':')
+        from_row, from_col = map(int, from_str.split(','))
+        to_row, to_col = map(int, to_str.split(','))
+        
+        # Simulate the move
+        new_board = board.copy()
+        new_board[to_row, to_col] = player
+        new_board[from_row, from_col] = 0
+
+        # Compute connected components of player's pieces after move
+        components = count_connected_components(new_board, player)
+        
+        # Compute number of captured enemy pieces
+        captured = 1 if board[to_row, to_col] == opponent else 0
+
+        # Score: higher is better
+        # Primary: reduce components (more reduction = better)
+        # Secondary: capture opponent pieces
+        # Tertiary: move pieces toward center (to enable better connectivity)
+        center_value = -(abs(to_row - 3.5) + abs(to_col - 3.5))  # center is at (3.5,3.5); higher when closer to center
+        
+        score = (10 - components) * 100 + captured * 50 + center_value
+
+        # Also discourage moves that create isolated pieces (if our component count increased)
+        # But since we are minimizing components, we focus on lower components as better.
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+
+def generate_legal_moves(board, player):
+    """
+    Generate all legal moves for the current player.
+    A piece can move in any of the 8 directions.
+    The distance must equal the total number of pieces (both players) in that line of movement.
+    Cannot jump over opponent pieces, but can jump over friendly pieces.
+    Can land on opponent piece (capture) or empty.
+    """
+    n = 8
+    moves = []
+    
+    # Directions: 8 directions
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    for r in range(n):
+        for c in range(n):
+            if board[r, c] == player:
+                # Try each direction
+                for dr, dc in directions:
+                    # Count pieces in this line until we hit an edge or opponent
+                    count = 0
+                    # Step along the line, counting pieces
+                    for step in range(1, n):
+                        nr, nc = r + dr * step, c + dc * step
+                        if not (0 <= nr < n and 0 <= nc < n):
+                            # Hit edge
+                            break
+                        if board[nr, nc] == opponent:
+                            # We hit an enemy piece: we can capture it if the total count equals step
+                            count += 1  # count the enemy piece
+                            if count == step:
+                                # Legal move: we step on the enemy piece
+                                moves.append(f"{r},{c}:{nr},{nc}")
+                            break  # cannot go beyond enemy
+                        elif board[nr, nc] == player:
+                            # Friendly piece: count it and continue
+                            count += 1
+                            # We can keep going (jump over)
+                        else:  # empty
+                            # Can land here if count equals step
+                            if count == step:
+                                moves.append(f"{r},{c}:{nr},{nc}")
+                            # continue to next step (can we jump over empty? No! rule says you must move EXACTLY count squares, but you can only jump over friendly, not empty. So empty blocks the path unless you land on it at correct step)
+                            # But note: you cannot jump over empty. So once you hit empty, if it's not at the required step, you stop.
+                            # And if it is at required step, you land and stop.
+                            # So we don't continue after empty unless we landed.
+                            # So we break here because beyond empty is blocked by the rule (no jumping over empty).
+                            break
+
+    return moves
+
+
+def count_connected_components(board, player):
+    """
+    Count the number of connected components for player's pieces using BFS.
+    Connectivity: 8 directions.
+    """
+    n = 8
+    visited = [[False] * n for _ in range(n)]
+    components = 0
+
+    # Directions for 8 neighbors
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    for r in range(n):
+        for c in range(n):
+            if board[r, c] == player and not visited[r][c]:
+                components += 1
+                # BFS to mark all connected pieces
+                queue = deque([(r, c)])
+                visited[r][c] = True
+                while queue:
+                    curr_r, curr_c = queue.popleft()
+                    for dr, dc in directions:
+                        nr, nc = curr_r + dr, curr_c + dc
+                        if 0 <= nr < n and 0 <= nc < n and not visited[nr][nc] and board[nr][nc] == player:
+                            visited[nr][nc] = True
+                            queue.append((nr, nc))
+    
+    return components

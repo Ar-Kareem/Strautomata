@@ -1,0 +1,160 @@
+
+import numpy as np
+from itertools import product
+
+# ---------- Helper functions -----------------------------------------
+
+def rotate_quad(board: np.ndarray, quad: int, direction: str) -> np.ndarray:
+    """Rotate the 3×3 quadrant `quad` of `board` in place and return a new board."""
+    new = board.copy()
+    # mapping of quadrant to slice indices (0‑based)
+    rows = slice(0, 3) if quad < 2 else slice(3, 6)
+    cols = slice(0, 3) if quad % 2 == 0 else slice(3, 6)
+    sub = new[rows, cols]
+    if direction == 'L':          # 90° anticlockwise
+        sub[:] = np.rot90(sub, k=1)
+    else:                         # 'R' – 90° clockwise
+        sub[:] = np.rot90(sub, k=-1)
+    return new
+
+def win_for(board: np.ndarray, player: int) -> bool:
+    """Return True if `player` (1 for us, 2 for opponent) has ≥5 in a row."""
+    # Build a binary mask: 1 where player stones are, 0 elsewhere
+    mask = (board == player).astype(int)
+
+    # helper to test all length‑5 windows along a line
+    def any_five(line):
+        # sliding window of length 5
+        for i in range(len(line) - 4):
+            if line[i:i+5].sum() == 5:
+                return True
+        return False
+
+    # rows & columns
+    for i in range(6):
+        if any_five(mask[i, :]) or any_five(mask[:, i]):
+            return True
+
+    # diagonal (↘) and anti‑diagonal (↙)
+    # collect all diagonals that are at least length 5
+    for dr, dc in [(1, 1), (1, -1)]:
+        for start_r in range(6):
+            for start_c in range(6):
+                # gather the diagonal starting at (start_r,start_c)
+                r, c = start_r, start_c
+                line = []
+                while 0 <= r < 6 and 0 <= c < 6:
+                    line.append(mask[r, c])
+                    r += dr
+                    c += dc
+                if len(line) >= 5 and any_five(np.array(line)):
+                    return True
+    return False
+
+def all_five_windows():
+    """Pre‑compute the list of coordinate windows (each length‑5) on a 6×6 board."""
+    windows = []
+    # horizontal
+    for r in range(6):
+        for c in range(2):
+            windows.append([(r, c+i) for i in range(5)])
+    # vertical
+    for c in range(6):
+        for r in range(2):
+            windows.append([(r+i, c) for i in range(5)])
+    # diagonal ↘
+    for r in range(2):
+        for c in range(2):
+            windows.append([(r+i, c+i) for i in range(5)])
+    # anti‑diagonal ↙
+    for r in range(2):
+        for c in range(4,6):
+            windows.append([(r+i, c-i) for i in range(5)])
+    return windows
+
+WINDOWS = all_five_windows()
+
+def heuristic(board: np.ndarray) -> int:
+    """Simple score: sum (our stones)^2 over all windows that contain no opponent stone."""
+    our = (board == 1).astype(int)
+    opp = (board == 2).astype(int)
+    score = 0
+    for win in WINDOWS:
+        opp_in = any(opp[r, c] for r, c in win)
+        if opp_in:
+            continue
+        our_cnt = sum(our[r, c] for r, c in win)
+        if our_cnt:
+            score += our_cnt * our_cnt
+    return score
+
+# ---------- Core policy ----------------------------------------------
+
+def policy(you, opponent) -> str:
+    """
+    Return a legal Pentago move as "row,col,quad,dir".
+    `you` and `opponent` are 6×6 arrays (list‑like) of 0/1.
+    """
+    # Build a unified board: 0 empty, 1 = us, 2 = opponent
+    board = np.zeros((6, 6), dtype=int)
+    board += np.array(you, dtype=int)
+    board += 2 * np.array(opponent, dtype=int)
+
+    empty_cells = [(r, c) for r in range(6) for c in range(6) if board[r, c] == 0]
+    best_move = None
+    best_score = -1
+
+    # --- 1. look for immediate winning move -------------------------
+    for r, c in empty_cells:
+        for quad in range(4):
+            for dirc in ('L', 'R'):
+                b = board.copy()
+                b[r, c] = 1                                   # place our marble
+                b = rotate_quad(b, quad, dirc)                # rotate
+                if win_for(b, 1):
+                    # format is 1‑based row/col
+                    return f"{r+1},{c+1},{quad},{dirc}"
+
+    # --- 2. evaluate safe moves ------------------------------------
+    for r, c in empty_cells:
+        for quad in range(4):
+            for dirc in ('L', 'R'):
+                b = board.copy()
+                b[r, c] = 1
+                b = rotate_quad(b, quad, dirc)
+
+                # check if opponent can win after this move
+                opp_can_win = False
+                opp_empty = [(rr, cc) for rr in range(6) for cc in range(6) if b[rr, cc] == 0]
+                for rr, cc in opp_empty:
+                    for q2 in range(4):
+                        for d2 in ('L', 'R'):
+                            b2 = b.copy()
+                            b2[rr, cc] = 2
+                            b2 = rotate_quad(b2, q2, d2)
+                            if win_for(b2, 2):
+                                opp_can_win = True
+                                break
+                        if opp_can_win:
+                            break
+                    if opp_can_win:
+                        break
+
+                if opp_can_win:
+                    continue            # not a safe move
+
+                # safe – compute heuristic score
+                sc = heuristic(b)
+                if sc > best_score:
+                    best_score = sc
+                    best_move = (r, c, quad, dirc)
+
+    # If we found a safe move, return it
+    if best_move:
+        r, c, quad, dirc = best_move
+        return f"{r+1},{c+1},{quad},{dirc}"
+
+    # --- 3. fallback (no safe move) ---------------------------------
+    # Just return the first legal move we examined (should never happen often)
+    r, c = empty_cells[0]
+    return f"{r+1},{c+1},0,L"

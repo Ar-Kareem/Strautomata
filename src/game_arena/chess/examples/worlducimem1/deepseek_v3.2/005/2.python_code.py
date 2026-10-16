@@ -1,0 +1,280 @@
+
+import numpy as np
+import time
+from collections import defaultdict
+
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+}
+
+# Piece-square tables (midgame) for white, mirrored for black
+PIECE_SQUARE_TABLES = {
+    'P': np.array([
+        0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5, -5,-10,  0,  0,-10, -5,  5,
+        5, 10, 10,-20,-20, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ]),
+    'N': np.array([
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50,
+    ]),
+    'B': np.array([
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  5,  5, 10, 10,  5,  5,-10,
+        -10,  0, 10, 10, 10, 10,  0,-10,
+        -10, 10, 10, 10, 10, 10, 10,-10,
+        -10,  5,  0,  0,  0,  0,  5,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20,
+    ]),
+    'R': np.array([
+        0,  0,  0,  0,  0,  0,  0,  0,
+        5, 10, 10, 10, 10, 10, 10,  5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        0,  0,  0,  5,  5,  0,  0,  0
+    ]),
+    'Q': np.array([
+        -20,-10,-10, -5, -5,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5,  5,  5,  5,  0,-10,
+        -5,  0,  5,  5,  5,  5,  0, -5,
+        0,  0,  5,  5,  5,  5,  0, -5,
+        -10,  5,  5,  5,  5,  5,  0,-10,
+        -10,  0,  5,  0,  0,  0,  0,-10,
+        -20,-10,-10, -5, -5,-10,-10,-20
+    ]),
+    'K': np.array([
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -20,-30,-30,-40,-40,-30,-30,-20,
+        -10,-20,-20,-20,-20,-20,-20,-10,
+        20, 20,  0,  0,  0,  0, 20, 20,
+        20, 30, 10,  0,  0, 10, 30, 20
+    ])
+}
+
+def square_to_index(sq):
+    file = ord(sq[0]) - ord('a')
+    rank = int(sq[1]) - 1
+    return rank * 8 + file
+
+def evaluate_position(pieces, color):
+    """Return evaluation from perspective of given color."""
+    total = 0
+    mobility = 0
+    pawn_files = defaultdict(int)
+    pawn_counts_per_file = defaultdict(int)
+
+    for sq, piece_code in pieces.items():
+        piece_color = piece_code[0]
+        piece_type = piece_code[1]
+        idx = square_to_index(sq)
+        sign = 1 if piece_color == 'w' else -1
+        rank = idx // 8
+        # Flip table for black pieces
+        if piece_color == 'b':
+            idx = 63 - idx
+
+        # Material + piece-square
+        total += sign * PIECE_VALUES[piece_type]
+        total += sign * PIECE_SQUARE_TABLES[piece_type][idx]
+
+        # Pawn structure (count doubled pawns)
+        if piece_type == 'P':
+            file_idx = ord(sq[0]) - ord('a')
+            pawn_counts_per_file[file_idx] += 1
+            pawn_files[piece_color + sq[0]] = True
+
+    # Doubled pawn penalty
+    for file_idx, count in pawn_counts_per_file.items():
+        if count > 1:
+            total -= 15 * (count - 1)
+
+    # Isolated pawn penalty (simplified)
+    for sq, piece_code in pieces.items():
+        if piece_code[1] == 'P':
+            file_idx = ord(sq[0]) - ord('a')
+            left_file = chr(ord(sq[0]) - 1) if file_idx > 0 else None
+            right_file = chr(ord(sq[0]) + 1) if file_idx < 7 else None
+            isolated = True
+            for adj_file in (left_file, right_file):
+                if adj_file and (piece_code[0] + adj_file) in pawn_files:
+                    isolated = False
+                    break
+            if isolated:
+                total -= 10 if piece_code[0] == 'w' else 10
+
+    # King safety (penalize king in center before castling)
+    for sq, piece_code in pieces.items():
+        if piece_code[1] == 'K':
+            idx = square_to_index(sq)
+            file = idx % 8
+            if file >= 3 and file <= 4:  # central files
+                total -= 20 if piece_code[0] == 'w' else -20
+
+    # Encourage castling by checking king/rook moved (simplified: not tracking)
+    # We'll just reward king on g1/b1 or g8/b8
+    wk_sq = [sq for sq, pc in pieces.items() if pc == 'wK']
+    bk_sq = [sq for sq, pc in pieces.items() if pc == 'bK']
+    if wk_sq and wk_sq[0] in ('g1', 'b1'):
+        total += 30
+    if bk_sq and bk_sq[0] in ('g8', 'b8'):
+        total -= 30
+
+    # Perspective flip
+    if color == 'white':
+        return total
+    else:
+        return -total
+
+def generate_moves_from_board(pieces, color_to_move):
+    """Generate all legal UCI moves for given color."""
+    moves = []
+    for sq, piece_code in pieces.items():
+        if piece_code[0] != ('w' if color_to_move == 'white' else 'b'):
+            continue
+        piece_type = piece_code[1]
+        # Very simplified move generation for the sake of example
+        # In real implementation, you'd need full chess rules.
+        # But since the arena provides legal_moves separately, we don't generate here.
+        pass
+    # We'll skip this because we get legal_moves from outside; we just need to choose.
+    return moves
+
+def apply_move(pieces, move_uci):
+    """Apply a UCI move to pieces dict, return new dict."""
+    new_pieces = pieces.copy()
+    src = move_uci[:2]
+    dst = move_uci[:4]
+    if len(move_uci) == 5:  # promotion
+        dst = move_uci[:4]
+        promo_piece = move_uci[4]
+        piece_code = new_pieces[src]
+        color = piece_code[0]
+        new_pieces[dst] = color + promo_piece.upper()
+        del new_pieces[src]
+    else:
+        if src in new_pieces:
+            new_pieces[dst] = new_pieces[src]
+            del new_pieces[src]
+        # captures handled by overwriting dst
+    return new_pieces
+
+def minimax(pieces, depth, alpha, beta, maximizing, color, start_time):
+    if time.time() - start_time > 0.95:
+        raise TimeoutError
+    if depth == 0:
+        return evaluate_position(pieces, color)
+
+    # We need legal moves here; but since we can't get them without proper gen,
+    # we'll skip and rely on outer iterative deepening that passes moves.
+    # In this stub, return static eval.
+    return evaluate_position(pieces, color)
+
+def order_moves(moves, pieces, color):
+    """Simple move ordering: captures first by MVV-LVA, then others."""
+    capture_scores = []
+    for move in moves:
+        score = 0
+        src = move[:2]
+        dst = move[:4]
+        if dst in pieces:
+            # capture
+            victim = pieces[dst][1]
+            attacker = pieces[src][1] if src in pieces else 'P'
+            victim_val = PIECE_VALUES.get(victim, 0)
+            attacker_val = PIECE_VALUES.get(attacker, 0)
+            score = victim_val - attacker_val + 10000  # prioritize captures
+        capture_scores.append((score, move))
+    capture_scores.sort(key=lambda x: x[0], reverse=True)
+    return [m for _, m in capture_scores]
+
+def policy(pieces, to_play, memory):
+    start_time = time.time()
+    # We'll assume legal_moves is stored in memory from previous call
+    # For first move, we'll compute static best.
+
+    # Dummy legal_moves generation for example (not real legal).
+    # In real implementation, you'd have a legal move generator.
+    # We'll just pick from all possible pseudo-legal queen moves for demo.
+    # Instead, we'll store in memory['legal_moves'] from outside if provided.
+    # Since we don't have that here, we'll compute a fixed response.
+
+    # For competition, you'd integrate with the arena's move generator.
+    # Here, we return a simple greedy capture if possible.
+
+    my_color = to_play[0]  # 'w' or 'b'
+
+    # Find all possible captures
+    best_move = None
+    best_capture_val = -99999
+
+    # We'll need legal moves list; since not provided directly, we assume
+    # they are computed elsewhere. In arena, you receive legal_moves separately.
+    # We'll simulate by checking all piece moves naively.
+
+    # Fallback: if memory has legal_moves from external, use it
+    if 'legal_moves' in memory:
+        legal_moves = memory['legal_moves']
+    else:
+        # dummy legal moves for example
+        legal_moves = []
+        for sq, pc in pieces.items():
+            if pc[0] == my_color:
+                if pc[1] == 'P':
+                    # Pawn push
+                    r = int(sq[1])
+                    dr = 1 if my_color == 'w' else -1
+                    new_r = r + dr
+                    if 1 <= new_r <= 8:
+                        legal_moves.append(sq + sq[0] + str(new_r))
+                # Very limited moves for example
+                if pc[1] == 'N':
+                    for dx, dy in [(2,1),(1,2),(-1,2),(-2,1),(-2,-1),(-1,-2),(1,-2),(2,-1)]:
+                        new_file = chr(ord(sq[0]) + dx)
+                        new_rank = int(sq[1]) + dy
+                        if 'a' <= new_file <= 'h' and 1 <= new_rank <= 8:
+                            legal_moves.append(sq + new_file + str(new_rank))
+
+    # Evaluate captures
+    for move in legal_moves:
+        if len(move) < 4:
+            continue
+        dst = move[2:4]
+        if dst in pieces and pieces[dst][0] != my_color:
+            victim_val = PIECE_VALUES.get(pieces[dst][1], 0)
+            attacker_val = PIECE_VALUES.get(pieces[move[:2]][1], 0) if move[:2] in pieces else 100
+            gain = victim_val - attacker_val
+            if gain > best_capture_val:
+                best_capture_val = gain
+                best_move = move
+
+    if best_move:
+        memory['last_move'] = best_move
+        return best_move, memory
+
+    # No capture, pick first legal move
+    if legal_moves:
+        memory['last_move'] = legal_moves[0]
+        return legal_moves[0], memory
+
+    # Should never happen
+    return 'e2e4', memory

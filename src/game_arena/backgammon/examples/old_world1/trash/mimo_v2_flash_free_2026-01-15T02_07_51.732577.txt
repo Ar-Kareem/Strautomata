@@ -1,0 +1,358 @@
+```python
+import itertools
+
+def policy(state):
+    def get_fields():
+        my_pts = state['my_pts']
+        opp_pts = state['opp_pts']
+        my_bar = state['my_bar']
+        opp_bar = state['opp_bar']
+        my_off = state['my_off']
+        opp_off = state['opp_off']
+        dice = state['dice']
+        return my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, dice
+
+    def generate_moves():
+        moves = []
+        # Single move for 1 die
+        if len(dice) == 1:
+            d = dice[0]
+            # Bar moves
+            if my_bar > 0:
+                target = 23 - d
+                if target >= 0 and opp_pts[target] < 2:
+                    moves.append((d, 'B', None, None))
+            else:
+                # Points
+                for i in range(24):
+                    if my_pts[i] > 0:
+                        # Regular move
+                        if i - d >= 0:
+                            if opp_pts[i - d] < 2:
+                                moves.append((d, f'A{i}', None, None))
+                        # Bearing off
+                        else:
+                            all_in_home = True
+                            for j in range(19, 24):
+                                if my_pts[j] > 0:
+                                    all_in_home = False
+                                    break
+                            if all_in_home:
+                                if i == 23 - d:
+                                    moves.append((d, f'A{i}', None, None))
+                                elif i < 23 - d:
+                                    # Check if all checkers are to the right of d
+                                    # Actually, standard rule: bear off if max point <= 6 and no checkers outside
+                                    # My indices: 23 (furthest home) to 19 (home board start).
+                                    # If i == 23-d, allowed.
+                                    # If i < 23-d, not allowed unless no checkers at 23-d?
+                                    # Actually, highest point is 23.
+                                    # Allowed if point index >= 23-d is empty.
+                                    blocked = False
+                                    for j in range(23-d+1, 24):
+                                        if my_pts[j] > 0:
+                                            blocked = True
+                                            break
+                                    if not blocked:
+                                        moves.append((d, f'A{i}', None, None))
+            if not moves:
+                moves.append((None, 'P', None, None))
+            return moves
+
+        # Two dice
+        d1, d2 = sorted(dice, reverse=True) # High, Low
+        found = False
+
+        # Bar moves
+        if my_bar > 0:
+            # Must try bar moves
+            # If both possible
+            t1 = 23 - d1
+            t2 = 23 - d2
+            # Check d1 (High)
+            if t1 >= 0 and opp_pts[t1] < 2:
+                # Try d2 from bar
+                if t2 >= 0 and opp_pts[t2] < 2:
+                    # If T1 == T2, impossible, so only one sequence.
+                    if t1 != t2:
+                        moves.append((d1, 'B', d2, 'B'))
+                        found = True
+                # Try d2 from non-bar
+                if not found:
+                    # Move High d1 from Bar, then Low d2 from points
+                    # Temporarily update state
+                    tmp_my_pts = my_pts[:]
+                    tmp_my_bar = my_bar - 1
+                    tmp_my_pts[t1] += 1
+                    # Check Low moves
+                    low_moves = get_regular_moves(tmp_my_pts, opp_pts, tmp_my_bar, d2)
+                    if low_moves:
+                        for fm in low_moves:
+                            moves.append((d1, 'B', d2, fm))
+                            found = True
+                    # Check Bear off for Low
+                    low_bo = get_bearing_off_moves(tmp_my_pts, tmp_my_bar, d2)
+                    if low_bo:
+                        for fm in low_bo:
+                            moves.append((d1, 'B', d2, fm))
+                            found = True
+            
+            # If we haven't found a valid High move from Bar, then we can't play High.
+            # Try Low from Bar (if High was invalid)
+            if not found:
+                if t2 >= 0 and opp_pts[t2] < 2:
+                    tmp_my_pts = my_pts[:]
+                    tmp_my_bar = my_bar - 1
+                    tmp_my_pts[t2] += 1
+                    # Try High d1 from points
+                    high_moves = get_regular_moves(tmp_my_pts, opp_pts, tmp_my_bar, d1)
+                    if high_moves:
+                        for fm in high_moves:
+                            moves.append((d2, 'B', d1, fm))
+                            found = True
+                    high_bo = get_bearing_off_moves(tmp_my_pts, tmp_my_bar, d1)
+                    if high_bo:
+                        for fm in high_bo:
+                            moves.append((d2, 'B', d1, fm))
+                            found = True
+        else:
+            # No bar checkers
+            # Try High then Low
+            # We need to recursively find if any sequence works.
+            # To avoid complex recursion, let's generate all valid 2-move sequences.
+            
+            # Helper to check full sequence
+            def check_seq(first_d, second_d, high_first):
+                # First move
+                m1_candidates = []
+                # Check bear off first
+                bo1 = get_bearing_off_moves(my_pts, my_bar, first_d)
+                if bo1: m1_candidates.extend(bo1)
+                # Reg moves
+                rg1 = get_regular_moves(my_pts, opp_pts, my_bar, first_d)
+                if rg1: m1_candidates.extend(rg1)
+                
+                if not m1_candidates: return False # Cannot play first die
+                
+                for src1 in m1_candidates:
+                    # Apply first move
+                    s_pts, s_bar = apply_move(my_pts, my_bar, src1, first_d)
+                    # Second move
+                    bo2 = get_bearing_off_moves(s_pts, s_bar, second_d)
+                    rg2 = get_regular_moves(s_pts, opp_pts, s_bar, second_d)
+                    if bo2 or rg2:
+                        # Record valid sequence
+                        src2 = (bo2[0] if bo2 else rg2[0]) # Just take one valid second move for simplicity
+                        # But we need to prioritize using both dice.
+                        # The engine forces us to play both if possible.
+                        # We just need to return *a* valid move.
+                        if high_first:
+                            moves.append((first_d, src1, second_d, src2))
+                        else:
+                            moves.append((second_d, src1, first_d, src2))
+                        return True # Found a valid sequence
+                return False
+
+            if check_seq(d1, d2, True):
+                found = True
+            elif check_seq(d2, d1, False):
+                found = True
+        
+        if not moves:
+            moves.append((None, 'P', None, 'P'))
+        return moves
+
+    def get_regular_moves(pts, opp_pts, bar, d):
+        if bar > 0:
+            target = 23 - d
+            if target >= 0 and opp_pts[target] < 2:
+                return ['B']
+            return []
+        res = []
+        for i in range(24):
+            if pts[i] > 0:
+                if i - d >= 0 and opp_pts[i - d] < 2:
+                    res.append(f'A{i}')
+        return res
+
+    def get_bearing_off_moves(pts, bar, d):
+        if bar > 0: return []
+        # Check if all checkers are in home board (19-23)
+        for i in range(19):
+            if pts[i] > 0: return []
+        # Logic for bearing off
+        # If we have a checker at 23-d, we must bear it off (if highest)
+        # But here we just return candidates.
+        # Engine handles "highest checker" rule for single die? 
+        # Actually, "must play higher die if only one".
+        # But if we generate moves, we must ensure we don't generate illegal bear offs.
+        # 1. If exact 23-d, bear off.
+        # 2. If 23-d empty, bear off highest checker below 23-d.
+        # 3. If 23-d is valid, we must use it (engine might enforce? Or we should).
+        # To be safe, we generate valid bear offs.
+        
+        # Check 1
+        if pts[23-d] > 0:
+            return [f'A{23-d}']
+        
+        # Check 2
+        # Find highest checker < 23-d (actually <= 23-d, but we checked 23-d).
+        # Wait, if 23-d is empty, we can bear off highest checker < 23-d.
+        # But engine might reject if a checker on 23-d could have been born off? 
+        # We try to be smart. If 23-d is empty, find highest existing.
+        highest = -1
+        for i in range(23-d, -1, -1): # Should check 0 to 23-d?
+            # Standard rule: If point 23-d is empty, bear off highest checker.
+            if pts[i] > 0:
+                highest = i
+                break
+        if highest != -1:
+            return [f'A{highest}']
+        return []
+
+    def apply_move(pts, bar, src, d):
+        if src == 'B':
+            new_bar = bar - 1
+            new_pts = pts[:]
+            target = 23 - d
+            new_pts[target] += 1
+            return new_pts, new_bar
+        else:
+            idx = int(src[1:])
+            new_pts = pts[:]
+            new_pts[idx] -= 1
+            # If bearing off, idx - d < 0, we don't add to any point.
+            if idx - d >= 0:
+                new_pts[idx - d] += 1
+            return new_pts, bar
+
+    # Main execution
+    my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, dice = get_fields()
+    move_candidates = generate_moves()
+    
+    # Policy: Prefer moves that hit opponent (landing on 1 checker).
+    # Then prefer moves that make points (stack of 2+).
+    # Then prefer spreading to safe areas.
+    best_move = move_candidates[0]
+    max_score = -1000
+
+    for move in move_candidates:
+        d1, src1, d2, src2 = move
+        if src1 == 'P':
+            # Only pass
+            return 'H:P,P' if len(dice)==0 else ('L:P,P' if len(dice)==1 else 'H:P,P')
+        
+        # Score calculation
+        score = 0
+        
+        # Apply both moves to a temp state
+        s_pts, s_bar = my_pts[:], my_bar
+        # Move 1
+        s_pts, s_bar = apply_move(s_pts, s_bar, src1, d1)
+        # Move 2
+        if src2:
+            s_pts, s_bar = apply_move(s_pts, s_bar, src2, d2)
+        
+        # Check hits
+        def check_hit(src, d, pts, opp):
+            if src == 'B': target = 23 - d
+            else: target = int(src[1:]) - d
+            if target >= 0 and opp[target] == 1: return True
+            return False
+        
+        hit1 = check_hit(src1, d1, my_pts, opp_pts)
+        hit2 = src2 and check_hit(src2, d2, s_pts, opp_pts) # Opp state changed after move 1
+        
+        if hit1: score += 50
+        if hit2: score += 50
+
+        # Make points
+        def count_made(pts, old_pts):
+            c = 0
+            for i in range(24):
+                if pts[i] >= 2 and old_pts[i] < 2:
+                    c += 1
+            return c
+        made1 = count_made(apply_move(my_pts, my_bar, src1, d1)[0], my_pts)
+        score += made1 * 20
+        
+        if src2:
+            mid_pts, _ = apply_move(my_pts, my_bar, src1, d1)
+            made2 = count_made(apply_move(mid_pts, my_bar, src2, d2)[0], mid_pts)
+            score += made2 * 20
+
+        # Penalty for leaving blots
+        def count_blots(pts, old_pts, src):
+            # If we moved OFF a point that had >1 checkers and left it at 1 (or 0)
+            # Actually, simpler: check old src point.
+            c = 0
+            if src == 'B': return 0
+            idx = int(src[1:])
+            if my_pts[idx] > 1: 
+                if pts[idx] == 1: c += 1
+            # Check point landed on? No, landing on 1 is hit (good), landing empty is ok.
+            return c
+        # Logic for blots is complex, let's use simple "spread" logic
+        # Penalize leaving single checkers in start if possible
+        if my_pts[23] > 0 and src1 != 'A23': 
+            # If we moved away from 23 and left 1
+            if src1 == 'A23' and my_pts[23] > 1:
+                 pass # moved, left?
+        
+        # Safety check: Don't leave blots near opponent
+        # Check if src1 moved from a point that is now vulnerable
+        if src1 != 'B':
+            p1 = int(src1[1:])
+            # If original point had >1, and now has 1, and p1 is in range 0..23
+            # (Assuming we just moved one checker)
+            # We need to know state BEFORE move.
+            if my_pts[p1] > 1:
+                # Did we leave a blot?
+                # Check if p1 is now 1.
+                # We can't easily check 'now' without tracking.
+                # Let's check 'danger' of the resulting position.
+            if opp_bar > 0:
+                # If opp on bar, points 0-5 are safe from hits (opp enters 23 down to 18)
+                # Points 18-23 are risky if opp enters.
+                # Points 0-5 (indices) are actually "my home".
+                # My home board is 19-23.
+                # If I move into 0-5 (opponent's home), I risk getting hit if opp bears off? No.
+                # If I move into 0-5 (opp home), opp cannot hit from bar.
+                # Only risk is from 6-17.
+                pass
+
+        # Heuristic: Keep checkers safe (make points)
+        # Heuristic: If opp has checkers on bar, advance forward checkers (e.g., 23->18)
+        
+        # Add randomness/tie-breaking
+        score += hash(str(move)) % 10
+        
+        if score > max_score:
+            max_score = score
+            best_move = move
+
+    # Format output
+    d1, src1, d2, src2 = best_move
+    if src1 == 'P': return 'H:P,P'
+    
+    # Determine H or L
+    # H: first move uses Higher die
+    # L: first move uses Lower die
+    # Check what dice correspond to src1
+    if d1 == 0: return 'H:P,P' # Should not happen
+    
+    # Sort dice to know which is High/Low
+    high_d = max(dice)
+    low_d = min(dice) if len(dice) == 2 else 0
+    
+    # If src1 uses high_d, it's H.
+    if d1 == high_d:
+        order = 'H'
+    else:
+        order = 'L'
+        
+    if src2:
+        return f"{order}:{src1},{src2}"
+    else:
+        return f"{order}:{src1},P"
+```

@@ -1,0 +1,315 @@
+The strategy for this policy:
+- Generate all legal captures (multi-jumps) first — captures are mandatory. For each piece, recursively search capture sequences, stopping if a man reaches promotion row (crowning ends the jump in this implementation, which is standard in many rulesets).
+- Score capture sequences by (1) number of pieces captured (primary), (2) whether the sequence yields promotion, (3) safety of the final landing square (avoid immediate recapture), and (4) centrality to prefer safer/stronger positions.
+- If no captures exist, generate all simple moves and pick one that promotes, avoids immediate recapture, and moves toward the center.
+- Men move forward (white up/increasing row, black down/decreasing row). Men capture forward in this policy (consistent with a common checkers rule set), kings capture in all four diagonal directions.
+- The policy always returns a legal move (start and final square). It's designed to be greedy but capture-aware and to avoid moving into obvious immediate recaptures where possible.
+
+<code>
+#!/usr/bin/env python3
+from typing import List, Tuple, Set
+import math
+import random
+
+Coord = Tuple[int, int]
+
+def policy(my_men: List[Coord], my_kings: List[Coord], opp_men: List[Coord], opp_kings: List[Coord], color: str) -> Tuple[Coord, Coord]:
+    """
+    Return a legal move ((from_row, from_col), (to_row, to_col)).
+    Assumptions implemented:
+    - Board is 8x8, rows 0..7, cols 0..7.
+    - 'w' moves upward (increasing row), 'b' moves downward (decreasing row).
+    - Men move one step forward diagonally; men capture forward diagonally (this policy uses forward-only captures for men).
+    - Kings move and capture in four diagonal directions.
+    - Captures are mandatory. Multi-jumps allowed. Crowning (promotion) ends the jump sequence here.
+    """
+    # Convert lists to sets for fast membership tests
+    my_men = set(my_men)
+    my_kings = set(my_kings)
+    opp_men = set(opp_men)
+    opp_kings = set(opp_kings)
+
+    ALL_DIRS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    # Movement direction for men
+    dir_forward = 1 if color == 'w' else -1
+    # Promotion row for us
+    promo_row = 7 if color == 'w' else 0
+
+    # Helper to check on-board
+    def on_board(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    # Helper to check if square is empty considering current dynamic sets
+    def is_empty(r, c, my_men_s, my_kings_s, opp_men_s, opp_kings_s):
+        if not on_board(r, c):
+            return False
+        return (r, c) not in my_men_s and (r, c) not in my_kings_s and (r, c) not in opp_men_s and (r, c) not in opp_kings_s
+
+    # Generate capture sequences for a single piece at pos
+    def gen_captures_from(pos: Coord, is_king: bool, my_men_s: Set[Coord], my_kings_s: Set[Coord],
+                          opp_men_s: Set[Coord], opp_kings_s: Set[Coord]) -> List[List[Coord]]:
+        """
+        Return list of capture sequences (as lists of landing coordinates), each sequence starts with first landing after first jump.
+        We will also need the initial from pos to be known externally.
+        For men, capture directions are forward-only in this policy.
+        For kings, all 4 diagonals.
+        Crowning upon landing ends the multi-jump.
+        """
+        results = []
+
+        # choose directions for capturing
+        if is_king:
+            dirs = ALL_DIRS
+        else:
+            # men capture forward-only (dr = 2 * dir_forward)
+            dirs = [(dir_forward, -1), (dir_forward, 1)]
+
+        # For each possible capture from current pos
+        r0, c0 = pos
+        found_any = False
+        for dr, dc in dirs:
+            mid_r = r0 + dr
+            mid_c = c0 + dc
+            land_r = r0 + 2 * dr
+            land_c = c0 + 2 * dc
+            if not (on_board(mid_r, mid_c) and on_board(land_r, land_c)):
+                continue
+            mid = (mid_r, mid_c)
+            land = (land_r, land_c)
+            # mid must contain an opponent piece, landing must be empty
+            if mid in opp_men_s or mid in opp_kings_s:
+                if is_empty(land_r, land_c, my_men_s, my_kings_s, opp_men_s, opp_kings_s):
+                    found_any = True
+                    # simulate capture: remove mid from opponent sets, move our piece to land
+                    new_opp_men = set(opp_men_s)
+                    new_opp_kings = set(opp_kings_s)
+                    if mid in new_opp_men:
+                        new_opp_men.remove(mid)
+                    else:
+                        new_opp_kings.remove(mid)
+                    # Our piece moves: if it was a man and reaches promotion row, it promotes and jump sequence stops here
+                    promoted = False
+                    if not is_king and land_r == promo_row:
+                        promoted = True
+                    # Our sets: remove original pos, add land position
+                    new_my_men = set(my_men_s)
+                    new_my_kings = set(my_kings_s)
+                    if is_king:
+                        new_my_kings.discard(pos)
+                        new_my_kings.add(land)
+                    else:
+                        new_my_men.discard(pos)
+                        if promoted:
+                            new_my_kings.add(land)
+                        else:
+                            new_my_men.add(land)
+                    if promoted:
+                        # sequence ends on promote
+                        results.append([land])
+                    else:
+                        # continue searching further captures from 'land'
+                        further = gen_captures_from(land, is_king or promoted, new_my_men, new_my_kings, new_opp_men, new_opp_kings)
+                        if not further:
+                            results.append([land])
+                        else:
+                            for seq in further:
+                                results.append([land] + seq)
+        return results
+
+    # Generate all captures for all pieces
+    all_captures = []  # tuples (from, sequence(list of landings), is_king_initial)
+    # For men
+    for m in list(my_men):
+        seqs = gen_captures_from(m, False, my_men, my_kings, opp_men, opp_kings)
+        for s in seqs:
+            all_captures.append((m, s, False))
+    # For kings
+    for k in list(my_kings):
+        seqs = gen_captures_from(k, True, my_men, my_kings, opp_men, opp_kings)
+        for s in seqs:
+            all_captures.append((k, s, True))
+
+    # Helper to compute center distance (lower is better)
+    CENTER = (3.5, 3.5)
+    def center_score(pos):
+        r, c = pos
+        return math.hypot(r - CENTER[0], c - CENTER[1])
+
+    # Helper to check if, after performing a move (from -> final), the opponent can immediately capture that moved piece
+    def moved_piece_vulnerable(after_my_men, after_my_kings, after_opp_men, after_opp_kings, moved_pos, moved_is_king):
+        # For each opponent piece, see if it can capture the moved piece on their turn
+        # Opponent men capture forward-only relative to opponent's color
+        opp_dir = 1 if color == 'b' else -1  # opponent moves opposite direction
+        # Directions for opponent men
+        opp_men_dirs = [ (opp_dir, -1), (opp_dir, 1) ]
+        # Opponent kings directions all four
+        for p in after_opp_men:
+            r0, c0 = p
+            for dr, dc in opp_men_dirs:
+                mid_r = r0 + dr
+                mid_c = c0 + dc
+                land_r = r0 + 2*dr
+                land_c = c0 + 2*dc
+                if not (on_board(mid_r, mid_c) and on_board(land_r, land_c)):
+                    continue
+                if (mid_r, mid_c) == moved_pos:
+                    # landing square must be empty
+                    if is_empty(land_r, land_c, after_my_men, after_my_kings, after_opp_men, after_opp_kings):
+                        return True
+        for p in after_opp_kings:
+            r0, c0 = p
+            for dr, dc in ALL_DIRS:
+                mid_r = r0 + dr
+                mid_c = c0 + dc
+                land_r = r0 + 2*dr
+                land_c = c0 + 2*dc
+                if not (on_board(mid_r, mid_c) and on_board(land_r, land_c)):
+                    continue
+                if (mid_r, mid_c) == moved_pos:
+                    if is_empty(land_r, land_c, after_my_men, after_my_kings, after_opp_men, after_opp_kings):
+                        return True
+        return False
+
+    # If captures exist, choose the best capture sequence
+    if all_captures:
+        # Evaluate each capture sequence
+        best = None
+        best_score = None
+        # For simulation, we need to apply the capture sequence to board to obtain final sets
+        for frm, seq, was_king in all_captures:
+            # seq is list of landing squares in order; apply jumps one by one
+            cur_pos = frm
+            cur_is_king = was_king
+            tmp_my_men = set(my_men)
+            tmp_my_kings = set(my_kings)
+            tmp_opp_men = set(opp_men)
+            tmp_opp_kings = set(opp_kings)
+            # remove original piece from its set
+            if cur_is_king:
+                tmp_my_kings.discard(cur_pos)
+            else:
+                tmp_my_men.discard(cur_pos)
+            captured_count = 0
+            promotion_happened = False
+            for land in seq:
+                lr, lc = land
+                # determine mid square between cur_pos and land
+                mid = ((cur_pos[0] + lr)//2, (cur_pos[1] + lc)//2)
+                # remove captured opponent piece
+                if mid in tmp_opp_men:
+                    tmp_opp_men.remove(mid)
+                    captured_count += 1
+                elif mid in tmp_opp_kings:
+                    tmp_opp_kings.remove(mid)
+                    captured_count += 1
+                # move our piece to land
+                cur_pos = land
+                # promotion check
+                if not cur_is_king and cur_pos[0] == promo_row:
+                    # becomes king and we stop further jumps (we assume earlier generation already enforced termination)
+                    cur_is_king = True
+                    promotion_happened = True
+                    tmp_my_kings.add(cur_pos)
+                    # ensure not in men set
+                    tmp_my_men.discard(cur_pos)
+                    # Break out to be safe (shouldn't have further seq according to our gen rules)
+                    break
+                else:
+                    # place back as man or king
+                    if cur_is_king:
+                        tmp_my_kings.add(cur_pos)
+                        tmp_my_men.discard(cur_pos)
+                    else:
+                        tmp_my_men.add(cur_pos)
+                        tmp_my_kings.discard(cur_pos)
+            final_pos = cur_pos
+            final_is_king = cur_is_king
+            # compute vulnerability
+            vulnerable = moved_piece_vulnerable(tmp_my_men, tmp_my_kings, tmp_opp_men, tmp_opp_kings, final_pos, final_is_king)
+            # score tuple: more captures better, promotion better, not vulnerable better, center preference lower distance
+            score = (captured_count, 1 if promotion_happened else 0, 0 if vulnerable else 1, -center_score(final_pos))
+            if best_score is None or score > best_score:
+                best_score = score
+                best = (frm, final_pos)
+        if best is None:
+            # Fallback: pick any capture (shouldn't happen)
+            frm, seq, _ = all_captures[0]
+            return (frm, seq[-1])
+        return best
+
+    # No captures: generate all simple moves
+    simple_moves = []  # (from, to, is_king)
+    # men move forward diagonally one
+    for m in my_men:
+        r, c = m
+        for dc in (-1, 1):
+            nr = r + dir_forward
+            nc = c + dc
+            if on_board(nr, nc) and is_empty(nr, nc, my_men, my_kings, opp_men, opp_kings):
+                simple_moves.append((m, (nr, nc), False))
+    # kings move one diag any direction
+    for k in my_kings:
+        r, c = k
+        for dr, dc in ALL_DIRS:
+            nr = r + dr
+            nc = c + dc
+            if on_board(nr, nc) and is_empty(nr, nc, my_men, my_kings, opp_men, opp_kings):
+                simple_moves.append((k, (nr, nc), True))
+
+    if not simple_moves:
+        # No legal moves (should be game over). As fallback, try to return a dummy move by moving any piece to itself (invalid but avoid crash).
+        # However to remain legal, try to find any adjacent capture-like move ignoring rules (rare). We'll just return first piece staying in place.
+        if my_men:
+            p = next(iter(my_men))
+            return (p, p)
+        elif my_kings:
+            p = next(iter(my_kings))
+            return (p, p)
+        else:
+            # no pieces at all, return corner
+            return ((0,0),(0,0))
+
+    # Evaluate simple moves and pick best by promoting, safety, center, forward progress
+    best = None
+    best_score = None
+    for frm, to, was_king in simple_moves:
+        nr, nc = to
+        promoted = (not was_king) and (nr == promo_row)
+        # simulate move to check vulnerability
+        tmp_my_men = set(my_men)
+        tmp_my_kings = set(my_kings)
+        tmp_opp_men = set(opp_men)
+        tmp_opp_kings = set(opp_kings)
+        # remove from original set
+        if was_king:
+            tmp_my_kings.discard(frm)
+            tmp_my_kings.add(to)
+        else:
+            tmp_my_men.discard(frm)
+            if promoted:
+                tmp_my_kings.add(to)
+            else:
+                tmp_my_men.add(to)
+        vulnerable = moved_piece_vulnerable(tmp_my_men, tmp_my_kings, tmp_opp_men, tmp_opp_kings, to, was_king or promoted)
+        # progress toward promotion: for white higher row better, for black lower row better
+        progress = (nr - frm[0]) if color == 'w' else (frm[0] - nr)
+        # center proximity (negative so higher is better)
+        cent = -center_score(to)
+        score = (1 if promoted else 0, 0 if vulnerable else 1, progress, cent)
+        if best_score is None or score > best_score:
+            best_score = score
+            best = (frm, to)
+
+    # If best found, return it
+    if best is not None:
+        return best
+
+    # Fallback: return random simple move
+    frm, to, _ = random.choice(simple_moves)
+    return (frm, to)
+
+# If run as script, provide a trivial example (not used in arena)
+if __name__ == "__main__":
+    # Example position: simple move for white
+    print(policy([(2,1)], [], [(5,2)], [], 'w'))
+</code>

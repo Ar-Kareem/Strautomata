@@ -1,0 +1,213 @@
+
+import numpy as np
+
+def hand_strength(private_card, public_cards):
+    """
+    Estimate hand strength based on private and public cards.
+    Returns a score between 0 and 1.
+    """
+    if not public_cards:
+        # Preflop: only based on rank
+        return private_card['rank'] / 14.0
+
+    cards = public_cards + [private_card]
+    ranks = [c['rank'] for c in cards]
+    suits = [c['suit'] for c in cards]
+
+    # Check for pairs, two pairs, etc.
+    rank_counts = {r: ranks.count(r) for r in set(ranks)}
+    max_rank_count = max(rank_counts.values())
+    
+    # Pair or better?
+    if max_rank_count >= 2:
+        pair_rank = max([r for r, c in rank_counts.items() if c >= 2], default=0)
+        if max_rank_count == 4:
+            return 0.9 + pair_rank / 140.0  # Four of a kind
+        elif max_rank_count == 3 and 2 in rank_counts.values():
+            return 0.8 + pair_rank / 140.0  # Full house
+        elif max_rank_count == 3:
+            return 0.7 + pair_rank / 140.0  # Set
+        elif max_rank_count == 2:
+            pairs = [r for r, c in rank_counts.items() if c == 2]
+            if len(pairs) >= 2:
+                return 0.6 + max(pairs) / 140.0  # Two pair
+            else:
+                return 0.5 + pair_rank / 140.0  # One pair
+
+    # Evaluate draws
+    flush_suit_count = {s: suits.count(s) for s in set(suits)}
+    max_suit_count = max(flush_suit_count.values())
+    has_flush_draw = max_suit_count >= 4
+    has_nut_flush_draw = (
+        has_flush_draw and 
+        private_card['suit'] in [s for s, c in flush_suit_count.items() if c >= 4]
+    )
+
+    # Check straight potential
+    unique_ranks = sorted(set(ranks))
+    # Add wheel (A-5) straight possibility
+    if 14 in unique_ranks:  # Ace
+        unique_ranks = [1] + unique_ranks  # Treat Ace as 1 for straights
+    straight_count = 0
+    max_straight_count = 0
+    for i in range(1, len(unique_ranks)):
+        if unique_ranks[i] == unique_ranks[i-1] + 1:
+            straight_count += 1
+            max_straight_count = max(max_straight_count, straight_count)
+        else:
+            straight_count = 0
+    has_straight_draw = max_straight_count >= 3
+
+    # Evaluate high card strength
+    high_card_rank = max(ranks)
+    nut_possible = (len(public_cards) == 4 or len(public_cards) == 5) and high_card_rank >= 14
+    high_card_strength = high_card_rank / 14.0
+
+    # Evaluate if connected to board
+    connected_to_board = any(
+        abs(private_card['rank'] - r) <= 2 for r in [c['rank'] for c in public_cards]
+    )
+
+    # Estimate strength based on possibilities
+    if has_flush_draw or has_straight_draw:
+        if len(public_cards) < 5:
+            # Draw with room to improve — strong implied odds
+            if has_flush_draw and has_straight_draw:
+                return 0.55 + high_card_strength * 0.1  # Straight flush draw is huge
+            elif has_flush_draw:
+                return 0.45 + high_card_strength * 0.1
+            elif has_straight_draw:
+                return 0.4 + high_card_strength * 0.1
+        else:
+            return 0.3 + high_card_strength * 0.1  # Missed draw
+
+    # Default: high card strength
+    return high_card_strength * 0.3
+
+
+def policy(state: dict) -> str:
+    # Extract state variables
+    private_card = state['private_cards'][0]
+    public_cards = state['public_cards']
+    pot = state['pot']
+    my_spent = state['my_spent']
+    opponent_spent = state['opponent_spent']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    
+    # Maximum raise amount and all-in amount calculation
+    # Assuming stack is fixed (implied: 100-chip starting stacks, based on comment)
+    # Since no total stack size is given, assume players start with 100, so remaining = 100 - my_spent
+    remaining_stack = 100 - my_spent
+    can_raise = 'raise' in allowed_actions
+    can_allin = 'all-in' in allowed_actions
+    can_call = 'call' in allowed_actions
+    can_fold = 'fold' in allowed_actions
+
+    # Pot odds: if to_call is 0, we can check safely
+    if to_call == 0:
+        # Always check if possible (min-risk)
+        if 'call' in allowed_actions:
+            return 'call'  # This is a check
+        elif 'raise' in allowed_actions:
+            # Aggression with decent hands
+            strength = hand_strength(private_card, public_cards)
+            if strength > 0.6 and np.random.random() < 0.3:
+                return 'raise'
+            else:
+                return 'call'
+
+    # If we have to call a bet
+    if to_call > 0:
+        # Calculate pot odds
+        effective_pot = pot + to_call  # Pot after we call
+        investment_ratio = to_call / effective_pot if effective_pot > 0 else 0
+
+        strength = hand_strength(private_card, public_cards)
+
+        # Estimate win probability or improvement chance
+        effective_strength = strength
+        if len(public_cards) < 5:  # Still has cards to come
+            if strength < 0.4:  # Weaker hands
+                # Adjust if we have draw potential (previously estimated in hand_strength)
+                # But if we missed, don't chase unless odds are great
+                pass
+            elif strength > 0.6:
+                effective_strength = strength + 0.2  # Strong hand, likely ahead
+            elif strength > 0.4:
+                effective_strength = strength + 0.1  # Decent hand or draw
+
+        # Pot odds requirement: we need at least investment_ratio < estimated equity
+        if investment_ratio > effective_strength * 1.5:
+            # Risk not worth it
+            if can_fold and strength < 0.5:
+                return 'fold'
+
+    # Decision logic
+    strength = hand_strength(private_card, public_cards)
+    n_board = len(public_cards)
+
+    # Preflop: tight play
+    if n_board == 0:
+        if private_card['rank'] >= 12:  # High cards: Q, K, A
+            if can_raise:
+                return 'raise'
+            else:
+                return 'call'
+        elif private_card['rank'] >= 9 and to_call <= 10:
+            return 'call'
+        else:
+            if can_call:
+                return 'call'  # Check if to_call is 0
+            elif to_call <= 5:
+                return 'call'
+            else:
+                return 'fold' if can_fold else 'call'
+
+    # Postflop
+    if strength > 0.8:
+        # Very strong hand
+        if can_allin and remaining_stack > 20:
+            return 'all-in'
+        elif can_raise:
+            return 'raise'
+        else:
+            return 'call'
+
+    elif strength > 0.6:
+        # Strong hand (top pair or better)
+        if can_raise and np.random.random() < 0.7:
+            return 'raise'
+        else:
+            return 'call'
+
+    elif strength > 0.4:
+        # Medium: draw or middle pair
+        if can_raise and n_board < 5 and to_call <= 20:
+            # Bluff or value with draw
+            if np.random.random() < 0.4:
+                return 'raise'
+        if investment_ratio < 0.3:  # Good odds
+            return 'call'
+        else:
+            return 'fold' if can_fold else 'call'
+
+    else:
+        # Weak hand
+        if to_call == 0:
+            return 'call'  # Check
+        elif can_raise and n_board == 0 and private_card['rank'] > 10 and np.random.random() < 0.1:
+            # Occasional bluff with high card
+            return 'raise'
+        else:
+            return 'fold' if can_fold else 'call'
+
+    # Default fallback
+    if 'raise' in allowed_actions and strength > 0.5:
+        return 'raise'
+    elif 'call' in allowed_actions:
+        return 'call'
+    elif 'all-in' in allowed_actions and strength > 0.7:
+        return 'all-in'
+    else:
+        return 'fold' if can_fold else 'call'

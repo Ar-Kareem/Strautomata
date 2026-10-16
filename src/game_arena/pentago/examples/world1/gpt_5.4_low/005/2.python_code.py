@@ -1,0 +1,269 @@
+
+from typing import List, Tuple
+
+# ---------- Precomputed geometry ----------
+
+# Bit index: r*6 + c, with r,c in 0..5
+
+QUAD_CELLS = {
+    0: [(r, c) for r in range(0, 3) for c in range(0, 3)],
+    1: [(r, c) for r in range(0, 3) for c in range(3, 6)],
+    2: [(r, c) for r in range(3, 6) for c in range(0, 3)],
+    3: [(r, c) for r in range(3, 6) for c in range(3, 6)],
+}
+
+QUAD_MASKS = {}
+ROT_MAPS = {}  # (quad, dir) -> list of (src_idx, dst_idx)
+
+for q, cells in QUAD_CELLS.items():
+    # local 3x3 positions
+    local = [(r % 3, c % 3) for (r, c) in cells]
+    idx_from_local = {(lr, lc): (cells[i][0] * 6 + cells[i][1]) for i, (lr, lc) in enumerate(local)}
+    mask = 0
+    for r, c in cells:
+        mask |= 1 << (r * 6 + c)
+    QUAD_MASKS[q] = mask
+
+    # clockwise
+    mapping_r = []
+    mapping_l = []
+    for lr in range(3):
+        for lc in range(3):
+            src = idx_from_local[(lr, lc)]
+            # clockwise: (r,c) -> (c, 2-r)
+            dr, dc = lc, 2 - lr
+            dst = idx_from_local[(dr, dc)]
+            mapping_r.append((src, dst))
+            # anticlockwise: (r,c) -> (2-c, r)
+            dr, dc = 2 - lc, lr
+            dst = idx_from_local[(dr, dc)]
+            mapping_l.append((src, dst))
+    ROT_MAPS[(q, 'R')] = mapping_r
+    ROT_MAPS[(q, 'L')] = mapping_l
+
+# All 5-cell winning masks
+WIN_MASKS: List[int] = []
+
+# Horizontal windows
+for r in range(6):
+    for c in range(2):
+        mask = 0
+        for k in range(5):
+            mask |= 1 << (r * 6 + (c + k))
+        WIN_MASKS.append(mask)
+
+# Vertical windows
+for c in range(6):
+    for r in range(2):
+        mask = 0
+        for k in range(5):
+            mask |= 1 << ((r + k) * 6 + c)
+        WIN_MASKS.append(mask)
+
+# Diagonal down-right windows
+for r, c in [(0, 0), (0, 1), (1, 0), (1, 1)]:
+    mask = 0
+    for k in range(5):
+        mask |= 1 << ((r + k) * 6 + (c + k))
+    WIN_MASKS.append(mask)
+
+# Diagonal down-left windows
+for r, c in [(0, 4), (0, 5), (1, 4), (1, 5)]:
+    mask = 0
+    for k in range(5):
+        mask |= 1 << ((r + k) * 6 + (c - k))
+    WIN_MASKS.append(mask)
+
+# Cell ordering: center-first
+CELL_ORDER = list(range(36))
+CELL_ORDER.sort(key=lambda i: ((i // 6) - 2.5) ** 2 + ((i % 6) - 2.5) ** 2)
+
+ROT_ORDER = [(0, 'L'), (0, 'R'), (1, 'L'), (1, 'R'), (2, 'L'), (2, 'R'), (3, 'L'), (3, 'R')]
+
+# Heuristic weights for uncontested 5-windows
+W = [0, 2, 10, 60, 500, 100000]
+
+CENTER_CELLS = [14, 15, 20, 21]  # (2,2),(2,3),(3,2),(3,3)
+
+
+# ---------- Bitboard helpers ----------
+
+def boards_to_bits(you, opponent) -> Tuple[int, int]:
+    y = 0
+    o = 0
+    for r in range(6):
+        yr = you[r]
+        orow = opponent[r]
+        for c in range(6):
+            if int(yr[c]):
+                y |= 1 << (r * 6 + c)
+            elif int(orow[c]):
+                o |= 1 << (r * 6 + c)
+    return y, o
+
+
+def rotate_bits(bits: int, quad: int, direction: str) -> int:
+    new_bits = bits & ~QUAD_MASKS[quad]
+    for src, dst in ROT_MAPS[(quad, direction)]:
+        if (bits >> src) & 1:
+            new_bits |= 1 << dst
+    return new_bits
+
+
+def apply_move(y: int, o: int, idx: int, quad: int, direction: str) -> Tuple[int, int]:
+    y2 = y | (1 << idx)
+    y2 = rotate_bits(y2, quad, direction)
+    o2 = rotate_bits(o, quad, direction)
+    return y2, o2
+
+
+def has_win(bits: int) -> bool:
+    for mask in WIN_MASKS:
+        if (bits & mask) == mask:
+            return True
+    return False
+
+
+def terminal_score_after_move(y: int, o: int) -> int:
+    """
+    Score from perspective of player represented by y.
+    +INF style if y wins, -INF if o wins, 0 if draw/both win, None-like via sentinel 999999999 if nonterminal.
+    """
+    yw = has_win(y)
+    ow = has_win(o)
+    if yw and not ow:
+        return 10**9
+    if ow and not yw:
+        return -10**9
+    if yw and ow:
+        return 0
+    if (y | o).bit_count() == 36:
+        return 0
+    return 999999999  # nonterminal sentinel
+
+
+def evaluate(y: int, o: int) -> int:
+    score = 0
+
+    # 5-cell windows
+    for mask in WIN_MASKS:
+        yc = (y & mask).bit_count()
+        oc = (o & mask).bit_count()
+        if yc and oc:
+            continue
+        if yc:
+            score += W[yc]
+        elif oc:
+            score -= W[oc]
+
+    # center control
+    for idx in CENTER_CELLS:
+        if (y >> idx) & 1:
+            score += 8
+        elif (o >> idx) & 1:
+            score -= 8
+
+    # slight material tie-break
+    score += (y.bit_count() - o.bit_count())
+
+    return score
+
+
+def generate_moves(y: int, o: int):
+    occ = y | o
+    for idx in CELL_ORDER:
+        if ((occ >> idx) & 1) == 0:
+            for quad, direction in ROT_ORDER:
+                yield idx, quad, direction
+
+
+def move_to_str(idx: int, quad: int, direction: str) -> str:
+    r = idx // 6 + 1
+    c = idx % 6 + 1
+    return f"{r},{c},{quad},{direction}"
+
+
+# ---------- Main policy ----------
+
+def policy(you, opponent) -> str:
+    y, o = boards_to_bits(you, opponent)
+
+    legal_moves = list(generate_moves(y, o))
+    # Guaranteed at least one empty cell, but keep a hard fallback.
+    if not legal_moves:
+        return "1,1,0,L"
+
+    fallback = move_to_str(*legal_moves[0])
+
+    try:
+        best_move = legal_moves[0]
+        best_score = -10**18
+
+        # Small move ordering cache by quick static value after our move
+        ordered = []
+
+        # Pass 1: immediate wins and rough ordering
+        for mv in legal_moves:
+            idx, quad, direction = mv
+            y2, o2 = apply_move(y, o, idx, quad, direction)
+            ts = terminal_score_after_move(y2, o2)
+
+            # Immediate decisive win
+            if ts == 10**9:
+                return move_to_str(idx, quad, direction)
+
+            # Quick ordering score
+            if ts == -10**9:
+                quick = -10**8
+            elif ts == 0:
+                quick = 0
+            else:
+                quick = evaluate(y2, o2)
+
+            ordered.append((quick, mv, y2, o2, ts))
+
+        ordered.sort(key=lambda x: x[0], reverse=True)
+
+        # Pass 2: 2-ply minimax
+        for _, mv, y2, o2, ts in ordered:
+            idx, quad, direction = mv
+
+            if ts != 999999999:
+                score = ts
+            else:
+                # Opponent to move: minimize our evaluation
+                worst_for_us = 10**18
+                alpha = best_score
+
+                opp_moves = generate_moves(o2, y2)
+                for omv in opp_moves:
+                    oidx, oquad, odir = omv
+                    o3, y3 = apply_move(o2, y2, oidx, oquad, odir)  # opponent becomes current player
+                    ots = terminal_score_after_move(o3, y3)
+
+                    if ots == 10**9:
+                        # Opponent wins
+                        reply_score = -10**9
+                    elif ots == -10**9:
+                        # We win after opponent's move rotation side-effect
+                        reply_score = 10**9
+                    elif ots == 0:
+                        reply_score = 0
+                    else:
+                        reply_score = evaluate(y3, o3)
+
+                    if reply_score < worst_for_us:
+                        worst_for_us = reply_score
+                        if worst_for_us <= alpha:
+                            break
+
+                score = worst_for_us
+
+            if score > best_score:
+                best_score = score
+                best_move = mv
+
+        return move_to_str(*best_move)
+
+    except Exception:
+        return fallback

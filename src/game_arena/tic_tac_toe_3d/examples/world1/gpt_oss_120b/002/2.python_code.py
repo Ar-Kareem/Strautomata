@@ -1,0 +1,102 @@
+
+import random
+from typing import List, Tuple
+import numpy as np
+
+# ----------------------------------------------------------------------
+# Helper to generate all winning lines in a 3x3x3 tic‑tac‑toe board
+# Each line is a list of three (x, y, z) coordinate tuples.
+# ----------------------------------------------------------------------
+def _generate_lines() -> List[List[Tuple[int, int, int]]]:
+    lines = []
+
+    # Straight lines along each axis
+    for y in range(3):
+        for z in range(3):
+            # x‑axis rows
+            lines.append([(x, y, z) for x in range(3)])
+    for x in range(3):
+        for z in range(3):
+            # y‑axis columns
+            lines.append([(x, y, z) for y in range(3)])
+    for x in range(3):
+        for y in range(3):
+            # z‑axis pillars
+            lines.append([(x, y, z) for z in range(3)])
+
+    # Diagonals on each xy‑plane (z fixed)
+    for z in range(3):
+        lines.append([(i, i, z) for i in range(3)])               # main diagonal
+        lines.append([(i, 2 - i, z) for i in range(3)])           # anti‑diagonal
+
+    # Diagonals on each xz‑plane (y fixed)
+    for y in range(3):
+        lines.append([(i, y, i) for i in range(3)])               # main diagonal
+        lines.append([(i, y, 2 - i) for i in range(3)])           # anti‑diagonal
+
+    # Diagonals on each yz‑plane (x fixed)
+    for x in range(3):
+        lines.append([(x, i, i) for i in range(3)])               # main diagonal
+        lines.append([(x, i, 2 - i) for i in range(3)])           # anti‑diagonal
+
+    # The four space diagonals
+    lines.append([(i, i, i) for i in range(3)])
+    lines.append([(i, i, 2 - i) for i in range(3)])
+    lines.append([(i, 2 - i, i) for i in range(3)])
+    lines.append([(2 - i, i, i) for i in range(3)])
+
+    return lines
+
+
+# Pre‑compute once
+WINNING_LINES = _generate_lines()
+
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Return the chosen move for the current player (represented by 1)
+    on a 3x3x3 Tic‑Tac‑Toe board.
+
+    Parameters
+    ----------
+    board : list[list[list[int]]]
+        3‑dimensional list with values:
+        0  – empty
+        1  – my pieces
+        -1 – opponent pieces
+
+    Returns
+    -------
+    tuple[int, int, int]
+        (x, y, z) coordinates of the selected empty cell.
+    """
+    # Convert to NumPy array for fast indexing
+    arr = np.array(board)
+
+    # 1️⃣ Try to win
+    for line in WINNING_LINES:
+        values = [arr[x, y, z] for (x, y, z) in line]
+        if sum(values) == 2 and 0 in values:          # two of mine + one empty
+            idx = values.index(0)
+            return line[idx]
+
+    # 2️⃣ Block opponent's win
+    for line in WINNING_LINES:
+        values = [arr[x, y, z] for (x, y, z) in line]
+        if sum(values) == -2 and 0 in values:         # two opponent + one empty
+            idx = values.index(0)
+            return line[idx]
+
+    # 3️⃣ Take centre if available
+    if arr[1, 1, 1] == 0:
+        return (1, 1, 1)
+
+    # 4️⃣ Fallback: pick a random empty cell
+    empty_cells = [(x, y, z) for x in range(3)
+                               for y in range(3)
+                               for z in range(3)
+                               if arr[x, y, z] == 0]
+    if not empty_cells:
+        # Board is full – shouldn't happen under normal use; raise an error
+        raise ValueError("No empty cells left on the board.")
+    return random.choice(empty_cells)

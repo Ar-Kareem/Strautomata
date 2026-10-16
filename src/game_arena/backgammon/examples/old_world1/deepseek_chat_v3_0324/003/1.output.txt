@@ -1,0 +1,212 @@
+Here's a smart Backgammon policy that implements several strategic principles:
+
+1. **Bar Re-entry Priority**: Always re-enter checkers from the bar first, choosing the highest possible point that's not blocked.
+2. **Hit Opponent**: When possible, hit opponent blots (single checkers) to send them to the bar.
+3. **Build Primes**: Prefer moves that create or extend consecutive blocked points.
+4. **Bear Off Aggressively**: When bearing off, prioritize removing checkers from higher points first.
+5. **Safe Play**: Avoid leaving single checkers vulnerable to being hit.
+6. **Anchor Creation**: Maintain anchors in opponent's home board when advantageous.
+
+The policy evaluates all legal moves and scores them based on these principles, selecting the highest-scoring move.
+
+<code>
+import numpy as np
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    if len(dice) == 0:
+        return "H:P,P"
+    
+    # Determine if we're in bear-off phase
+    def is_bear_off_possible():
+        home_board = range(18,24) if sum(my_pts[:18]) == 0 else range(6) if sum(my_pts[6:]) == 0 else None
+        if home_board is None:
+            return False
+        return all(p == 0 for i, p in enumerate(my_pts) if i not in home_board)
+    
+    bear_off = is_bear_off_possible()
+    
+    # Generate all possible moves
+    def generate_moves():
+        moves = []
+        dice_pairs = [(dice[0], dice[1])] if len(dice) == 1 else [(dice[0], dice[1]), (dice[1], dice[0])]
+        
+        for die1, die2 in dice_pairs:
+            # Handle bar moves first if needed
+            if my_bar > 0:
+                from1 = 'B'
+                # Check possible re-entry points
+                possible_pts = [24 - die1] if die1 <= 24 else []
+                possible_pts = [p for p in possible_pts if opp_pts[p-1] < 2]
+                if not possible_pts:
+                    continue
+                # Choose highest possible point
+                from1_pt = possible_pts[0] - 1  # convert to 0-based
+                
+                # Second move if available
+                if len(dice) > 1:
+                    # Try moving from board
+                    possible_second = []
+                    for i, count in enumerate(my_pts):
+                        if count > 0 and i != from1_pt:
+                            dest = i - die2 if bear_off else i + die2
+                            if bear_off:
+                                if dest < -1:
+                                    possible_second.append(i)
+                                elif 0 <= dest < 24 and (opp_pts[dest] < 2 or dest == from1_pt):
+                                    possible_second.append(i)
+                            else:
+                                if 0 <= dest < 24 and opp_pts[dest] < 2:
+                                    possible_second.append(i)
+                    
+                    if possible_second:
+                        for i in possible_second:
+                            moves.append(('H' if die1 > die2 else 'L', from1_pt, i))
+                    else:
+                        moves.append(('H' if die1 > die2 else 'L', from1_pt, 'P'))
+                else:
+                    moves.append(('H' if die1 > die2 else 'L', from1_pt, 'P'))
+            else:
+                # Regular moves from board
+                possible_first = []
+                for i, count in enumerate(my_pts):
+                    if count > 0:
+                        dest = i - die1 if bear_off else i + die1
+                        if bear_off:
+                            if dest < -1:
+                                possible_first.append(i)
+                            elif 0 <= dest < 24 and opp_pts[dest] < 2:
+                                possible_first.append(i)
+                        else:
+                            if 0 <= dest < 24 and opp_pts[dest] < 2:
+                                possible_first.append(i)
+                
+                if not possible_first:
+                    continue
+                
+                for i in possible_first:
+                    if len(dice) > 1:
+                        possible_second = []
+                        for j, count in enumerate(my_pts):
+                            if count > 0 and j != i:
+                                dest = j - die2 if bear_off else j + die2
+                                if bear_off:
+                                    if dest < -1:
+                                        possible_second.append(j)
+                                    elif 0 <= dest < 24 and (opp_pts[dest] < 2 or dest == i - die1):
+                                        possible_second.append(j)
+                                else:
+                                    if 0 <= dest < 24 and (opp_pts[dest] < 2 or dest == i + die1):
+                                        possible_second.append(j)
+                        
+                        if possible_second:
+                            for j in possible_second:
+                                moves.append(('H' if die1 > die2 else 'L', i, j))
+                        else:
+                            moves.append(('H' if die1 > die2 else 'L', i, 'P'))
+                    else:
+                        moves.append(('H' if die1 > die2 else 'L', i, 'P'))
+        
+        return moves
+    
+    moves = generate_moves()
+    if not moves:
+        return "H:P,P"
+    
+    # Score each move based on strategy
+    def score_move(move):
+        order, from1, from2 = move
+        score = 0
+        
+        # Convert from positions to points
+        def get_point(f):
+            if f == 'B':
+                return -1
+            elif f == 'P':
+                return None
+            return f
+        
+        pt1 = get_point(from1)
+        pt2 = get_point(from2)
+        
+        # Bar re-entry gets priority
+        if from1 == 'B':
+            score += 100
+        
+        # Hitting opponent blots
+        if pt1 is not None and pt1 != -1:
+            dest1 = pt1 - dice[0] if bear_off else pt1 + dice[0]
+            if 0 <= dest1 < 24 and opp_pts[dest1] == 1:
+                score += 50
+        
+        if pt2 is not None and pt2 != -1 and pt2 != 'P':
+            die_used = dice[1] if order == 'H' and dice[0] > dice[1] else dice[0] if order == 'L' and dice[0] < dice[1] else dice[0] if order == 'H' else dice[1]
+            dest2 = pt2 - die_used if bear_off else pt2 + die_used
+            if 0 <= dest2 < 24 and opp_pts[dest2] == 1:
+                score += 50
+        
+        # Building primes (consecutive blocked points)
+        if pt1 is not None and pt1 != -1:
+            dest1 = pt1 - dice[0] if bear_off else pt1 + dice[0]
+            if 0 <= dest1 < 24 and my_pts[dest1] > 1:
+                score += 30
+        
+        if pt2 is not None and pt2 != -1 and pt2 != 'P':
+            die_used = dice[1] if order == 'H' and dice[0] > dice[1] else dice[0] if order == 'L' and dice[0] < dice[1] else dice[0] if order == 'H' else dice[1]
+            dest2 = pt2 - die_used if bear_off else pt2 + die_used
+            if 0 <= dest2 < 24 and my_pts[dest2] > 1:
+                score += 30
+        
+        # Bearing off gets priority in bear-off phase
+        if bear_off:
+            if pt1 is not None and pt1 != -1:
+                dest1 = pt1 - dice[0]
+                if dest1 < 0:
+                    score += 40 * (24 - pt1)  # higher points get more priority
+            
+            if pt2 is not None and pt2 != -1 and pt2 != 'P':
+                die_used = dice[1] if order == 'H' and dice[0] > dice[1] else dice[0] if order == 'L' and dice[0] < dice[1] else dice[0] if order == 'H' else dice[1]
+                dest2 = pt2 - die_used
+                if dest2 < 0:
+                    score += 40 * (24 - pt2)
+        
+        # Avoid leaving blots
+        if pt1 is not None and pt1 != -1:
+            new_pt1 = my_pts[pt1] - 1
+            if new_pt1 == 1 and opp_pts[pt1] > 0:
+                score -= 20
+        
+        if pt2 is not None and pt2 != -1 and pt2 != 'P':
+            new_pt2 = my_pts[pt2] - 1
+            if new_pt2 == 1 and opp_pts[pt2] > 0:
+                score -= 20
+        
+        return score
+    
+    # Score all moves and select best
+    scored_moves = [(score_move(move), move) for move in moves]
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+    best_move = scored_moves[0][1]
+    
+    # Format the move string
+    def format_pt(pt):
+        if pt == 'B':
+            return 'B'
+        elif pt == 'P':
+            return 'P'
+        else:
+            return f'A{pt}'
+    
+    order, from1, from2 = best_move
+    from1_str = format_pt(from1)
+    from2_str = format_pt(from2)
+    
+    return f"{order}:{from1_str},{from2_str}"
+</code>

@@ -1,0 +1,100 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Simple heuristic-based policy for 3D Tic Tac Toe.
+    Prioritizes:
+    1. Winning moves
+    2. Blocking opponent's winning moves
+    3. Center and strategic positions
+    4. Random empty cell
+    """
+    board = np.array(board)
+    n = board.shape[0]
+    
+    # Find all empty cells
+    empty_cells = []
+    for i in range(n):
+        for j in range(n):
+            for k in range(n):
+                if board[i][j][k] == 0:
+                    empty_cells.append((i, j, k))
+    
+    if not empty_cells:
+        return (0, 0, 0)  # Should never happen in valid game
+    
+    # Check for winning moves
+    for cell in empty_cells:
+        board[cell] = 1
+        if check_winner(board, 1):
+            return cell
+        board[cell] = 0
+    
+    # Check for blocking opponent's winning moves
+    for cell in empty_cells:
+        board[cell] = -1
+        if check_winner(board, -1):
+            return cell
+        board[cell] = 0
+    
+    # Prefer center positions, then middle layer, then corners, then edges
+    center = (1, 1, 1)
+    if center in empty_cells:
+        return center
+    
+    # Middle layer preference (z=1)
+    middle_layer = [cell for cell in empty_cells if cell[2] == 1]
+    if middle_layer:
+        # Among middle layer, prefer center proximity
+        return min(middle_layer, key=lambda x: abs(x[0]-1) + abs(x[1]-1))
+    
+    # Corner positions
+    corners = [(i, j, k) for i in [0, 2] for j in [0, 2] for k in [0, 2]]
+    available_corners = [c for c in corners if c in empty_cells]
+    if available_corners:
+        return available_corners[0]  # Pick first available corner
+    
+    # If nothing else, return first empty cell
+    return empty_cells[0]
+
+def check_winner(board: np.ndarray, player: int) -> bool:
+    """
+    Check if the given player has won on the board.
+    """
+    n = board.shape[0]
+    
+    # Check all possible lines in 3D: x, y, z, and diagonals
+    for i in range(n):
+        for j in range(n):
+            # Check along x-axis
+            if np.all(board[:, i, j] == player):
+                return True
+            # Check along y-axis
+            if np.all(board[i, :, j] == player):
+                return True
+            # Check along z-axis
+            if np.all(board[i, j, :] == player):
+                return True
+    
+    # Check face diagonals
+    for i in range(n):
+        # xy-plane diagonals at fixed z=i
+        if np.all(np.diag(board[:, :, i]) == player) or np.all(np.diag(np.fliplr(board[:, :, i])) == player):
+            return True
+        # xz-plane diagonals at fixed y=i
+        if np.all(np.diag(board[:, i, :]) == player) or np.all(np.diag(np.fliplr(board[:, i, :])) == player):
+            return True
+        # yz-plane diagonals at fixed x=i
+        if np.all(np.diag(board[i, :, :]) == player) or np.all(np.diag(np.fliplr(board[i, :, :])) == player):
+            return True
+    
+    # Check space diagonals (main 4 in 3x3x3)
+    if (board[0,0,0] == player and board[1,1,1] == player and board[2,2,2] == player) or \
+       (board[0,0,2] == player and board[1,1,1] == player and board[2,2,0] == player) or \
+       (board[0,2,0] == player and board[1,1,1] == player and board[2,0,2] == player) or \
+       (board[0,2,2] == player and board[1,1,1] == player and board[2,0,0] == player):
+        return True
+        
+    return False

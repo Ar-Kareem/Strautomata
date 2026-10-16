@@ -1,0 +1,216 @@
+The strategy for this policy is to implement a heuristic-based AI that prioritizes strong local plays and global strategic objectives in Havannah. The AI evaluates each valid move using a weighted scoring system that considers:
+
+1. **Threat Detection and Prevention**: Checks if the current move or opponent's potential moves can complete a winning structure (ring, bridge, fork). The AI prioritizes blocking opponent wins and completing its own.
+
+2. **Proximity to Edges and Corners**: Since bridges connect corners and forks connect edges, the AI values moves near corners and edges more highly, especially when building toward multiple objectives.
+
+3. **Connectivity and Group Expansion**: Favors moves that connect or strengthen existing groups of own stones, enhancing potential for rings, bridges, or forks.
+
+4. **Mobility and Future Options**: Prefers central or flexible positions that maintain high future mobility.
+
+To efficiently assess winning conditions, we use lightweight pathfinding (BFS) over hexagonal neighbors to check connectivity to edges, corners, and ring formation potential.
+
+The AI computes a score for each valid move and selects the highest-scoring legal move. In case no strong strategic move is found, it defaults to a safe positional move.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Set
+from collections import deque
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    N = 15
+    board = np.zeros((N, N), dtype=int)
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opp:
+        board[r][c] = 2
+
+    # Hexagonal neighbors: offsets for (row, col)
+    # Directions: down, up, down-left, up-left, down-right, up-right
+    directions = [(1, 0), (-1, 0), (-1, -1), (1, 1), (1, -1), (-1, 1)]
+
+    def in_bounds(r: int, c: int) -> bool:
+        return 0 <= r < N and 0 <= c < N
+
+    def get_neighbors(r: int, c: int):
+        neighbors = []
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if in_bounds(nr, nc):
+                neighbors.append((nr, nc))
+        return neighbors
+
+    def get_edge_type(r: int, c: int) -> List[str]:
+        edges = []
+        if r == 0: edges.append('top')
+        if r == N-1: edges.append('bottom')
+        if c == 0: edges.append('left')
+        if c == N-1: edges.append('right')
+        # Diagonal corners
+        if r == 0 and c == 0: edges.extend(['top', 'left', 'corner_top_left'])
+        elif r == 0 and c == N-1: edges.extend(['top', 'right', 'corner_top_right'])
+        elif r == N-1 and c == 0: edges.extend(['bottom', 'left', 'corner_bottom_left'])
+        elif r == N-1 and c == N-1: edges.extend(['bottom', 'right', 'corner_bottom_right'])
+        # Other corners (hexagonal board has 6 corners)
+        if r == 0 and c == N//2: edges.append('corner_top')
+        if r == N-1 and c == N//2: edges.append('corner_bottom')
+        return list(set(edges))
+
+    def is_corner(r: int, c: int) -> bool:
+        corners = [
+            (0, 0), (0, N-1), (N-1, 0), (N-1, N-1),
+            (0, N//2), (N-1, N//2)
+        ]
+        return (r, c) in corners
+
+    # Check if a player has a bridge (connects any two corners)
+    def has_bridge(group: Set[Tuple[int, int]]) -> bool:
+        corner_touch = 0
+        corners = [(0, 0), (0, N-1), (N-1, 0), (N-1, N-1), (0, N//2), (N-1, N//2)]
+        for cr, cc in corners:
+            if (cr, cc) in group:
+                corner_touch += 1
+                if corner_touch >= 2:
+                    return True
+        return False
+
+    # Check if a player has a fork (connects three edges)
+    def has_fork(group: Set[Tuple[int, int]]) -> bool:
+        touched_edges = set()
+        for r, c in group:
+            edges = get_edge_type(r, c)
+            for e in edges:
+                if e in ['top', 'bottom', 'left', 'right']:
+                    touched_edges.add(e)
+        return len(touched_edges) >= 3
+
+    # Check if stones form a ring (loop around at least one cell)
+    def has_ring(group: Set[Tuple[int, int]]) -> bool:
+        if len(group) < 6:
+            return False
+
+        # Get all empty cells inside the convex hull? Instead: check if any empty cell is fully surrounded
+        # We'll do a BFS on empty cells surrounded by stones
+        visited = set()
+        for r in range(N):
+            for c in range(N):
+                if (r, c) not in group and (r, c) not in visited and board[r][c] == 0:
+                    # BFS to see if this empty region is fully enclosed by the group
+                    region = set()
+                    queue = deque([(r, c)])
+                    is_enclosed = True
+                    while queue:
+                        cr, cc = queue.popleft()
+                        if (cr, cc) in region:
+                            continue
+                        region.add((cr, cc))
+                        for nr, nc in get_neighbors(cr, cc):
+                            if board[nr][nc] == 0:
+                                if (nr, nc) not in region:
+                                    queue.append((nr, nc))
+                            else:
+                                if (nr, nc) not in group:  # surrounded by opponent or mixed
+                                    is_enclosed = False
+                    if is_enclosed and region:
+                        # Now check if group surrounds this region
+                        adjacent_stones = set()
+                        for cr, cc in region:
+                            for nr, nc in get_neighbors(cr, cc):
+                                if (nr, nc) in group:
+                                    adjacent_stones.add((nr, nc))
+                        if len(adjacent_stones) >= 3:  # loop requires at least ~6 but this is a proxy
+                            return True
+                    visited |= region
+        return False
+
+    def simulate_move(r: int, c: int, player: int) -> Set[Tuple[int, int]]:
+        temp_board = board.copy()
+        temp_board[r][c] = player
+        # Build group connected to (r,c) via BFS
+        group = set()
+        stack = [(r, c)]
+        color = player
+        while stack:
+            cr, cc = stack.pop()
+            if (cr, cc) in group:
+                continue
+            group.add((cr, cc))
+            for nr, nc in get_neighbors(cr, cc):
+                if temp_board[nr][nc] == color and (nr, nc) not in group:
+                    stack.append((nr, nc))
+        return group
+
+    def evaluate_move(r: int, c: int) -> float:
+        score = 0.0
+
+        # Basic position value: favor center and symmetry
+        center_r, center_c = N//2, N//2
+        dist_to_center = abs(r - center_r) + abs(c - center_c)
+        score += (N - dist_to_center) * 0.01
+
+        # Reward proximity to edges and corners
+        edges = get_edge_type(r, c)
+        edge_count = len([e for e in edges if e in ['top', 'bottom', 'left', 'right']])
+        score += edge_count * 2.0
+        if is_corner(r, c):
+            score += 3.0
+
+        # Check if move completes a win
+        my_group = simulate_move(r, c, 1)
+        if has_ring(my_group) or has_bridge(my_group) or has_fork(my_group):
+            score += 1000.0  # Highest priority
+
+        # Check if opponent would win here — block!
+        opp_group = simulate_move(r, c, 2)
+        if has_ring(opp_group) or has_bridge(opp_group) or has_fork(opp_group):
+            score += 900.0  # Almost as important
+
+        # Connectivity: connect to existing group?
+        connects = False
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if in_bounds(nr, nc) and board[nr][nc] == 1:
+                connects = True
+                # Extra points for connecting to multiple stones
+                neighbor_count = 0
+                for ddr, ddc in directions:
+                    nnr, nnc = nr + ddr, nc + ddc
+                    if in_bounds(nnr, nnc) and (nnr, nnc) != (r, c) and board[nnr][nnc] == 1:
+                        neighbor_count += 1
+                score += 1.0 + neighbor_count * 0.5
+        if not connects and len(me) > 0:
+            # Penalize isolated moves late in game
+            min_dist = min(abs(r - mr) + abs(c - mc) for mr, mc in me)
+            if min_dist > 3:
+                score -= 0.5
+
+        # Avoid creating weak isolated groups
+        liberty_count = 0
+        for nr, nc in get_neighbors(r, c):
+            if board[nr][nc] == 0:
+                liberty_count += 1
+        if liberty_count == 1:
+            score -= 2.0
+
+        return score
+
+    # Collect valid moves
+    valid_moves = []
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c] and board[r][c] == 0:
+                valid_moves.append((r, c))
+
+    # Evaluate all valid moves
+    move_scores = []
+    for move in valid_moves:
+        score = evaluate_move(move[0], move[1])
+        move_scores.append((score, move))
+
+    # Sort by score descending
+    move_scores.sort(reverse=True)
+
+    # Always return a valid move
+    best_move = move_scores[0][1] if move_scores else valid_moves[0]
+    return best_move
+</code>

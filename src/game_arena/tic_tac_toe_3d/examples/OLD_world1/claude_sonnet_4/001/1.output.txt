@@ -1,0 +1,182 @@
+Looking at this 3D Tic Tac Toe problem, I need to implement a strategy that considers all possible winning lines in a 3x3x3 cube. Let me break this down:
+
+1. First, I need to identify all possible winning lines (rows, columns, diagonals across all dimensions)
+2. Then implement a strategy that prioritizes winning moves, blocking opponent wins, and making strategic moves
+
+```python
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    import random
+    
+    def get_all_lines():
+        """Get all possible winning lines in 3D tic-tac-toe"""
+        lines = []
+        
+        # Rows (along x-axis)
+        for y in range(3):
+            for z in range(3):
+                lines.append([(x, y, z) for x in range(3)])
+        
+        # Columns (along y-axis)
+        for x in range(3):
+            for z in range(3):
+                lines.append([(x, y, z) for y in range(3)])
+        
+        # Depth (along z-axis)
+        for x in range(3):
+            for y in range(3):
+                lines.append([(x, y, z) for z in range(3)])
+        
+        # Face diagonals (xy plane)
+        for z in range(3):
+            lines.append([(i, i, z) for i in range(3)])  # main diagonal
+            lines.append([(i, 2-i, z) for i in range(3)])  # anti diagonal
+        
+        # Face diagonals (xz plane)
+        for y in range(3):
+            lines.append([(i, y, i) for i in range(3)])  # main diagonal
+            lines.append([(i, y, 2-i) for i in range(3)])  # anti diagonal
+        
+        # Face diagonals (yz plane)
+        for x in range(3):
+            lines.append([(x, i, i) for i in range(3)])  # main diagonal
+            lines.append([(x, i, 2-i) for i in range(3)])  # anti diagonal
+        
+        # Space diagonals (3D diagonals)
+        lines.append([(i, i, i) for i in range(3)])  # main space diagonal
+        lines.append([(i, i, 2-i) for i in range(3)])  # space diagonal
+        lines.append([(i, 2-i, i) for i in range(3)])  # space diagonal
+        lines.append([(2-i, i, i) for i in range(3)])  # space diagonal
+        
+        return lines
+    
+    def get_line_state(line):
+        """Get the state of a line: (my_count, opponent_count, empty_positions)"""
+        my_count = 0
+        opponent_count = 0
+        empty_positions = []
+        
+        for x, y, z in line:
+            cell = board[x][y][z]
+            if cell == 1:
+                my_count += 1
+            elif cell == -1:
+                opponent_count += 1
+            else:
+                empty_positions.append((x, y, z))
+        
+        return my_count, opponent_count, empty_positions
+    
+    def get_empty_cells():
+        """Get all empty cells on the board"""
+        empty = []
+        for x in range(3):
+            for y in range(3):
+                for z in range(3):
+                    if board[x][y][z] == 0:
+                        empty.append((x, y, z))
+        return empty
+    
+    lines = get_all_lines()
+    empty_cells = get_empty_cells()
+    
+    if not empty_cells:
+        return (0, 0, 0)  # Should not happen in valid game
+    
+    # Priority 1: Win immediately
+    for line in lines:
+        my_count, opponent_count, empty_positions = get_line_state(line)
+        if my_count == 2 and opponent_count == 0 and len(empty_positions) == 1:
+            return empty_positions[0]
+    
+    # Priority 2: Block opponent from winning
+    for line in lines:
+        my_count, opponent_count, empty_positions = get_line_state(line)
+        if opponent_count == 2 and my_count == 0 and len(empty_positions) == 1:
+            return empty_positions[0]
+    
+    # Priority 3: Create a fork (two ways to win)
+    fork_moves = []
+    for move in empty_cells:
+        x, y, z = move
+        # Temporarily place our piece
+        board[x][y][z] = 1
+        
+        winning_lines = 0
+        for line in lines:
+            my_count, opponent_count, empty_positions = get_line_state(line)
+            if my_count == 2 and opponent_count == 0 and len(empty_positions) == 1:
+                winning_lines += 1
+        
+        # Restore board
+        board[x][y][z] = 0
+        
+        if winning_lines >= 2:
+            fork_moves.append(move)
+    
+    if fork_moves:
+        return random.choice(fork_moves)
+    
+    # Priority 4: Block opponent forks
+    opponent_fork_moves = []
+    for move in empty_cells:
+        x, y, z = move
+        # Temporarily place opponent's piece
+        board[x][y][z] = -1
+        
+        winning_lines = 0
+        for line in lines:
+            my_count, opponent_count, empty_positions = get_line_state(line)
+            if opponent_count == 2 and my_count == 0 and len(empty_positions) == 1:
+                winning_lines += 1
+        
+        # Restore board
+        board[x][y][z] = 0
+        
+        if winning_lines >= 2:
+            opponent_fork_moves.append(move)
+    
+    if opponent_fork_moves:
+        return random.choice(opponent_fork_moves)
+    
+    # Priority 5: Take center if available
+    center = (1, 1, 1)
+    if center in empty_cells:
+        return center
+    
+    # Priority 6: Make a move that creates the most opportunities
+    best_moves = []
+    best_score = -1
+    
+    for move in empty_cells:
+        x, y, z = move
+        score = 0
+        
+        # Count lines where this move would give us 1 piece and no opponent pieces
+        for line in lines:
+            if (x, y, z) in line:
+                my_count, opponent_count, empty_positions = get_line_state(line)
+                if opponent_count == 0:  # Line not blocked by opponent
+                    score += 1
+        
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+    
+    return random.choice(best_moves) if best_moves else random.choice(empty_cells)
+```
+
+This solution implements a strategic approach to 3D Tic Tac Toe:
+
+1. **Win Detection**: Identifies all 49 possible winning lines in 3D space (rows, columns, depths, face diagonals, and space diagonals)
+2. **Priority System**: 
+   - Immediate win (complete a line with 2 of my pieces)
+   - Block opponent wins (block lines with 2 opponent pieces)
+   - Create forks (moves that create multiple winning opportunities)
+   - Block opponent forks
+   - Take the center position
+   - Choose moves that create the most future opportunities
+3. **Strategic Positioning**: Prefers moves that keep multiple winning lines open while avoiding opponent-controlled lines
+
+The function evaluates the board state and returns the coordinates of the best move according to this priority system.

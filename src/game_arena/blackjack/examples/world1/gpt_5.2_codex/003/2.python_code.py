@@ -1,0 +1,92 @@
+
+from functools import lru_cache
+
+# Card order and properties
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+INDEX = {r: i for i, r in enumerate(RANKS)}
+VALUES = [11, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10]
+IS_ACE = [True, False, False, False, False, False, False, False, False, False, False, False, False]
+FULL_MASK = (1 << 13) - 1
+
+def compute_total_and_soft_aces(hand, target):
+    total = 0
+    soft_aces = 0
+    for c in hand:
+        idx = INDEX[c]
+        if IS_ACE[idx]:
+            total += 11
+            soft_aces += 1
+        else:
+            total += VALUES[idx]
+    # Adjust Aces from 11 to 1 as needed
+    while total > target and soft_aces > 0:
+        total -= 10
+        soft_aces -= 1
+    return total, soft_aces
+
+def update_total(total, soft_aces, idx, target):
+    if IS_ACE[idx]:
+        total += 11
+        soft_aces += 1
+    else:
+        total += VALUES[idx]
+    while total > target and soft_aces > 0:
+        total -= 10
+        soft_aces -= 1
+    return total, soft_aces
+
+@lru_cache(None)
+def optimal_value(mask, total, soft_aces, target):
+    if total > target:
+        return 0.0  # bust
+    if mask == 0:
+        return float(total)
+
+    stay_val = float(total)
+    sum_ev = 0.0
+    count = 0
+    m = mask
+    while m:
+        lsb = m & -m
+        idx = (lsb.bit_length() - 1)
+        new_total, new_soft = update_total(total, soft_aces, idx, target)
+        sum_ev += optimal_value(mask ^ lsb, new_total, new_soft, target)
+        count += 1
+        m -= lsb
+
+    hit_ev = sum_ev / count
+    return max(stay_val, hit_ev)
+
+def policy(hand: list[str], target: int) -> str:
+    total, soft_aces = compute_total_and_soft_aces(hand, target)
+
+    # If already busted or perfect, stay
+    if total > target or total == target:
+        return "STAY"
+
+    # Compute remaining deck mask
+    mask = FULL_MASK
+    for c in hand:
+        mask &= ~(1 << INDEX[c])
+
+    if mask == 0:
+        return "STAY"
+
+    # Expected value if we hit
+    sum_ev = 0.0
+    count = 0
+    m = mask
+    while m:
+        lsb = m & -m
+        idx = (lsb.bit_length() - 1)
+        new_total, new_soft = update_total(total, soft_aces, idx, target)
+        sum_ev += optimal_value(mask ^ lsb, new_total, new_soft, target)
+        count += 1
+        m -= lsb
+    hit_ev = sum_ev / count
+
+    # Compare with staying
+    if hit_ev > total + 1e-9:
+        return "HIT"
+    else:
+        return "STAY"

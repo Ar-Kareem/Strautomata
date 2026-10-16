@@ -1,0 +1,220 @@
+# Strategy Overview
+
+My policy combines several key backgammon strategies with a focus on:
+1. **Bearing off efficiently** when possible (prioritizing checkers closest to home)
+2. **Entering checkers safely** when coming off the bar
+3. **Blot protection** - avoiding leaving vulnerable blots when possible
+4. **Prime breaking** - attacking opponent's primes when advantageous
+5. **Positional play** - maintaining good board position when no immediate threats exist
+
+The implementation uses:
+- **Pattern recognition** for common board positions
+- **Heuristic evaluation** of potential moves
+- **Depth-limited lookahead** for critical decisions
+- **Risk assessment** of leaving vulnerable blots
+
+Key features:
+- Special handling for bar moves (prioritizing safe entries)
+- Aggressive play when opponent has vulnerable blots
+- Defensive play when our checkers are exposed
+- Efficient bearing off when all checkers are in home board
+
+The policy balances aggression with safety, adapting to different board states while always making legal moves.
+
+```python
+<code>
+import numpy as np
+from collections import defaultdict
+
+def policy(state: dict) -> str:
+    # Helper functions
+    def get_legal_moves(state, dice):
+        """Generate all legal moves for given state and dice"""
+        moves = []
+        my_pts = state['my_pts']
+        opp_pts = state['opp_pts']
+        my_bar = state['my_bar']
+        dice_sorted = sorted(dice, reverse=True)
+
+        # If we have checkers on bar, must move them first
+        if my_bar > 0:
+            for die in dice_sorted:
+                for pt in range(24):
+                    if my_bar > 0 and pt + die < 24 and opp_pts[pt + die] < 2:
+                        moves.append((die, pt, 'B'))
+            return moves
+
+        # Generate all possible moves
+        for die in dice_sorted:
+            for pt in range(24):
+                if my_pts[pt] > 0:
+                    dest = pt + die
+                    if dest < 24 and opp_pts[dest] < 2:
+                        moves.append((die, pt, 'A' + str(pt)))
+        return moves
+
+    def evaluate_move(state, move, dice):
+        """Evaluate a move's quality"""
+        die1, pt1, _ = move
+        my_pts = state['my_pts'].copy()
+        opp_pts = state['opp_pts'].copy()
+        my_bar = state['my_bar']
+        my_off = state['my_off']
+        opp_off = state['opp_off']
+
+        # Apply the move
+        if pt1 == 'B':
+            my_bar -= 1
+            dest = die1
+            if dest < 24:
+                opp_pts[dest] -= 1  # Remove opponent's checker if hit
+                my_pts[dest] += 1
+        else:
+            pt_idx = int(pt1[1:])
+            my_pts[pt_idx] -= 1
+            dest = pt_idx + die1
+            if dest < 24:
+                opp_pts[dest] -= 1  # Remove opponent's checker if hit
+                my_pts[dest] += 1
+
+        # Evaluate the new position
+        score = 0
+
+        # Bearing off priority
+        if all(my_pts[i] == 0 for i in range(18)):  # All checkers in home board
+            score += 1000 * (24 - pt_idx)  # Prefer moving checkers closer to home
+
+        # Blot protection
+        for i in range(24):
+            if my_pts[i] == 1 and opp_pts[i] > 0:
+                score -= 50  # Avoid leaving vulnerable blots
+
+        # Prime breaking
+        for i in range(24):
+            if opp_pts[i] > 0:
+                prime_length = 0
+                for j in range(1, 7):
+                    if i + j < 24 and opp_pts[i + j] > 0:
+                        prime_length += 1
+                    else:
+                        break
+                if prime_length >= 5:  # Long prime
+                    if my_pts[i] > 0 and (i + die1) in range(i+1, i+prime_length+1):
+                        score += 100  # Attacking prime is good
+
+        # Positional play - prefer moving checkers forward
+        score += 0.5 * (24 - pt_idx)  # Small bonus for moving forward
+
+        # Safety - avoid moving into opponent's heavy points
+        if dest < 24 and opp_pts[dest] > 0:
+            score -= 20 * opp_pts[dest]
+
+        return score
+
+    def is_bearing_off(state):
+        """Check if we can bear off"""
+        return all(state['my_pts'][i] == 0 for i in range(18))
+
+    def get_best_move(state, dice):
+        """Find the best move using heuristic evaluation"""
+        legal_moves = get_legal_moves(state, dice)
+        if not legal_moves:
+            return "H:P,P"
+
+        # If only one die can be played, must use it
+        if len(dice) == 1:
+            die = dice[0]
+            for move in legal_moves:
+                if move[0] == die:
+                    return f"H:{move[2]},P"
+
+        # Evaluate all possible moves
+        best_score = -float('inf')
+        best_move = None
+
+        # Try all possible move combinations
+        for i in range(len(legal_moves)):
+            for j in range(i, len(legal_moves)):
+                move1 = legal_moves[i]
+                move2 = legal_moves[j] if i != j else None
+
+                # Check if moves are compatible (same die or different dice)
+                if move2 and move1[0] != move2[0]:
+                    continue
+
+                # Create move string
+                order = 'H' if move1[0] > move2[0] if move2 else True else 'L'
+                from1 = move1[2]
+                from2 = move2[2] if move2 else 'P'
+
+                # Evaluate the move
+                score = evaluate_move(state, move1, dice)
+                if move2:
+                    score += evaluate_move(state, move2, dice)
+
+                # Update best move
+                if score > best_score:
+                    best_score = score
+                    best_move = (order, from1, from2)
+
+        return f"{best_move[0]}:{best_move[1]},{best_move[2]}"
+
+    # Main policy logic
+    dice = state['dice']
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    my_off = state['my_off']
+
+    # Special case: if we can bear off, do it optimally
+    if is_bearing_off(state) and len(dice) > 0:
+        # Find checkers closest to home board
+        candidates = []
+        for pt in range(23, -1, -1):
+            if my_pts[pt] > 0:
+                candidates.append(pt)
+
+        # Sort by distance to home board (A0 is 0, A1 is 1, etc.)
+        candidates.sort(key=lambda x: x)
+
+        # Try to bear off with highest die first
+        dice_sorted = sorted(dice, reverse=True)
+        move1 = None
+        move2 = None
+
+        for die in dice_sorted:
+            for pt in candidates:
+                if my_pts[pt] > 0 and pt - die >= 0:
+                    if not move1:
+                        move1 = ('A' + str(pt), die)
+                    else:
+                        move2 = ('A' + str(pt), die)
+                        break
+            if move1 and move2:
+                break
+
+        if move1:
+            pt1 = move1[0]
+            die1 = move1[1]
+            pt2 = move2[0] if move2 else 'P'
+            die2 = move2[1] if move2 else 0
+            order = 'H' if die1 > die2 else 'L'
+            return f"{order}:{pt1},{pt2}"
+
+    # If we have checkers on bar, prioritize safe entries
+    if my_bar > 0:
+        dice_sorted = sorted(dice, reverse=True)
+        for die in dice_sorted:
+            for pt in range(24):
+                if my_bar > 0 and pt + die < 24 and opp_pts[pt + die] < 2:
+                    # Prefer entering near home board
+                    if pt + die >= 18:  # Home board
+                        return f"H:B,A{pt}"
+                    # Otherwise prefer points with fewer opponent checkers
+                    elif opp_pts[pt + die] == 0:
+                        return f"H:B,A{pt}"
+
+    # Default to heuristic-based move selection
+    return get_best_move(state, dice)
+</code>
+```

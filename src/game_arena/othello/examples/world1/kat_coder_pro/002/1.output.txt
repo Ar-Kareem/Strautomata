@@ -1,0 +1,105 @@
+<code>
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Othello policy using a simple heuristic with corner priority and mobility.
+    Returns the best move string or "pass" if no legal moves exist.
+    """
+    # Convert to internal board representation (8x8 int)
+    #  0 = empty, 1 = your disc, 2 = opponent disc
+    board = np.zeros((8, 8), dtype=int)
+    board[you == 1] = 1
+    board[opponent == 1] = 2
+
+    # Directions for checking flips (8 directions)
+    directions = [(-1,-1), (-1,0), (-1,1),
+                  (0,-1),           (0,1),
+                  (1,-1),  (1,0),   (1,1)]
+
+    def is_valid_move(r, c):
+        """Check if placing at (r,c) is valid and returns flipped discs."""
+        if board[r, c] != 0:
+            return False, []
+        
+        flipped = []
+        for dr, dc in directions:
+            temp_flipped = []
+            nr, nc = r + dr, c + dc
+            # Walk in direction until we hit a disc of our own, empty, or edge
+            while 0 <= nr < 8 and 0 <= nc < 8 and board[nr, nc] == 2:
+                temp_flipped.append((nr, nc))
+                nr += dr
+                nc += dc
+            
+            # If we ended on our disc, the move is valid along this line
+            if 0 <= nr < 8 and 0 <= nc < 8 and board[nr, nc] == 1 and temp_flipped:
+                flipped.extend(temp_flipped)
+        
+        return len(flipped) > 0, flipped
+
+    # Find all valid moves
+    valid_moves = []
+    for r in range(8):
+        for c in range(8):
+            valid, flips = is_valid_move(r, c)
+            if valid:
+                valid_moves.append((r, c, len(flips)))
+
+    if not valid_moves:
+        return "pass"
+
+    # Heuristic scoring for moves
+    def score_move(r, c, flips_count):
+        # Base score is number of flips
+        score = flips_count
+        
+        # Corner bonuses (highly valuable)
+        corners = [(0,0), (0,7), (7,0), (7,7)]
+        if (r, c) in corners:
+            score += 20
+            # Also reduce opponent's potential moves more strongly
+            score += flips_count * 2
+        
+        # Edge squares (less valuable than corners, more than center)
+        elif r in [0, 7] or c in [0, 7]:
+            score += 5
+        
+        # Avoid giving opponent corners in next turn
+        # If move opens a corner for opponent, penalize
+        corner_danger = {
+            (0,0): [(0,1), (1,0), (1,1)],
+            (0,7): [(0,6), (1,7), (1,6)],
+            (7,0): [(6,0), (7,1), (6,1)],
+            (7,7): [(6,7), (7,6), (6,6)]
+        }
+        for corner, vulnerable in corner_danger.items():
+            if (r, c) in vulnerable:
+                # Check if placing here exposes the corner
+                # If corner is empty and we're adjacent, it might be bad
+                if board[corner[0], corner[1]] == 0:
+                    score -= 10
+        
+        # Prefer moves that reduce opponent's mobility
+        # (Lookahead simulation is too slow for simple policy, 
+        #  but we can favor stable positions)
+        if r in [2, 5] or c in [2, 5]:
+            score += 2  # Control central influence
+            
+        return score
+
+    # Evaluate all moves
+    best_score = -1
+    best_move = None
+    
+    for r, c, flips in valid_moves:
+        score = score_move(r, c, flips)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    # Convert back to move string
+    file_letter = chr(ord('a') + best_move[1])
+    rank = str(best_move[0] + 1)
+    return file_letter + rank
+</code>

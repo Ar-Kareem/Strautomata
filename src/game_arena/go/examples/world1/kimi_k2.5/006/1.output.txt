@@ -1,0 +1,175 @@
+The strategy for this policy is to implement a tactical Go engine that prioritizes immediate captures and saving groups in atari, while maintaining positional awareness. The agent evaluates candidate moves near existing stones to save computation time.
+
+Key components:
+1. **Tactical Priority**: Highest priority is given to capturing opponent stones (worth 1000 points per stone). Second priority is saving own groups that are in atari (1 liberty) by extending them (worth 500 points).
+2. **Atari Threats**: Moves that reduce opponent groups to 1 liberty (atari) receive bonus points (100).
+3. **Positional Play**: Early game (first 20 stones) prefers 3rd and 4th line moves near corners. Mid/late game prefers center control.
+4. **Legality Check**: The policy verifies that moves are not suicide by checking if the placed stone or its connected group gains liberties through captures or adjacent empty points.
+5. **Eye Avoidance**: The policy avoids filling its own true eyes (all 4 neighbors are friendly or board edge) to prevent suicidal endgame moves.
+6. **Passing**: Returns `(0, 0)` if no legal moves are found.
+
+The algorithm uses BFS to count liberties and detect connected groups, ensuring accurate capture and suicide detection within the 1-second time limit.
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    # Initialize board: 0=empty, 1=me, 2=opponent
+    board = np.zeros((19, 19), dtype=np.int8)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = 2
+    
+    # Opening move: play 4-4 if board is empty
+    if np.sum(board) == 0:
+        return (4, 4)
+    
+    # Generate candidates: empty points within distance 2 of any stone
+    candidates = set()
+    all_stones = [(r-1, c-1) for r, c in (me + opponent)]
+    
+    for r, c in all_stones:
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                    candidates.add((nr, nc))
+    
+    # Fallback: check all empty points if no frontier found
+    if not candidates:
+        for r in range(19):
+            for c in range(19):
+                if board[r, c] == 0:
+                    candidates.add((r, c))
+        if not candidates:
+            return (0, 0)
+    
+    best_score = -float('inf')
+    best_move = (0, 0)
+    
+    for r, c in candidates:
+        score = evaluate_move(board, r, c)
+        if score > best_score:
+            best_score = score
+            best_move = (r + 1, c + 1)
+    
+    # Pass if no legal move found
+    if best_score < -500000:
+        return (0, 0)
+    
+    return best_move
+
+def evaluate_move(board, r, c):
+    """Evaluate a move. Returns large negative number if illegal."""
+    temp_board = board.copy()
+    temp_board[r, c] = 1
+    
+    # Check for captures of opponent groups
+    captured = 0
+    is_legal = False
+    
+    for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and temp_board[nr, nc] == 2:
+            if count_liberties(temp_board, nr, nc, 2) == 0:
+                captured += remove_group(temp_board, nr, nc, 2)
+                is_legal = True
+    
+    # Check suicide (if no captures)
+    if not is_legal:
+        if count_liberties(temp_board, r, c, 1) == 0:
+            return -1000000
+    
+    # Base score: capturing is very good
+    score = captured * 1000
+    
+    # Check if this saves a friendly group in atari (on original board)
+    for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 1:
+            if count_liberties(board, nr, nc, 1) == 1:
+                score += 500
+                break
+    
+    # Check if this puts opponent in atari (reduces to 1 liberty)
+    for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 2:
+            if count_liberties(board, nr, nc, 2) == 2:
+                score += 100
+    
+    # Positional heuristics
+    total_stones = np.sum(board != 0)
+    if total_stones < 20:
+        # Early game: favor 3rd and 4th line, corners
+        line_bonus = 0
+        for val in [r, c, 18-r, 18-c]:
+            if val == 2 or val == 3:  # 0-indexed: 3rd or 4th line
+                line_bonus += 15
+        score += line_bonus
+    else:
+        # Mid/late game: center is valuable
+        score += 18 - abs(r - 9) - abs(c - 9)
+    
+    # Avoid filling own eyes
+    if is_eye_like(board, r, c, 1):
+        score -= 300
+    
+    return score
+
+def count_liberties(board, start_r, start_c, color):
+    """Count liberties of the group at start_r, start_c using BFS."""
+    if board[start_r, start_c] != color:
+        return 0
+    
+    visited = set()
+    queue = deque([(start_r, start_c)])
+    visited.add((start_r, start_c))
+    liberties = set()
+    
+    while queue:
+        r, c = queue.popleft()
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                if board[nr, nc] == 0:
+                    liberties.add((nr, nc))
+                elif board[nr, nc] == color and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+    return len(liberties)
+
+def remove_group(board, start_r, start_c, color):
+    """Remove all stones of color in the group containing start_r, start_c. Returns count."""
+    if board[start_r, start_c] != color:
+        return 0
+    
+    count = 0
+    queue = deque([(start_r, start_c)])
+    board[start_r, start_c] = 0
+    count = 1
+    
+    while queue:
+        r, c = queue.popleft()
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == color:
+                board[nr, nc] = 0
+                count += 1
+                queue.append((nr, nc))
+    return count
+
+def is_eye_like(board, r, c, color):
+    """Simple eye detection: all 4 adjacent points are friendly or edge."""
+    friendly = 0
+    for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19:
+            if board[nr, nc] == color:
+                friendly += 1
+        else:
+            friendly += 1  # Board edge counts as friendly boundary
+    return friendly == 4
+</code>

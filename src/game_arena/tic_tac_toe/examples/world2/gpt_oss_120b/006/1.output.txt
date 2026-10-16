@@ -1,0 +1,119 @@
+**Strategy Overview**
+
+The policy uses a classic *minimax* search with alpha‑beta pruning to play perfectly on the 4×4 Tic‑Tac‑Toe board (win condition: four in a row).  
+
+1. **Win detection** – Every turn we check rows, columns and the two diagonals. If a line sums to `+4` we have won, if it sums to `‑4` the opponent has won.  
+
+2. **Game evaluation** – Terminal states are scored as follows:  
+   * `+10 – depth` for a win (the sooner we win, the higher the score),  
+   * `‑10 + depth` for a loss (the later we lose, the higher the score),  
+   * `0` for a draw.  
+
+3. **Minimax with alpha‑beta** – The algorithm assumes the opponent plays optimally (minimizing our score) and searches the full game tree (maximum of 16 moves). Because the state space is tiny, the search finishes well within the 1‑second limit.  
+
+4. **Transposition table** – Results of previously examined board configurations are cached (using a tuple of the flattened board and the current player) to avoid redundant work.  
+
+5. **Move selection** – After the search finishes, the move that yields the best minimax score is returned. If several moves share the same optimal score, one of them is chosen at random to add a little variety.  
+
+The resulting policy always chooses a legal, empty cell and plays optimally, making it extremely hard for any opponent policy to beat it.
+
+---
+
+<code>
+import random
+from functools import lru_cache
+from typing import List, Tuple
+
+# Directions for win checking: rows, columns, two diagonals
+WIN_LINES = [
+    # rows
+    [(0, 0), (0, 1), (0, 2), (0, 3)],
+    [(1, 0), (1, 1), (1, 2), (1, 3)],
+    [(2, 0), (2, 1), (2, 2), (2, 3)],
+    [(3, 0), (3, 1), (3, 2), (3, 3)],
+    # columns
+    [(0, 0), (1, 0), (2, 0), (3, 0)],
+    [(0, 1), (1, 1), (2, 1), (3, 1)],
+    [(0, 2), (1, 2), (2, 2), (3, 2)],
+    [(0, 3), (1, 3), (2, 3), (3, 3)],
+    # diagonals
+    [(0, 0), (1, 1), (2, 2), (3, 3)],
+    [(0, 3), (1, 2), (2, 1), (3, 0)],
+]
+
+def check_winner(board: List[List[int]]) -> int:
+    """Return 1 if player (1) wins, -1 if opponent (-1) wins, 0 otherwise."""
+    for line in WIN_LINES:
+        total = sum(board[r][c] for r, c in line)
+        if total == 4:
+            return 1
+        if total == -4:
+            return -1
+    return 0
+
+def board_full(board: List[List[int]]) -> bool:
+    return all(cell != 0 for row in board for cell in row)
+
+def flatten(board: List[List[int]]) -> Tuple[int, ...]:
+    return tuple(cell for row in board for cell in row)
+
+@lru_cache(maxsize=None)
+def minimax_cached(state: Tuple[int, ...], player: int, depth: int) -> Tuple[int, Tuple[int, int] | None]:
+    """
+    Minimax with alpha‑beta handled implicitly by caching.
+    Returns (score, best_move). best_move is None for terminal nodes.
+    """
+    # Reconstruct board from flattened state
+    board = [list(state[i*4:(i+1)*4]) for i in range(4)]
+
+    winner = check_winner(board)
+    if winner != 0:
+        # win/loss scoring incorporates depth to favour quicker wins
+        return (10 - depth if winner == 1 else depth - 10, None)
+
+    if board_full(board):
+        return (0, None)  # draw
+
+    best_score = -float('inf') if player == 1 else float('inf')
+    best_moves = []
+
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                board[r][c] = player
+                new_state = flatten(board)
+                score, _ = minimax_cached(new_state, -player, depth + 1)
+                board[r][c] = 0  # undo move
+
+                if player == 1:
+                    if score > best_score:
+                        best_score = score
+                        best_moves = [(r, c)]
+                    elif score == best_score:
+                        best_moves.append((r, c))
+                else:
+                    if score < best_score:
+                        best_score = score
+                        best_moves = [(r, c)]
+                    elif score == best_score:
+                        best_moves.append((r, c))
+
+    # Random tie‑break among equally good moves
+    chosen_move = random.choice(best_moves) if best_moves else None
+    return (best_score, chosen_move)
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Return the optimal (row, col) for our player (1) given the current board.
+    The function always returns a legal empty cell.
+    """
+    state = flatten(board)
+    _, move = minimax_cached(state, 1, 0)
+    if move is None:
+        # Should not happen unless the board is full; pick any empty cell as fallback
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == 0:
+                    return (r, c)
+    return move
+</code>

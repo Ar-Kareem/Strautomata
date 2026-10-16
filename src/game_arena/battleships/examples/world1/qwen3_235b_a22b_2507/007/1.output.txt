@@ -1,0 +1,137 @@
+<thinking>
+To design an effective targeting policy for Battleship, I need to balance two modes of play:
+
+1. **Hunting mode**: When we have no recent hits, systematically search likely locations where ships could be.
+2. **Targeting mode**: When we have a hit (or multiple), try to deduce the orientation of the ship and target adjacent cells.
+
+Key ideas:
+
+- Use a **probability heatmap** to estimate where ships are likely to be.
+- Update probabilities based on misses and hits.
+- After a hit, prioritize adjacent cells (up/down/left/right).
+- If multiple hits are aligned, try to extend in that direction.
+- Use ship lengths to prune impossible placements and update probabilities.
+
+Steps:
+1. Track which ships are left (initially [5,4,3,3,2]).
+2. For each unshot cell, count how many ways a ship of any remaining length can be placed through it (in horizontal and vertical directions).
+3. Avoid cells that are impossible due to misses.
+4. After a hit, increase priority of neighbors (but not guaranteed to be best — sometimes better to wait for more data).
+5. However, for simplicity and robustness, use a **classic "heatmap" strategy**: count valid ship placements.
+
+But to keep it efficient and strong:
+
+- I will compute a "weight" for each cell: the number of ways any remaining ship can be placed over it, consistent with current knowledge.
+- Only consider ship placements that don’t go through any `-1` (miss) cells and don’t contradict confirmed hits.
+
+However, since I don’t know which ship was hit, I must assume any remaining ship could be involved.
+
+We can do:
+
+- For each ship size in remaining ships,
+- For each possible position and orientation,
+- Check if it's consistent with the board (i.e., any cell it covers that has been fired upon must not be a miss, and if it's a hit, must be respected).
+- Then, increment a counter for each cell covered by such a valid placement.
+
+Then, pick the unshot cell with the highest count.
+
+But we don't know which ships are already sunk. However, we can count how many hits we've scored — when we get 5+4+3+3+2 = 18 hits, game over. But we don't know opponent's sunk ships.
+
+So: assume all ships are still alive until proven otherwise.
+
+Optimization: since the grid is only 10x10, we can iterate over all possible ship placements.
+
+Steps in code:
+
+1. Initialize a 10x10 score grid (zeros).
+2. Define ship sizes: [5,4,3,3,2]
+3. For each ship size:
+   - For each possible starting (r,c) and direction (horizontal/vertical):
+     - Check if placing the ship there is consistent:
+        - All cells in ship footprint must be within bounds.
+        - None of the cells should be a miss (-1).
+        - If a cell has been shot and is a hit (1), that's ok — we expect that.
+        - If a cell has not been shot (0), that's ok.
+     - If consistent, increment score for each cell in that segment.
+4. Now, for cells that have already been shot (i.e., board[r][c] != 0), we must not return them.
+5. Among unshot cells, pick the one with highest score.
+6. Break ties consistently — e.g., row-major.
+
+However, this basic heatmap might not be best post-hit. But actually, the heatmap naturally rises near hits because ship placements must cover hits.
+
+But: we might want to bias towards adjacent to hits after a hit? The heatmap should already do that — only ships that pass through hits will be counted, so nearby unshot cells get boosted.
+
+Yes, so the heatmap approach naturally handles the transition from hunting to targeting.
+
+Let's implement accordingly.
+
+Edge: if no valid placements are found (can happen due to inconsistent state), fall back to random unshot cell.
+
+Use only base Python and maybe math — no need for numpy, since 10x10 is small.
+
+But for clarity, we'll use nested loops.
+
+Let's code accordingly.
+</thinking>
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Ship lengths: one of each
+    ship_sizes = [5, 4, 3, 3, 2]
+    
+    # Grid size
+    n = 10
+    
+    # Initialize a score grid to count valid placements covering each cell
+    score = [[0] * n for _ in range(n)]
+    
+    # For each ship size
+    for size in ship_sizes:
+        # Horizontal placements
+        for r in range(n):
+            for c in range(n - size + 1):
+                # Check if placing ship at (r, c) to (r, c+size-1) is valid
+                valid = True
+                for dc in range(size):
+                    if board[r][c + dc] == -1:  # miss, cannot place ship here
+                        valid = False
+                        break
+                if not valid:
+                    continue
+                # If valid, increment score for each cell in this segment
+                for dc in range(size):
+                    score[r][c + dc] += 1
+        
+        # Vertical placements
+        for r in range(n - size + 1):
+            for c in range(n):
+                valid = True
+                for dr in range(size):
+                    if board[r + dr][c] == -1:  # miss
+                        valid = False
+                        break
+                if not valid:
+                    continue
+                for dr in range(size):
+                    score[r + dr][c] += 1
+    
+    # Now, find unshot cells (board[r][c] == 0) with highest score
+    best_score = -1
+    best_cell = None
+    
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 0:  # haven't shot here
+                if score[r][c] > best_score:
+                    best_score = score[r][c]
+                    best_cell = (r, c)
+    
+    # If no unshot cell found (shouldn't happen in valid game), fallback
+    if best_cell is None:
+        # Find any unshot cell
+        for r in range(n):
+            for c in range(n):
+                if board[r][c] == 0:
+                    return (r, c)
+    
+    return best_cell
+</code>

@@ -1,0 +1,741 @@
+<thinking>
+I need to implement a Connect 4 policy in Python. The function `policy(board)` takes a 6x7 board as input and should return an integer representing the column to drop a disc. I am player `1`, and the opponent is `-1`.
+
+Here's my thought process for developing the policy:
+
+1.  **Understand the Goal**: Win the game, or at least prevent the opponent from winning. This implies a defensive and offensive strategy.
+
+2.  **Prioritization**:
+    *   **Winning Move**: If I can win with a move, make it. This is the highest priority.
+    *   **Blocking an Opponent's Winning Move**: If the opponent can win on their next move, block it. This is the second highest priority.
+    *   **Creating a "Threat"**: Create situations where I have multiple ways to win on the next turn (e.g., a "two-way" win or a "fork").
+    *   **Blocking an Opponent's "Threat"**: Prevent the opponent from creating strong threats.
+    *   **Center Preference**: In Connect 4, controlling the center columns (3 and 2, 4) is generally advantageous as it offers more potential winning lines.
+    *   **Random/Fallback**: If no strategic move is found, pick a valid random column.
+
+3.  **Helper Functions**:
+    *   `is_valid_move(board, col)`: Checks if a column is not full.
+    *   `drop_disc(board, col, player)`: Returns a new board state after dropping a disc in a given column for a given player. This is useful for simulating moves.
+    *   `check_win(board, player)`: Checks if the given player has won on the current board. This is crucial for evaluating moves.
+    *   `get_available_moves(board)`: Returns a list of valid column indices.
+
+4.  **Implementing `check_win`**: This function needs to check for four in a row horizontally, vertically, and diagonally.
+    *   **Horizontal**: Iterate through rows, then columns, checking `board[r][c:c+4]`.
+    *   **Vertical**: Iterate through columns, then rows, checking `board[r:r+4][c]`.
+    *   **Diagonal (main)**: Iterate through rows and columns, checking `board[r][c], board[r+1][c+1], board[r+2][c+2], board[r+3][c+3]`.
+    *   **Diagonal (anti)**: Iterate through rows and columns, checking `board[r][c], board[r+1][c-1], board[r+2][c-2], board[r+3][c-3]`.
+    *   Need to be careful with boundary conditions for all these checks.
+
+5.  **Policy Logic - Step-by-Step**:
+
+    *   **Step 0: Get Valid Moves**: First, identify all columns where I can legally place a disc.
+
+    *   **Step 1: Check for Immediate Win (Player 1)**:
+        *   For each valid column `c`:
+            *   Simulate dropping my disc (`1`) in `c`.
+            *   If `check_win` for player `1` returns `True`, return `c` immediately. This is the highest priority.
+
+    *   **Step 2: Check for Immediate Opponent Win (Player -1) and Block**:
+        *   For each valid column `c`:
+            *   Simulate dropping the opponent's disc (`-1`) in `c`.
+            *   If `check_win` for player `-1` returns `True`, then if I can drop my disc in `c` (which is already a valid move), I should block it. Return `c`. This is the second highest priority.
+
+    *   **Step 3: Consider "Traps" or "Forks" (Advanced threat detection)**:
+        *   This is more complex. A simple approach for a quick policy might be to identify if playing a column creates *two* simultaneous threats. For example, if playing a column creates a 3-in-a-row that could become 4-in-a-row from two different adjacent spots.
+        *   A simpler, but still better than random, approach for threats:
+            *   Count how many ways a move could lead to a win *on the next turn*.
+            *   If placing a disc in column `c` leads to me having a 3-in-a-row that can be completed, and the *next* move by the opponent *cannot* block it, this is good.
+            *   This gets complicated quickly. For a 1-second limit, I should keep it simpler. Let's focus on creating 3-in-a-rows and blocking opponent's 3-in-a-rows that are "open".
+
+    *   **Step 4: Create 3-in-a-row with an open end (Offensive)**:
+        *   Iterate through valid moves. For each move, simulate placing my disc.
+        *   After placing the disc, check if it creates an "open 3-in-a-row". An "open 3-in-a-row" means three of my discs are aligned, and both ends (if applicable) are open (empty). This is tricky to check perfectly.
+        *   A simpler heuristic: Prioritize moves that result in a 3-in-a-row where one end is open and can be completed *if the opponent doesn't block it*.
+
+    *   **Step 5: Block Opponent's "Two-Way" Threats (Defensive)**:
+        *   This is crucial. If the opponent places a disc, and it creates *two* winning opportunities for them on their *next* move, I need to block the one that is immediately available or the most threatening. This is very hard to detect reliably with just a few lookaheads.
+
+    *   **Step 6: Center Preference**: If no immediate wins or blocks are needed, prioritize columns closer to the center (3, 2, 4, 1, 5, 0, 6). This is a good heuristic.
+
+    *   **Step 7: Random Fallback**: If all else fails, pick a random valid column.
+
+6.  **Refining `check_win` (and `check_line`)**:
+    Let's make `check_win` robust. It needs to check 4 consecutive cells.
+
+    ```python
+    def check_line(board, r, c, dr, dc, player):
+        # Checks a line starting at (r, c) with direction (dr, dc)
+        # for 4 consecutive discs of 'player'
+        count = 0
+        for i in range(4):
+            nr, nc = r + i * dr, c + i * dc
+            if 0 <= nr < 6 and 0 <= nc < 7 and board[nr][nc] == player:
+                count += 1
+            else:
+                break
+        return count == 4
+
+    def check_win(board, player):
+        # Horizontal
+        for r in range(6):
+            for c in range(4): # Only needs to go up to col 3 to check 4 discs
+                if check_line(board, r, c, 0, 1, player):
+                    return True
+        # Vertical
+        for r in range(3): # Only needs to go up to row 2 to check 4 discs
+            for c in range(7):
+                if check_line(board, r, c, 1, 0, player):
+                    return True
+        # Diagonal (top-left to bottom-right)
+        for r in range(3):
+            for c in range(4):
+                if check_line(board, r, c, 1, 1, player):
+                    return True
+        # Diagonal (top-right to bottom-left)
+        for r in range(3):
+            for c in range(3, 7): # Start from col 3, go to 6
+                if check_line(board, r, c, 1, -1, player):
+                    return True
+        return False
+    ```
+
+7.  **Refining `drop_disc`**:
+    Need to find the lowest empty cell.
+
+    ```python
+    def drop_disc(board, col, player):
+        new_board = [row[:] for row in board] # Deep copy the board
+        for r in range(5, -1, -1): # From bottom to top
+            if new_board[r][col] == 0:
+                new_board[r][col] = player
+                return new_board, (r, col) # Return new board and position of new disc
+        return None, None # Column is full
+    ```
+    Actually, I only need to return the new board. The position isn't strictly necessary for the current strategy.
+
+8.  **Implementing the Policy Function**:
+
+    ```python
+    import random
+
+    # [Helper functions: is_valid_move, drop_disc, check_win, get_available_moves]
+    # ... (as defined above, slightly adjusted)
+
+    def policy(board: list[list[int]]) -> int:
+        PLAYER = 1
+        OPPONENT = -1
+        ROWS = 6
+        COLS = 7
+
+        def is_valid_move(board, col):
+            return board[0][col] == 0
+
+        def get_valid_moves(board):
+            return [c for c in range(COLS) if is_valid_move(board, c)]
+
+        def drop_disc_internal(board_state, col, player):
+            temp_board = [row[:] for row in board_state] # Create a deep copy
+            for r in range(ROWS - 1, -1, -1):
+                if temp_board[r][col] == 0:
+                    temp_board[r][col] = player
+                    return temp_board
+            return None # Should not happen if is_valid_move is checked first
+
+        def check_win_internal(board_state, player):
+            # Check horizontal
+            for r in range(ROWS):
+                for c in range(COLS - 3):
+                    if all(board_state[r][c + i] == player for i in range(4)):
+                        return True
+            # Check vertical
+            for r in range(ROWS - 3):
+                for c in range(COLS):
+                    if all(board_state[r + i][c] == player for i in range(4)):
+                        return True
+            # Check positive diagonal (bottom-left to top-right)
+            for r in range(ROWS - 3):
+                for c in range(COLS - 3):
+                    if all(board_state[r + i][c + i] == player for i in range(4)):
+                        return True
+            # Check negative diagonal (top-left to bottom-right)
+            for r in range(ROWS - 3):
+                for c in range(3, COLS):
+                    if all(board_state[r + i][c - i] == player for i in range(4)):
+                        return True
+            return False
+
+        valid_moves = get_valid_moves(board)
+
+        # 1. Check for immediate win (player 1)
+        for col in valid_moves:
+            next_board = drop_disc_internal(board, col, PLAYER)
+            if check_win_internal(next_board, PLAYER):
+                return col
+
+        # 2. Check for immediate opponent win and block (player -1)
+        for col in valid_moves:
+            next_board = drop_disc_internal(board, col, OPPONENT) # Simulate opponent's move
+            if check_win_internal(next_board, OPPONENT):
+                # If opponent can win, I can block by playing in the same column
+                return col
+
+        # 3. Prevent opponent from creating "dropping" threat (e.g., A win above an opponent's piece)
+        # This is a key defensive move. If I play in column C, and then the opponent can win BY PLAYING IN C,
+        # and there's a space above my piece, then I shouldn't play in C unless it wins.
+        # More specifically, if playing in a column allows the opponent to win immediately above my piece,
+        # and I didn't win or block them previously with this move, don't play it.
+        # This is essentially checking if placing my disc creates an immediate win for the opponent
+        # *on the next row up* IF THEY PLAY THERE.
+        # This is quite specific, and usually covered by the 'check for immediate opponent win and block'
+        # if the opponent can just drop their piece.
+        # Let's consider a true "trap prevention": if I play in column X, and this creates a situation
+        # where the opponent can play in column Y (which is *not* X), and then win immediately.
+        # This is getting into 2-ply lookahead for threats, which might be too complex for a simple heuristic.
+        # A simpler version: check if placing my disc allows the opponent to make a *direct* winning move
+        # that wasn't there before. This is hard to distinsguish from 'opponent win and block'.
+
+        # Let's consider a simpler threat: a "two-way" threat.
+        # If I play in 'col', does it create a situation where I have two immediate winning moves for the *next* turn?
+        # A more robust approach for next-turn threats:
+        # Evaluate each move based on how many '3-in-a-rows' an action creates for 'PLAYER', and how many for 'OPPONENT'.
+        # This is hard to quantify quickly.
+
+        # Heuristic for "potential wins" (3-in-a-rows that can be completed):
+        # Count how many immediate 4-in-a-row opportunities each potential move creates.
+        # This function would be similar to check_win, but looks for 3-of-4 with an adjacent empty slot.
+        # Let's simplify and prioritize center first.
+
+        # 4. Prioritize center columns:
+        # A common strategy is to play in the middle columns first, as they offer more winning opportunities.
+        # Ordered list of columns from most preferred to least preferred:
+        center_priority = [3, 2, 4, 1, 5, 0, 6]
+        preferred_moves = [c for c in center_priority if c in valid_moves]
+
+        # Let's try to detect if a move creates a "fork" for me, or prevents a "fork" for the opponent.
+        # A fork means creating two distinct winning threats with a single move.
+        # This is a bit advanced for a basic policy under time constraint.
+
+        # A simpler "threat" evaluation might be to count the number of 3-in-a-rows we create.
+        def count_threats(board_state, player):
+            threat_count = 0
+            # Define all possible 4-cell lines
+            lines = []
+            # Horizontal
+            for r in range(ROWS):
+                for c in range(COLS - 3):
+                    lines.append([(r, c+i) for i in range(4)])
+            # Vertical
+            for r in range(ROWS - 3):
+                for c in range(COLS):
+                    lines.append([(r+i, c) for i in range(4)])
+            # Diagonal (positive)
+            for r in range(ROWS - 3):
+                for c in range(COLS - 3):
+                    lines.append([(r+i, c+i) for i in range(4)])
+            # Diagonal (negative)
+            for r in range(ROWS - 3):
+                for c in range(3, COLS):
+                    lines.append([(r+i, c-i) for i in range(4)])
+
+            for line in lines:
+                player_discs = 0
+                empty_slots = 0
+                for r, c in line:
+                    if board_state[r][c] == player:
+                        player_discs += 1
+                    elif board_state[r][c] == 0:
+                        empty_slots += 1
+                
+                # If 3 player discs and 1 empty slot, it's a threat
+                if player_discs == 3 and empty_slots == 1:
+                    threat_count += 1
+            return threat_count
+
+        best_col = -1
+        max_threats = -1
+
+        # Search for moves that create the most threats (3-in-a-rows with an open spot) or block them implicitly
+        # This approach tries to make good offensive moves if no immediate win/block
+        # We also need to check for "falling threats" (if opponent can stack on my piece to win).
+        # This is more complex and typically requires a full minimax with alpha-beta or Monte Carlo.
+
+        # For a simple priority-based system:
+        # If after my move, the opponent *cannot* create an immediate win in their *next* move,
+        # then it's a good move. This is also covered by blocking.
+
+        # Let's try a simplified "score" for each move.
+        # Score_a = My direct wins (highest priority).
+        # Score_b = Opponent direct wins (block highest priority).
+        # Score_c = My "almost wins" (3-in-a-row with 1 empty, where empty is next available spot).
+        # Score_d = Opponent "almost wins" (block if possible).
+        # Score_e = Center preference.
+
+        # Let's refine the threat calculation to be more specific to Connect 4:
+        # A "threat" is a line of 3 for player, with an empty cell where player can play and win.
+        # This is complicated by gravity. The "empty cell" must be the one that becomes occupied by the drop.
+
+        # Let's re-evaluate the scoring for each move.
+
+        # Weights:
+        # Win: 1000
+        # Block: 900
+        # Create a "fork" (multiple winning threats): 500
+        # Prevent opponent's fork: 400
+        # Create 3-in-a-row (horizontal/vertical/diagonal): 100
+        # Block opponent's 3-in-a-row: 90
+        # Center column (col 3): 10
+        # Adjacent to center (col 2, 4): 5
+        # Outer columns (col 1, 5): 2
+        # Edges (col 0, 6): 1
+
+        # This needs a way to calculate "threats" more rigorously, including two-way threats.
+        # A simpler way is to count opportunities.
+
+        MAX_EVAL_SCORE = 10**9 # For winning move
+        MIN_EVAL_SCORE = -10**9 # For losing move
+        
+        best_score = -float('inf')
+        best_choice = random.choice(preferred_moves) if preferred_moves else random.choice(valid_moves)
+
+        for col in valid_moves:
+            current_score = 0
+            
+            # Simulate placing my disc
+            r_drop = -1
+            for r_check in range(ROWS - 1, -1, -1):
+                if board[r_check][col] == 0:
+                    r_drop = r_check
+                    break
+            
+            # If column is full (should be handled by valid_moves, but as a safeguard)
+            if r_drop == -1:
+                continue
+
+            sim_board = [row[:] for row in board]
+            sim_board[r_drop][col] = PLAYER
+
+            # 1. My immediate win
+            if check_win_internal(sim_board, PLAYER):
+                return col # Absolute best move, return immediately
+
+            # 2. Block opponent's immediate win (already handled at top level, but included in score for completeness if not found previously)
+            # This logic needs to be careful not to double-count, or prioritize blocking opponent when I can win.
+            # The structure of the policy should be:
+            # 1. Win
+            # 2. Block
+            # 3. Best strategic move
+
+            # Let's stick to the top-level structure of win/block, then strategic.
+            # Strategic evaluation:
+            # How many ways can *I* win on the next turn AFTER THIS MOVE? (Forks)
+            # How many ways can *OPPONENT* win on the next turn AFTER THIS MOVE? (Opponent forks / traps)
+
+            # Function to count potential wins (lines of 3 with an open end, specifically where the next drop can complete it)
+            def count_potential_wins(board_state, player):
+                potential_wins = 0
+                
+                # Iterate through all columns to find where a disc can be dropped
+                for c_next in range(COLS):
+                    if board_state[0][c_next] == 0: # If column is not full
+                        # Find the drop row for this `c_next`
+                        r_next = -1
+                        for r_check in range(ROWS - 1, -1, -1):
+                            if board_state[r_check][c_next] == 0:
+                                r_next = r_check
+                                break
+                        
+                        if r_next != -1:
+                            # Temporarily place disc and check for win
+                            temp_board_win_check = [row[:] for row in board_state]
+                            temp_board_win_check[r_next][c_next] = player
+                            if check_win_internal(temp_board_win_check, player):
+                                potential_wins += 1
+                return potential_wins
+            
+            # Check my potential wins *after* my move
+            my_potential_wins_after_my_move = count_potential_wins(sim_board, PLAYER)
+            current_score += my_potential_wins_after_my_move * 100 # Give a high value for creating threats/forks
+
+            # Check opponent's potential wins *after* my move (i.e., threats I allow)
+            # This is important for preventing traps.
+            # Simulate opponent's response for each column `c_opp`
+            # If they can win on the next move, that's bad.
+            opponent_threats_created_by_my_move = 0
+            for c_opp in range(COLS):
+                if sim_board[0][c_opp] == 0: # If opponent can drop in this column
+                    r_opp_drop = -1
+                    for r_check in range(ROWS - 1, -1, -1):
+                        if sim_board[r_check][c_opp] == 0:
+                            r_opp_drop = r_check
+                            break
+                    
+                    if r_opp_drop != -1:
+                        temp_board_opp_move = [row[:] for row in sim_board]
+                        temp_board_opp_move[r_opp_drop][c_opp] = OPPONENT
+                        if check_win_internal(temp_board_opp_move, OPPONENT):
+                            opponent_threats_created_by_my_move += 1
+
+            # If my move creates an immediate win for the opponent (a trap), penalize heavily.
+            # This is critical.
+            if opponent_threats_created_by_my_move > 0:
+                current_score -= (opponent_threats_created_by_my_move ** 2) * 200 # Penalize more for multiple traps
+
+            # If current_score is too low due to opponent threat, don't consider this a good move.
+            # This needs to be weighted against my own offensive potential.
+
+            # 5. Center preference heuristics
+            if col == 3: current_score += 10
+            elif col == 2 or col == 4: current_score += 5
+            elif col == 1 or col == 5: current_score += 2
+            else: current_score += 1 # Edges are least preferred
+
+            if current_score > best_score:
+                best_score = current_score
+                best_choice = col
+            # If scores are equal, prioritize center.
+            elif current_score == best_score:
+                # Compare column preference
+                current_col_pref = center_priority.index(col)
+                best_col_pref = center_priority.index(best_choice)
+                if current_col_pref < best_col_pref: # Smaller index means higher preference
+                    best_choice = col
+
+        # If no strategic move (e.g., all scores are negative or zero due to immediate opponent wins if I make any move),
+        # then we might fall back to random from preferred_moves.
+        # But this loop should always find *some* valid_move with a score.
+        # If best_score is still -infinity, it means no valid moves were found, which implies an already full board (but we check valid_moves).
+        # Or, if all moves lead to immediate opponent wins, it will pick one that minimizes the damage (least negative score).
+
+        return best_choice
+    ```
+
+9.  **Final Review and Considerations**:
+    *   **Time Limit**: The `check_win_internal` function is called frequently. It's relatively efficient for a 6x7 grid. `count_potential_wins` iterates through all columns and calls `check_win_internal`, which is also acceptable. The deep copy of the board is necessary for simulation.
+    *   **Randomness**: If multiple moves have the same best score, the current `best_choice` update `elif current_score == best_score` will prioritize columns based on `center_priority` order, which is good. If no move has a positive score (meaning no immediate win/block/threat formation), it will still pick the one with the highest score (e.g., least negative, or highest center preference among neutral moves).
+    *   **Edge Cases**: What if the board is full? `get_valid_moves` will return an empty list. The policy needs to handle this. The problem statement says I must return an integer `col` such that the column is not full. This implies the game state will always *have* available moves if policy is called. Therefore `valid_moves` will never be empty.
+    *   **Forks/Traps**: The current scoring system `my_potential_wins_after_my_move` and `opponent_threats_created_by_my_move` tries to capture double threats. `my_potential_wins_after_my_move` counts how many *different squares* I can drop into next to win. If this count is > 1 for a given move, that's a fork. `opponent_threats_created_by_my_move` does the same for the opponent. This is a decent heuristic for common forks/traps.
+    *   **Depth**: This is a 1-ply lookahead policy (and 2-ply for evaluating the immediate threats after my current move). A true minimax would go deeper, but this is a good balance for the time limit and complexity.
+
+Double check the `check_win_internal` logic.
+Horizontal: `COLS - 3` is correct (0,1,2,3), (1,2,3,4), (2,3,4,5), (3,4,5,6)
+Vertical: `ROWS - 3` is correct (0,1,2,3), (1,2,3,4), (2,3,4,5)
+Diagonal positive: `ROWS - 3` and `COLS - 3` are correct.
+Diagonal negative: `ROWS - 3` and `c in range(3, COLS)` are correct for `c-i`.
+
+Looks good.
+
+One quick optimization: in `count_potential_wins`, it could benefit from only checking columns that are `valid_moves` for the *simulated* board. Current implementation iterates `range(COLS)`. That's okay, `board_state[0][c_next] == 0` filters out full columns correctly.
+
+The `center_priority` list should be initialized outside the `policy` function as it's constant.
+
+```python
+import random
+
+# Global constants for board dimensions and player representation
+ROWS = 6
+COLS = 7
+PLAYER = 1
+OPPONENT = -1
+
+# Prioritized list of columns (center preference)
+CENTER_PRIORITY = [3, 2, 4, 1, 5, 0, 6]
+
+def policy(board: list[list[int]]) -> int:
+
+    def is_valid_move(board_state, col):
+        """Checks if a column is not full."""
+        return 0 <= col < COLS and board_state[0][col] == 0
+
+    def get_valid_moves(board_state):
+        """Returns a list of valid column indices."""
+        return [c for c in range(COLS) if is_valid_move(board_state, c)]
+
+    def drop_disc_internal(board_state, col, player):
+        """
+        Returns a new board state after dropping a disc.
+        Assumes the move is valid.
+        """
+        temp_board = [row[:] for row in board_state]  # Create a deep copy
+        for r in range(ROWS - 1, -1, -1):
+            if temp_board[r][col] == 0:
+                temp_board[r][col] = player
+                return temp_board
+        return None # Should not be reached if move is valid
+
+    def check_win_internal(board_state, player):
+        """Checks if the given player has won on the current board."""
+        # Check horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                if all(board_state[r][c + i] == player for i in range(4)):
+                    return True
+        # Check vertical
+        for r in range(ROWS - 3):
+            for c in range(COLS):
+                if all(board_state[r + i][c] == player for i in range(4)):
+                    return True
+        # Check positive diagonal (bottom-left to top-right)
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                if all(board_state[r + i][c + i] == player for i in range(4)):
+                    return True
+        # Check negative diagonal (top-right to bottom-left)
+        for r in range(ROWS - 3):
+            for c in range(3, COLS):
+                if all(board_state[r + i][c - i] == player for i in range(4)):
+                    return True
+        return False
+    
+    def count_potential_wins(board_state, player):
+        """
+        Counts how many distinct next moves would result in a win for the given player.
+        This is used to detect "forks" or "threats".
+        """
+        potential_wins = 0
+        
+        # Iterate through all columns to find where a disc can be dropped
+        current_valid_moves = get_valid_moves(board_state)
+        for c_next in current_valid_moves:
+            # Simulate placing disc for 'player' on c_next
+            temp_board_win_check = drop_disc_internal(board_state, c_next, player)
+            if check_win_internal(temp_board_win_check, player):
+                potential_wins += 1
+        return potential_wins
+
+    valid_moves = get_valid_moves(board)
+
+    # 1. Check for immediate win (player 1)
+    for col in valid_moves:
+        next_board = drop_disc_internal(board, col, PLAYER)
+        if check_win_internal(next_board, PLAYER):
+            return col
+
+    # 2. Check for immediate opponent win and block (player -1)
+    for col in valid_moves:
+        next_board_opponent_sim = drop_disc_internal(board, col, OPPONENT)
+        if check_win_internal(next_board_opponent_sim, OPPONENT):
+            return col # Block the opponent's winning move
+
+    # If no immediate win or block, then evaluate strategic moves
+    best_score = -float('inf')
+    best_choice = random.choice(valid_moves) # Fallback to a random valid move initially
+
+    for col in valid_moves:
+        current_score = 0
+        
+        # Simulate placing my disc in 'col'
+        sim_board_my_move = drop_disc_internal(board, col, PLAYER)
+
+        # Calculate my offensive potential (how many forks/threats I create)
+        my_forks = count_potential_wins(sim_board_my_move, PLAYER)
+        current_score += my_forks * 100 # High value for creating multiple winning opportunities
+
+        # Calculate opponent's defensive requirements (how many forks/threats I allow them to create *after* my move)
+        # This checks if my current move sets up a winning trap for the opponent on their *next* turn.
+        # This is where we look for immediate counter-wins for the opponent.
+        opponent_immediate_wins_after_my_move = count_potential_wins(sim_board_my_my_move, OPPONENT)
+        
+        # If my move creates an immediate winning opportunity for the opponent (a trap), penalize heavily.
+        if opponent_immediate_wins_after_my_move > 0:
+            # We want to avoid moves that give the opponent a direct win.
+            # If the opponent can win in multiple ways, that's even worse.
+            current_score -= (opponent_immediate_wins_after_my_move ** 2) * 200 # Punish forks more heavily
+            # If there's an immediate opponent win, and it's not a block I just handled, this move is bad.
+            # This implicitly means, if the earliest logic didn't grab it, I can't win nor block,
+            # and by making THIS move, I set up the opponent to win.
+
+        # Center preference heuristic
+        col_index_in_priority = CENTER_PRIORITY.index(col)
+        current_score += (COLS - col_index_in_priority) # Higher value for closer to center
+
+        if current_score > best_score:
+            best_score = current_score
+            best_choice = col
+        elif current_score == best_score:
+            # If scores are equal, prefer columns closer to the center
+            best_choice_priority_index = CENTER_PRIORITY.index(best_choice)
+            current_choice_priority_index = CENTER_PRIORITY.index(col)
+            if current_choice_priority_index < best_choice_priority_index:
+                best_choice = col
+    
+    return best_choice
+```
+
+The refined `count_potential_wins` is good because it explicitly simulates the *next* player dropping a disc to win.
+The `opponent_immediate_wins_after_my_move` is a crucial defensive measure. If I make a move that allows the opponent to win immediately, that move is severely penalized.
+
+The `current_score += (COLS - col_index_in_priority)` for center preference feels right.
+`COLS` (7) - `index_of_3` (0) = 7.
+`COLS` (7) - `index_of_0` (6) = 1. So 7 is highest, 1 is lowest.
+
+Seems like a reasonable balance of offense and defense for a basic policy under time constraints.<code>
+import random
+
+# Global constants for board dimensions and player representation
+ROWS = 6
+COLS = 7
+PLAYER = 1         # Represents our disc on the board
+OPPONENT = -1      # Represents the opponent's disc on the board
+
+# Prioritized list of columns (center preference).
+# Columns are ordered from most preferred (center) to least preferred (edges).
+CENTER_PRIORITY = [3, 2, 4, 1, 5, 0, 6]
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Implements a targeting policy for a Connect 4 game.
+    The policy prioritizes winning, blocking, creating forks, and controlling the center.
+
+    Args:
+        board: A 6x7 grid representing the Connect 4 board.
+               0 = empty, 1 = player's disc, -1 = opponent's disc.
+
+    Returns:
+        An integer representing the column index (0-6) to drop a disc.
+        The selected column must not be full.
+    """
+
+    def is_valid_move(board_state: list[list[int]], col: int) -> bool:
+        """Checks if a column is within bounds and not full."""
+        return 0 <= col < COLS and board_state[0][col] == 0
+
+    def get_valid_moves(board_state: list[list[int]]) -> list[int]:
+        """Returns a list of all valid column indices for dropping a disc."""
+        return [c for c in range(COLS) if is_valid_move(board_state, c)]
+
+    def drop_disc_internal(board_state: list[list[int]], col: int, player: int) -> list[list[int]]:
+        """
+        Returns a new board state after dropping a disc in the specified column for the given player.
+        Assumes the move is valid (i.e., the column is not full).
+
+        Args:
+            board_state: The current state of the board.
+            col: The column where the disc is to be dropped.
+            player: The player whose disc is being dropped (1 or -1).
+
+        Returns:
+            A new list of lists representing the board after the move.
+        """
+        temp_board = [row[:] for row in board_state]  # Create a deep copy
+        for r in range(ROWS - 1, -1, -1):  # Iterate from bottom to top
+            if temp_board[r][col] == 0:
+                temp_board[r][col] = player
+                return temp_board
+        return temp_board # Should not be reached if move is valid, but good for type safety
+
+    def check_win_internal(board_state: list[list[int]], player: int) -> bool:
+        """
+        Checks if the given player has formed a line of four on the current board.
+
+        Args:
+            board_state: The current state of the board.
+            player: The player to check for a win (1 or -1).
+
+        Returns:
+            True if the player has won, False otherwise.
+        """
+        # Check horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                if all(board_state[r][c + i] == player for i in range(4)):
+                    return True
+        # Check vertical
+        for r in range(ROWS - 3):
+            for c in range(COLS):
+                if all(board_state[r + i][c] == player for i in range(4)):
+                    return True
+        # Check positive diagonal (bottom-left to top-right)
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                if all(board_state[r + i][c + i] == player for i in range(4)):
+                    return True
+        # Check negative diagonal (top-right to bottom-left)
+        for r in range(ROWS - 3):
+            for c in range(3, COLS):
+                if all(board_state[r + i][c - i] == player for i in range(4)):
+                    return True
+        return False
+    
+    def count_potential_wins(board_state: list[list[int]], player: int) -> int:
+        """
+        Counts how many distinct *next* moves would result in a win for the given player
+        on the provided board state. This is used to detect "forks" or strong threats.
+
+        Args:
+            board_state: The current state of the board.
+            player: The player to check for potential wins (1 or -1).
+
+        Returns:
+            The number of distinct moves that would result in a win for the player.
+        """
+        potential_wins = 0
+        current_valid_moves = get_valid_moves(board_state)
+        for c_next in current_valid_moves:
+            # Simulate placing disc for 'player' on c_next
+            temp_board_win_check = drop_disc_internal(board_state, c_next, player)
+            if check_win_internal(temp_board_win_check, player):
+                potential_wins += 1
+        return potential_wins
+
+    valid_moves = get_valid_moves(board)
+
+    # 1. Strategy: Check for immediate win (Player 1)
+    # If we can win in the current turn, take that move.
+    for col in valid_moves:
+        next_board_my_move = drop_disc_internal(board, col, PLAYER)
+        if check_win_internal(next_board_my_move, PLAYER):
+            return col
+
+    # 2. Strategy: Check for immediate opponent win and block (Player -1)
+    # If the opponent can win on their next turn, block that move.
+    for col in valid_moves:
+        next_board_opponent_sim = drop_disc_internal(board, col, OPPONENT)
+        if check_win_internal(next_board_opponent_sim, OPPONENT):
+            return col  # Block the opponent's winning move
+
+    # 3. Strategy: Evaluate strategic moves (no immediate win or block found)
+    best_score = -float('inf')  # Initialize with a very low score
+    # Fallback to a random valid move initially, in case no strategic move gives a positive score
+    best_choice = random.choice(valid_moves) 
+
+    for col in valid_moves:
+        current_score = 0
+        
+        # Simulate placing our disc in 'col'
+        sim_board_my_move = drop_disc_internal(board, col, PLAYER)
+
+        # Calculate our offensive potential: How many "forks" or strong threats we create.
+        # A fork means creating multiple distinct winning opportunities for ourselves on the next turn.
+        my_forks = count_potential_wins(sim_board_my_move, PLAYER)
+        current_score += my_forks * 100  # High value for creating multiple winning opportunities
+
+        # Calculate opponent's defensive requirements: Check if our move creates any
+        # immediate winning traps for the opponent on their *next* turn.
+        opponent_immediate_wins_after_my_move = count_potential_wins(sim_board_my_move, OPPONENT)
+        
+        # If our move creates an immediate winning opportunity for the opponent (a trap),
+        # penalize this move heavily. The square factor ensures multiple opponent threats
+        # are penalized more severely.
+        if opponent_immediate_wins_after_my_move > 0:
+            current_score -= (opponent_immediate_wins_after_my_move ** 2) * 200
+
+        # Heuristic: Center preference.
+        # Columns closer to the center are generally more strategic as they offer
+        # more potential lines to connect 4. We use the CENTER_PRIORITY list.
+        col_index_in_priority = CENTER_PRIORITY.index(col)
+        # Assign a higher score for higher priority (smaller index in CENTER_PRIORITY means higher priority)
+        current_score += (COLS - col_index_in_priority) 
+
+        # Update the best move if the current move has a higher score.
+        if current_score > best_score:
+            best_score = current_score
+            best_choice = col
+        # If scores are equal, prefer columns closer to the center (using CENTER_PRIORITY order).
+        elif current_score == best_score:
+            best_choice_priority_index = CENTER_PRIORITY.index(best_choice)
+            current_choice_priority_index = CENTER_PRIORITY.index(col)
+            if current_choice_priority_index < best_choice_priority_index:
+                best_choice = col
+    
+    return best_choice
+</code>

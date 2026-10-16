@@ -1,0 +1,130 @@
+The strategy for this policy is to play optimal Misère Nim. In Misère Nim, the player who takes the last object loses. The optimal strategy differs from standard (Normal) Nim primarily in the endgame:
+
+1.  **Endgame (all piles size 0 or 1):**
+    *   If the number of piles with size 1 is **odd**, the position is losing (a P-position). Any move will eventually lead to a loss against perfect play.
+    *   If the number of piles with size 1 is **even**, the position is winning (an N-position). The optimal move is to take 1 object from any pile, leaving an odd number of piles (forcing the opponent into a losing position).
+
+2.  **Midgame (at least one pile size $\ge$ 2):**
+    *   The strategy is mostly identical to Normal Nim.
+    *   Calculate the Nim-sum (bitwise XOR) of all pile sizes.
+    *   **If Nim-sum $\neq$ 0 (Winning Position):**
+        *   Find a move that makes the Nim-sum 0. This involves selecting a pile $i$ with size $x_i$ such that $x_i \oplus S < x_i$, and reducing it to $x_i \oplus S$.
+        *   **Exception:** If the move to make Nim-sum 0 results in a state where *all* piles are size 0 or 1, we must check the count of size-1 piles.
+            *   If the resulting count of size-1 piles is **even**, this move actually gives the opponent a winning endgame position. We must adjust the move to ensure we leave an **odd** count of size-1 piles.
+    *   **If Nim-sum $=$ 0 (Losing Position):**
+        *   Against a perfect player, any move leads to a loss. We employ a defensive heuristic: take 1 object from the largest pile. This creates the most complex state possible, increasing the likelihood that the opponent makes a mistake.
+
+<code>
+import random
+
+def policy(piles: list[int]) -> str:
+    """
+    Returns the next move for the game of Misère Nim.
+    Format: 'pile,take'
+    """
+    
+    # 1. Identify Endgame state (all piles are 0 or 1)
+    is_endgame = all(p <= 1 for p in piles)
+    
+    if is_endgame:
+        # In endgame, P-position is odd count of 1s.
+        # If odd, we are losing -> move to even (or lose eventually).
+        # If even, we are winning -> move to odd.
+        # In both cases, simply taking 1 from a pile of 1 is the standard move logic
+        # (unless we have only 1 pile of 1, then taking it loses immediately).
+        
+        # Count non-zero piles
+        count_ones = sum(1 for p in piles if p > 0)
+        
+        # We want to make the count odd for the opponent.
+        # If current count is even, take 1 -> becomes odd (good).
+        # If current count is odd, take 1 -> becomes even (opponent wins), but we are in P-pos so we lose anyway.
+        
+        # Find first non-zero pile
+        for i, p in enumerate(piles):
+            if p > 0:
+                # Optimization: If there is only 1 pile, we are forced to take it and lose.
+                # If there are multiple, we take 1.
+                return f"{i},1"
+                
+        # Should not be reached if game is valid
+        return "0,1"
+
+    # 2. Midgame / General Strategy
+    # Calculate Nim Sum
+    nim_sum = 0
+    for p in piles:
+        nim_sum ^= p
+        
+    # If we are in a winning position (Nim Sum != 0)
+    if nim_sum != 0:
+        # Try to find a move that makes nim_sum 0
+        # We must also handle the edge case where the move results in an all-1s state with even count
+        
+        # Sort indices by pile size descending to prioritize optimal reduction or simple heuristics if multiple exist
+        # Though strict deterministic order is fine.
+        
+        for i, p in enumerate(piles):
+            if p > 0:
+                # Target size to make nim_sum 0
+                target = p ^ nim_sum
+                if target < p:
+                    # Candidate move: reduce pile i to 'target'
+                    take = p - target
+                    
+                    # Check if this move triggers the all-1s endgame
+                    # We simulate the state
+                    new_piles = piles[:]
+                    new_piles[i] = target
+                    
+                    if all(x <= 1 for x in new_piles):
+                        # We are entering the "all 1s" zone.
+                        # We want to leave an ODD number of 1s (P-position for opponent).
+                        new_ones_count = sum(1 for x in new_piles if x > 0)
+                        
+                        if new_ones_count % 2 == 1:
+                            # Good move: leaves odd count (P-position)
+                            return f"{i},{take}"
+                        else:
+                            # Bad move: leaves even count (N-position for opponent).
+                            # We need to adjust the move to leave an odd count.
+                            # The other piles (j != i) are already size 0 or 1.
+                            # Let k be the number of ones in other piles.
+                            # We want (k + (1 if new_piles[i]==1 else 0)) to be Odd.
+                            
+                            # Number of ones in piles other than i
+                            fixed_ones = sum(1 for j, val in enumerate(piles) if j != i and val > 0)
+                            
+                            # We need final count to be odd.
+                            # If fixed_ones is odd, we need current pile to be 0.
+                            # If fixed_ones is even, we need current pile to be 1.
+                            adjusted_target = 0 if fixed_ones % 2 == 1 else 1
+                            
+                            # Check if adjusted_target is valid (0 <= adjusted_target < p)
+                            # Since p >= 2 (because nim_sum != 0 and we are not in endgame state at start),
+                            # and adjusted_target is 0 or 1, it is always valid if p > 1.
+                            if 0 <= adjusted_target < p:
+                                take_adj = p - adjusted_target
+                                return f"{i},{take_adj}"
+                    else:
+                        # Standard winning move, not entering all-1s state
+                        return f"{i},{take}"
+    
+    # 3. Losing Position (Nim Sum == 0) or Fallback
+    # We cannot win against perfect play. Use heuristic to confuse opponent.
+    # Take 1 from the largest pile.
+    
+    # Find index of max pile
+    max_pile = -1
+    max_idx = -1
+    for i, p in enumerate(piles):
+        if p > max_pile:
+            max_pile = p
+            max_idx = i
+            
+    if max_idx != -1 and max_pile > 0:
+        return f"{max_idx},1"
+        
+    # Absolute fallback (should not happen in valid game state)
+    return "0,1"
+</code>

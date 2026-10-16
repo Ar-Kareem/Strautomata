@@ -1,0 +1,125 @@
+
+
+Thestrategy for this policy is to prioritize moves that directly threaten the opponent's king, followed by material gains, king safety, and positional improvements. This approach combines aggressive tactics with long-term positional awareness.
+
+<code>
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Helper function to get piece value
+    def piece_value(piece: str) -> int:
+        return {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 1000}[piece[1]]
+    
+    # Helper function to check if a square is attacked
+    def is_attacked(board: dict, square: str, color: str) -> bool:
+        directions = [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]
+        for dx, dy in directions:
+            x, y = int(square[1]), ord(square[0]) - ord('a')
+            for step in range(1, 8):
+                nx, ny = x + dx * step, y + dy * step
+                if not (1 <= nx <= 8 and 0 <= ny < 8):
+                    break
+                target = chr(ny + ord('a')) + str(nx)
+                if target not in board:
+                    continue
+                piece = board[target]
+                if piece[0] == color:
+                    continue
+                # Check if piece can attack along this direction
+                if (piece[1] == 'B' or piece[1] == 'Q') and abs(dx) == abs(dy):
+                    return True
+                if (piece[1] == 'R' or piece[1] == 'Q') and (dx == 0 or dy == 0):
+                    return True
+                if piece[1] == 'N':
+                    return True
+                break
+        return False
+
+    # Helper function to evaluate board position
+    def evaluate(board: dict, color: str) -> int:
+        score = 0
+        for square, piece in board.items():
+            if piece[0] == color:
+                score += piece_value(piece)
+            else:
+                score -= piece_value(piece)
+        return score
+
+    # Generate legal moves
+    legal_moves = []
+    for src, piece in pieces.items():
+        if piece[0] != to_play:
+            continue
+        # Generate moves for each piece type
+        if piece[1] == 'P':
+            # Pawn moves
+            file, rank = src[0], int(src[1])
+            promotions = ['r', 'n', 'b', 'q']
+            for promotion in promotions:
+                for step in [(0,1), (0,-1)]:
+                    new_rank = rank + step
+                    if not (1 <= new_rank <= 8):
+                        continue
+                    new_square = chr(file + ord('a')) + str(new_rank)
+                    if new_square in pieces:
+                        continue
+                    legal_moves.append(f"{src}{new_square}")
+            # Captures
+            for step in [(1,1), (1,-1)]:
+                new_rank = rank + step
+                if not (1 <= new_rank <= 8):
+                    continue
+                new_square = chr(file + ord('a')) + str(new_rank)
+                if new_square in pieces and pieces[new_square][0] != to_play:
+                    legal_moves.append(f"{src}{new_square}")
+        elif piece[1] == 'N':
+            # Knight moves
+            for step in [(1,2), (2,1), (-1,2), (-2,1), (1,-2), (2,-1), (-1,-2), (-2,-1)]:
+                new_rank = rank + step
+                if not (1 <= new_rank <= 8):
+                    continue
+                new_square = chr(file + ord('a')) + str(new_rank)
+                if new_square in pieces and pieces[new_square][0] == to_play:
+                    continue
+                legal_moves.append(f"{src}{new_square}")
+        elif piece[1] in ['B','R','Q']:
+            # Sliding pieces
+            for direction in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                for step in range(1, 8):
+                    new_rank = rank + direction[1] * step
+                    if not (1 <= new_rank <= 8):
+                        break
+                    new_square = chr(file + ord('a')) + str(new_rank)
+                    if new_square in pieces:
+                        if pieces[new_square][0] != to_play:
+                            legal_moves.append(f"{src}{new_square}")
+                        break
+                    else:
+                        legal_moves.append(f"{src}{new_square}")
+    
+    # Evaluate each move
+    best_move = None
+    best_score = -float('inf')
+    for move in legal_moves:
+        # Simulate move
+        new_pieces = pieces.copy()
+        src, tgt = move[0:2], move[2:4]
+        piece = new_pieces[src]
+        del new_pieces[src]
+        if tgt in new_pieces:
+            captured = new_pieces[tgt]
+            del new_pieces[tgt]
+        else:
+            captured = None
+        new_pieces[tgt] = piece
+        
+        # Check for immediate threats
+        if is_attacked(new_pieces, tgt, 'b' if to_play == 'w' else 'w'):
+            continue
+        
+        # Evaluate position
+        score = evaluate(new_pieces, to_play)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move, memory
+</code>

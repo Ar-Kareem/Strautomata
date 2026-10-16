@@ -1,0 +1,151 @@
+```python
+import random
+from typing import List, Tuple, Set, Dict, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Smart Battleship targeting policy using hit tracking and probability-based shooting.
+    
+    Strategy:
+    1. If we have hits that might be part of a ship, prioritize adjacent cells
+    2. Otherwise, use a parity-based pattern to efficiently search the board
+    3. When we have multiple hits in a line, extend in the same direction
+    """
+    
+    n = 10
+    ships = [5, 4, 3, 3, 2]  # Remaining ship lengths to sink
+    
+    # Find all hit cells
+    hits = []
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 1:
+                hits.append((r, c))
+    
+    # Find all possible target cells (unexplored)
+    targets = []
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 0:
+                targets.append((r, c))
+    
+    if not targets:
+        return (0, 0)  # Should never happen in valid gameplay
+    
+    # If we have hits, try to sink the ship
+    if hits:
+        # Group hits that are connected (likely part of same ship)
+        hit_groups = []
+        unvisited = hits.copy()
+        
+        while unvisited:
+            start = unvisited.pop(0)
+            group = [start]
+            queue = [start]
+            
+            while queue:
+                r, c = queue.pop(0)
+                # Check neighbors
+                for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                    nr, nc = r + dr, c + dc
+                    if (nr, nc) in unvisited:
+                        unvisited.remove((nr, nc))
+                        group.append((nr, nc))
+                        queue.append((nr, nc))
+            
+            hit_groups.append(group)
+        
+        # For each hit group, try to extend in a direction
+        for group in hit_groups:
+            if len(group) == 1:
+                # Single hit - check all adjacent cells
+                r, c = group[0]
+                directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+                random.shuffle(directions)
+                
+                for dr, dc in directions:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < n and 0 <= nc < n and board[nr][nc] == 0:
+                        return (nr, nc)
+            
+            else:
+                # Multiple hits - determine the direction and extend
+                # Sort group by row or column depending on alignment
+                if group[0][0] == group[1][0]:  # Same row (horizontal)
+                    group.sort(key=lambda x: x[1])
+                    min_c, max_c = group[0][1], group[-1][1]
+                    # Try to extend left
+                    if min_c > 0 and board[group[0][0]][min_c - 1] == 0:
+                        return (group[0][0], min_c - 1)
+                    # Try to extend right
+                    if max_c < n - 1 and board[group[0][0]][max_c + 1] == 0:
+                        return (group[0][0], max_c + 1)
+                else:  # Same column (vertical)
+                    group.sort(key=lambda x: x[0])
+                    min_r, max_r = group[0][0], group[-1][0]
+                    # Try to extend up
+                    if min_r > 0 and board[min_r - 1][group[0][1]] == 0:
+                        return (min_r - 1, group[0][1])
+                    # Try to extend down
+                    if max_r < n - 1 and board[max_r + 1][group[0][1]] == 0:
+                        return (max_r + 1, group[0][1])
+    
+    # No promising hits - use a smart search pattern
+    # Use a diagonal pattern with checkerboard parity (odd sum cells first)
+    # This efficiently covers the board while accounting for ship sizes
+    
+    # First prioritize cells with odd (r+c) to follow checkerboard pattern
+    odd_targets = [t for t in targets if (t[0] + t[1]) % 2 == 1]
+    even_targets = [t for t in targets if (t[0] + t[1]) % 2 == 0]
+    
+    # Prioritize odd cells first (checkerboard pattern)
+    prioritized_targets = odd_targets + even_targets
+    
+    # Further shuffle targets to avoid predictable patterns
+    random.shuffle(prioritized_targets)
+    
+    # Check if any target has high probability based on ship placement possibilities
+    best_score = -1
+    best_target = prioritized_targets[0]
+    
+    for r, c in prioritized_targets:
+        score = 0
+        
+        # Count how many ship placements could pass through this cell
+        for ship_len in ships:
+            # Horizontal placements
+            for dc in range(-ship_len + 1, 1):
+                valid = True
+                for i in range(ship_len):
+                    nr, nc = r, c + dc + i
+                    if (not (0 <= nr < n and 0 <= nc < n) or 
+                        board[nr][nc] == -1):
+                        valid = False
+                        break
+                    if board[nr][nc] == 1 and (nr, nc) not in [(r, c + i + dc) for i in range(ship_len)]:
+                        valid = False
+                        break
+                if valid:
+                    score += 1
+            
+            # Vertical placements
+            for dr in range(-ship_len + 1, 1):
+                valid = True
+                for i in range(ship_len):
+                    nr, nc = r + dr + i, c
+                    if (not (0 <= nr < n and 0 <= nc < n) or 
+                        board[nr][nc] == -1):
+                        valid = False
+                        break
+                    if board[nr][nc] == 1 and (nr, nc) not in [(r + i + dr, c) for i in range(ship_len)]:
+                        valid = False
+                        break
+                if valid:
+                    score += 1
+        
+        if score > best_score:
+            best_score = score
+            best_target = (r, c)
+    
+    return best_target
+```

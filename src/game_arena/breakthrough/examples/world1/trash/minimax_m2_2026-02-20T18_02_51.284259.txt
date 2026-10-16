@@ -1,0 +1,205 @@
+**Strategy**
+
+The policy uses a classic **minimax** algorithm with **alpha‑beta pruning** and a fixed search depth of 4.  
+The evaluation function combines:
+
+* **Material**: 1000 × (the difference in number of pieces).  
+* **Position**: 10 × the row index (for White the higher the row, the better; for Black the lower the row).  
+* **Central‑column bonus**: +2 for pieces on columns 3 or 4, encouraging control of the centre.
+
+Promotion (reaching the opponent’s home row) is recognised as an immediate win and is taken without search.  
+Captures and forward moves are ordered first, which greatly improves the pruning efficiency of alpha‑beta.
+
+If only one legal move exists or a promotion is possible, it is returned directly. Otherwise the minimax search selects the best move.
+
+This combination gives a strong, aggressive player that can reliably beat simpler greedy or random opponents while staying well inside the 1‑second time limit.
+<code>
+import sys
+sys.setrecursionlimit(10000)
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+
+def generate_moves(board, color):
+    """Return a list of legal moves for the given colour.
+    Each move is a tuple ((from_r,from_c),(to_r,to_c))."""
+    dir = -1 if color == 'b' else 1
+    moves = []
+    for (r, c), p in board.items():
+        if p != color:
+            continue
+        # straight forward
+        nr, nc = r + dir, c
+        if 0 <= nr < 8 and (nr, nc) not in board:
+            moves.append(((r, c), (nr, nc)))
+        # diagonal left
+        nr, nc = r + dir, c - 1
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            target = board.get((nr, nc))
+            if target is None or target != color:
+                moves.append(((r, c), (nr, nc)))
+        # diagonal right
+        nr, nc = r + dir, c + 1
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            target = board.get((nr, nc))
+            if target is None or target != color:
+                moves.append(((r, c), (nr, nc)))
+    return moves
+
+
+def apply_move(board, move, color):
+    """Return a new board after applying the move."""
+    new_board = dict(board)
+    (fr, fc), (tr, tc) = move
+    # remove piece from source
+    del new_board[(fr, fc)]
+    # remove captured piece if any
+    if (tr, tc) in new_board:
+        del new_board[(tr, tc)]
+    # place piece on target
+    new_board[(tr, tc)] = color
+    return new_board
+
+
+def move_priority(move, board, color):
+    """Heuristic to order moves: promotion > capture > forward > diagonal."""
+    (_, _), (tr, tc) = move
+    promo_row = 7 if color == 'w' else 0
+    if tr == promo_row:
+        return 1000
+    # capture
+    if (tr, tc) in board and board[(tr, tc)] != color:
+        return 100
+    # straight forward (non‑capture)
+    if tc == move[0][1]:
+        return 10
+    # diagonal empty
+    return 0
+
+
+def evaluate(board, color):
+    """Static evaluation from the perspective of `color`.
+    Returns a large positive value for a win, large negative for a loss."""
+    # immediate promotion check
+    promo_row = 7 if color == 'w' else 0
+    for (r, c), p in board.items():
+        if p == color and r == promo_row:
+            return 10 ** 9
+    opp_color = 'w' if color == 'b' else 'b'
+    opp_promo_row = 7 if opp_color == 'w' else 0
+    for (r, c), p in board.items():
+        if p == opp_color and r == opp_promo_row:
+            return -10 ** 9
+
+    # piece count
+    my_cnt = sum(1 for p in board.values() if p == color)
+    opp_cnt = sum(1 for p in board.values() if p == opp_color)
+    if my_cnt == 0:
+        return -10 ** 9
+    if opp_cnt == 0:
+        return 10 ** 9
+
+    # positional score
+    my_pos = 0
+    opp_pos = 0
+    for (r, c), p in board.items():
+        if p == color:
+            if color == 'w':
+                my_pos += r * 10 + (2 if c in (3, 4) else 0)
+            else:
+                my_pos += (7 - r) * 10 + (2 if c in (3, 4) else 0)
+        else:  # opponent
+            if opp_color == 'w':
+                opp_pos += r * 10 + (2 if c in (3, 4) else 0)
+            else:
+                opp_pos += (7 - r) * 10 + (2 if c in (3, 4) else 0)
+
+    # material + position
+    return (my_cnt - opp_cnt) * 1000 + (my_pos - opp_pos)
+
+
+# ----------------------------------------------------------------------
+# Minimax with alpha‑beta pruning
+# ----------------------------------------------------------------------
+
+MAX_DEPTH = 4
+
+def minimax(board, depth, alpha, beta, maximizing, color):
+    """Return (evaluation, best_move) for the given board and side to move."""
+    if depth == 0:
+        return evaluate(board, color), None
+
+    moves = generate_moves(board, color)
+    if not moves:
+        # no legal moves → loss
+        return -10 ** 9 if maximizing else 10 ** 9, None
+
+    # order moves to improve pruning
+    moves = sorted(moves, key=lambda m: move_priority(m, board, color), reverse=True:
+        max_eval)
+
+    if maximizing = -10 ** 9
+        best_move = None
+        for move in moves:
+            new_board = apply_move(board, move, color)
+            eval_val, _ = minimax(new_board, depth - 1, alpha, beta, False,
+                                   'w' if color == 'b' else 'b')
+            if eval_val > max_eval:
+                max_eval = eval_val
+                best_move = move
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = 10 ** 9
+        best_move = None
+        for move in moves:
+            new_board = apply_move(board, move, color)
+            eval_val, _ = minimax(new_board, depth - 1, alpha, beta, True,
+                                   'w' if color == 'b' else 'b')
+            if eval_val < min_eval:
+                min_eval = eval_val
+                best_move = move
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+
+# ----------------------------------------------------------------------
+# Public policy
+# ----------------------------------------------------------------------
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Choose the next move for the Breakthrough board."""
+    # Build the board dictionary
+    board = {}
+    for r, c in me:
+        board[(r, c)] = color
+    other = 'w' if color == 'b' else 'b'
+    for r, c in opp:
+        board[(r, c)] = other
+
+    # Generate all legal moves
+    moves = generate_moves(board, color)
+
+    # Immediate promotion win
+    promo_row = 7 if color == 'w' else 0
+    for move in moves:
+        (_, _), (tr, tc) = move
+        if tr == promo_row:
+            return move
+
+    # If only one legal move, take it
+    if len(moves) == 1:
+        return moves[0]
+
+    # Order moves for better alpha‑beta performance
+    moves = sorted(moves, key=lambda m: move_priority(m, board, color), reverse=True)
+
+    # Run minimax with fixed depth
+    _, best = minimax(board, MAX_DEPTH, -10**9, 10**9, True, color)
+    return best if best is not None else moves[0]
+</code>

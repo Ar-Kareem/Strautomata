@@ -1,0 +1,149 @@
+**Strategy Overview**
+
+The policy follows a simple but effective hierarchy that respects all Backgammon rules and the engine’s mandatory‑move constraints.
+
+1. **Bar priority** – If any of our checkers are on the bar we must re‑enter them before touching any other checker.
+2. **Hit preference** – When a move can land on a single opponent checker (a “blot”) we rank it higher than a simple advance.
+3. **Bearing‑off** – If all our checkers are already inside the home board (points 0‑5) we bear‑off whenever the dice allow it.
+4. **Advance the furthest checker** – If no hit or bear‑off is possible we move the checker that is closest to home (the highest point index) to make progress.
+5. **Dice order handling** –  
+   *If both dice can be played* we always use the higher die first and encode the move with the `H` prefix.  
+   *If only one die can be played* we must use the higher die when it is legal; otherwise we use the lower die and encode the move with the `L` prefix.  
+   When a second move is impossible we append `P` (pass) for the missing move.
+
+The policy evaluates all legal starting points for each die, scores them (hit > bear‑off > regular advance) and selects the best according to the hierarchy above. The resulting move string is always legal for the given state.
+
+---
+
+```python
+def policy(state: dict) -> str:
+    """
+    Return a legal Backgammon move string for the given state.
+    The move respects all mandatory‑move rules and prefers hits,
+    bearing off and advancing the furthest checker.
+    """
+
+    my_pts = state["my_pts"]
+    opp_pts = state["opp_pts"]
+    my_bar = state["my_bar"]
+    dice = state["dice"]
+
+    # No dice -> pass
+    if not dice:
+        return "H:P,P"
+
+    # Sort dice: high first, low last
+    dice_sorted = sorted(dice, reverse=True)
+    high = dice_sorted[0]
+    low = dice_sorted[-1] if len(dice_sorted) > 1 else dice_sorted[0]
+
+    # Are we allowed to bear off?
+    home_ready = sum(my_pts[6:]) == 0
+
+    # ------------------------------------------------------------------
+    # Helper: destination index for a start point and a die
+    # ------------------------------------------------------------------
+    def dest_from(start: str, die: int) -> int:
+        if start == "B":                 # from the bar
+            return 24 - die
+        else:                            # absolute point A<i>
+            i = int(start[1:])
+            return i - die
+
+    # ------------------------------------------------------------------
+    # Gather all legal starts for a given die
+    # ------------------------------------------------------------------
+    def possible_starts(die: int):
+        starts = []
+
+        # Bar must be cleared first
+        if my_bar > 0:
+            dest = 24 - die
+            if opp_pts[dest] < 2:          # entry point not blocked
+                starts.append("B")
+            return starts                  # no other moves allowed while on the bar
+
+        # Normal board moves
+        for i, cnt in enumerate(my_pts):
+            if cnt == 0:
+                continue
+            dest = i - die
+            if dest >= 0:
+                if opp_pts[dest] < 2:      # not blocked
+                    starts.append(f"A{i}")
+            else:                           # bearing off attempt
+                if home_ready and i <= 5:  # exact bear‑off allowed
+                    starts.append(f"A{i}")
+        return starts
+
+    # ------------------------------------------------------------------
+    # Scoring function – higher is better
+    #   hit   : +2
+    #   bear‑off : +1
+    #   advance furthest : tiny bonus based on point index
+    # ------------------------------------------------------------------
+    def score_start(start: str, die: int) -> float:
+        dest = dest_from(start, die)
+        s = 0.0
+        if dest >= 0:
+            if opp_pts[dest] == 1:          # hit a blot
+                s += 2.0
+        else:
+            s += 1.0                         # bear‑off
+        if start != "B":                     # prefer higher points (closer to home)
+            idx = int(start[1:])
+            s += (23 - idx) / 1000.0
+        return s
+
+    # ------------------------------------------------------------------
+    # Choose the best start from a list according to the scoring function
+    # ------------------------------------------------------------------
+    def best_start(candidates, die):
+        if not candidates:
+            return None
+        best = max(candidates, key=lambda st: score_start(st, die))
+        return best
+
+    # ------------------------------------------------------------------
+    # BAR handling (must move from bar before anything else)
+    # ------------------------------------------------------------------
+    if my_bar > 0:
+        high_st = possible_starts(high)
+        low_st = possible_starts(low) if low != high else high_st
+
+        # Both dice can be played from the bar
+        if high_st and low_st:
+            hs = best_start(high_st, high)
+            ls = best_start(low_st, low)
+            return f"H:{hs},{ls}"
+
+        # Only one die can be played from the bar
+        if high_st:
+            return f"H:{best_start(high_st, high)},P"
+        if low_st:
+            return f"L:{best_start(low_st, low)},P"
+
+        # No legal entry -> pass
+        return "H:P,P"
+
+    # ------------------------------------------------------------------
+    # Normal board (no checkers on the bar)
+    # ------------------------------------------------------------------
+    high_st = possible_starts(high)
+    low_st = possible_starts(low) if low != high else high_st
+
+    # Both dice usable
+    if high_st and low_st:
+        hs = best_start(high_st, high)
+        ls = best_start(low_st, low)
+        return f"H:{hs},{ls}"
+
+    # Only one die usable – must use the higher die if possible
+    if high_st:
+        return f"H:{best_start(high_st, high)},P"
+    if low_st:
+        return f"L:{best_start(low_st, low)},P"
+
+    # No move possible at all
+    return "H:P,P"
+```

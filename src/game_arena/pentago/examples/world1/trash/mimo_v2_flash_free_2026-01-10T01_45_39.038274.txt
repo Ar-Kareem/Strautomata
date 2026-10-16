@@ -1,0 +1,253 @@
+The problem asks us to implement a move-selection policy for the game Pentago.
+The game is played on a 6x6 board divided into four 3x3 quadrants.
+The move consists of placing a marble on an empty cell, then rotating one quadrant 90 degrees clockwise (R) or anticlockwise (L).
+The goal is to achieve 5 or more marbles in a row (horizontal, vertical, or diagonal).
+If the opponent has a winning move, we must block it.
+If we have a winning move, we must play it.
+We should also consider threats.
+
+The strategy will be:
+1.  **Parse Input**: Convert the `you` and `opponent` arrays into a game state.
+2.  **Generate Candidates**: Generate all legal moves. There are empty cells * 4 quadrants * 2 directions. Since the board is usually dense, this number is manageable.
+3.  **Evaluation (Win/Loss)**:
+    *   Check if any candidate move results in us winning. If so, play it.
+    *   Check if any candidate move results in the opponent winning (due to the rotation helping them). If so, we must avoid this move unless we are forced (but usually there are alternatives).
+4.  **Heuristic Evaluation**:
+    *   If no immediate win/loss, evaluate moves based on a heuristic.
+    *   **Heuristic factors**:
+        *   Blocking opponent lines (reducing their count).
+        *   Creating/Enhancing our own lines (increasing our count).
+        *   Prefer moves that create multiple threats.
+5.  **Optimization**: Use bitboards or dense array representations for speed. We need to check lines after placing a piece and rotating a quadrant. Rotating a quadrant affects 9 cells, which can affect many lines.
+
+```python
+import sys
+import numpy as np
+
+def policy(you, opponent) -> str:
+    """
+    Pentago AI Policy.
+    Strategy:
+    1. Check for immediate win.
+    2. Check for opponent's immediate win (forced block).
+    3. Heuristic search: maximize own lines, minimize opponent lines.
+    """
+    
+    # Convert inputs to numpy arrays if they aren't already (for easier manipulation)
+    board_you = np.array(you, dtype=np.int8)
+    board_opp = np.array(opponent, dtype=np.int8)
+    
+    # Helper to get empty cells
+    empty_mask = (board_you == 0) & (board_opp == 0)
+    empty_coords = np.argwhere(empty_mask)
+    
+    # Quadrant definitions (row_start, col_start) for 0-based indexing
+    quadrants = {
+        0: (0, 0),  # Top-left
+        1: (0, 3),  # Top-right
+        2: (3, 0),  # Bottom-left
+        3: (3, 3)   # Bottom-right
+    }
+
+    def get_lines(board):
+        """Extract all possible lines of length 5 from the board."""
+        lines = []
+        # Horizontal
+        for r in range(6):
+            for c in range(2): # 0, 1
+                lines.append([(r, c+i) for i in range(5)])
+        # Vertical
+        for c in range(6):
+            for r in range(2):
+                lines.append([(r+i, c) for i in range(5)])
+        # Diagonal Down-Right
+        for r in range(2):
+            for c in range(2):
+                lines.append([(r+i, c+i) for i in range(5)])
+        # Diagonal Up-Right
+        for r in range(4, 6):
+            for c in range(2):
+                lines.append([(r-i, c+i) for i in range(5)])
+        return lines
+
+    ALL_LINES = get_lines(np.zeros((6, 6)))
+
+    def evaluate_board(board):
+        """Returns a score: (win_score, my_threats, opp_threats)"""
+        my_score = 0
+        opp_score = 0
+        my_wins = 0
+        opp_wins = 0
+        
+        for line in ALL_LINES:
+            count_me = 0
+            count_opp = 0
+            count_empty = 0
+            for r, c in line:
+                if board[r][c] == 1: count_me += 1
+                elif board[r][c] == 2: count_opp += 1  # We use 2 for opponent internally if needed, or map
+                else: count_empty += 1
+            
+            # Actually, let's stick to checking specific boards.
+            # Here we want to analyze a board state.
+            # Let's assume this function receives a board where 1=me, 2=opp, 0=empty
+            
+            if count_me > 0 and count_opp == 0:
+                if count_me == 5: my_wins += 1
+                elif count_me == 4: my_score += 1000
+                elif count_me == 3: my_score += 100
+                elif count_me == 2: my_score += 10
+            elif count_opp > 0 and count_me == 0:
+                if count_opp == 5: opp_wins += 1
+                elif count_opp == 4: opp_score += 1000
+                elif count_opp == 3: opp_score += 100
+                elif count_opp == 2: opp_score += 10
+        
+        return my_wins, opp_wins, my_score, opp_score
+
+    # We need a fast way to simulate moves.
+    # The critical part is the rotation.
+    # Since we are python, we can't be too slow.
+    
+    # Let's define a simulation function that returns the resulting board state.
+    # We represent board as a flat string or tuple for hashing if we wanted to memoize, 
+    # but direct array copy is fine for ~1000 moves.
+    
+    def get_rotated_quadrant(sub_board, direction):
+        """Returns rotated 3x3 numpy array."""
+        if direction == 'R':
+            return np.rot90(sub_board, -1)
+        else:
+            return np.rot90(sub_board, 1)
+
+    def apply_move(you_arr, opp_arr, r, c, q, d):
+        """Returns new_you, new_opp after move."""
+        new_you = you_arr.copy()
+        new_opp = opp_arr.copy()
+        
+        # 1. Place
+        new_you[r][c] = 1
+        
+        # 2. Rotate
+        r_start, c_start = quadrants[q]
+        # Extract
+        sub_you = new_you[r_start:r_start+3, c_start:c_start+3]
+        sub_opp = new_opp[r_start:r_start+3, c_start:c_start+3]
+        
+        # Rotate
+        rot_you = get_rotated_quadrant(sub_you, d)
+        rot_opp = get_rotated_quadrant(sub_opp, d)
+        
+        # Place back
+        new_you[r_start:r_start+3, c_start:c_start+3] = rot_you
+        new_opp[r_start:r_start+3, c_start:c_start+3] = rot_opp
+        
+        return new_you, new_opp
+
+    # Combine boards for evaluation function
+    def combine(you_arr, opp_arr):
+        # 1 for me, 2 for opp, 0 for empty
+        return you_arr + 2 * opp_arr
+
+    # Move Selection Logic
+    
+    best_score = -float('inf')
+    best_move = None
+    
+    # Prioritize moves that look promising
+    # We iterate through all valid moves (empty cell + quadrant + dir)
+    
+    # Optimization: Filter quadrants that affect lines?
+    # Just iterating all is 6*6*4*2 = ~288 moves max. That's small.
+    # The overhead is in board evaluation (checking all lines).
+    # We can optimize evaluation by only checking lines affected by the move.
+    # Lines affected: any line passing through the placed piece OR any piece in the rotated quadrant.
+    
+    # Since we don't have precomputed lists of lines per cell, let's stick to a slightly optimized check.
+    # Actually, checking 288 * (max lines = ~200) * (5 checks) is ~288k ops, which is very fast in numpy.
+    
+    # Let's precompute line coordinates for quick checks
+    # Or just generate all lines once as list of coords.
+    # For checking a board, we can just scan 6 rows, 6 cols, 2 diags of length >= 5.
+    
+    def check_win(board_arr):
+        """Check if 5-in-a-row exists. Returns True/False."""
+        # 1s are me. We use this function for the specific player's perspective
+        # We check horizontal
+        for r in range(6):
+            for c in range(2):
+                if np.all(board_arr[r, c:c+5] == 1): return True
+        # Vertical
+        for c in range(6):
+            for r in range(2):
+                if np.all(board_arr[r:r+5, c] == 1): return True
+        # Diag DR
+        for r in range(2):
+            for c in range(2):
+                if all(board_arr[r+i, c+i] == 1 for i in range(5)): return True
+        # Diag UR
+        for r in range(4, 6):
+            for c in range(2):
+                if all(board_arr[r-i, c+i] == 1 for i in range(5)): return True
+        return False
+
+    # We need to check if the move is a win for ME
+    # And if the move gives a win for OPPONENT (after rotation).
+    
+    # To speed up, let's just do the loop.
+    # We should pick a random move if nothing found, but we should always find something.
+    
+    moves = []
+    for r, c in empty_coords:
+        for q in range(4):
+            for d in ['L', 'R']:
+                moves.append((r, c, q, d))
+    
+    # Randomize to avoid deterministic loops if testing, but priority is logic.
+    
+    for r, c, q, d in moves:
+        new_you, new_opp = apply_move(board_you, board_opp, r, c, q, d)
+        
+        # Check 1: Did I win?
+        if check_win(new_you):
+            return f"{r+1},{c+1},{q},{d}"
+            
+        # Check 2: Did I give opponent a win?
+        # Note: The opponent wins if they get 5 in a row. We check their board.
+        if check_win(new_opp):
+            # This move is bad, skip it (unless it's the only move, but usually not)
+            continue
+            
+        # Heuristic: Evaluate the board state
+        # We want to maximize my lines, minimize opponent lines.
+        
+        # Let's calculate a simple score
+        my_win, opp_win, my_threat, opp_threat = evaluate_board(combine(new_you, new_opp))
+        
+        # Note: evaluate_board treats 1 as me, 2 as opp.
+        
+        # Score calculation:
+        # Weights:
+        # Win is handled above.
+        # Avoid giving opponent win is handled above.
+        # Threats:
+        score = my_threat - (opp_threat * 1.2) # Slightly favor defense
+        
+        # Bonus for occupying center or rotating quadrants with pieces
+        # Let's add some positional weight
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c, q, d)
+
+    # Fallback (should not happen if board is not full)
+    if best_move:
+        r, c, q, d = best_move
+        return f"{r+1},{c+1},{q},{d}"
+    
+    # If somehow no move found (e.g. all give opponent win, which implies we lost anyway)
+    # Just pick the first valid move
+    r, c = empty_coords[0]
+    return f"{r+1},{c+1},0,L"
+
+```

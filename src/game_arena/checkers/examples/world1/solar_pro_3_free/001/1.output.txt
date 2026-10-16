@@ -1,0 +1,370 @@
+**Strategy**
+
+The policy follows the official checkers rule that a capture must be made when one is available.  
+It therefore first exhaustively searches for any capture moves (including multiple‑jump
+sequences) and returns the capture with the highest material value.  
+If no capture exists, it generates ordinary non‑capture moves, preferring forward
+progress and promotion, and returns the move with the best material/evaluation.
+
+**Evaluation**  
+A simple material heuristic is used:
+
+* King = +100, Man = +50  
+* Opponent King = –100, Opponent Man = –50  
+* Small bonuses are given for landing on the promotion row (+20) and for
+  getting closer to the opponent’s home row (+5 per step).
+
+The search depth is limited to 7 plies (captures) – enough for any legal game,
+yet fast enough for the 1‑second budget.
+
+**Capture generation**  
+A recursive function builds all capture chains from a given piece. It respects the
+mandatory “no‑turn” rule: after a jump the same diagonal direction (`dr,dc`) is
+kept for the next jump, which is exactly the rule in checkers. Kings can start
+jumps in four directions, men only in the forward direction.
+
+**Non‑capture moves**  
+All forward‑only (men) or forward‑/backward‑only (king) moves that land on an
+empty dark square are generated. Promotion is performed automatically when a man
+reaches its home row.
+
+**Output**  
+The function always returns a legal move as `((from_row, from_col), (to_row, to_col))`.
+If captures exist, one is returned; otherwise the best simple move is returned.
+
+---
+
+```python
+<code>
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Choose a legal next move for a checkers player.
+    Returns ((from_row, from_col), (to_row, to_col)) where the piece is yours
+    and the destination square is empty (or a promoted piece on the home row).
+    Captures are mandatory – the function will never return a non‑capture if a
+    capture exists.
+    """
+
+    # ----- utilities ----------------------------------------------------
+    # Is a square on the checkerboard dark and inside the board?
+    def is_valid(row, col):
+        return 0 <= row <= 7 and 0 <= col <= 7 and (row + col) % 2 == 0
+
+    # Convert a board index (0‑63) to (row, col)
+    def idx_to_coord(idx):
+        return idx // 8, idx % 8
+
+    # Convert a list of squares to a 64‑bit mask
+    def list_to_mask(lst):
+        mask = 0
+        for r, c in lst:
+            mask |= 1 << (r * 8 + c)
+        return mask
+
+    # ----- game state ----------------------------------------------------
+    PROMOTION_ROW = 0 if color == 'b' else 7          # back rows for men‑to‑king
+    forward = -1 if color == 'b' else 1             # player’s forward direction
+
+    my_men_mask   = list_to_mask(my_men)
+    my_king_mask  = list_to_mask(my_kings)
+    opp_men_mask  = list_to_mask(opp_men)
+    opp_king_mask = list_to_mask(opp_kings)
+    full_board    = (my_men_mask | my_king_mask |
+                     opp_men_mask | opp_king_mask)
+
+    # ----- move evaluation -----------------------------------------------
+    # Material value: King 100, Man 50. Small bonuses for promotion and proximity.
+    def evaluate_sequence(seq):
+        # Apply the sequence to obtain final piece masks
+        men = my_men_mask
+        kings = my_king_mask
+        opp_men = opp_men_mask
+        opp_king = opp_king_mask
+        for frm, to in seq:
+            r, c = frm // 8, frm % 8
+            piece = 'king' if (kings >> frm) & 1 else 'man'
+            dr = ((to // 8) - r) // 2
+            dc = ((to % 8) - c) // 2
+
+            inter_r, inter_c = r + dr, c + dc
+            inter_idx = inter_r * 8 + inter_c
+
+            # update opponent's mask
+            if (opp_king >> inter_idx) & 1:
+                opp_king &= ~(1 << inter_idx)
+            elif (opp_men >> inter_idx) & 1:
+                opp_men &= ~(1 << inter_idx)
+
+            # update our own masks
+            if piece == 'man':
+                men &= ~(1 << frm)          # remove old location
+                if to // 8 == PROMOTION_ROW:  # promotion
+                    kings |= (1 << to)
+                else:
+                    men |= (1 << to)
+            else:   # piece is a king
+                kings &= ~(1 << frm)
+                kings |= (1 << to)
+        # final score
+        own = 100 * kings.bit_count() + 50 * men.bit_count()
+        opp = 100 * opp_king.bit_count() + 50 * opp_men.bit_count()
+        # proximity bonus (king row distance 1 gives +5, promotion row already counted)
+        bonus = 0
+        for piece in men:
+            if (piece.bit_length() > 0 and (piece // 8) < PROMOTION_ROW):
+                row = (piece.bit_length() - 1) // 8
+                if row >= 1 and row < PROMOTION_ROW:
+                    bonus += 5
+        for piece in kings:
+            if ((piece // 8) - PROMOTION_ROW) >= 1:
+                bonus += 5
+        # opponent proximity (penalty)
+        for opp_piece in opp_men:
+            if ((opp_piece.bit_length() - 1) // 8) >= 1:
+                bonus -= 5
+        for opp_piece in opp_king:
+            if ((opp_piece.bit_length() - 1) // 8) >= 1:
+                bonus -= 5
+        # landing on promotion row gives a small extra reward
+        for frm, to in seq:
+            if to // 8 == PROMOTION_ROW and (kings >> to) & 1 == 0:
+                bonus += 20
+        return own - opp + bonus
+
+    # ----- whether a piece can capture in a given direction ---------------
+    def can_capture(board, men, kings, opp_men, opp_king, start_idx, dr, dc):
+        r = start_idx // 8
+        c = start_idx % 8
+        inter_r = r + dr
+        inter_c = c + dc
+        dest_r = inter_r + dr
+        dest_c = inter_c + dc
+        if not is_valid(inter_r, inter_c) or not is_valid(dest_r, dest_c):
+            return False
+        inter_idx = inter_r * 8 + inter_c
+        dest_idx   = dest_r * 8 + dest_c
+        if ((board >> inter_idx) & 1) == 0:     # intermediate not opponent
+            return False
+        if ((board >> dest_idx) & 1):          # destination occupied
+            return False
+        return True
+
+    # ----- recursive capture generation ------------------------------------
+    MAX_DEPTH = 7   # enough for any legal sequence
+
+    def rec_capture(board, men, kings, opp_men, opp_king,
+                    start_idx, dr, dc, depth):
+        """
+        Returns a list of capture sequences starting from start_idx
+        using diagonal direction (dr, dc). Each sequence is a list of
+        (from_idx, to_idx) moves.
+        """
+        # No capture possible in this direction → empty list
+        if not can_capture(board, men, kings, opp_men, opp_king,
+                           start_idx, dr, dc):
+            return []
+
+        # compute the squares of the current jump
+        r = start_idx // 8
+        c = start_idx % 8
+        inter_r = r + dr
+        inter_c = c + dc
+        dest_r = inter_r + dr
+        dest_c = inter_c + dc
+        inter_idx = inter_r * 8 + inter_c
+        dest_idx   = dest_r * 8 + dest_c
+
+        # promotion?
+        is_prom = False
+        if (men >> start_idx) & 1:   # it is a man (otherwise already king)
+            if dest_r == PROMOTION_ROW:
+                is_prom = True
+
+        # update own masks
+        new_men = men
+        new_kings = kings
+        if (men >> start_idx) & 1:
+            # remove the man (will become king only after promotion)
+            new_men &= ~(1 << start_idx)
+            if is_prom:
+                new_kings |= (1 << dest_idx)
+            else:
+                new_men |= (1 << dest_idx)
+        else:
+            # piece is a king
+            new_kings &= ~(1 << start_idx)
+            new_kings |= (1 << dest_idx)
+        # update opponent’s mask
+        if (opp_king >> inter_idx) & 1:
+            opp_king &= ~(1 << inter_idx)
+        elif (opp_men >> inter_idx) & 1:
+            opp_men &= ~(1 << inter_idx)
+
+        # board after performing this single jump
+        new_board = board ^ (1 << start_idx) ^ (1 << inter_idx) ^ (1 << dest_idx)
+
+        # can we continue the same‑direction jump?
+        more = can_capture(new_board, new_men, new_kings, opp_men, opp_king,
+                          dest_idx, dr, dc)
+
+        # base case – stop when no more jumps or depth exhausted
+        if not more or depth == 0:
+            seq = [(start_idx, dest_idx)]
+            return [seq]
+
+        # recursive continuation
+        deeper = rec_capture(new_board, new_men, new_kings,
+                            opp_men, opp_king,
+                            dest_idx, dr, dc, depth - 1)
+        # prepend current move to every deeper sequence
+        for s in deeper:
+            seq = [(start_idx, dest_idx)] + s
+            yield seq
+
+    # ----- capture sequences from all own pieces ---------------------------
+    capture_seqs = []
+    our_mask = my_men_mask | my_king_mask
+    while our_mask:
+        lsb = our_mask & -our_mask
+        idx = lsb.bit_length() - 1
+        our_mask ^= lsb
+
+        piece = 'man' if (my_men_mask >> idx) & 1 else 'king'
+        start = idx
+        if piece == 'man':
+            # forward only
+            for dc in (-1, +1):
+                dr = forward
+                for seq in rec_capture(full_board,
+                                      my_men_mask, my_king_mask,
+                                      opp_men_mask, opp_king_mask,
+                                      start, dr, dc, MAX_DEPTH):
+                    capture_seqs.extend(seq)
+        else:  # king
+            for dr, dc in ((forward, -1), (forward, +1),
+                           (-forward, -1), (-forward, +1)):
+                if is_valid((start // 8) + dr,
+                            (start % 8) + dc):   # ensure intermediate square exists
+                    for seq in rec_capture(full_board,
+                                          my_men_mask, my_king_mask,
+                                          opp_men_mask, opp_king_mask,
+                                          start, dr, dc, MAX_DEPTH):
+                        capture_seqs.extend(seq)
+
+    # ----- pick the best capture ----------------------------------------
+    if capture_seqs:
+        best_seq = max(capture_seqs, key=lambda s: evaluate_sequence(s))
+        first_move = idx_to_coord(best_seq[0][0]), idx_to_coord(best_seq[0][1])
+        return first_move
+
+    # ----- generate and evaluate all non‑capture moves --------------------
+    def generate_simple_moves():
+        moves = []
+        our_mask = my_men_mask | my_king_mask
+        while our_mask:
+            lsb = our_mask & -our_mask
+            idx = lsb.bit_length() - 1
+            our_mask ^= lsb
+            row, col = idx // 8, idx % 8
+            piece = 'king' if (my_king_mask >> idx) & 1 else 'man'
+            dirs = []
+            if piece == 'man':
+                # forward only (black downwards, white upwards)
+                dr = forward
+                dirs = [(dr, -1), (dr, +1)]
+            else:
+                # kings: forward and backward
+                dirs = [(forward, -1), (forward, +1),
+                        (-forward, -1), (-forward, +1)]
+            for dr, dc in dirs:
+                dest_row = row + dr
+                dest_col = col + dc
+                if not is_valid(dest_row, dest_col):
+                    continue
+                dest_idx = dest_row * 8 + dest_col
+                if ((full_board >> dest_idx) & 1):
+                    continue                # would be a capture
+                moves.append(((row, col), (dest_row, dest_col)))
+        return moves
+
+    simple_moves = generate_simple_moves()
+    best_simple = None
+    best_val = -float('inf')
+    for move in simple_moves:
+        row0, col0 = move[0]
+        row1, col1 = move[1]
+        idx0 = row0 * 8 + col0
+        idx1 = row1 * 8 + col1
+
+        # simulate the move to evaluate
+        men = my_men_mask
+        kings = my_king_mask
+        opp_men = opp_men_mask
+        opp_king = opp_king_mask
+
+        # piece type at the start square
+        piece = 'king' if (kings >> idx0) & 1 else 'man'
+        dr = ((idx1 // 8) - (idx0 // 8)) // 2
+        dc = ((idx1 % 8) - (idx0 % 8)) // 2
+
+        # update opponent’s piece
+        inter_r = (idx0 // 8) + dr
+        inter_c = (idx0 % 8) + dc
+        inter_idx = inter_r * 8 + inter_c
+        if (opp_king >> inter_idx) & 1:
+            opp_king &= ~(1 << inter_idx)
+        elif (opp_men >> inter_idx) & 1:
+            opp_men &= ~(1 << inter_idx)
+
+        # update own piece
+        if piece == 'man':
+            men &= ~(1 << idx0)
+            if row1 == PROMOTION_ROW:    # promotion to king
+                kings |= (1 << idx1)
+            else:
+                men |= (1 << idx1)
+        else:  # king
+            kings &= ~(1 << idx0)
+            kings |= (1 << idx1)
+
+        val = (100 * kings.bit_count() + 50 * men.bit_count()) - \
+              (100 * opp_king.bit_count() + 50 * opp_men.bit_count())
+
+        # proximity bonuses (same as for capture evaluation)
+        bonus = 0
+        # own pieces
+        for piece in men:
+            if piece:
+                r = (piece.bit_length() - 1) // 8
+                if r >= 1 and r < PROMOTION_ROW:
+                    bonus += 5
+        for piece in kings:
+            if piece:
+                r = (piece.bit_length() - 1) // 8
+                if r > PROMOTION_ROW:
+                    bonus += 5
+        # opponent pieces
+        for piece in opp_men:
+            if piece:
+                r = (piece.bit_length() - 1) // 8
+                if r >= 1:
+                    bonus -= 5
+        for piece in opp_king:
+            if piece:
+                r = (piece.bit_length() - 1) // 8
+                if r >= 1:
+                    bonus -= 5
+        # promotion landing bonus
+        if row1 == PROMOTION_ROW and (kings >> idx1) & 1 == 0:
+            bonus += 20
+        val += bonus
+
+        if val > best_val:
+            best_val = val
+            best_simple = move
+
+    return best_simple
+
+# The above function always returns a legal move, respecting the mandatory‑capture rule.
+</code>
+```

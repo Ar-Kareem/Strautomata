@@ -1,0 +1,278 @@
+<thinking>
+Alright, I need to implement a targeting policy for a Connect 4 game. The goal is to choose the best column to drop my disc (1) to maximize the chance of winning by forming a horizontal, vertical, or diagonal line of four of my own discs.
+
+### Understanding the Board Representation
+First, I need to understand how the board is represented. It's a 6x7 grid (rows x columns) where:
+- `0` means empty.
+- `1` means my disc (current player).
+- `-1` means opponent's disc.
+
+Rows are indexed from 0 (top) to 5 (bottom), and columns from 0 to 6. The disc will always fall into the lowest available cell in the chosen column.
+
+### Objective
+The objective is to create a line of four connected discs (horizontally, vertically, or diagonally) on my turn. The policy function should return the column index where dropping my disc will lead to a winning move or the best possible move otherwise.
+
+### Approach
+I need to evaluate all possible valid moves (columns that are not full) and choose the one that maximizes my chances of winning. Here's how I can break it down:
+
+1. **Check for Immediate Win**: First, I should check if dropping my disc in any column results in a win. This is the highest priority.
+2. **Block Opponent's Win**: If no immediate win is possible, I should check if the opponent can win in their next move. If so, I should block that move.
+3. **Evaluate Potential Moves**: If neither of the above is possible, I should evaluate the potential moves based on some criteria. For example:
+   - **Center Control**: Dropping discs in the center columns (3 or 4) is generally better because it gives more opportunities for forming lines of four.
+   - **Creating Threats**: Look for columns where dropping a disc would create a potential threat (e.g., three discs in a row with an empty space next to them).
+   - **Randomness**: If no strategic move is apparent, choose a random valid column.
+
+### Implementation Steps
+1. **Simulate Moves**: For each valid column, simulate dropping my disc into that column and check if it results in a win.
+2. **Check Opponent's Win**: If no winning move is found, simulate the opponent's move in each valid column and check if they can win. If so, block that column.
+3. **Heuristic Evaluation**: If neither immediate win nor blocking is possible, use a heuristic to choose the best column. The heuristic could be based on:
+   - **Center Bias**: Prefer columns 3 and 4.
+   - **Potential Threats**: Columns that create the most potential threats (e.g., three in a row, two in a row with two empty spaces below, etc.).
+   - **Randomness**: As a fallback, choose a random column.
+
+### Heuristic Function
+I need a heuristic function to evaluate the potential of each column. Here are some ideas:
+- **Four in a Row**: If dropping my disc in a column results in four discs in a row, it's a winning move.
+- **Three in a Row**: If dropping my disc in a column results in three discs in a row, it's a strong move.
+- **Two in a Row with Space Below**: If dropping my disc in a column results in two discs in a row with two empty spaces below, it's a potential winning move in the next turn.
+- **Center Columns**: Prefer columns 3 and 4 over others.
+- **Opponent's Discs**: Avoid columns that are adjacent to opponent's discs unless necessary.
+
+### Checking for Win
+To check if a move results in a win, I need to look at the board after placing my disc in the chosen column and see if there's a horizontal, vertical, or diagonal line of four discs.
+
+### Checking for Opponent's Win
+Similarly, I need to simulate the opponent's move in each column and check if they can win.
+
+### Potential Threats
+I should also look for potential threats where I can create a line of three discs, or two discs with two empty spaces below, etc.
+
+### Code Structure
+I'll define a helper function `check_win` that takes a board and a player and checks if that player has won. Then, I'll iterate over each column, simulate the move, and use `check_win` to see if it's a winning move. If not, I'll simulate the opponent's move to see if they can win next turn. If neither, I'll use a heuristic to choose the best column.
+
+### Heuristic Evaluation
+I can assign scores to each column based on how many potential winning lines they can create. For example:
+- A column that creates three in a row gets a higher score.
+- A column that creates two in a row with two empty spaces below gets a medium score.
+- Center columns get a bonus score.
+
+### Edge Cases
+- If the board is full, but the game isn't over, return any column (though this shouldn't happen in a valid game).
+- If there's only one valid column, choose that one.
+
+### Example
+For a board where dropping a disc in column 3 would create a vertical line of four discs, the function should return 3.
+
+### Optimization
+Since the function must run within 1 second, I need to ensure that the checks are efficient. Using numpy might help with board operations, but for simplicity, I'll stick to standard Python lists and functions.
+
+### Final Plan
+1. Iterate over each column.
+2. For each column, simulate dropping my disc.
+3. Check if this move results in a win.
+4. If no win is found, simulate the opponent's move in each column and check if they can win.
+5. If neither, choose the column based on the heuristic score.
+6. Return the best column found.
+
+Let's start writing the code.
+</thinking>
+
+<code>
+import numpy as np
+from typing import List
+
+def check_win(board: List[List[int]], player: int) -> bool:
+    """
+    Check if the player has won by having four discs in a row horizontally, vertically, or diagonally.
+    """
+    # Convert the list to a numpy array for easier manipulation
+    board_np = np.array(board, dtype=int)
+
+    # Check vertical lines
+    for col in range(7):
+        for row in range(3):  # Only need to check up to the third row to avoid index errors
+            if board_np[row][col] == player and board_np[row+1][col] == player and board_np[row+2][col] == player and board_np[row+3][col] == player:
+                return True
+
+    # Check horizontal lines
+    for row in range(6):
+        for col in range(4):  # Only need to check up to the fourth column
+            if board_np[row][col] == player and board_np[row][col+1] == player and board_np[row][col+2] == player and board_np[row][col+3] == player:
+                return True
+
+    # Check diagonal lines (top-left to bottom-right)
+    for row in range(3):
+        for col in range(4):
+            if board_np[row][col] == player and board_np[row+1][col+1] == player and board_np[row+2][col+2] == player and board_np[row+3][col+3] == player:
+                return True
+
+    # Check diagonal lines (top-right to bottom-left)
+    for row in range(3):
+        for col in range(3, 7):
+            if board_np[row][col] == player and board_np[row+1][col-1] == player and board_np[row+2][col-2] == player and board_np[row+3][col-3] == player:
+                return True
+
+    return False
+
+def simulate_move(board: List[List[int]], col: int, player: int) -> List[List[int]]:
+    """
+    Simulate dropping a disc in the specified column for the given player.
+    """
+    # Create a copy of the board
+    new_board = [row[:] for row in board]
+
+    # Find the lowest available row in the column
+    for row in range(6):
+        if new_board[row][col] == 0:
+            new_board[row][col] = player
+            break
+
+    return new_board
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Choose the best column to drop the current player's disc based on the board state.
+    """
+    # Check for immediate winning move
+    for col in range(7):
+        new_board = simulate_move(board, col, 1)
+        if check_win(new_board, 1):
+            return col
+
+    # Check for opponent's winning move and block it
+    for col in range(7):
+        # Check if the column is not full
+        if board[5][col] != 0:
+            continue
+        new_board = simulate_move(board, col, -1)
+        if check_win(new_board, -1):
+            return col
+
+    # If no immediate win or block, evaluate potential moves using a heuristic
+    scores = []
+    for col in range(7):
+        # Skip full columns
+        if board[5][col] != 0:
+            continue
+
+        # Simulate dropping my disc in this column
+        new_board = simulate_move(board, col, 1)
+
+        # Score based on potential lines of four
+        score = 0
+
+        # Check for potential vertical lines
+        for row in range(6):
+            if new_board[row][col] == 1:
+                # Count consecutive discs below
+                consecutive = 1
+                for next_row in range(row + 1, 6):
+                    if new_board[next_row][col] == 1:
+                        consecutive += 1
+                    else:
+                        break
+                # If we have three consecutive discs below, and the next row is empty, it's a potential win
+                if row + 3 < 6 and new_board[row + 3][col] == 0 and consecutive >= 3:
+                    score += 10  # High potential for vertical win
+
+        # Check for potential horizontal lines
+        for row in range(6):
+            if new_board[row][col] == 1:
+                # Check left and right for consecutive discs
+                consecutive_left = 0
+                for c_left in range(col - 1, -1, -1):
+                    if new_board[row][c_left] == 1:
+                        consecutive_left += 1
+                    else:
+                        break
+
+                consecutive_right = 0
+                for c_right in range(col + 1, 7):
+                    if new_board[row][c_right] == 1:
+                        consecutive_right += 1
+                    else:
+                        break
+
+                # If we have three consecutive discs in a row (left + right + current)
+                if consecutive_left + consecutive_right >= 2:
+                    score += 5 * (consecutive_left + consecutive_right)  # Potential for horizontal win
+
+        # Check for potential diagonal lines (top-left to bottom-right)
+        for row in range(6):
+            if new_board[row][col] == 1:
+                # Check top-left diagonal
+                consecutive_tl = 0
+                c_tl = col - 1
+                r_tl = row - 1
+                while c_tl >= 0 and r_tl >= 0 and new_board[r_tl][c_tl] == 1:
+                    consecutive_tl += 1
+                    c_tl -= 1
+                    r_tl -= 1
+
+                # Check bottom-right diagonal
+                consecutive_br = 0
+                c_br = col + 1
+                r_br = row + 1
+                while c_br < 7 and r_br < 6 and new_board[r_br][c_br] == 1:
+                    consecutive_br += 1
+                    c_br += 1
+                    r_br += 1
+
+                # If we have three consecutive discs in a diagonal
+                if consecutive_tl + consecutive_br >= 2:
+                    score += 5 * (consecutive_tl + consecutive_br)  # Potential for diagonal win
+
+        # Check for potential diagonal lines (top-right to bottom-left)
+        for row in range(6):
+            if new_board[row][col] == 1:
+                # Check top-right diagonal
+                consecutive_tr = 0
+                c_tr = col - 1
+                r_tr = row + 1
+                while c_tr >= 0 and r_tr < 6 and new_board[r_tr][c_tr] == 1:
+                    consecutive_tr += 1
+                    c_tr -= 1
+                    r_tr += 1
+
+                # Check bottom-left diagonal
+                consecutive_bl = 0
+                c_bl = col + 1
+                r_bl = row - 1
+                while c_bl < 7 and r_bl >= 0 and new_board[r_bl][c_bl] == 1:
+                    consecutive_bl += 1
+                    c_bl += 1
+                    r_bl -= 1
+
+                # If we have three consecutive discs in a diagonal
+                if consecutive_tr + consecutive_bl >= 2:
+                    score += 5 * (consecutive_tr + consecutive_bl)  # Potential for diagonal win
+
+        # Center bias: prefer columns 3 and 4
+        if col == 3 or col == 4:
+            score += 2
+
+        # Avoid columns with opponent's discs adjacent unless necessary
+        for row in range(6):
+            if new_board[row][col] == 1:
+                # Check adjacent cells for opponent's discs
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        new_row = row + dr
+                        new_col = col + dc
+                        if 0 <= new_row < 6 and 0 <= new_col < 7 and new_board[new_row][new_col] == -1:
+                            score -= 1
+
+        scores.append(score)
+
+    # Find the column with the highest score that is not full
+    max_score = -1
+    best_col = 0
+    for col in range(7):
+        if board[5][col] == 0 and scores[col] > max_score:
+            max_score = scores[col]
+            best_col = col
+
+    return best_col
+</code>

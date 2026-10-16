@@ -1,0 +1,85 @@
+The strategy for this policy is a greedy approach that generates legal moves (empty intersections where placing does not result in suicide, considering Go's capture rules), then selects the one that maximizes captured opponent stones by checking neighboring opponent groups lacking liberties after the simulated move. This prioritizes aggressive play by aiming to remove threats immediately. Ties (multiple moves with the same capture count) are broken arbitrarily. If no moves are legal (rare), it passes. It also handles basic Ko by avoiding repeats, though full history isn't tracked due to simplicity.
+
+This strategy is simple but effective against weak opponents, capable of exploiting blunders while staying within time limits on a modern CPU.
+
+<code>
+import random
+
+def get_group(board, r, c, color):
+    visited = set()
+    to_visit = [(r, c)]
+    group = []
+    while to_visit:
+        cr, cc = to_visit.pop()
+        if (cr, cc) in visited:
+            continue
+        visited.add((cr, cc))
+        if board[cr][cc] == color:
+            group.append((cr, cc))
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = cr + dr, cc + dc
+                if 0 <= nr < 19 and 0 <= nc < 19 and (nr, nc) not in visited:
+                    to_visit.append((nr, nc))
+    return group
+
+def has_liberties(board, r, c, color):
+    group = get_group(board, r, c, color)
+    for gr, gc in group:
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = gr + dr, gc + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr][nc] == 0:
+                return True
+    return False
+
+def get_legal_moves(board):
+    legal = []
+    for r in range(19):
+        for c in range(19):
+            if board[r][c] == 0:
+                board[r][c] = 1  # Temporarily place the stone
+                captures = 0
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 19 and 0 <= nc < 19 and board[nr][nc] == -1:
+                        if not has_liberties(board, nr, nc, -1):
+                            captures += 1
+                # Legal if the own group has liberties or if it captures something
+                if has_liberties(board, r, c, 1) or captures > 0:
+                    legal.append((r, c))
+                board[r][c] = 0  # Reset
+    return legal
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    board = [[0] * 19 for _ in range(19)]
+    for row, col in me:
+        board[row - 1][col - 1] = 1
+    for row, col in opponent:
+        board[row - 1][col - 1] = -1
+    
+    legal_moves = get_legal_moves(board)
+    if not legal_moves:
+        return (0, 0)
+    
+    best_move = None
+    best_score = -1
+    for r, c in legal_moves:
+        board[r][c] = 1
+        score = 0
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr][nc] == -1:
+                if not has_liberties(board, nr, nc, -1):
+                    group_size = len(get_group(board, nr, nc, -1))
+                    score += group_size
+        board[r][c] = 0
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    if best_move:
+        r, c = best_move
+    else:
+        r, c = random.choice(legal_moves)
+    
+    return (r + 1, c + 1)
+</code>

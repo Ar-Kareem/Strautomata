@@ -1,0 +1,124 @@
+
+import copy
+
+def get_group(board, r, c, color):
+    visited = set()
+    q = [(r, c)]
+    group = []
+    while q:
+        nr, nc = q.pop(0)
+        if (nr, nc) in visited or board[nr][nc] != color:
+            continue
+        visited.add((nr, nc))
+        group.append((nr, nc))
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nnr, nnc = nr + dr, nc + dc
+            if 1 <= nnr <= 19 and 1 <= nnc <= 19 and board[nnr][nnc] == color and (nnr, nnc) not in visited:
+                q.append((nnr, nnc))
+    return group
+
+def has_liberties(board, group):
+    for r, c in group:
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == 0:
+                return True
+    return False
+
+def liberty_count(board, group):
+    libs = set()
+    for r, c in group:
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == 0:
+                libs.add((nr, nc))
+    return len(libs)
+
+def simulate_move(board, r, c, color, opponent_color):
+    if not (1 <= r <= 19 and 1 <= c <= 19 and board[r][c] == 0):
+        return False, [], []
+    board[r][c] = color
+    captures = []
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = r + dr, c + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] == opponent_color:
+            group = get_group(board, nr, nc, opponent_color)
+            if not has_liberties(board, group):
+                captures.extend(group)
+                for pr, pc in group:
+                    board[pr][pc] = 0
+    placed_group = get_group(board, r, c, color)
+    if not has_liberties(board, placed_group):
+        # undo suicide
+        board[r][c] = 0
+        for pr, pc in captures:
+            board[pr][pc] = opponent_color
+        return False, [], []
+    return True, captures, placed_group
+
+def find_groups(board, color):
+    visited = set()
+    groups = []
+    for i in range(1, 20):
+        for j in range(1, 20):
+            if board[i][j] == color and (i, j) not in visited:
+                group = get_group(board, i, j, color)
+                groups.append(group)
+                visited.update(group)
+    return groups
+
+def evaluate(board, my_color, op_color):
+    my_groups = find_groups(board, my_color)
+    op_groups = find_groups(board, op_color)
+    my_stones = sum(len(g) for g in my_groups)
+    op_stones = sum(len(g) for g in op_groups)
+    my_libs = sum(liberty_count(board, g) for g in my_groups)
+    op_libs = sum(liberty_count(board, g) for g in op_groups)
+    return my_stones + my_libs - (op_stones + op_libs)
+
+def policy(me, opponent):
+    board = [[0] * 20 for _ in range(20)]  # 1-19 indexed
+    my_color = 1
+    op_color = -1
+    for r, c in me:
+        board[r][c] = my_color
+    for r, c in opponent:
+        board[r][c] = op_color
+    
+    # Find candidates: empty positions adjacent to any stone
+    candidates = set()
+    for i in range(1, 20):
+        for j in range(1, 20):
+            if board[i][j] == 0:
+                adjacent = False
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = i + dr, j + dc
+                    if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr][nc] != 0:
+                        adjacent = True
+                        break
+                if adjacent:
+                    candidates.add((i, j))
+    
+    # If no candidates (e.g., very start), play a corner star point
+    if not candidates:
+        candidates.add((4, 4))  # corner
+    
+    best_move = None
+    best_score = float('-inf')
+    for r, c in candidates:
+        board_copy = [row[:] for row in board]  # shallow copy for undo
+        legal, captures, placed_group = simulate_move(board, r, c, my_color, op_color)
+        if legal:
+            score = evaluate(board, my_color, op_color)
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+        # undo
+        board[r][c] = 0
+        for pr, pc in captures:
+            board[pr][pc] = op_color
+    
+    if best_move is not None:
+        return best_move
+    else:
+        return (0, 0)  # pass if somehow no legal (shouldn't happen)

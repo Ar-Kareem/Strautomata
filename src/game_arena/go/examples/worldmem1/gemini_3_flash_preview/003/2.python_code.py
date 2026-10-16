@@ -1,0 +1,91 @@
+
+import random
+
+def get_liberties(pts, me, opp):
+    blocks = set(me) | set(opp)
+    liberties = set()
+    for r, c in pts:
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if (nr, nc) not in blocks:
+                    liberties.add((nr, nc))
+    return liberties
+
+def is_suicide(move, me, opp):
+    r, c = move
+    # Temporarily place the stone
+    new_me = me + [move]
+    
+    # Check if this stone has liberties
+    if get_liberties([move], new_me, opp):
+        return False
+    
+    # Check if this move captures any opponent stones
+    # (If it captures, it is not suicide)
+    neighbor_opps = []
+    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nr, nc = r + dr, c + dc
+        if (nr, nc) in opp:
+            neighbor_opps.append((nr, nc))
+    
+    # Simplified check: if any adjacent opponent group is now at 0 liberties
+    # we would capture it. 
+    for orr, oc in neighbor_opps:
+        # Find group (simplified for speed: just check neighbors of neighbors)
+        if len(get_liberties([(orr, oc)], opp, new_me)) == 0:
+            return False
+            
+    return True
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    board_size = 19
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+
+    # 1. Capture Opponent Stones in Atari
+    for r, c in opponent:
+        libs = get_liberties([(r, c)], opp_set, me_set)
+        if len(libs) == 1:
+            move = list(libs)[0]
+            if not is_suicide(move, me, opponent):
+                return move, memory
+
+    # 2. Defend Own Stones in Atari
+    for r, c in me:
+        libs = get_liberties([(r, c)], me_set, opp_set)
+        if len(libs) == 1:
+            move = list(libs)[0]
+            if move not in occupied and not is_suicide(move, me, opponent):
+                return move, memory
+
+    # 3. Opening Strategy (Star Points)
+    star_points = [(4, 4), (4, 16), (16, 4), (16, 16), (10, 10), (4, 10), (10, 4), (16, 10), (10, 16)]
+    for pt in star_points:
+        if pt not in occupied:
+            return pt, memory
+
+    # 4. Play near existing stones (Clumping/Connection)
+    adj_candidates = set()
+    for r, c in me:
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= board_size and 1 <= nc <= board_size and (nr, nc) not in occupied:
+                adj_candidates.add((nr, nc))
+    
+    adj_list = list(adj_candidates)
+    random.shuffle(adj_list)
+    for move in adj_list:
+        if not is_suicide(move, me, opponent):
+            return move, memory
+
+    # 5. Fallback: Any Legal Random Move
+    all_coords = [(r, c) for r in range(1, 20) for c in range(1, 20)]
+    random.shuffle(all_coords)
+    for move in all_coords:
+        if move not in occupied and not is_suicide(move, me, opponent):
+            return move, memory
+
+    # Pass if no moves found
+    return (0, 0), memory

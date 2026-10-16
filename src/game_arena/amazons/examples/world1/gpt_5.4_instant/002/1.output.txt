@@ -1,0 +1,240 @@
+The strategy for this policy is a fast territorial/mobility heuristic with guaranteed legal fallback.
+
+Core ideas:
+- Generate all legal moves for our amazons.
+- For each candidate move, evaluate the resulting board using:
+  - our immediate mobility minus opponent mobility,
+  - a territory-style estimate based on queen-distance reachability for both sides,
+  - a small bonus for centralization / activity.
+- Use a one-ply lookahead with a strong static evaluation, which is usually very effective on 6x6 under tight time limits.
+- To remain robust, always keep a legal fallback move and return it if anything unexpected happens.
+
+This balances strength and speed:
+- Full minimax can be too expensive because Amazons has a large branching factor.
+- Pure random/legal-first policies are weak.
+- Mobility and territorial control are strong predictors in Amazons, especially on smaller boards.
+
+<code>
+import numpy as np
+
+# 8 queen directions
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)]
+
+N = 6
+
+
+def in_bounds(r, c):
+    return 0 <= r < N and 0 <= c < N
+
+
+def ray_moves(board, r, c):
+    """All empty squares reachable by a queen move from (r,c)."""
+    out = []
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        while in_bounds(nr, nc) and board[nr, nc] == 0:
+            out.append((nr, nc))
+            nr += dr
+            nc += dc
+    return out
+
+
+def generate_legal_moves(board, player=1):
+    """Generate all legal moves as tuples (fr,fc,tr,tc,ar,ac)."""
+    amazons = np.argwhere(board == player)
+    moves = []
+    for fr, fc in amazons:
+        tos = ray_moves(board, fr, fc)
+        if not tos:
+            continue
+        for tr, tc in tos:
+            # Apply move temporarily for arrow generation
+            board[fr, fc] = 0
+            board[tr, tc] = player
+            arrows = ray_moves(board, tr, tc)
+            board[tr, tc] = 0
+            board[fr, fc] = player
+            for ar, ac in arrows:
+                moves.append((fr, fc, tr, tc, ar, ac))
+    return moves
+
+
+def apply_move_inplace(board, move, player):
+    fr, fc, tr, tc, ar, ac = move
+    board[fr, fc] = 0
+    board[tr, tc] = player
+    board[ar, ac] = -1
+
+
+def undo_move_inplace(board, move, player):
+    fr, fc, tr, tc, ar, ac = move
+    board[ar, ac] = 0
+    board[tr, tc] = 0
+    board[fr, fc] = player
+
+
+def mobility(board, player):
+    """Count reachable move destinations from all amazons (not full move count)."""
+    total = 0
+    for r, c in np.argwhere(board == player):
+        total += len(ray_moves(board, r, c))
+    return total
+
+
+def queen_distance_map(board, starts):
+    """
+    Multi-source shortest path in queen-move metric on current empty-board geometry.
+    Distance = minimum number of queen moves to reach each empty square.
+    Amazons/blocked cells are obstacles; starts can expand from their occupied squares.
+    """
+    INF = 10**9
+    dist = np.full((N, N), INF, dtype=np.int32)
+
+    # simple queue with list index, enough for tiny 6x6 board
+    q = []
+    head = 0
+
+    for r, c in starts:
+        dist[r, c] = 0
+        q.append((r, c))
+
+    while head < len(q):
+        r, c = q[head]
+        head += 1
+        nd = dist[r, c] + 1
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            while in_bounds(nr, nc) and board[nr, nc] == 0:
+                if dist[nr, nc] > nd:
+                    dist[nr, nc] = nd
+                    q.append((nr, nc))
+                nr += dr
+                nc += dc
+    return dist
+
+
+def territorial_score(board):
+    """
+    Compare queen-distance control of empty cells.
+    Positive means better for player 1.
+    """
+    my_pos = [tuple(x) for x in np.argwhere(board == 1)]
+    opp_pos = [tuple(x) for x in np.argwhere(board == 2)]
+
+    if not my_pos and not opp_pos:
+        return 0.0
+    if not my_pos:
+        return -1000.0
+    if not opp_pos:
+        return 1000.0
+
+    d1 = queen_distance_map(board, my_pos)
+    d2 = queen_distance_map(board, opp_pos)
+
+    score = 0.0
+    for r in range(N):
+        for c in range(N):
+            if board[r, c] != 0:
+                continue
+            a = d1[r, c]
+            b = d2[r, c]
+            if a < b:
+                score += 1.0
+            elif a > b:
+                score -= 1.0
+            elif a < 10**9:
+                score += 0.1  # contested but reachable
+    return score
+
+
+def centrality_bonus(board):
+    """Small positional bonus for our amazons being active/central."""
+    centers = [(2.5, 2.5)]
+    score = 0.0
+    for r, c in np.argwhere(board == 1):
+        # closer to center is better
+        d = abs(r - 2.5) + abs(c - 2.5)
+        score += (5.0 - d)
+    for r, c in np.argwhere(board == 2):
+        d = abs(r - 2.5) + abs(c - 2.5)
+        score -= (5.0 - d)
+    return score
+
+
+def evaluate(board):
+    my_mob = mobility(board, 1)
+    opp_mob = mobility(board, 2)
+
+    # Terminal-like pressure
+    if opp_mob == 0:
+        return 1e6
+    if my_mob == 0:
+        return -1e6
+
+    terr = territorial_score(board)
+    cent = centrality_bonus(board)
+
+    return 4.0 * (my_mob - opp_mob) + 2.5 * terr + 0.3 * cent
+
+
+def move_to_string(move):
+    fr, fc, tr, tc, ar, ac = move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+
+def policy(board) -> str:
+    board = np.array(board, copy=True)
+
+    try:
+        moves = generate_legal_moves(board, 1)
+        if not moves:
+            # Robust fallback; environment says this shouldn't happen.
+            return "0,0:0,0:0,0"
+
+        # Legal fallback in case anything goes wrong later
+        best_move = moves[0]
+
+        # Fast ordering by immediate heuristics
+        scored = []
+        for mv in moves:
+            fr, fc, tr, tc, ar, ac = mv
+            # quick local features without full evaluation
+            center_gain = (
+                (5.0 - (abs(tr - 2.5) + abs(tc - 2.5))) -
+                (5.0 - (abs(fr - 2.5) + abs(fc - 2.5)))
+            )
+            # prefer arrows that block central / nearby regions
+            arrow_center = (5.0 - (abs(ar - 2.5) + abs(ac - 2.5)))
+            quick = 0.8 * center_gain + 0.2 * arrow_center
+            scored.append((quick, mv))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Evaluate top candidates fully; all if manageable
+        max_full = 80
+        candidates = [mv for _, mv in scored[:max_full]]
+
+        best_score = -1e18
+        for mv in candidates:
+            apply_move_inplace(board, mv, 1)
+            score = evaluate(board)
+            undo_move_inplace(board, mv, 1)
+
+            if score > best_score:
+                best_score = score
+                best_move = mv
+
+        return move_to_string(best_move)
+
+    except Exception:
+        # Guaranteed legal fallback if possible
+        try:
+            moves = generate_legal_moves(np.array(board, copy=True), 1)
+            if moves:
+                return move_to_string(moves[0])
+        except Exception:
+            pass
+        return "0,0:0,0:0,0"
+</code>

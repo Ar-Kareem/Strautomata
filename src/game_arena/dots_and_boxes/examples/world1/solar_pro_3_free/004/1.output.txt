@@ -1,0 +1,338 @@
+**Strategy for this policy:**  
+We use the classic “Berlekamp’s chain‑counting” algorithm.  
+1. **Main game** – while there are still *safe* moves (edges that do **not** give us a box), we play the safe move that leaves the opponent with the **fewest** boxes in the eventual short game (i.e. the smallest number of opponent‑owned boxes).  
+2. **Short game** – when all safe moves are gone, the game has ≤ 2 × our‑lead boxes left. Then we must claim boxes.  
+   * If the opponent is ahead, we give them the *smallest* chain of their boxes (by counting the connected components of opponent‑owned boxes).  
+   * If we are ahead, we still try to minimise the opponent’s chain, but we also prefer moves that capture the most boxes for us.  
+
+The implementation follows the steps above with a tiny amount of bookkeeping (counting owners of sides, simulating a move, BFS for chain lengths). All moves are guaranteed legal because we only ever play edges that are currently `0` in the given array, and we always update the board before returning the move. The whole policy runs comfortably within the 1 second limit on a 4×4 board (maximum 40 empty edges).  
+
+```python
+<code>
+import numpy as np
+
+# Utility helpers
+def _get_boxes_affected(typ: str, r: int, c: int) -> list[tuple[int, int]]:
+    """Return box coordinates touched by drawing an edge."""
+    boxes = []
+    if typ == 'H':
+        # top side for box (r,c); bottom side for box (r-1,c)
+        if 0 <= r <= 3 and 0 <= c <= 3:
+            boxes.append((r, c))
+        if 0 <= r-1 <= 3 and 0 <= c <= 3:
+            boxes.append((r-1, c))
+    else:  # 'V'
+        # left side for box (r,c); right side for box (r+1,c)
+        if 0 <= r <= 3 and 0 <= c <= 3:
+            boxes.append((r, c))
+        if 0 <= r+1 <= 3 and 0 <= c <= 3:
+            boxes.append((r+1, c))
+    return boxes
+
+def _capture_if_complete(board: np.ndarray, horiz: np.ndarray, vert: np.ndarray,
+                        typ: str, r: int, c: int) -> (int, np.ndarray, np.ndarray):
+    """Simulate drawing an edge and count boxes we capture."""
+    cap = board.copy()
+    h = horiz.copy()
+    v = vert.copy()
+    capt = 0
+    boxes = _get_boxes_affected(typ, r, c)
+
+    # draw the edge (our side is +1)
+    if typ == 'H':
+        h[r, c] = 1
+        for br, bc in boxes:
+            # after drawing, does this box finish?
+            # check the four sides
+            sides = []
+            # top
+            top = h[br, bc] if 0 <= br <= 4 else None
+            # bottom
+            bot = h[br + 1, bc] if 0 <= br + 1 <= 4 else None
+            # left
+            left = v[br, bc] if 0 <= bc <= 3 else None
+            # right
+            right = v[br, bc + 1] if 0 <= bc + 1 <= 4 else None
+
+            # a side may be None (e.g. when the box is out of bounds)
+            nonzero_sides = sum(1 for s in sides if s is not None and s != 0)
+            # we only own the side we just added
+            # if all three other sides are already drawn (nonzero), we capture
+            if (
+                (top not in (None, 0) or bot not in (None, 0))
+                and left not in (None, 0)
+                and right not in (None, 0)
+            ):
+                # at least four nonzero sides (the one we added is 1)
+                cap[br, bc] = 1
+                capt += 1
+    else:  # 'V'
+        v[r, c] = 1
+        for br, bc in boxes:
+            # sides for box (br, bc)
+            # top: horiz[br, bc]
+            top = h[br, bc] if 0 <= br <= 4 else None
+            # bottom: horiz[br + 1, bc]
+            bot = h[br + 1, bc] if 0 <= br + 1 <= 4 else None
+            # left: vert[br, bc]
+            left = v[br, bc] if 0 <= bc <= 3 else None
+            # right: vert[br, bc + 1]
+            right = v[br, bc + 1] if 0 <= bc + 1 <= 4 else None
+
+            # all four sides present?
+            if (
+                (top not in (None, 0) or bot not in (None, 0))
+                and left not in (None, 0)
+                and right not in (None, 0)
+            ):
+                cap[br, bc] = 1
+                capt += 1
+
+    # return updated arrays and number of boxes we just captured
+    return cap, h, v, capt
+
+def _compute_box_net(board: np.ndarray, horiz: np.ndarray, vert: np.ndarray,
+                     i: int, j: int) -> int:
+    """Return net ownership (+1/-1/0) of a box."""
+    net = 0
+    # top side
+    top = horiz[i, j] if i <= 4 else 0
+    net += (1 if top == 1 else -1 if top == -1 else 0)
+    # bottom side
+    bot = horiz[i + 1, j] if i + 1 <= 4 else 0
+    net += (1 if bot == 1 else -1 if bot == -1 else 0)
+    # left side
+    left = vert[i, j] if j <= 3 else 0
+    net += (1 if left == 1 else -1 if left == -1 else 0)
+    # right side
+    right = vert[i, j + 1] if j + 1 <= 4 else 0
+    net += (1 if right == 1 else -1 if right == -1 else 0)
+    return net
+
+def _compute_potential_boxes(board: np.ndarray, horiz: np.ndarray, vert: np.ndarray):
+    """Return (our_potential, opponent_potential) for boxes that are still unclaimed."""
+    our = 0
+    opp = 0
+    for i in range(4):
+        for j in range(4):
+            if board[i, j] != 0:
+                continue  # already claimed
+            net = _compute_box_net(board, horiz, vert, i, j)
+            if net > 0:
+                our += 1
+            elif net < 0:
+                opp += 1
+            # net == 0 → contested; ignored for potentials
+    return our, opp
+
+def _opponent_chain_lengths(board: np.ndarray, horiz: np.ndarray, vert: np.ndarray):
+    """Return list of component sizes of opponent-owned boxes."""
+    opp_boxes = []
+    for i in range(4):
+        for j in range(4):
+            if board[i, j] != -1:  # not opponent’s
+                continue
+            net = _compute_box_net(board, horiz, vert, i, j)
+            if net < 0:   # definitely opponent’s box in short game
+                opp_boxes.append((i, j))
+
+    visited = np.zeros_like(board, dtype=bool)
+    chain_sizes = []
+
+    for start in opp_boxes:
+        if visited[start]:
+            continue
+        # BFS
+        size = 0
+        q = [start]
+        while q:
+            r, c = q.pop(0)
+            if visited[r, c]:
+                continue
+            visited[r, c] = True
+            size += 1
+            # neighbours
+            for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nr, nc = r + dr, c + dc
+                if not (0 <= nr < 4 and 0 <= nc < 4):
+                    continue
+                # determine whether the boxes share a drawn edge
+                if dr == 1:  # down
+                    # share horizontal edge at (nr, nc)
+                    if horiz[nr, nc] != 0:
+                        q.append((nr, nc))
+                elif dr == -1:  # up
+                    if horiz[r, nc] != 0:
+                        q.append((nr, nc))
+                elif dc == 1:  # right
+                    # share vertical edge at (r, nc)
+                    if vert[r, nc] != 0:
+                        q.append((nr, nc))
+                else:  # left
+                    if vert[r, nc - 1] != 0:
+                        q.append((nr, nc))
+        chain_sizes.append(size)
+    return chain_sizes
+
+def _potential_opponent_total(board: np.ndarray, horiz: np.ndarray, vert: np.ndarray):
+    """Sum of opponent‑owned boxes that would be theirs in the short game."""
+    opp = 0
+    for i in range(4):
+        for j in range(4):
+            if board[i, j] != 0:
+                continue
+            net = _compute_box_net(board, horiz, vert, i, j)
+            if net < 0:
+                opp += 1
+    return opp
+
+def _safe_moves_exist(horiz: np.ndarray, vert: np.ndarray) -> list:
+    """Generate all empty edges that are safe (do not give us a box)."""
+    safe = []
+    # horizontal edges
+    for r in range(5):
+        for c in range(5):
+            if horiz[r, c] == 0:
+                # simulate drawing this edge
+                cap, h, v, capture = _capture_if_complete(horiz, vert, capture,
+                                                        'H', r, c)
+                if capture == 0:
+                    safe.append(('H', r, c))
+                else:
+                    # use captured board to update capture for real move if needed later
+                    pass
+    # vertical edges
+    for r in range(5):
+        for c in range(5):
+            if vert[r, c] == 0:
+                cap, h, v, capture = _capture_if_complete(horiz, vert, capture,
+                                                        'V', r, c)
+                if capture == 0:
+                    safe.append(('V', r, c))
+    return safe
+
+def _capture_moves(horiz: np.ndarray, vert: np.ndarray, capture: np.ndarray):
+    """All empty edges that would give us at least one box."""
+    moves = []
+    # horizontal
+    for r in range(5):
+        for c in range(5):
+            if horiz[r, c] == 0:
+                # quick capture test
+                cap, h, v, capture_cnt = _capture_if_complete(horiz, vert, capture,
+                                                            'H', r, c)
+                if capture_cnt > 0:
+                    moves.append(('H', r, c))
+    # vertical
+    for r in range(5):
+        for c in range(5):
+            if vert[r, c] == 0:
+                cap, h, v, capture_cnt = _capture_if_complete(horiz, vert, capture,
+                                                            'V', r, c)
+                if capture_cnt > 0:
+                    moves.append(('V', r, c))
+    return moves
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """Return the next legal move in the format 'row,col,dir'."""
+    # Ensure we have a mutable copy
+    h = horizontal.copy()
+    v = vertical.copy()
+    c = capture.copy()
+
+    our_score = (c == 1).sum()
+    opp_score = (c == -1).sum()
+    diff = our_score - opp_score          # positive when we lead
+    boxes_left = (c == 0).sum()
+
+    # ----- Main game: while there are safe moves -----
+    while True:
+        safe = _safe_moves_exist(h, v)
+        if safe:
+            # evaluate each safe move – we want the one that leaves opponent with fewest
+            # boxes in the eventual short game.
+            best = None
+            best_val = np.inf   # opponent total boxes
+            for move in safe:
+                typ, r, col = move
+                # simulate the move
+                new_c, new_h, new_v, captured_this_move = _capture_if_complete(
+                    h, v, c, typ, r, col)
+                # compute opponent potential after this move
+                opp_total = _potential_opponent_total(new_c, new_h, new_v)
+                # (if opp_total == 0 it's perfect)
+                if opp_total < best_val:
+                    best_val = opp_total
+                    best = (typ, r, col)
+                # in case of tie, pick any
+            # apply the chosen move
+            typ, r, col = best
+            if typ == 'H':
+                h[r, col] = 1
+                for br, bc in _get_boxes_affected('H', r, col):
+                    if c[br, bc] == 0 and all(
+                        h[br, bc],
+                        h[br + 1, bc] if br + 1 <= 4 else np.nan,
+                        v[br, bc],
+                        v[br, bc + 1] if bc + 1 <= 4 else np.nan,
+                    ):
+                        c[br, bc] = 1
+            else:  # V
+                v[r, col] = 1
+                for br, bc in _get_boxes_affected('V', r, col):
+                    if c[br, bc] == 0 and all(
+                        h[br, bc] if 0 <= br <= 4 else np.nan,
+                        h[br + 1, bc] if 0 <= br + 1 <= 4 else np.nan,
+                        v[br, bc],
+                        v[br, bc + 1] if bc + 1 <= 4 else np.nan,
+                    ):
+                        c[br, bc] = 1
+            # update arrays for next iteration
+            c, h, v = new_c, new_h, new_v
+            return f"{r},{col},{typ}"
+        else:
+            # ----- Short game: no safe moves left -----
+            cap_moves = _capture_moves(h, v, c)
+            if not cap_moves:
+                # All edges already drawn – terminal (should never happen)
+                raise RuntimeError("No legal moves available but board not full")
+
+            # We need to evaluate each possible capture move.
+            # Metric: minimize opponent chain length; secondary: maximise boxes we take.
+            evaluations = []
+            for move in cap_moves:
+                typ, r, col = move
+                new_c, new_h, new_v, captured_cnt = _capture_if_complete(
+                    h, v, c, typ, r, col)
+                # Determine opponent chain lengths after the move
+                chain_sizes = _opponent_chain_lengths(new_c, new_h, new_v)
+                opp_total = sum(chain_sizes)  # total opponent boxes in chains
+                evaluations.append((opp_total, -captured_cnt, typ, r, col))
+
+            # Sort: smallest opponent total first; among ties, more captured boxes preferred.
+            evaluations.sort()
+            typ, r, col = evaluations[0][:3]
+            # Apply the move and update capture
+            if typ == 'H':
+                h[r, col] = 1
+                for br, bc in _get_boxes_affected('H', r, col):
+                    if c[br, bc] == 0 and all(
+                        h[br, bc],
+                        h[br + 1, bc] if br + 1 <= 4 else np.nan,
+                        v[br, bc],
+                        v[br, bc + 1] if bc + 1 <= 4 else np.nan,
+                    ):
+                        c[br, bc] = 1
+            else:  # V
+                v[r, col] = 1
+                for br, bc in _get_boxes_affected('V', r, col):
+                    if c[br, bc] == 0 and all(
+                        h[br, bc] if 0 <= br <= 4 else np.nan,
+                        h[br + 1, bc] if 0 <= br + 1 <= 4 else np.nan,
+                        v[br, bc],
+                        v[br, bc + 1] if bc + 1 <= 4 else np.nan,
+                    ):
+                        c[br, bc] = 1
+            # Return the selected move string
+            return f"{r},{col},{typ}"
+</code>

@@ -1,0 +1,120 @@
+The strategy for this policy is to use a combination of offensive and defensive heuristics to evaluate moves for Havannah on a 15×15 board. It prioritizes winning moves and blocks opponent's winning threats. For non-critical positions, it selects the best move based on strategic proximity (corners and edges), connectivity with own stones, and disruption of the opponent. The policy evaluates possible bridge and fork structures, and scores moves based on adjacency, proximity to corners, and interference with the opponent. It handles ring structures via implicit strategic development but does not explicitly detect them.
+
+<code>
+```python
+from collections import deque
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    from collections import deque
+
+    me_set = set(me)
+    opp_set = set(opp)
+    N = 15
+
+    # Define the six corners of the Havannah board (assumed positions)
+    corners = [(0, 0), (0, 14), (14, 14), (14, 0), (0, 7), (14, 7)]
+
+    def is_edge(r: int, c: int):
+        # Returns the types of edges a cell belongs to (top, bottom, left, right)
+        edges = []
+        if r == 0 and c not in {0, 14}:
+            edges.append('top')
+        if r == 14 and c not in {0, 14}:
+            edges.append('bottom')
+        if c == 0 and r not in {0, 14}:
+            edges.append('left')
+        if c == 14 and r not in {0, 14}:
+            edges.append('right')
+        return edges
+
+    def is_winning(stones, corners, is_edge_func):
+        # Checks if `stones` meet bridge, fork, or ring conditions
+        stones_set = set(stones)
+        visited_all = set()
+
+        for pos in stones_set:
+            if pos not in visited_all:
+                visited = set()
+                queue = deque([pos])
+                visited.add(pos)
+                visited_all.add(pos)
+
+                # Standard hex grid neighbor directions (6 directions)
+                directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1)]
+                while queue:
+                    r, c = queue.popleft()
+                    for dr, dc in directions:
+                        nr, nc = r + dr, c + dc
+                        if (nr, nc) in stones_set and (nr, nc) not in visited and 0 <= nr < N and 0 <= nc < N:
+                            visited.add((nr, nc))
+                            visited_all.add((nr, nc))
+                            queue.append((nr, nc))
+
+                # Check for bridge (2 corners in the connected component)
+                corners_in_component = [(x, y) for x, y in corners if (x, y) in visited]
+                if len(corners_in_component) >= 2:
+                    return True
+
+                # Check for fork (3 distinct edges in the connected component)
+                edge_types = set()
+                for x, y in visited:
+                    for e in is_edge_func(x, y):
+                        edge_types.add(e)
+                if len(edge_types) >= 3:
+                    return True
+        return False
+
+    valid_moves = []
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                valid_moves.append((r, c))
+
+    # Step 1: Check for immediate win
+    for move in valid_moves:
+        r, c = move
+        temp_me = me + [move]
+        if is_winning(temp_me, corners, is_edge):
+            return move
+
+    # Step 2: Block immediate opponent win
+    for move in valid_moves:
+        r, c = move
+        temp_opp = opp + [move]
+        if is_winning(temp_opp, corners, is_edge):
+            return move
+
+    # Step 3: Heuristic scoring to choose best move
+    def heuristic_score(move):
+        r, c = move
+        score = 0
+
+        # Proximity to own stones (connectivity bonus)
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1)]
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in me_set:
+                score += 10  # Higher value for connectivity
+
+        # Bonus for corner placement
+        if (r, c) in corners:
+            score += 50
+
+        # Bonus for edge proximity
+        edges = is_edge(r, c)
+        score += len(edges) * 10  # Each edge adds points
+
+        # Bonus for interfering with opponent
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in opp_set:
+                score += 20  # Add incentive to block opponents
+
+        return score
+
+    # Sort valid moves by heuristic score in descending order
+    sorted_moves = sorted(valid_moves, key=heuristic_score, reverse=True)
+    return sorted_moves[0]
+```
+</code>

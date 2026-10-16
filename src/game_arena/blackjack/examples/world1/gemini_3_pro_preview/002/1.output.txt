@@ -1,0 +1,197 @@
+<thinking>
+The problem asks for an optimal policy for a simplified Blackjack game against an opponent playing with an identical deck. The target score $T$ is random (10-30). The goal is to maximize the probability of having a score closer to $T$ than the opponent without busting, or drawing (both bust, or same score).
+
+**Key Rules & Mechanics:**
+1.  **Decks**: Two separate 13-card decks (A, 2-10, J, Q, K). Drawing removes from the deck.
+2.  **Values**: A=1/11 (soft/hard), 2-9=Face, 10/J/Q/K=10.
+3.  **Winning**: Score closest to $T$ wins. If both bust, draw. If one busts, other wins.
+4.  **Opponent**: Independent deck, unknown hand. Assumed to be rational/playing optimally.
+
+**Approach:**
+Since the game is symmetric and the state space is small ($2^{13} = 8192$ possible subsets of cards), we can compute the optimal policy on the fly using game theory (finding a Nash Equilibrium).
+1.  **State Representation**: Each state is defined by the subset of cards currently held (bitwise mask).
+2.  **Game Solving**:
+    *   We don't know the opponent's strategy, but since the game is symmetric, the optimal strategy is likely the Best Response to itself.
+    *   We can approximate this iteratively:
+        *   Assume an initial opponent policy (e.g., "Stay if score $\ge T-5$").
+        *   Calculate the opponent's final score distribution ($D_{opp}$) using this policy.
+        *   Calculate our optimal Best Response policy given $D_{opp}$ using a backward pass (Expectimax).
+        *   Update the opponent's policy to be this Best Response and repeat.
+    *   The state space is a Directed Acyclic Graph (DAG) based on the number of cards. Recursion or topological iteration works.
+    *   Given the 1-second time limit, 2-3 iterations of this process over 8192 states is extremely fast (order of magnitude $10^5$ operations).
+
+**Algorithm Details:**
+*   **Precomputation**: Build the adjacency list (children for each mask) and base scores (A=1) at module load time to save time during calls.
+*   **Dynamic Scoring**: Inside `policy`, compute exact scores for the specific $T$ (adjusting Ace to 11 if possible).
+*   **Forward Pass**: Calculate the probability of the opponent reaching each state and eventually finishing at each score $0..T$ or Bust.
+*   **Backward Pass**: Calculate the Value $V(state)$ for us.
+    *   $V_{stay}(score) = P(OppBust) + P(Opp < score) + 0.5 \times P(Opp == score)$.
+    *   $V_{hit}(state) = \text{Average}(V(children))$.
+    *   $V(state) = \max(V_{stay}, V_{hit})$.
+*   **Decision**: For the user's current hand, compare $V_{stay}$ and $V_{hit}$.
+
+This solves the "Meta" of the opponent's distribution and gives the optimal move for the specific hand and target.
+</thinking>
+<code>
+import numpy as np
+
+# --- Global Precomputations (Static Game Rules) ---
+
+# Card definitions
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+RANK_MAP = {r: i for i, r in enumerate(RANKS)}
+
+# Base values: 2-9 face, 10-K=10. Ace=1 (dynamic +10 handled later)
+CARD_VALUES = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10], dtype=np.int32)
+
+# State Space: 2^13 subsets of the deck
+N_STATES = 1 << 13
+ALL_MASKS = np.arange(N_STATES, dtype=np.int32)
+
+# BITS array: (8192, 13) boolean, BITS[m, i] is True if card i in mask m
+BITS = ((ALL_MASKS[:, None] & (1 << np.arange(13, dtype=np.int32))) > 0)
+
+# Base scores for each subset (treating Ace as 1)
+BASE_SCORES = BITS @ CARD_VALUES
+# Indicator if subset contains an Ace (Rank 0)
+HAS_ACE = BITS[:, 0]
+
+# Transition Graph (Adjacency List)
+# CHILDREN[m] = list of next states (masks) reachable by drawing one card
+CHILDREN = [[] for _ in range(N_STATES)]
+for m in range(N_STATES):
+    # Iterate all card indices 0..12
+    # If card i is not in m, drawing it leads to state m | (1 << i)
+    for i in range(13):
+        if not (m & (1 << i)):
+            CHILDREN[m].append(m | (1 << i))
+
+# Precompute counts for probability calculations
+CHILD_COUNTS = np.array([len(c) for c in CHILDREN], dtype=np.int32)
+
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Decides whether to 'HIT' or 'STAY' given the current hand and target score.
+    Uses a 2-step iterative Expectimax approach to approximate the Nash Equilibrium.
+    """
+    
+    # --- 1. Identify Current State ---
+    current_mask = 0
+    for c in hand:
+        current_mask |= (1 << RANK_MAP[c])
+        
+    # --- 2. Target-Specific Score Calculation ---
+    # Score = Sum(cards). Ace counts as 11 if sum <= target, else 1.
+    scores = BASE_SCORES.copy()
+    # Identify hands where Ace=11 is valid: (has ace) AND (base_sum + 10 <= target)
+    soft_bonus = (HAS_ACE & ((scores + 10) <= target))
+    scores[soft_bonus] += 10
+    
+    # Check immediate bust
+    current_score = scores[current_mask]
+    if current_score > target:
+        return "STAY" 
+    
+    # --- 3. Iterative Solver ---
+    
+    # Initial Policy Guess: Threshold Strategy (e.g., Stay on T-5)
+    # This provides a reasonable starting distribution for the opponent.
+    thresh = max(target - 5, 11)
+    
+    # policy_arr: True=STAY, False=HIT
+    valid_mask = scores <= target
+    stay_mask = (scores >= thresh) & valid_mask
+    policy_arr = np.zeros(N_STATES, dtype=bool)
+    policy_arr[stay_mask] = True
+    
+    # Mark bust states as STAY (absorbing states for logic)
+    policy_arr[scores > target] = True
+    
+    bust_idx = target + 1
+    
+    # Run 2 iterations:
+    # 1. Compute opponent distribution based on current policy estimate.
+    # 2. Compute "Best Response" utility values.
+    # 3. Update policy to be the Best Response.
+    # 2 passes is sufficient for the strategy to converge for this game size.
+    for _ in range(2):
+        # --- A. Forward Pass (Compute Opponent Distribution d_opp) ---
+        d_opp = np.zeros(bust_idx + 1, dtype=np.float64)
+        mask_probs = np.zeros(N_STATES, dtype=np.float64)
+        mask_probs[0] = 1.0 # Opponent starts with empty hand
+        
+        # Iterate in topological order (subset sizes increase)
+        for m in range(N_STATES):
+            p = mask_probs[m]
+            if p < 1e-12: continue
+            
+            s = scores[m]
+            if s > target:
+                d_opp[bust_idx] += p
+                continue
+                
+            # If policy says STAY, or no cards left to draw
+            if policy_arr[m] or CHILD_COUNTS[m] == 0:
+                d_opp[s] += p
+            else:
+                # HIT: Distribute probability uniformly to children
+                p_share = p / CHILD_COUNTS[m]
+                for child in CHILDREN[m]:
+                    mask_probs[child] += p_share
+        
+        # --- B. Backward Pass (Compute Best Response Values) ---
+        
+        # 1. Calculate Utility of Staying at each score
+        # Utility = 1.0 * P(Opp Bust) + 1.0 * P(Opp < Me) + 0.5 * P(Opp == Me)
+        opp_bust_prob = d_opp[bust_idx]
+        score_payoffs = np.zeros(target + 1, dtype=np.float64)
+        
+        cumulative_lower = 0.0
+        for s_val in range(target + 1):
+            p_eq = d_opp[s_val]
+            score_payoffs[s_val] = opp_bust_prob + cumulative_lower + 0.5 * p_eq
+            cumulative_lower += p_eq
+            
+        V = np.zeros(N_STATES, dtype=np.float64)
+        
+        # Iterate backward (N_STATES-1 down to 0) to solve Expectimax
+        for m in range(N_STATES - 1, -1, -1):
+            s = scores[m]
+            
+            # Value of a Bust State
+            if s > target:
+                # If I am busted, I get 0.5 (Draw) only if Opponent also busts
+                V[m] = 0.5 * opp_bust_prob
+                continue
+                
+            # Value if Staying
+            val_stay = score_payoffs[s]
+            
+            # Value if Hitting
+            cnt = CHILD_COUNTS[m]
+            if cnt == 0:
+                # Forced Stay
+                V[m] = val_stay
+                policy_arr[m] = True
+            else:
+                # Expectimax: Average value of next states
+                val_hit_sum = 0.0
+                for child in CHILDREN[m]:
+                    val_hit_sum += V[child]
+                val_hit = val_hit_sum / cnt
+                
+                # Update Policy and Value
+                if val_stay >= val_hit:
+                    V[m] = val_stay
+                    policy_arr[m] = True
+                else:
+                    V[m] = val_hit
+                    policy_arr[m] = False
+
+    # --- 4. Execute Best Response for Current Hand ---
+    if policy_arr[current_mask]:
+        return "STAY"
+    else:
+        return "HIT"
+</code>

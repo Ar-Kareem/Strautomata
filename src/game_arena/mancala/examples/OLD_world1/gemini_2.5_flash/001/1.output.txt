@@ -1,0 +1,232 @@
+```python
+import math
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Implements a move-selection policy for the game Kalah.
+    The policy uses a minimax-like approach with a limited search depth
+    and a simple evaluation function.
+    """
+
+    def _apply_move(current_you, current_opponent, move_idx):
+        """
+        Applies a move to the board state and returns the new state,
+        whether it's an extra move, and whether a capture occurred.
+        Does not modify the input lists.
+        """
+        new_you = list(current_you)
+        new_opponent = list(current_opponent)
+
+        seeds = new_you[move_idx]
+        new_you[move_idx] = 0
+        current_pos = move_idx
+        turn_player = 0  # 0 for 'you', 1 for 'opponent's side'
+        
+        last_landed_in_your_house = False
+        last_landed_in_your_store = False
+        last_landed_house_idx = -1
+        last_landed_player = -1 # 0 for you, 1 for opponent
+
+        while seeds > 0:
+            if turn_player == 0:  # Your side
+                current_pos += 1
+                if current_pos <= 6:  # Your houses or store
+                    new_you[current_pos] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        if current_pos == 6:
+                            last_landed_in_your_store = True
+                        else:
+                            last_landed_in_your_house = True
+                            last_landed_house_idx = current_pos
+                            last_landed_player = 0
+                else:  # Move to opponent's side
+                    turn_player = 1
+                    current_pos = -1 # Will be 0 after increment
+            else:  # Opponent's side
+                current_pos += 1
+                if current_pos <= 5:  # Opponent's houses (skip opponent's store)
+                    new_opponent[current_pos] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        last_landed_house_idx = current_pos
+                        last_landed_player = 1
+                else:  # Move back to your side
+                    turn_player = 0
+                    current_pos = -1 # Will be 0 after increment
+
+        extra_move = last_landed_in_your_store
+        
+        capture_occurred = False
+        if last_landed_in_your_house and new_you[last_landed_house_idx] == 1:
+            # Check for capture
+            opposite_house_idx = 5 - last_landed_house_idx
+            if new_opponent[opposite_house_idx] > 0:
+                new_you[6] += new_you[last_landed_house_idx]
+                new_you[last_landed_house_idx] = 0
+                new_you[6] += new_opponent[opposite_house_idx]
+                new_opponent[opposite_house_idx] = 0
+                capture_occurred = True
+
+        return new_you, new_opponent, extra_move, capture_occurred
+
+    def _is_game_over(current_you, current_opponent):
+        """Checks if the game is over."""
+        your_houses_empty = all(h == 0 for h in current_you[0:6])
+        opponent_houses_empty = all(h == 0 for h in current_opponent[0:6])
+        return your_houses_empty or opponent_houses_empty
+
+    def _get_game_result(current_you, current_opponent):
+        """
+        Calculates the final score difference if the game is over.
+        If not over, moves remaining seeds to stores.
+        """
+        final_you = list(current_you)
+        final_opponent = list(current_opponent)
+
+        your_houses_empty = all(h == 0 for h in final_you[0:6])
+        opponent_houses_empty = all(h == 0 for h in final_opponent[0:6])
+
+        if your_houses_empty:
+            for i in range(6):
+                final_opponent[6] += final_opponent[i]
+                final_opponent[i] = 0
+        elif opponent_houses_empty:
+            for i in range(6):
+                final_you[6] += final_you[i]
+                final_you[i] = 0
+                
+        return final_you[6] - final_opponent[6]
+
+    def _evaluate_board(current_you, current_opponent):
+        """
+        A simple evaluation function.
+        Prioritizes seeds in your store, then potential captures,
+        and avoids giving opponent captures.
+        """
+        score = current_you[6] - current_opponent[6]
+
+        # Bonus for seeds in your store
+        score += current_you[6] * 2
+
+        # Penalty for seeds in opponent's store
+        score -= current_opponent[6] * 2
+
+        # Mobility (number of legal moves) - might be too complex for simple eval
+        # num_your_moves = sum(1 for i in range(6) if current_you[i] > 0)
+        # num_opponent_moves = sum(1 for i in range(6) if current_opponent[i] > 0)
+        # score += (num_your_moves - num_opponent_moves) * 0.1
+
+        # Consider upcoming captures
+        # This is hard to do in a static eval without lookahead
+
+        return score
+
+    memo = {} # Memoization for the minimax function
+
+    def minimax(current_you, current_opponent, depth, is_maximizing_player):
+        """
+        Minimax algorithm with alpha-beta pruning and memoization.
+        """
+        state_tuple = (tuple(current_you), tuple(current_opponent), is_maximizing_player)
+        if state_tuple in memo:
+            return memo[state_tuple]
+
+        if _is_game_over(current_you, current_opponent):
+            result = _get_game_result(current_you, current_opponent)
+            memo[state_tuple] = result
+            return result
+
+        if depth == 0:
+            eval_score = _evaluate_board(current_you, current_opponent)
+            memo[state_tuple] = eval_score
+            return eval_score
+
+        legal_moves = [i for i in range(6) if current_you[i] > 0] if is_maximizing_player else \
+                      [i for i in range(6) if current_opponent[i] > 0]
+
+        if not legal_moves: # Should not happen if policy is called when there's always a legal move
+            eval_score = _evaluate_board(current_you, current_opponent)
+            memo[state_tuple] = eval_score
+            return eval_score
+
+        if is_maximizing_player:
+            max_eval = -math.inf
+            for move in legal_moves:
+                new_you, new_opponent, extra_move, _ = _apply_move(current_you, current_opponent, move)
+                
+                # Check for game over immediately after move application
+                if _is_game_over(new_you, new_opponent):
+                    eval_val = _get_game_result(new_you, new_opponent)
+                elif extra_move:
+                    eval_val = minimax(new_you, new_opponent, depth - 1, True) # Still maximizing player
+                else:
+                    eval_val = minimax(new_opponent, new_you, depth - 1, False) # Opponent's turn (minimize)
+                max_eval = max(max_eval, eval_val)
+            memo[state_tuple] = max_eval
+            return max_eval
+        else:  # Minimizing player (opponent)
+            min_eval = math.inf
+            for move in legal_moves:
+                new_opponent_temp, new_you_temp, extra_move, _ = _apply_move(current_opponent, current_you, move) # Opponent makes a move
+                
+                # Check for game over immediately after move application
+                if _is_game_over(new_you_temp, new_opponent_temp):
+                    eval_val = _get_game_result(new_you_temp, new_opponent_temp)
+                elif extra_move:
+                    eval_val = minimax(new_opponent_temp, new_you_temp, depth - 1, False) # Still minimizing player
+                else:
+                    eval_val = minimax(new_you_temp, new_opponent_temp, depth - 1, True) # Player's turn (maximize)
+                min_eval = min(min_eval, eval_val)
+            memo[state_tuple] = min_eval
+            return min_eval
+
+    # --- Main policy execution ---
+
+    best_move = -1
+    max_score = -math.inf
+    
+    # Try a deeper search for critical moves
+    depth_limit = 4 
+
+    # Find all legal moves
+    legal_moves = [i for i in range(6) if you[i] > 0]
+
+    # Prioritize moves that lead to an extra turn or capture
+    initial_priority_moves = []
+    other_moves = []
+
+    for move_idx in legal_moves:
+        new_you, new_opponent, extra_move, capture_occurred = _apply_move(you, opponent, move_idx)
+        if extra_move or capture_occurred:
+            initial_priority_moves.append(move_idx)
+        else:
+            other_moves.append(move_idx)
+
+    # Evaluate moves, prioritizing those that give an extra turn or capture
+    for move_idx in initial_priority_moves + other_moves: # Process priority moves first
+        new_you, new_opponent, extra_move, _ = _apply_move(you, opponent, move_idx)
+        
+        # If the game ends immediately, take that move if it's favorable
+        if _is_game_over(new_you, new_opponent):
+            score_diff = _get_game_result(new_you, new_opponent)
+            if score_diff > max_score:
+                max_score = score_diff
+                best_move = move_idx
+            continue
+
+        current_score = -math.inf
+        if extra_move:
+            # If we get an extra move, we are still the maximizing player
+            current_score = minimax(new_you, new_opponent, depth_limit - 1, True)
+        else:
+            # Otherwise, it's the opponent's turn to minimize our score
+            current_score = minimax(new_opponent, new_you, depth_limit - 1, False) # Pass opponent as maximizing player for their turn
+
+        if current_score > max_score:
+            max_score = current_score
+            best_move = move_idx
+        
+    return best_move
+
+```

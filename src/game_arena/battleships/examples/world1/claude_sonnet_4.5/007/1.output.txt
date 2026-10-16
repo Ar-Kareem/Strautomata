@@ -1,0 +1,186 @@
+<thinking>
+To create an effective Battleship targeting policy, I need to consider several strategies:
+
+1. **Initial Search Pattern**: When no ships have been hit, use a checkerboard or sparse pattern to efficiently search the board, since ships must occupy consecutive cells.
+
+2. **Hunt Mode**: Once a hit is found, systematically search adjacent cells to find the ship's orientation and sink it.
+
+3. **Target Mode**: After finding the orientation, continue firing along that line until the ship is sunk.
+
+4. **Probability-Based Targeting**: Consider ship sizes and remaining possibilities to prioritize high-probability cells.
+
+Key observations:
+- Ships have lengths: 5, 4, 3, 3, 2
+- The smallest ship is length 2, so a checkerboard pattern with spacing 1 will eventually find all ships
+- After hitting a ship (finding a `1`), I should search orthogonally adjacent cells
+- If I find two aligned hits, I should continue in that direction
+
+Strategy:
+1. First, check if there are any hits (`1`) on the board
+2. If there are isolated hits (no adjacent hits), try all 4 directions around them
+3. If there are aligned hits (forming a line), continue in both directions of that line
+4. If no hits exist, use a checkerboard/parity pattern for efficient searching
+
+Let me implement this:
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Find all hits and misses
+    hits = []
+    unknown = []
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.append((r, c))
+            elif board[r][c] == 0:
+                unknown.append((r, c))
+    
+    # If we have hits, target around them
+    if hits:
+        # Look for adjacent hits (forming a line)
+        for r, c in hits:
+            # Check all 4 directions
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    # Check if this extends a line of hits
+                    # or is adjacent to a hit
+                    return (nr, nc)
+    
+    # No hits or no adjacent unknowns to hits
+    # Use checkerboard pattern (parity-based search)
+    # Prioritize cells where ships of minimum size 2 can fit
+    for parity in [0, 1]:
+        for r in range(10):
+            for c in range(10):
+                if (r + c) % 2 == parity and board[r][c] == 0:
+                    return (r, c)
+    
+    # Fallback: return any unknown cell
+    if unknown:
+        return unknown[0]
+    
+    return (0, 0)  # Should never reach here in valid game
+```
+
+Wait, this is a bit simplistic. Let me refine the strategy:
+
+1. **Target Mode** (highest priority): If there are hits that form a line, continue along that line
+2. **Hunt Mode** (medium priority): If there are isolated hits, check adjacent cells
+3. **Search Mode** (lowest priority): Use checkerboard pattern
+
+Let me improve this:
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    
+    if hits:
+        # Find hits that might be part of unsunk ships
+        # Try to find adjacent unknown cells to existing hits
+        
+        # First, check if we have aligned hits (a ship orientation is found)
+        for r, c in hits:
+            for dr, dc in [(0, 1), (1, 0)]:  # Right and Down
+                # Check if there's another hit in this direction
+                if (r + dr, c + dc) in hits:
+                    # We have at least 2 aligned hits, continue in both directions
+                    # Go forward
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                        nr, nc = nr + dr, nc + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        return (nr, nc)
+                    
+                    # Go backward
+                    nr, nc = r - dr, c - dc
+                    while 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                        nr, nc = nr - dr, nc - dc
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        return (nr, nc)
+        
+        # No aligned hits found, check all adjacent cells to any hit
+        for r, c in hits:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    return (nr, nc)
+    
+    # No hits to follow up on, use checkerboard pattern
+    for r in range(10):
+        for c in range(10):
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                return (r, c)
+    
+    # Fill in remaining cells
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    return (0, 0)
+```
+
+This looks better. The strategy prioritizes continuing along a discovered ship orientation, then exploring around isolated hits, then using an efficient search pattern.
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship targeting policy using hunt-and-target strategy.
+    
+    Strategy:
+    1. If we have aligned hits (ship direction found), continue along that line
+    2. If we have isolated hits, search adjacent cells
+    3. Otherwise, use checkerboard pattern for efficient search
+    """
+    
+    # Collect all hits
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    
+    if hits:
+        # Priority 1: Check if we have aligned hits and continue in that direction
+        for r, c in hits:
+            for dr, dc in [(0, 1), (1, 0)]:  # Check right and down only (avoid duplicates)
+                # Check if there's another hit in this direction
+                if (r + dr, c + dc) in hits:
+                    # Found aligned hits! Continue in both directions along this line
+                    
+                    # Search forward along the line
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                        nr, nc = nr + dr, nc + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        return (nr, nc)
+                    
+                    # Search backward along the line
+                    nr, nc = r - dr, c - dc
+                    while 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                        nr, nc = nr - dr, nc - dc
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        return (nr, nc)
+        
+        # Priority 2: No aligned hits found, explore around isolated hits
+        for r, c in hits:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    return (nr, nc)
+    
+    # Priority 3: No active targets, use checkerboard search pattern
+    # This is optimal because smallest ship is length 2
+    for r in range(10):
+        for c in range(10):
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                return (r, c)
+    
+    # Priority 4: Fill in remaining odd-parity cells
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    # Should never reach here in a valid game
+    return (0, 0)
+</code>

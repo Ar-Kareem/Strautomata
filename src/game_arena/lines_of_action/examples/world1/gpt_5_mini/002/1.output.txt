@@ -1,0 +1,319 @@
+<thinking>
+I will implement a complete Python policy for Lines of Action. The policy enumerates all legal moves, evaluates positions using connectivity and mobility heuristics, and runs a small depth-limited negamax (alpha-beta) search with beam pruning to keep the branching reasonable. It prefers moves that reduce the number of your connected groups, increase the opponent's groups, increase your largest component, capture pieces, and increase mobility. The code is self-contained and returns a single legal move as the required string.
+</thinking>
+<code>
+import math
+import time
+from copy import deepcopy
+
+# Policy entry point required by the arena
+def policy(board) -> str:
+    """
+    board: 8x8 list of lists of ints (0 empty, 1 our piece, -1 opponent)
+    returns move string "r1,c1:r2,c2"
+    """
+    engine = LOAEngine(board)
+    move = engine.search_best_move()
+    if move is None:
+        # fallback: pick first legal move (shouldn't normally happen)
+        moves = engine.generate_moves(board, 1)
+        if not moves:
+            return "0,0:0,0"
+        r1,c1,r2,c2 = moves[0]
+        return f"{r1},{c1}:{r2},{c2}"
+    r1,c1,r2,c2 = move
+    return f"{r1},{c1}:{r2},{c2}"
+
+
+class LOAEngine:
+    def __init__(self, board):
+        # board: list of lists
+        self.board = [row[:] for row in board]
+        self.SIZE = 8
+        self.DIRS = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
+        self.start_time = time.time()
+        self.TIME_LIMIT = 0.95  # seconds, stay safe
+        # Search parameters
+        self.MAX_DEPTH = 3
+        # Beam widths per depth (0 = root)
+        self.BEAM = {0: 40, 1: 30, 2: 18}
+        # Precompute positions of pieces
+        self.update_piece_lists(self.board)
+
+    def update_piece_lists(self, board):
+        self.our_pieces = []
+        self.opp_pieces = []
+        for r in range(self.SIZE):
+            for c in range(self.SIZE):
+                v = board[r][c]
+                if v == 1:
+                    self.our_pieces.append((r,c))
+                elif v == -1:
+                    self.opp_pieces.append((r,c))
+
+    def elapsed(self):
+        return time.time() - self.start_time
+
+    # Count pieces along the line of movement for (r,c) and direction (dr,dc)
+    def count_line_pieces(self, board, r, c, dr, dc):
+        count = 0
+        if dr == 0:
+            # horizontal: count row
+            for cc in range(self.SIZE):
+                if board[r][cc] != 0:
+                    count += 1
+        elif dc == 0:
+            # vertical: count column
+            for rr in range(self.SIZE):
+                if board[rr][c] != 0:
+                    count += 1
+        elif dr == dc:
+            # main diagonal (NW-SE)
+            # step back to start of diagonal
+            rr,cc = r,c
+            while 0 <= rr-dr and 0 <= cc-dc:
+                rr -= dr
+                cc -= dc
+            # walk diagonal
+            while 0 <= rr < self.SIZE and 0 <= cc < self.SIZE:
+                if board[rr][cc] != 0:
+                    count += 1
+                rr += dr
+                cc += dc
+        else:
+            # anti-diagonal (NE-SW)
+            rr,cc = r,c
+            while 0 <= rr-dr and 0 <= cc-dc and rr-dr < self.SIZE and cc-dc < self.SIZE:
+                rr -= dr
+                cc -= dc
+            while 0 <= rr < self.SIZE and 0 <= cc < self.SIZE:
+                if board[rr][cc] != 0:
+                    count += 1
+                rr += dr
+                cc += dc
+        return count
+
+    def on_board(self, r, c):
+        return 0 <= r < self.SIZE and 0 <= c < self.SIZE
+
+    # Generate legal moves for given player_val (1 for us, -1 for opp)
+    def generate_moves(self, board, player_val):
+        moves = []
+        # iterate pieces
+        for r in range(self.SIZE):
+            for c in range(self.SIZE):
+                if board[r][c] != player_val:
+                    continue
+                for dr,dc in self.DIRS:
+                    dist = self.count_line_pieces(board, r, c, dr, dc)
+                    if dist == 0:
+                        continue
+                    tr = r + dr * dist
+                    tc = c + dc * dist
+                    if not self.on_board(tr, tc):
+                        continue
+                    dest = board[tr][tc]
+                    if dest == player_val:
+                        continue  # cannot land on own piece
+                    # path check: cannot jump over enemy pieces
+                    steps = max(abs(tr - r), abs(tc - c))
+                    step_r = 0 if steps == 0 else (tr - r) // steps
+                    step_c = 0 if steps == 0 else (tc - c) // steps
+                    blocked = False
+                    for i in range(1, steps):
+                        mr = r + step_r * i
+                        mc = c + step_c * i
+                        if board[mr][mc] == -player_val:
+                            blocked = True
+                            break
+                    if blocked:
+                        continue
+                    moves.append((r,c,tr,tc))
+        return moves
+
+    # Apply move and return new board
+    def apply_move(self, board, move, player_val):
+        r,c,tr,tc = move
+        nb = [row[:] for row in board]
+        nb[tr][tc] = nb[r][c]  # place moving piece (1 or -1)
+        nb[r][c] = 0
+        return nb
+
+    # Connectivity: number of connected components and size of largest component for a player
+    def connectivity(self, board, player_val):
+        visited = [[False]*self.SIZE for _ in range(self.SIZE)]
+        comps = 0
+        max_size = 0
+        for r in range(self.SIZE):
+            for c in range(self.SIZE):
+                if board[r][c] == player_val and not visited[r][c]:
+                    comps += 1
+                    # BFS/DFS
+                    stack = [(r,c)]
+                    visited[r][c] = True
+                    size = 0
+                    while stack:
+                        rr,cc = stack.pop()
+                        size += 1
+                        for dr,dc in self.DIRS:
+                            nr, nc = rr+dr, cc+dc
+                            if 0 <= nr < self.SIZE and 0 <= nc < self.SIZE:
+                                if not visited[nr][nc] and board[nr][nc] == player_val:
+                                    visited[nr][nc] = True
+                                    stack.append((nr,nc))
+                    if size > max_size:
+                        max_size = size
+        if comps == 0:
+            max_size = 0
+        return comps, max_size
+
+    def piece_counts(self, board):
+        our = 0
+        opp = 0
+        for r in range(self.SIZE):
+            for c in range(self.SIZE):
+                if board[r][c] == 1:
+                    our += 1
+                elif board[r][c] == -1:
+                    opp += 1
+        return our, opp
+
+    # Static evaluation from current player's perspective (player_val = 1)
+    def evaluate(self, board):
+        # higher is better for player 1 (us)
+        our_comps, our_largest = self.connectivity(board, 1)
+        opp_comps, opp_largest = self.connectivity(board, -1)
+        our_moves = len(self.generate_moves(board, 1))
+        opp_moves = len(self.generate_moves(board, -1))
+        our_pieces, opp_pieces = self.piece_counts(board)
+
+        # Terminal checks: connected => win
+        if our_comps == 1 and our_pieces > 0:
+            return 100000  # big win
+        if opp_comps == 1 and opp_pieces > 0:
+            return -100000  # big loss
+
+        # Heuristic combination (weights tuned empirically)
+        # We prefer fewer our components (smaller is better), more opponent components (bigger is better)
+        score = 0
+        score += 1000 * (opp_comps - our_comps)
+        score += 50 * (our_largest - opp_largest)
+        score += 10 * (our_moves - opp_moves)
+        score += 200 * (our_pieces - opp_pieces)
+        # small tie-breakers: centralization (sum of distances to center for our pieces)
+        center_r = center_c = (self.SIZE - 1) / 2.0
+        our_center_dist = 0.0
+        for r in range(self.SIZE):
+            for c in range(self.SIZE):
+                if board[r][c] == 1:
+                    our_center_dist += math.hypot(r-center_r, c-center_c)
+        opp_center_dist = 0.0
+        for r in range(self.SIZE):
+            for c in range(self.SIZE):
+                if board[r][c] == -1:
+                    opp_center_dist += math.hypot(r-center_r, c-center_c)
+        # prefer being somewhat centralized (smaller distance)
+        score += int(2 * (opp_center_dist - our_center_dist))
+        return score
+
+    # Negamax with alpha-beta and beam pruning
+    def negamax(self, board, depth, alpha, beta, player_val, ply):
+        # Time check
+        if self.elapsed() > self.TIME_LIMIT:
+            # Return static evaluation to abort search
+            return self.evaluate(board), None
+
+        # Terminal or depth 0
+        our_comps, _ = self.connectivity(board, 1)
+        opp_comps, _ = self.connectivity(board, -1)
+        our_pieces, opp_pieces = self.piece_counts(board)
+        if our_comps == 1 and our_pieces > 0:
+            return 100000, None
+        if opp_comps == 1 and opp_pieces > 0:
+            return -100000, None
+
+        if depth == 0:
+            return self.evaluate(board), None
+
+        moves = self.generate_moves(board, player_val)
+        if not moves:
+            # No moves: evaluate statically
+            return self.evaluate(board), None
+
+        # Order moves by static evaluation after applying (for beam)
+        scored_moves = []
+        for m in moves:
+            nb = self.apply_move(board, m, player_val)
+            val = self.evaluate(nb) if player_val == 1 else -self.evaluate_flip(nb)
+            # For negamax, but we'll sort descending
+            scored_moves.append((val, m))
+        scored_moves.sort(reverse=True, key=lambda x: x[0])
+
+        # Beam pruning: keep top-K moves depending on ply
+        beam_k = self.BEAM.get(ply, 12)
+        if beam_k is not None and len(scored_moves) > beam_k:
+            scored_moves = scored_moves[:beam_k]
+
+        best_val = -10**9
+        best_move = None
+        for _, move in scored_moves:
+            nb = self.apply_move(board, move, player_val)
+            # Recurse: flip player
+            val_child, _ = self.negamax(nb, depth-1, -beta, -alpha, -player_val, ply+1)
+            val_child = -val_child
+            if val_child > best_val:
+                best_val = val_child
+                best_move = move
+            alpha = max(alpha, val_child)
+            if alpha >= beta:
+                break
+            # Time check inside loop
+            if self.elapsed() > self.TIME_LIMIT:
+                break
+        return best_val, best_move
+
+    # Helper for evaluating from opponent perspective
+    def evaluate_flip(self, board):
+        # Evaluate from opponent's perspective (1 is us): return evaluation as if 1 were opponent
+        # i.e., invert signs: evaluate(-board) but faster to compute using existing evaluate by flipping pieces
+        flipped = [[0]*self.SIZE for _ in range(self.SIZE)]
+        for r in range(self.SIZE):
+            for c in range(self.SIZE):
+                flipped[r][c] = -board[r][c]
+        # now evaluate flipped board as if we're player 1
+        return self.evaluate(flipped)
+
+    def search_best_move(self):
+        # iterative deepening until MAX_DEPTH or time runs out
+        best_move = None
+        best_val = -10**9
+        depth = 1
+        while depth <= self.MAX_DEPTH:
+            if self.elapsed() > self.TIME_LIMIT:
+                break
+            val, move = self.negamax(self.board, depth, -10**9, 10**9, 1, 0)
+            if self.elapsed() > self.TIME_LIMIT:
+                break
+            if move is not None:
+                best_move = move
+                best_val = val
+            depth += 1
+        # If no move found, try to return any legal move
+        if best_move is None:
+            moves = self.generate_moves(self.board, 1)
+            if moves:
+                return moves[0]
+            else:
+                return None
+        return best_move
+
+# If run as a script, you can place a small self-test here (not executed by the arena).
+if __name__ == "__main__":
+    # Example empty board with some pieces for quick local test
+    b = [[0]*8 for _ in range(8)]
+    b[0][0] = 1
+    b[0][7] = -1
+    b[7][0] = 1
+    b[7][7] = -1
+    print(policy(b))
+</code>

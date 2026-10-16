@@ -1,0 +1,176 @@
+
+import itertools
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Smart 4x4 Tic Tac Toe policy that uses multiple strategies:
+    1. Take immediate win
+    2. Block opponent's immediate win
+    3. Positional scoring
+    4. MiniMax lookahead with alpha-beta pruning
+    """
+    n = len(board)
+    empty_cells = [(i, j) for i in range(n) for j in range(n) if board[i][j] == 0]
+    
+    if not empty_cells:
+        return (0, 0)  # No moves available
+    
+    # 1. Check for immediate win
+    for row, col in empty_cells:
+        board[row][col] = 1
+        if check_winner(board) == 1:
+            board[row][col] = 0
+            return (row, col)
+        board[row][col] = 0
+    
+    # 2. Check for opponent's immediate win and block
+    for row, col in empty_cells:
+        board[row][col] = -1
+        if check_winner(board) == -1:
+            board[row][col] = 0
+            return (row, col)
+        board[row][col] = 0
+    
+    # 3. Use MiniMax to find best move
+    best_move = None
+    best_score = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    for row, col in empty_cells:
+        board[row][col] = 1
+        score = minimax(board, 3, False, alpha, beta, 1)
+        board[row][col] = 0
+        
+        if score > best_score:
+            best_score = score
+            best_move = (row, col)
+        alpha = max(alpha, score)
+    
+    return best_move if best_move else empty_cells[0]
+
+def check_winner(board: List[List[int]]) -> int:
+    """Check if there's a winner on the board."""
+    n = len(board)
+    
+    # Check rows and columns
+    for i in range(n):
+        if all(board[i][j] == 1 for j in range(n)) or all(board[j][i] == 1 for j in range(n)):
+            return 1
+        if all(board[i][j] == -1 for j in range(n)) or all(board[j][i] == -1 for j in range(n)):
+            return -1
+    
+    # Check diagonals
+    if all(board[i][i] == 1 for i in range(n)) or all(board[i][n-1-i] == 1 for i in range(n)):
+        return 1
+    if all(board[i][i] == -1 for i in range(n)) or all(board[i][n-1-i] == -1 for i in range(n)):
+        return -1
+    
+    return 0
+
+def count_line_completions(board: List[List[int]], player: int) -> int:
+    """Count how many lines player has partially completed (3/4 for win)."""
+    n = len(board)
+    count = 0
+    
+    # Check rows and columns
+    for i in range(n):
+        row_count = sum(1 for j in range(n) if board[i][j] == player)
+        col_count = sum(1 for j in range(n) if board[j][i] == player)
+        if row_count == n-1:
+            count += 1
+        if col_count == n-1:
+            count += 1
+    
+    # Check diagonals
+    diag1_count = sum(1 for i in range(n) if board[i][i] == player)
+    diag2_count = sum(1 for i in range(n) if board[i][n-1-i] == player)
+    if diag1_count == n-1:
+        count += 1
+    if diag2_count == n-1:
+        count += 1
+    
+    return count
+
+def evaluate_board(board: List[List[int]], player: int) -> float:
+    """Evaluate board state from player's perspective."""
+    if check_winner(board) == player:
+        return 10000
+    if check_winner(board) == -player:
+        return -10000
+    
+    # Count nearly completed lines
+    my_nearly_wins = count_line_completions(board, player)
+    opp_nearly_wins = count_line_completions(board, -player)
+    
+    # Count all partial lines (2 or more in a row)
+    my_partial = count_partial_lines(board, player)
+    opp_partial = count_partial_lines(board, -player)
+    
+    return my_nearly_wins * 100 + my_partial * 10 - opp_nearly_wins * 100 - opp_partial * 10
+
+def count_partial_lines(board: List[List[int]], player: int) -> int:
+    """Count lines where player has 2+ marks."""
+    n = len(board)
+    count = 0
+    
+    # Check rows and columns
+    for i in range(n):
+        row_count = sum(1 for j in range(n) if board[i][j] == player)
+        col_count = sum(1 for j in range(n) if board[j][i] == player)
+        if row_count >= 2:
+            count += row_count
+        if col_count >= 2:
+            count += col_count
+    
+    # Check diagonals
+    diag1_count = sum(1 for i in range(n) if board[i][i] == player)
+    diag2_count = sum(1 for i in range(n) if board[i][n-1-i] == player)
+    if diag1_count >= 2:
+        count += diag1_count
+    if diag2_count >= 2:
+        count += diag2_count
+    
+    return count
+
+def is_board_full(board: List[List[int]]) -> bool:
+    """Check if board is full."""
+    return all(board[i][j] != 0 for i in range(len(board)) for j in range(len(board)))
+
+def minimax(board: List[List[int]], depth: int, is_maximizing: bool, 
+            alpha: float, beta: float, player: int) -> float:
+    """MiniMax algorithm with alpha-beta pruning."""
+    n = len(board)
+    
+    if check_winner(board) == player:
+        return 1000
+    if check_winner(board) == -player:
+        return -1000
+    if is_board_full(board) or depth == 0:
+        return evaluate_board(board, player)
+    
+    empty_cells = [(i, j) for i in range(n) for j in range(n) if board[i][j] == 0]
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for row, col in empty_cells:
+            board[row][col] = 1
+            eval = minimax(board, depth - 1, False, alpha, beta, player)
+            board[row][col] = 0
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for row, col in empty_cells:
+            board[row][col] = -1
+            eval = minimax(board, depth - 1, True, alpha, beta, player)
+            board[row][col] = 0
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval

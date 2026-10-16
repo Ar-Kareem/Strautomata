@@ -1,0 +1,121 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            row, col, content = int(prop[1]), int(prop[2]), prop[3]
+            board[(row, col)] = content
+    
+    opponent = "black" if role == "red" else "red"
+    
+    def is_safe(r, c, board_state):
+        for dr in [-1, 1]:
+            opp_r, land_r = r + dr, r - dr
+            if 1 <= opp_r <= 5 and 1 <= land_r <= 5:
+                if board_state.get((opp_r, c), "blank") == opponent and board_state.get((land_r, c), "blank") == "blank":
+                    return False
+        for dc in [-1, 1]:
+            opp_c, land_c = c + dc, c - dc
+            if 1 <= opp_c <= 5 and 1 <= land_c <= 5:
+                if board_state.get((r, opp_c), "blank") == opponent and board_state.get((r, land_c), "blank") == "blank":
+                    return False
+        if (r + c) % 2 == 0:
+            for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                opp_r, opp_c = r + dr, c + dc
+                land_r, land_c = r - dr, c - dc
+                if 1 <= opp_r <= 5 and 1 <= opp_c <= 5 and 1 <= land_r <= 5 and 1 <= land_c <= 5:
+                    if (opp_r + opp_c) % 2 == 0 and (land_r + land_c) % 2 == 0:
+                        if board_state.get((opp_r, opp_c), "blank") == opponent and board_state.get((land_r, land_c), "blank") == "blank":
+                            return False
+        return True
+    
+    def count_jumps(r, c, board_state):
+        count = 0
+        for dc in [-1, 1]:
+            mid_c, end_c = c + dc, c + 2*dc
+            if 1 <= mid_c <= 5 and 1 <= end_c <= 5:
+                if board_state.get((r, mid_c), "blank") == opponent and board_state.get((r, end_c), "blank") == "blank":
+                    count += 1
+        for dr in [-1, 1]:
+            mid_r, end_r = r + dr, r + 2*dr
+            if 1 <= mid_r <= 5 and 1 <= end_r <= 5:
+                if board_state.get((mid_r, c), "blank") == opponent and board_state.get((end_r, c), "blank") == "blank":
+                    count += 1
+        if (r + c) % 2 == 0:
+            for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                mid_r, mid_c = r + dr, c + dc
+                end_r, end_c = r + 2*dr, c + 2*dc
+                if 1 <= mid_r <= 5 and 1 <= mid_c <= 5 and 1 <= end_r <= 5 and 1 <= end_c <= 5:
+                    if (mid_r + mid_c) % 2 == 0 and (end_r + end_c) % 2 == 0:
+                        if board_state.get((mid_r, mid_c), "blank") == opponent and board_state.get((end_r, end_c), "blank") == "blank":
+                            count += 1
+        return count
+    
+    my_pieces = [(r, c) for (r, c), v in board.items() if v == role]
+    all_moves, all_jumps = [], []
+    
+    for (r, c) in my_pieces:
+        for dc in [-1, 1]:
+            nc = c + dc
+            if 1 <= nc <= 5:
+                target = board.get((r, nc), "blank")
+                if target == "blank":
+                    all_moves.append(("move", r, c, r, nc))
+                elif target == opponent:
+                    nnc = nc + dc
+                    if 1 <= nnc <= 5 and board.get((r, nnc), "blank") == "blank":
+                        all_jumps.append(("jump", r, c, r, nc, r, nnc))
+        for dr in [-1, 1]:
+            nr = r + dr
+            if 1 <= nr <= 5:
+                target = board.get((nr, c), "blank")
+                if target == "blank":
+                    all_moves.append(("move", r, c, nr, c))
+                elif target == opponent:
+                    nnr = nr + dr
+                    if 1 <= nnr <= 5 and board.get((nnr, c), "blank") == "blank":
+                        all_jumps.append(("jump", r, c, nr, c, nnr, c))
+        if (r + c) % 2 == 0:
+            for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 5 and 1 <= nc <= 5 and (nr + nc) % 2 == 0:
+                    target = board.get((nr, nc), "blank")
+                    if target == "blank":
+                        all_moves.append(("move", r, c, nr, nc))
+                    elif target == opponent:
+                        nnr, nnc = nr + dr, nc + dc
+                        if 1 <= nnr <= 5 and 1 <= nnc <= 5 and (nnr + nnc) % 2 == 0:
+                            if board.get((nnr, nnc), "blank") == "blank":
+                                all_jumps.append(("jump", r, c, nr, nc, nnr, nnc))
+    
+    if all_jumps:
+        best_jump, best_score = None, -9999
+        for jump in all_jumps:
+            score = 10
+            new_board = board.copy()
+            new_board[(jump[1], jump[2])] = "blank"
+            new_board[(jump[3], jump[4])] = "blank"
+            new_board[(jump[5], jump[6])] = role
+            score += count_jumps(jump[5], jump[6], new_board) * 15
+            score += 3 if is_safe(jump[5], jump[6], new_board) else -5
+            if role == "red" and jump[5] < jump[1]: score += 2
+            elif role == "black" and jump[5] > jump[1]: score += 2
+            if score > best_score: best_score, best_jump = score, jump
+        return f"jump({best_jump[1]},{best_jump[2]},{best_jump[3]},{best_jump[4]},{best_jump[5]},{best_jump[6]})"
+    
+    if all_moves:
+        best_move, best_score = None, -9999
+        for move in all_moves:
+            score = 0
+            new_board = board.copy()
+            new_board[(move[1], move[2])] = "blank"
+            new_board[(move[3], move[4])] = role
+            if role == "red" and move[3] < move[1]: score += 3
+            elif role == "black" and move[3] > move[1]: score += 3
+            score += 2 if is_safe(move[3], move[4], new_board) else -10
+            score -= abs(move[3] - 3) + abs(move[4] - 3)
+            if count_jumps(move[3], move[4], new_board) > 0: score += 5
+            if score > best_score: best_score, best_move = score, move
+        return f"move({best_move[1]},{best_move[2]},{best_move[3]},{best_move[4]})"
+    
+    return "noop"

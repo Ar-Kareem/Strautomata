@@ -1,0 +1,96 @@
+
+import collections
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    # Determine target sides based on color
+    if color == 'b':
+        target_sides = {(r, c) for r in [0, 10] for c in range(11)}
+    else:
+        target_sides = {(r, c) for c in [0, 10] for r in range(11)}
+    
+    # Generate all empty cells
+    all_cells = [(r, c) for r in range(11) for c in range(11)]
+    empty_cells = [cell for cell in all_cells if cell not in me and cell not in opp]
+    
+    # Helper function to check connectivity
+    def is_connected(player_stones, target_set):
+        stones = set(player_stones)
+        if not stones:
+            return False
+        
+        start_stones = {stone for stone in stones if stone in target_set}
+        if not start_stones:
+            return False
+        
+        visited = set()
+        queue = collections.deque(start_stones)
+        visited |= start_stones
+        
+        while queue:
+            r, c = queue.popleft()
+            neighbors = [
+                (r-1, c), (r+1, c),
+                (r, c-1), (r, c+1),
+                (r-1, c+1), (r+1, c-1)
+            ]
+            for nr, nc in neighbors:
+                if 0 <= nr <= 10 and 0 <= nc <= 10:
+                    if (nr, nc) in stones and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+                        if (nr, nc) in target_set:
+                            return True
+        return False
+    
+    # Helper function for heuristic evaluation
+    def evaluate_board(player, opponent):
+        player_set = set(player)
+        opponent_set = set(opponent)
+        
+        player_score = 0
+        for stone in player_set:
+            if stone in target_sides:
+                player_score += 1
+        for stone in player_set:
+            r, c = stone
+            neighbors = [
+                (r-1, c), (r+1, c),
+                (r, c-1), (r, c+1),
+                (r-1, c+1), (r+1, c-1)
+            ]
+            for nr, nc in neighbors:
+                if (nr, nc) in target_sides:
+                    player_score += 1
+        
+        opponent_score = 0
+        for stone in opponent_set:
+            if stone in target_sides:
+                opponent_score += 1
+        for stone in opponent_set:
+            r, c = stone
+            neighbors = [
+                (r-1, c), (r+1, c),
+                (r, c-1), (r, c+1),
+                (r-1, c+1), (r+1, c-1)
+            ]
+            for nr, nc in neighbors:
+                if (nr, nc) in target_sides:
+                    opponent_score += 1
+        
+        return player_score - opponent_score
+    
+    # Check for winning moves first
+    for cell in empty_cells:
+        if is_connected(me + [cell], target_sides):
+            return cell
+    
+    # Evaluate all moves and choose the best
+    best_score = -float('inf')
+    best_move = None
+    for cell in empty_cells:
+        score = evaluate_board(me + [cell], opp)
+        if score > best_score:
+            best_score = score
+            best_move = cell
+    
+    return best_move

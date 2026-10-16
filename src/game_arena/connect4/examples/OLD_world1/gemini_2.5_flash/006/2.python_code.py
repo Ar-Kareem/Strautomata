@@ -1,0 +1,191 @@
+
+import random
+
+def policy(board: list[list[int]]) -> int:
+    ROWS = len(board)
+    COLS = len(board[0])
+    PLAYER = 1
+    OPPONENT = -1
+
+    def is_valid_location(board, col):
+        return board[0][col] == 0
+
+    def get_next_open_row(board, col):
+        for r in range(ROWS - 1, -1, -1):
+            if board[r][col] == 0:
+                return r
+        return -1 # Should not happen if is_valid_location is true
+
+    def drop_piece(temp_board, row, col, piece):
+        temp_board[row][col] = piece
+
+    def check_win(board, piece):
+        # Check horizontal locations for win
+        for c in range(COLS - 3):
+            for r in range(ROWS):
+                if board[r][c] == piece and board[r][c + 1] == piece and board[r][c + 2] == piece and board[r][c + 3] == piece:
+                    return True
+
+        # Check vertical locations for win
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                if board[r][c] == piece and board[r + 1][c] == piece and board[r + 2][c] == piece and board[r + 3][c] == piece:
+                    return True
+
+        # Check positively sloped diagonals
+        for c in range(COLS - 3):
+            for r in range(ROWS - 3):
+                if board[r][c] == piece and board[r + 1][c + 1] == piece and board[r + 2][c + 2] == piece and board[r + 3][c + 3] == piece:
+                    return True
+
+        # Check negatively sloped diagonals
+        for c in range(COLS - 3):
+            for r in range(3, ROWS):
+                if board[r][c] == piece and board[r - 1][c + 1] == piece and board[r - 2][c + 2] == piece and board[r - 3][c + 3] == piece:
+                    return True
+        return False
+
+    def evaluate_window(window, piece):
+        score = 0
+        opp_piece = OPPONENT if piece == PLAYER else PLAYER
+
+        if window.count(piece) == 4:
+            score += 100000
+        elif window.count(piece) == 3 and window.count(0) == 1:
+            score += 100
+        elif window.count(piece) == 2 and window.count(0) == 2:
+            score += 10
+
+        if window.count(opp_piece) == 3 and window.count(0) == 1:
+            score -= 1000
+        elif window.count(opp_piece) == 2 and window.count(0) == 2:
+            score -= 10
+        
+        return score
+
+    def score_position(board, piece):
+        score = 0
+
+        # Score center column - encourages playing in the middle
+        center_array = [board[r][COLS // 2] for r in range(ROWS)]
+        center_count = center_array.count(piece)
+        score += center_count * 3
+
+        # Score horizontal
+        for r in range(ROWS):
+            row_array = board[r]
+            for c in range(COLS - 3):
+                window = row_array[c:c + 4]
+                score += evaluate_window(window, piece)
+
+        # Score vertical
+        for c in range(COLS):
+            col_array = [board[r][c] for r in range(ROWS)]
+            for r in range(ROWS - 3):
+                window = col_array[r:r + 4]
+                score += evaluate_window(window, piece)
+
+        # Score positive sloped diagonal
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [board[r + i][c + i] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        # Score negative sloped diagonal
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                window = [board[r - i][c + i] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        return score
+    
+    def get_valid_locations(board):
+        valid_locations = []
+        for col in range(COLS):
+            if is_valid_location(board, col):
+                valid_locations.append(col)
+        return valid_locations
+
+    def minimax(board, depth, alpha, beta, maximizingPlayer):
+        valid_locations = get_valid_locations(board)
+        is_terminal = check_win(board, PLAYER) or check_win(board, OPPONENT) or len(valid_locations) == 0
+
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if check_win(board, PLAYER):
+                    return (None, 100000000000000)
+                elif check_win(board, OPPONENT):
+                    return (None, -10000000000000)
+                else: # Game is a draw
+                    return (None, 0)
+            else: # Depth is zero
+                return (None, score_position(board, PLAYER))
+        
+        if maximizingPlayer:
+            value = -float('inf')
+            column = random.choice(valid_locations) # Default to a random move
+            for col in valid_locations:
+                row = get_next_open_row(board, col)
+                b_copy = [row[:] for row in board]
+                drop_piece(b_copy, row, col, PLAYER)
+                new_score = minimax(b_copy, depth - 1, alpha, beta, False)[1]
+                if new_score > value:
+                    value = new_score
+                    column = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return column, value
+
+        else: # Minimizing player
+            value = float('inf')
+            column = random.choice(valid_locations)
+            for col in valid_locations:
+                row = get_next_open_row(board, col)
+                b_copy = [row[:] for row in board]
+                drop_piece(b_copy, row, col, OPPONENT)
+                new_score = minimax(b_copy, depth - 1, alpha, beta, True)[1]
+                if new_score < value:
+                    value = new_score
+                    column = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return column, value
+
+    # Main policy logic
+    valid_cols = get_valid_locations(board)
+    if not valid_cols:
+        # This state should not be reached if the game is still active
+        # but as a fail-safe, return -1 or raise an error.
+        # For this context, picking the first column might implicitly lead to a loss.
+        return 0
+
+    # Check for immediate win
+    for col in valid_cols:
+        row = get_next_open_row(board, col)
+        temp_board = [r[:] for r in board]
+        drop_piece(temp_board, row, col, PLAYER)
+        if check_win(temp_board, PLAYER):
+            return col
+    
+    # Check for immediate opponent win and block it
+    for col in valid_cols:
+        row = get_next_open_row(board, col)
+        temp_board = [r[:] for r in board]
+        drop_piece(temp_board, row, col, OPPONENT)
+        if check_win(temp_board, OPPONENT):
+            return col
+
+    # Use minimax for lookahead
+    # Adjust depth based on desired difficulty and time limits.
+    # A depth of 4-5 is usually a good balance for Connect 4 given time constraints.
+    # For a 1-second limit, depth 4 is a safer bet.
+    selected_column, minimax_score = minimax(board, 4, -float('inf'), float('inf'), True)
+    
+    if selected_column is not None:
+        return selected_column
+    else:
+        # Fallback to a random valid column if somehow minimax fails or returns None
+        return random.choice(valid_cols)
+

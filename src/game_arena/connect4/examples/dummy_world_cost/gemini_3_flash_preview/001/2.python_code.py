@@ -1,0 +1,149 @@
+
+import random
+
+def policy(board: list[list[int]]) -> int:
+    import time
+    
+    ROWS = 6
+    COLS = 7
+    WINDOW_LENGTH = 4
+    EMPTY = 0
+    PLAYER = 1
+    OPPONENT = -1
+
+    def get_valid_locations(grid):
+        return [c for c in range(COLS) if grid[0][c] == EMPTY]
+
+    def get_next_open_row(grid, col):
+        for r in range(ROWS-1, -1, -1):
+            if grid[r][col] == EMPTY:
+                return r
+        return -1
+
+    def drop_piece(grid, row, col, piece):
+        grid[row][col] = piece
+
+    def check_win(grid, piece):
+        # Horizontal
+        for c in range(COLS - 3):
+            for r in range(ROWS):
+                if grid[r][c] == piece and grid[r][c+1] == piece and grid[r][c+2] == piece and grid[r][c+3] == piece:
+                    return True
+        # Vertical
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                if grid[r][c] == piece and grid[r+1][c] == piece and grid[r+2][c] == piece and grid[r+3][c] == piece:
+                    return True
+        # Positive Diagonal
+        for c in range(COLS - 3):
+            for r in range(ROWS - 3):
+                if grid[r][c] == piece and grid[r+1][c+1] == piece and grid[r+2][c+2] == piece and grid[r+3][c+3] == piece:
+                    return True
+        # Negative Diagonal
+        for c in range(COLS - 3):
+            for r in range(3, ROWS):
+                if grid[r][c] == piece and grid[r-1][c+1] == piece and grid[r-2][c+2] == piece and grid[r-3][c+3] == piece:
+                    return True
+        return False
+
+    def evaluate_window(window, piece):
+        score = 0
+        opp_piece = -piece
+        if window.count(piece) == 4:
+            score += 1000
+        elif window.count(piece) == 3 and window.count(EMPTY) == 1:
+            score += 10
+        elif window.count(piece) == 2 and window.count(EMPTY) == 2:
+            score += 3
+
+        if window.count(opp_piece) == 3 and window.count(EMPTY) == 1:
+            score -= 80  # Block opponent's 3-in-a-row
+            
+        return score
+
+    def score_position(grid, piece):
+        score = 0
+        # Center column preference
+        center_array = [grid[r][COLS//2] for r in range(ROWS)]
+        center_count = center_array.count(piece)
+        score += center_count * 4
+
+        # Horizontal
+        for r in range(ROWS):
+            row_array = grid[r]
+            for c in range(COLS - 3):
+                window = row_array[c:c+WINDOW_LENGTH]
+                score += evaluate_window(window, piece)
+        # Vertical
+        for c in range(COLS):
+            col_array = [grid[r][c] for r in range(ROWS)]
+            for r in range(ROWS - 3):
+                window = col_array[r:r+WINDOW_LENGTH]
+                score += evaluate_window(window, piece)
+        # Diagonal Pos
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [grid[r+i][c+i] for i in range(WINDOW_LENGTH)]
+                score += evaluate_window(window, piece)
+        # Diagonal Neg
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [grid[r+3-i][c+i] for i in range(WINDOW_LENGTH)]
+                score += evaluate_window(window, piece)
+        return score
+
+    def is_terminal_node(grid):
+        return check_win(grid, PLAYER) or check_win(grid, OPPONENT) or len(get_valid_locations(grid)) == 0
+
+    def minimax(grid, depth, alpha, beta, maximizingPlayer):
+        valid_locations = get_valid_locations(grid)
+        terminal = is_terminal_node(grid)
+        if depth == 0 or terminal:
+            if terminal:
+                if check_win(grid, PLAYER):
+                    return (None, 10000000)
+                elif check_win(grid, OPPONENT):
+                    return (None, -10000000)
+                else: # Game over, no more valid moves
+                    return (None, 0)
+            else:
+                return (None, score_position(grid, PLAYER))
+
+        if maximizingPlayer:
+            value = -float('inf')
+            column = random.choice(valid_locations)
+            # Order moves to improve pruning (prioritize center)
+            ordered_locations = sorted(valid_locations, key=lambda x: abs(x - 3))
+            for col in ordered_locations:
+                row = get_next_open_row(grid, col)
+                b_copy = [r[:] for r in grid]
+                drop_piece(b_copy, row, col, PLAYER)
+                new_score = minimax(b_copy, depth - 1, alpha, beta, False)[1]
+                if new_score > value:
+                    value = new_score
+                    column = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return column, value
+
+        else: # Minimizing player
+            value = float('inf')
+            column = random.choice(valid_locations)
+            ordered_locations = sorted(valid_locations, key=lambda x: abs(x - 3))
+            for col in ordered_locations:
+                row = get_next_open_row(grid, col)
+                b_copy = [r[:] for r in grid]
+                drop_piece(b_copy, row, col, OPPONENT)
+                new_score = minimax(b_copy, depth - 1, alpha, beta, True)[1]
+                if new_score < value:
+                    value = new_score
+                    column = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return column, value
+
+    # Depths higher than 4 might exceed 1s depending on state complexity
+    col, _ = minimax(board, 4, -float('inf'), float('inf'), True)
+    return col if col is not None else random.choice(get_valid_locations(board))

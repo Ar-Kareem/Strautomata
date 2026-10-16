@@ -1,0 +1,152 @@
+
+
+Strategy:
+This policy employs a minimax algorithm with alpha-beta pruning to explore potential moves up to a depth of 4. It prioritizes immediate wins and blocks opponent wins. The evaluation function scores positions based on line potential (3-in-a-row > 2-in-a-row > 1-in-a-row), with additional weight given to controlling the center column for better board dominance. Moves are ordered to maximize alpha-beta efficiency, trying center columns first.
+
+<code>
+import copy
+
+# Precompute all possible winning lines
+LINES = []
+# horizontal
+for r in range(6):
+    for c in range(4):
+        LINES.append([(r, c), (r, c+1), (r, c+2), (r, c+3)])
+# vertical
+for r in range(3):
+    for c in range(7):
+        LINES.append([(r, c), (r+1, c), (r+2, c), (r+3, c)])
+# diagonal down-right
+for r in range(3):
+    for c in range(4):
+        LINES.append([(r, c), (r+1, c+1), (r+2, c+2), (r+3, c+3)])
+# diagonal up-right
+for r in range(3, 6):
+    for c in range(4):
+        LINES.append([(r, c), (r-1, c+1), (r-2, c+2), (r-3, c+3)])
+
+def get_valid_moves(board):
+    return [col for col in range(7) if board[0][col] == 0]
+
+def drop_disc(board, col, player):
+    new_board = [row[:] for row in board]
+    for r in range(5, -1, -1):
+        if new_board[r][col] == 0:
+            new_board[r][col] = player
+            break
+    return new_board
+
+def is_win(board, player):
+    for line in LINES:
+        a, b, c, d = line
+        if (board[a[0]][a[1]] == player and 
+            board[b[0]][b[1]] == player and 
+            board[c[0]][c[1]] == player and 
+            board[d[0]][d[1]] == player):
+            return True
+    return False
+
+def evaluate(board):
+    if is_win(board, 1):
+        return float('inf')
+    if is_win(board, -1):
+        return -float('inf')
+    
+    score = 0
+    # Center column preference
+    center_col = 3
+    for r in range(6):
+        if board[r][center_col] == 1:
+            score += 3
+        elif board[r][center_col] == -1:
+            score -= 3
+    
+    # Evaluate all lines
+    for line in LINES:
+        cells = [board[r][c] for (r, c) in line]
+        player_count = cells.count(1)
+        opp_count = cells.count(-1)
+        
+        if player_count > 0 and opp_count > 0:
+            continue  # Blocked line, no value
+        if player_count == 3:
+            score += 100
+        elif player_count == 2:
+            score += 10
+        elif player_count == 1:
+            score += 1
+        elif opp_count == 3:
+            score -= 100
+        elif opp_count == 2:
+            score -= 10
+        elif opp_count == 1:
+            score -= 1
+    
+    return score
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    valid_moves = get_valid_moves(board)
+    terminal = depth == 0 or not valid_moves or is_win(board, 1) or is_win(board, -1)
+    if terminal:
+        if is_win(board, 1):
+            return float('inf')
+        elif is_win(board, -1):
+            return -float('inf')
+        elif depth == 0 or not valid_moves:
+            return evaluate(board)
+    
+    if maximizing_player:
+        value = -float('inf')
+        move_order = [3,2,4,1,5,0,6]
+        ordered_moves = [m for m in move_order if m in valid_moves]
+        for col in ordered_moves:
+            child = drop_disc(board, col, 1)
+            value = max(value, minimax(child, depth-1, alpha, beta, False))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = float('inf')
+        move_order = [3,2,4,1,5,0,6]
+        ordered_moves = [m for m in move_order if m in valid_moves]
+        for col in ordered_moves:
+            child = drop_disc(board, col, -1)
+            value = min(value, minimax(child, depth-1, alpha, beta, True))
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+def policy(board):
+    valid_moves = get_valid_moves(board)
+    if not valid_moves:
+        return 0  # Shouldn't happen but safety
+    
+    # Check immediate win
+    for col in valid_moves:
+        new_board = drop_disc(board, col, 1)
+        if is_win(new_board, 1):
+            return col
+    
+    # Block opponent's immediate win
+    for col in valid_moves:
+        new_board = drop_disc(board, col, -1)
+        if is_win(new_board, -1):
+            return col
+    
+    # Use minimax with optimal move ordering
+    best_score = -float('inf')
+    best_move = valid_moves[0]
+    move_order = [3,2,4,1,5,0,6]
+    ordered_moves = [m for m in move_order if m in valid_moves]
+    
+    for col in ordered_moves:
+        new_board = drop_disc(board, col, 1)
+        score = minimax(new_board, depth=4, alpha=-float('inf'), beta=float('inf'), maximizing_player=False)
+        if score > best_score:
+            best_score = score
+            best_move = col
+    
+    return best_move
+</code>

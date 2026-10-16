@@ -1,0 +1,172 @@
+The strategy for this policy is a negamax search with alpha-beta pruning. The policy prioritizes moves that grant extra turns (landing in the store), capture opportunities, and strategic positioning. It uses dynamic depth adjustment based on remaining seeds, with deeper search in endgame positions. The evaluation function considers store difference, potential seeds in houses, extra turn opportunities, capture threats, and defensive positioning against opponent captures. Move ordering is used to improve alpha-beta pruning efficiency by examining promising moves first.
+
+<code>
+def policy(you, opponent):
+    """
+    Main policy function for Kalah (Mancala).
+    Uses negamax with alpha-beta pruning to find the best move.
+    """
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    
+    # Single move case
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Adjust search depth based on game state
+    total_seeds = sum(you[:6]) + sum(opponent[:6])
+    if total_seeds <= 12:
+        depth = 14
+    elif total_seeds <= 24:
+        depth = 10
+    else:
+        depth = 8
+    
+    # Order moves for better pruning
+    ordered = order_moves(you, opponent, legal_moves)
+    
+    best_move = ordered[0]
+    best_score = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    for move in ordered:
+        new_you, new_opp, extra = make_move(you, opponent, move)
+        
+        if extra:
+            score = negamax(new_you, new_opp, depth - 1, alpha, beta)
+        else:
+            score = -negamax(new_opp, new_you, depth - 1, -beta, -alpha)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+        
+        alpha = max(alpha, score)
+    
+    return best_move
+
+
+def order_moves(you, opponent, moves):
+    """Order moves by priority: extra turns, captures, then store contribution."""
+    scored = []
+    for m in moves:
+        n = you[m]
+        last = (m + n) % 13
+        
+        if last == 6:  # Extra turn
+            priority = 100000 + n
+        elif last < 6:  # Potential capture
+            empty = (last == m) or (you[last] == 0)
+            if empty and opponent[5 - last] > 0:
+                priority = 50000 + opponent[5 - last] * 100 + n
+            else:
+                priority = count_to_store(m, n) * 10 + n
+        else:
+            priority = count_to_store(m, n) * 10 + n
+        
+        scored.append((priority, m))
+    
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+
+def negamax(you, opponent, depth, alpha, beta):
+    """Negamax search with alpha-beta pruning."""
+    legal = [i for i in range(6) if you[i] > 0]
+    
+    # Terminal: no legal moves
+    if not legal:
+        return you[6] - (opponent[6] + sum(opponent[:6]))
+    
+    # Depth limit
+    if depth <= 0:
+        return evaluate(you, opponent)
+    
+    ordered = order_moves(you, opponent, legal)
+    best = -float('inf')
+    
+    for m in ordered:
+        ny, no, extra = make_move(you, opponent, m)
+        
+        if extra:
+            s = negamax(ny, no, depth - 1, alpha, beta)
+        else:
+            s = -negamax(no, ny, depth - 1, -beta, -alpha)
+        
+        best = max(best, s)
+        alpha = max(alpha, s)
+        
+        if alpha >= beta:
+            break
+    
+    return best
+
+
+def make_move(you, opponent, pit):
+    """Execute a move and return (new_you, new_opponent, extra_turn)."""
+    n = you[pit]
+    ny, no = list(you), list(opponent)
+    ny[pit] = 0
+    
+    pos = pit
+    for _ in range(n):
+        pos = (pos + 1) % 13
+        if pos < 6:
+            ny[pos] += 1
+        elif pos == 6:
+            ny[6] += 1
+        else:
+            no[pos - 7] += 1
+    
+    extra = (pos == 6)
+    
+    # Capture check
+    if not extra and pos < 6:
+        empty = (pos == pit) or (you[pos] == 0)
+        if empty and no[5 - pos] > 0:
+            ny[6] += ny[pos] + no[5 - pos]
+            ny[pos] = 0
+            no[5 - pos] = 0
+    
+    return ny, no, extra
+
+
+def count_to_store(pit, n):
+    """Count seeds that land in store when sowing n seeds from pit."""
+    if n <= 0:
+        return 0
+    j = (6 - pit) % 13
+    if j == 0:
+        j = 13
+    if n < j:
+        return 0
+    return 1 + (n - j) // 13
+
+
+def evaluate(you, opponent):
+    """Heuristic evaluation from perspective of 'you'."""
+    score = (you[6] - opponent[6]) * 10
+    score += sum(you[:6]) - sum(opponent[:6])
+    
+    # Extra turn and capture opportunities
+    for i in range(6):
+        if you[i] > 0:
+            last = (i + you[i]) % 13
+            if last == 6:
+                score += 3
+            elif last < 6:
+                empty = (last == i) or (you[last] == 0)
+                if empty and opponent[5 - last] > 0:
+                    score += opponent[5 - last]
+    
+    # Defensive: penalize opponent capture threats
+    for i in range(6):
+        if opponent[i] > 0:
+            last = (i + opponent[i]) % 13
+            if last < 6:
+                empty = (last == i) or (opponent[last] == 0)
+                if empty and you[5 - last] > 0:
+                    score -= you[5 - last] * 0.5
+    
+    return score
+</code>

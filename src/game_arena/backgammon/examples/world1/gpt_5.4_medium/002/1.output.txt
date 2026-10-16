@@ -1,0 +1,386 @@
+The strategy for this policy is:
+
+1. Enumerate all legal move sequences itself, so it always returns a legal move string.
+2. Respect key Backgammon constraints:
+   - bar checkers must enter first,
+   - blocked points cannot be entered,
+   - if both dice can be played, play both,
+   - if only one die can be played, prefer the higher die when required,
+   - standard bearing-off including oversize bear-off from the highest occupied home point.
+3. Score each legal resulting position with a practical heuristic:
+   - strongly reward bearing off and hitting,
+   - strongly penalize having men on the bar,
+   - prefer lower pip count,
+   - reward made points, home-board strength, anchors, and primes,
+   - penalize blots and directly exposed blots,
+   - switch emphasis slightly between race-like and contact-like positions.
+4. Choose the highest-scoring legal action, with deterministic tie-breaking.
+
+<code>
+from typing import List, Tuple, Optional
+
+# ---------- Basic utilities ----------
+
+def _src_to_token(src):
+    if src is None:
+        return "P"
+    if src == "B":
+        return "B"
+    return f"A{src}"
+
+def _action_str(order: str, src1, src2) -> str:
+    return f"{order}:{_src_to_token(src1)},{_src_to_token(src2)}"
+
+def _copy_pos(pos):
+    my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off = pos
+    return (my_pts[:], opp_pts[:], my_bar, opp_bar, my_off, opp_off)
+
+def _all_in_home(my_pts: List[int], my_bar: int) -> bool:
+    if my_bar != 0:
+        return False
+    for i in range(6, 24):
+        if my_pts[i] > 0:
+            return False
+    return True
+
+# ---------- Move application ----------
+
+def _apply_single(pos, die: int, src):
+    """
+    Apply one checker move using one die.
+    Returns new position tuple or None if illegal.
+    Position tuple:
+      (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+    """
+    my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off = _copy_pos(pos)
+
+    # Must enter from bar first.
+    if my_bar > 0:
+        if src != "B":
+            return None
+        dest = 24 - die
+        if dest < 0 or dest > 23:
+            return None
+        if opp_pts[dest] >= 2:
+            return None
+        my_bar -= 1
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+            opp_bar += 1
+        my_pts[dest] += 1
+        return (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+
+    # Normal board move.
+    if src == "B" or src is None:
+        return None
+    p = src
+    if p < 0 or p > 23 or my_pts[p] <= 0:
+        return None
+
+    dest = p - die
+
+    # Normal move on board.
+    if dest >= 0:
+        if opp_pts[dest] >= 2:
+            return None
+        my_pts[p] -= 1
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+            opp_bar += 1
+        my_pts[dest] += 1
+        return (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+
+    # Bearing off.
+    if not _all_in_home(my_pts, my_bar):
+        return None
+
+    exact = (die == p + 1)
+    oversize = (die > p + 1)
+
+    if exact:
+        my_pts[p] -= 1
+        my_off += 1
+        return (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+
+    if oversize:
+        # Allowed only if there are no checkers on higher home points.
+        for q in range(p + 1, 6):
+            if my_pts[q] > 0:
+                return None
+        my_pts[p] -= 1
+        my_off += 1
+        return (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+
+    return None
+
+def _legal_sources_for_die(pos, die: int):
+    my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off = pos
+    if my_bar > 0:
+        new_pos = _apply_single(pos, die, "B")
+        return [("B", new_pos)] if new_pos is not None else []
+
+    out = []
+    for p in range(24):
+        if my_pts[p] > 0:
+            new_pos = _apply_single(pos, die, p)
+            if new_pos is not None:
+                out.append((p, new_pos))
+    return out
+
+# ---------- Legal action generation ----------
+
+def _generate_actions_one_die(pos, die: int):
+    actions = []
+    for src1, pos1 in _legal_sources_for_die(pos, die):
+        s = _action_str("H", src1, None)
+        actions.append((s, pos1))
+    if not actions:
+        actions.append(("H:P,P", pos))
+    return actions
+
+def _generate_actions_two_dice(pos, d1: int, d2: int):
+    high = d1 if d1 >= d2 else d2
+    low = d2 if d1 >= d2 else d1
+
+    candidates = []
+
+    # Order H: high first, then low
+    for src1, pos1 in _legal_sources_for_die(pos, high):
+        second = _legal_sources_for_die(pos1, low)
+        if second:
+            for src2, pos2 in second:
+                candidates.append((_action_str("H", src1, src2), pos2, 2, "H"))
+        else:
+            candidates.append((_action_str("H", src1, None), pos1, 1, "H"))
+
+    # Order L: low first, then high
+    if low != high:
+        for src1, pos1 in _legal_sources_for_die(pos, low):
+            second = _legal_sources_for_die(pos1, high)
+            if second:
+                for src2, pos2 in second:
+                    candidates.append((_action_str("L", src1, src2), pos2, 2, "L"))
+            else:
+                candidates.append((_action_str("L", src1, None), pos1, 1, "L"))
+
+    if not candidates:
+        return [("H:P,P", pos)]
+
+    # Must play both if possible.
+    max_moves = 0
+    for _, _, nm, _ in candidates:
+        if nm > max_moves:
+            max_moves = nm
+    candidates = [c for c in candidates if c[2] == max_moves]
+
+    # If only one die can be played, must play the higher die when possible.
+    if max_moves == 1 and low != high:
+        any_high = False
+        for _, _, _, order in candidates:
+            if order == "H":
+                any_high = True
+                break
+        if any_high:
+            candidates = [c for c in candidates if c[3] == "H"]
+
+    # Deduplicate by action string.
+    dedup = {}
+    for s, p, _, _ in candidates:
+        dedup[s] = p
+    return [(s, dedup[s]) for s in dedup]
+
+def _legal_actions(state: dict):
+    my_pts = list(state["my_pts"])
+    opp_pts = list(state["opp_pts"])
+    my_bar = int(state["my_bar"])
+    opp_bar = int(state["opp_bar"])
+    my_off = int(state["my_off"])
+    opp_off = int(state["opp_off"])
+    dice = list(state["dice"])
+
+    pos = (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+
+    if len(dice) == 0:
+        return [("H:P,P", pos)]
+    if len(dice) == 1:
+        return _generate_actions_one_die(pos, int(dice[0]))
+    return _generate_actions_two_dice(pos, int(dice[0]), int(dice[1]))
+
+# ---------- Evaluation helpers ----------
+
+def _pip_count_my(my_pts, my_bar):
+    total = 25 * my_bar
+    for i, c in enumerate(my_pts):
+        total += (i + 1) * c
+    return total
+
+def _pip_count_opp(opp_pts, opp_bar):
+    total = 25 * opp_bar
+    for i, c in enumerate(opp_pts):
+        total += (24 - i) * c
+    return total
+
+def _count_made(points):
+    return sum(1 for c in points if c >= 2)
+
+def _count_made_range(points, lo, hi):
+    return sum(1 for i in range(lo, hi + 1) if points[i] >= 2)
+
+def _count_blots(points):
+    return sum(1 for c in points if c == 1)
+
+def _longest_prime(points):
+    best = 0
+    cur = 0
+    for c in points:
+        if c >= 2:
+            cur += 1
+            if cur > best:
+                best = cur
+        else:
+            cur = 0
+    return best
+
+def _stack_penalty(points):
+    # Penalize excessive stacking beyond a normal made point.
+    pen = 0
+    for c in points:
+        if c > 2:
+            pen += (c - 2)
+    return pen
+
+def _highest_occupied(points):
+    for i in range(23, -1, -1):
+        if points[i] > 0:
+            return i
+    return -1
+
+def _lowest_occupied(points):
+    for i in range(24):
+        if points[i] > 0:
+            return i
+    return 24
+
+def _my_blot_exposure(my_pts, opp_pts, opp_bar):
+    """
+    Rough count of how many direct one-die shots opponent has at my blots.
+    Opponent moves from low indices to high indices.
+    """
+    exposure = 0
+    for p in range(24):
+        if my_pts[p] != 1:
+            continue
+        threats = 0
+        start = p - 6
+        if start < 0:
+            start = 0
+        for q in range(start, p):
+            threats += opp_pts[q]
+        if p <= 5:
+            threats += opp_bar
+        exposure += min(threats, 4)
+    return exposure
+
+def _opp_blot_exposure(opp_pts, my_pts, my_bar):
+    """
+    Rough count of how many direct one-die shots I have at opponent blots.
+    I move from high indices to low indices.
+    """
+    exposure = 0
+    for q in range(24):
+        if opp_pts[q] != 1:
+            continue
+        threats = 0
+        end = q + 6
+        if end > 23:
+            end = 23
+        for p in range(q + 1, end + 1):
+            threats += my_pts[p]
+        if q >= 18:
+            threats += my_bar
+        exposure += min(threats, 4)
+    return exposure
+
+def _evaluate_pos(pos):
+    my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off = pos
+
+    my_pip = _pip_count_my(my_pts, my_bar)
+    opp_pip = _pip_count_opp(opp_pts, opp_bar)
+
+    my_made = _count_made(my_pts)
+    opp_made = _count_made(opp_pts)
+
+    my_home_made = _count_made_range(my_pts, 0, 5)
+    opp_home_made = _count_made_range(opp_pts, 18, 23)
+
+    my_anchors = _count_made_range(my_pts, 18, 23)
+    opp_anchors = _count_made_range(opp_pts, 0, 5)
+
+    my_blots = _count_blots(my_pts)
+    opp_blots = _count_blots(opp_pts)
+
+    my_prime = _longest_prime(my_pts)
+    opp_prime = _longest_prime(opp_pts)
+
+    my_stack = _stack_penalty(my_pts)
+    opp_stack = _stack_penalty(opp_pts)
+
+    my_exposed = _my_blot_exposure(my_pts, opp_pts, opp_bar)
+    opp_exposed = _opp_blot_exposure(opp_pts, my_pts, my_bar)
+
+    my_high = _highest_occupied(my_pts)
+    opp_low = _lowest_occupied(opp_pts)
+    contact = (my_bar > 0 or opp_bar > 0 or my_high > opp_low)
+
+    score = 0.0
+
+    # Most important terms
+    score += 240.0 * (my_off - opp_off)
+    score += 95.0 * (opp_bar - my_bar)
+    score += 1.6 * (opp_pip - my_pip)
+
+    # Structure
+    score += 7.0 * (my_made - opp_made)
+    score += 10.0 * (my_home_made - opp_home_made)
+    score += 5.0 * (my_anchors - opp_anchors)
+    score += 8.0 * (my_prime - opp_prime)
+    score += 3.0 * (opp_blots - my_blots)
+    score += 2.5 * (opp_exposed - my_exposed)
+    score += 1.2 * (opp_stack - my_stack)
+
+    if contact:
+        score += 18.0 * (opp_bar - my_bar)
+        score += 5.0 * (my_anchors - opp_anchors)
+        score += 4.0 * (my_prime - opp_prime)
+        score += 3.5 * (opp_exposed - my_exposed)
+    else:
+        # In pure races, pip count and efficient bearoff matter more.
+        score += 1.2 * (opp_pip - my_pip)
+        score += 14.0 * (my_off - opp_off)
+        score -= 2.0 * my_blots
+        score -= 1.5 * my_exposed
+
+    # Extra incentive to trap if opponent is on the bar.
+    score += 6.0 * my_home_made * opp_bar
+    # Extra penalty for being on the bar against a strong home board.
+    score -= 5.0 * opp_home_made * my_bar
+
+    return score
+
+# ---------- Public policy ----------
+
+def policy(state: dict) -> str:
+    actions = _legal_actions(state)
+
+    best_action = None
+    best_score = None
+
+    for action_str, pos in actions:
+        sc = _evaluate_pos(pos)
+        if best_score is None or sc > best_score or (sc == best_score and action_str < best_action):
+            best_score = sc
+            best_action = action_str
+
+    # Fallback should never be needed, but keep a safe legal-looking default.
+    return best_action if best_action is not None else "H:P,P"
+</code>

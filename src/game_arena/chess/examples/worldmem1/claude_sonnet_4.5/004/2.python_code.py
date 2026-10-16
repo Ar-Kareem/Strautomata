@@ -1,0 +1,204 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    import random
+    
+    # Piece values for material evaluation
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    # Center squares for positional bonuses
+    center_squares = {'d4', 'e4', 'd5', 'e5'}
+    extended_center = {'c3', 'd3', 'e3', 'f3', 'c4', 'd4', 'e4', 'f4',
+                       'c5', 'd5', 'e5', 'f5', 'c6', 'd6', 'e6', 'f6'}
+    
+    def get_square_from_move(move_str):
+        """Extract destination square from move string."""
+        # Remove check/mate symbols
+        move = move_str.replace('+', '').replace('#', '')
+        
+        # Handle castling
+        if move == 'O-O' or move == 'O-O-O':
+            return None
+        
+        # Handle pawn promotion
+        if '=' in move:
+            move = move.split('=')[0]
+        
+        # Remove capture symbol
+        move = move.replace('x', '')
+        
+        # Extract last 2 characters as destination square
+        if len(move) >= 2:
+            dest = move[-2:]
+            if dest[0] in 'abcdefgh' and dest[1] in '12345678':
+                return dest
+        return None
+    
+    def evaluate_position(pieces_dict, color):
+        """Evaluate position from perspective of given color."""
+        score = 0
+        my_color = 'w' if color == 'white' else 'b'
+        opp_color = 'b' if color == 'white' else 'w'
+        
+        # Material count
+        for square, piece in pieces_dict.items():
+            piece_type = piece[1]
+            piece_color = piece[0]
+            value = piece_values.get(piece_type, 0)
+            
+            if piece_color == my_color:
+                score += value
+                # Positional bonuses
+                if piece_type in ['N', 'B', 'Q'] and square in center_squares:
+                    score += 0.3
+                elif piece_type in ['P'] and square in center_squares:
+                    score += 0.2
+            else:
+                score -= value
+                if piece_type in ['N', 'B', 'Q'] and square in center_squares:
+                    score -= 0.3
+                elif piece_type in ['P'] and square in center_squares:
+                    score -= 0.2
+        
+        return score
+    
+    def parse_move(move_str, pieces_dict, color):
+        """Simulate a move and return resulting position."""
+        new_pieces = pieces_dict.copy()
+        my_color = 'w' if color == 'white' else 'b'
+        
+        # Handle castling
+        if move_str.startswith('O-O-O'):
+            # Queenside castling
+            if color == 'white':
+                if 'e1' in new_pieces and new_pieces['e1'] == 'wK':
+                    new_pieces['c1'] = 'wK'
+                    new_pieces['d1'] = 'wR'
+                    del new_pieces['e1']
+                    if 'a1' in new_pieces:
+                        del new_pieces['a1']
+            else:
+                if 'e8' in new_pieces and new_pieces['e8'] == 'bK':
+                    new_pieces['c8'] = 'bK'
+                    new_pieces['d8'] = 'bR'
+                    del new_pieces['e8']
+                    if 'a8' in new_pieces:
+                        del new_pieces['a8']
+            return new_pieces
+        elif move_str.startswith('O-O'):
+            # Kingside castling
+            if color == 'white':
+                if 'e1' in new_pieces and new_pieces['e1'] == 'wK':
+                    new_pieces['g1'] = 'wK'
+                    new_pieces['f1'] = 'wR'
+                    del new_pieces['e1']
+                    if 'h1' in new_pieces:
+                        del new_pieces['h1']
+            else:
+                if 'e8' in new_pieces and new_pieces['e8'] == 'bK':
+                    new_pieces['g8'] = 'bK'
+                    new_pieces['f8'] = 'bR'
+                    del new_pieces['e8']
+                    if 'h8' in new_pieces:
+                        del new_pieces['h8']
+            return new_pieces
+        
+        # Parse regular move
+        move = move_str.replace('+', '').replace('#', '')
+        promotion = None
+        if '=' in move:
+            parts = move.split('=')
+            move = parts[0]
+            promotion = parts[1]
+        
+        is_capture = 'x' in move
+        move = move.replace('x', '')
+        
+        # Get destination square
+        dest = move[-2:]
+        
+        # Determine piece type and source
+        if move[0].isupper():
+            piece_type = move[0]
+            disambig = move[1:-2] if len(move) > 3 else ''
+        else:
+            piece_type = 'P'
+            disambig = move[0] if len(move) > 2 else ''
+        
+        # Find the piece to move
+        moving_piece = None
+        source_square = None
+        for square, piece in new_pieces.items():
+            if piece == my_color + piece_type:
+                # Check disambiguation
+                if disambig:
+                    if disambig in 'abcdefgh' and square[0] != disambig:
+                        continue
+                    if disambig in '12345678' and square[1] != disambig:
+                        continue
+                # This is a candidate
+                if source_square is None:
+                    source_square = square
+                    moving_piece = piece
+        
+        if source_square and moving_piece:
+            # Execute move
+            if dest in new_pieces:
+                del new_pieces[dest]
+            new_pieces[dest] = moving_piece
+            del new_pieces[source_square]
+            
+            # Handle promotion
+            if promotion:
+                new_pieces[dest] = my_color + promotion
+        
+        return new_pieces
+    
+    # Check for immediate checkmate
+    for move in legal_moves:
+        if '#' in move:
+            return (move, memory)
+    
+    # Evaluate all moves
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        score = 0
+        
+        # Bonus for checks
+        if '+' in move or '#' in move:
+            score += 2
+        
+        # Bonus for captures
+        if 'x' in move:
+            score += 1
+            
+        # Bonus for castling (if not done yet)
+        if 'O-O' in move:
+            score += 1.5
+        
+        # Evaluate resulting position
+        try:
+            new_position = parse_move(move, pieces, to_play)
+            pos_score = evaluate_position(new_position, to_play)
+            score += pos_score
+        except:
+            # If parsing fails, use basic heuristic
+            pass
+        
+        # Bonus for center control
+        dest = get_square_from_move(move)
+        if dest:
+            if dest in center_squares:
+                score += 0.5
+            elif dest in extended_center:
+                score += 0.2
+        
+        # Random tiebreaker
+        score += random.random() * 0.01
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return (best_move, memory)

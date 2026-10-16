@@ -1,0 +1,135 @@
+To solve this problem of implementing a targeting policy for a Connect 4 game on a 6x7 grid, we need to determine the optimal move for the current player. The solution involves using a minimax algorithm with alpha-beta pruning to evaluate potential moves and their outcomes, ensuring both efficiency and effective decision-making.
+
+### Approach
+The approach involves the following key steps:
+1. **Check for a Winning Move**: Before diving into complex evaluations, check if the current move can immediately result in a win. This allows for an immediate return of the winning column if found.
+2. **Generate Possible Moves**: Identify all available columns where a disc can be dropped.
+3. **Minimax Algorithm with Alpha-Beta Pruning**: Recursively explore possible moves up to a certain depth (4 plies in our case), alternating between maximizing (current player's turn) and minimizing (opponent's turn) the score. This allows the algorithm to consider multiple future moves and choose the optimal one.
+4. **Evaluation Heuristic**: Quantify the board state by counting the number of possible winning lines (three of a kind that can be completed in the next move) for each player. This helps in assessing the potential moves beyond immediate wins and losses.
+
+### Solution Code
+```python
+def policy(board: list[list[int]]) -> int:
+    def is_winner(bd, player):
+        rows = 6
+        cols = 7
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        for r in range(rows):
+            for c in range(cols):
+                if bd[r][c] != player:
+                    continue
+                for dr, dc in directions:
+                    valid = all(
+                        0 <= r + i * dr < rows and
+                        0 <= c + i * dc < cols and
+                        bd[r + i * dr][c + i * dc] == player
+                        for i in range(4)
+                    )
+                    if valid:
+                        return True
+        return False
+
+    def min_heuristic(bd):
+        # Score based on number of our potential lines
+        our = sum(
+            1 for r in range(3) for c in range(7) for dr, dc in [(0,1),(1,0),(1,1),(1,-1)] if
+            0 <= r+3*dr < 6 and 0 <= c+3*dc <7 and
+            all(bd[r+i*dr][c+i*dc] == 1 for i in range(3)) and
+            bd[r+3*dr][c+3*dc] == 0
+        )
+        their = sum(
+            1 for r in range(3) for c in range(7) for dr, dc in [(0,1),(1,0),(1,1),(1,-1)] if
+            0 <= r+3*dr <6 and 0 <= c+3*dc <7 and
+            all(bd[r+i*dr][c+i*dc] == -1 for i in range(3)) and
+            bd[r+3*dr][c+3*dc] == 0
+        )
+        return our - their
+
+    def get_available_columns(bd):
+        available = []
+        for c in range(7):
+            for r in range(5, -1, -1):
+                if bd[r][c] == 0:
+                    available.append(c)
+                    break
+        return available
+
+    def make_move(bd, c, player):
+        new_bd = [row.copy() for row in bd]
+        for r in range(5, -1, -1):
+            if new_bd[r][c] == 0:
+                new_bd[r][c] = player
+                return new_bd
+        return new_bd  # Shouldn't reach here
+
+    alpha = -float('inf')
+    beta = float('inf')
+    best_col = -1
+
+    available_columns = get_available_columns(board)
+    if not available_columns:
+        return 0  # Handle full board, though unlikely in normal play
+
+    # Check for immediate winning move
+    for col in available_columns:
+        new_board = make_move(board, col, 1)
+        if is_winner(new_board, 1):
+            return col
+
+    # If no immediate win, proceed with minimax
+    depth = 4  # Adjust depth as needed for balance between speed and accuracy
+    for col in available_columns:
+        new_board = make_move(board, col, 1)
+        score = minimax(new_board, depth - 1, alpha, beta, False)
+        if score > alpha:
+            alpha, best_col = score, col
+        if alpha >= beta:
+            break
+
+    return best_col
+
+def minimax(bd, depth, alpha, beta, is_maximizing):
+    if is_winner(bd, 1):
+        return 1
+    if is_winner(bd, -1):
+        return -1
+    if depth == 0:
+        return min_heuristic(bd)
+    available_columns = get_available_columns(bd)
+    if not available_columns:
+        return 0  # Draw
+
+    if is_maximizing:
+        best_score = -float('inf')
+        for col in available_columns:
+            new_bd = make_move(bd, col, 1)
+            score = minimax(new_bd, depth - 1, alpha, beta, False)
+            best_score = max(best_score, score)
+            alpha = max(alpha, best_score)
+            if score == 1:
+                return 1  # Immediate win
+            if alpha >= beta:
+                break
+        return best_score
+    else:
+        best_score = float('inf')
+        for col in available_columns:
+            new_bd = make_move(bd, col, -1)
+            score = minimax(new_bd, depth - 1, alpha, beta, True)
+            best_score = min(best_score, score)
+            beta = min(beta, best_score)
+            if score == -1:
+                return -1  # Opponent's immediate win
+            if alpha >= beta:
+                break
+        return best_score
+```
+
+### Explanation
+1. **is_winner Function**: Checks if the current board state results in a win for the specified player by examining all possible lines of four in horizontal, vertical, and diagonal directions.
+2. **min_heuristic Function**: Evaluates the board state based on the number of potential lines (three discs in a row with an empty next spot) for both the current player and the opponent. The heuristic value is the difference between these counts, prioritizing our potential to win and penalizing the opponent's potential.
+3. **get_available_columns Function**: Identifies columns where a disc can be dropped by checking for the first empty cell from the bottom of each column.
+4. **make_move Function**: Creates a new board state by dropping a disc into the specified column at the lowest available row.
+5. **policy Function**: First checks for an immediate winning move. If none exists, it uses the minimax algorithm with alpha-beta pruning to evaluate potential moves, selecting the optimal column based on the evaluation of possible future moves up to a depth of 4 plies.
+
+This approach efficiently balances between speed and strategic depth, ensuring the AI makes strong moves while staying within the time constraints.

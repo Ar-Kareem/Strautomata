@@ -1,0 +1,167 @@
+To solve this simplified Blackjack-like game efficiently, we need to decide whether to **HIT** (draw another card) or **STAY** (stop drawing cards) based on a recursive strategy that weighs the **expected outcome** against an optimal opponent's play.
+
+The key idea is to build a **recursive decision tree**, where for each possible card I could draw, I simulate the result and determine the action that grants the highest probability of **me winning**, given that the opponent also plays optimally.
+
+---
+
+### Game Rules Recap
+
+- **Target**: A random integer between 10 and 30.
+- **Cards**: A single-suit deck with 13 distinct cards: `"A"`, `"2"` to `"10"`, and face cards `"J"`, `"Q"`, `"K"`.
+- **Card values**:
+  - Numeric cards (2-10): face value
+  - `"J"`, `"Q"`, `"K"`: 10
+  - `"A"`: 11 if the total is ≤ target, otherwise 1.
+- **Ways to Win**:
+  - If I bust → I lose immediately.
+  - If the opponent busts → I win.
+  - If neither busts, the player with the value **closest** to the target wins. A draw is handled as a 0.5 win probability for each side.
+
+---
+
+### Strategy Overview
+
+We define a recursive function `recurse` that evaluates whether the current player (either me or the opponent) should HIT or STAY and returns the **probability that I will win** starting from this hand. This function uses **memoization** to optimize repeated recursive calls.
+
+#### For My Turn (is_my_turn=True):
+
+- **Stay Option**: The opponent now plays their own game from an empty hand.
+- **Hit Option**: For each possible card not in my hand, recursively calculate the expected win probability from the new hand.
+
+Choose the option (HIT or STAY) that gives the **maximum chance of me winning**.
+
+#### For the Opponent’s Turn (is_my_turn=False):
+
+- The opponent tries to beat my hand.
+- They also have a recursive choice to **HIT** or **STAY**, and will choose the one that **maximizes their chance of winning**, which from my perspective, **minimizes my win chance**.
+
+The function calculates both outcomes (if the opponent stays now or hits) and returns the **minimal chance of me winning**.
+
+---
+
+### Card Value Calculation Function
+
+A helper function `compute_value` is used to evaluate a hand. It first treats Aces as 11, then adjusts for any Aces if the total exceeds the target, trying to bring it under the target by converting 11-Aces into 1s. If it's still over target after all Ace adjustments, the hand is **busted**.
+
+---
+
+### Code Implementation
+
+```python
+from functools import lru_cache
+
+def policy(hand: list[str], target: int) -> str:
+    all_cards = {"A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"}
+
+    def compute_value(hand_seq):
+        total = 0
+        aces = 0
+        for card in hand_seq:
+            if card == "A":
+                total += 11
+                aces += 1
+            elif card in ("J", "Q", "K", "10"):
+                total += 10
+            else:
+                total += int(card)
+
+        # Adjust for Aces where sum > target
+        while total > target and aces > 0:
+            total -= 10
+            aces -= 1
+
+        return total if total <= target else None
+
+    @lru_cache(maxsize=None)
+    def recurse(hand_tuple, is_my_turn, my_stayed_value):
+        hand_seq = list(hand_tuple)
+        current_hand_value = compute_value(hand_seq)
+
+        if current_hand_value is None:
+            # Busted; I lose if it's my turn, and I win if it's the opponent's turn
+            return 0.0 if is_my_turn else 1.0, "STAY"
+
+        if is_my_turn:
+            # My turn: decide whether to stay or hit
+            # Simulate opponent's turn with an empty hand
+            opp_hand = tuple(sorted([]))
+            opp_win_prob_stay, _ = recurse(opp_hand, is_my_turn=False, my_stayed_value=current_hand_value)
+
+            # Simulate hit: take each possible next card and recurse
+            available = [c for c in all_cards if c not in hand_seq]
+            if not available:
+                return opp_win_prob_stay, "STAY"
+
+            hit_win_probs = []
+            for card in available:
+                new_hand = tuple(sorted(hand_seq + [card]))
+                # Recree with the new hand, still my turn
+                p, _ = recurse(new_hand, is_my_turn=True, my_stayed_value=None)
+                hit_win_probs.append(p)
+
+            hit_avg_win_prob = sum(hit_win_probs) / len(available)
+
+            # Choose between staying or hitting
+            if opp_win_prob_stay >= hit_avg_win_prob:
+                return opp_win_prob_stay, "STAY"
+            else:
+                return hit_avg_win_prob, "HIT"
+
+        else:
+            # Opponent's turn: evaluate if staying or hitting gives the best chance for them to beat my_stayed_value
+            if my_stayed_value is None:
+                # Opponent has no information about me — impossible in this context
+                raise ValueError("my_stayed_value cannot be None when evaluating opponent's turn")
+
+            if not hand_tensor:
+                return 0.0, "HIT"
+
+            available = [c for c in all_cards if c not in hand_seq]
+            # If no cards: opponent must stay
+            if not available:
+                return (
+                    0.0 if current_hand_value > my_stayed_value else 1.0 if current_hand_value < my_stayed_value else 0.5,
+                    "STAY"
+                )
+
+            # Opponent's current value
+            current_value = current_hand_value
+
+            # Option 1: if opponent stops now
+            if current_value > my_stayed_value:
+                option_prob_stay = 0.0  # Opponent wins
+            elif current_value < my_stayed_value:
+                option_prob_stay = 1.0  # I win
+            else:
+                option_prob_stay = 0.5  # Draw
+
+            # Option 2: hit next card
+            hit_probs = []
+            for card in available:
+                new_hand = tuple(sorted(hand_seq + [card]))
+                p, _ = recurse(new_hand, is_my_turn=False, my_stayed_value=my_stayed_value)
+                hit_probs.append(p)
+            hit_avg_prob = sum(hit_probs) / len(available)
+
+            # Opponent picks the better option
+            if (1 - option_prob_stay) >= (1 - hit_avg_prob):
+                return option_prob_stay, "STAY"
+            else:
+                return hit_avg_prob, "HIT"
+
+    # Initial call
+    initial_hand = tuple(sorted(hand))
+    _, action = recurse(initial_hand, is_my_turn=True, my_stayed_value=None)
+    return action
+```
+
+---
+
+### Why This Strategy is Optimized
+
+- The recursive function `recurse` evaluates the **expected win rate** rather than guessing.
+- **Memoization** helps reduce redundant evaluations of the same hands.
+- The opponent is assumed to also play **optimally**, so when evaluating "stay", we simulate the best game the opponent can play from an empty hand.
+- The opponent is modeled to choose **HIT or STAY** based on which option gives them the greatest chance of beating me — this is easy to compute once we simulate all possible moves.
+
+This recursive and dynamic programming approach is suitable given the small deck size and manageable number of possible states when using memoization.

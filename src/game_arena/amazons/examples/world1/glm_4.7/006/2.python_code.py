@@ -1,0 +1,194 @@
+
+import numpy as np
+import time
+import sys
+
+# Constants
+EMPTY = 0
+MY_AMAZON = 1
+OPPONENT_AMAZON = 2
+ARROW = -1
+BOARD_SIZE = 6
+DIRECTIONS = [
+    (0, 1), (0, -1), (1, 0), (-1, 0),
+    (1, 1), (1, -1), (-1, 1), (-1, -1)
+]
+
+def count_moves(board, player):
+    """
+    Counts the total number of legal moves (move + arrow shot) for a given player.
+    Used as a proxy for mobility in the evaluation function.
+    """
+    count = 0
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r, c] == player:
+                # Iterate directions for Amazon move
+                for dr, dc in DIRECTIONS:
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr, nc] == EMPTY:
+                        # From landing spot (nr, nc), iterate directions for Arrow shot
+                        for adr, adc in DIRECTIONS:
+                            ar, ac = nr + adr, nc + adc
+                            while 0 <= ar < BOARD_SIZE and 0 <= ac < BOARD_SIZE:
+                                # Check if arrow target is blocked
+                                # Note: The start square (r,c) is vacated, so it counts as empty for the arrow path
+                                blocked = False
+                                if board[ar, ac] != EMPTY:
+                                    if (ar, ac) == (r, c):
+                                        pass # Valid path through vacated square
+                                    else:
+                                        blocked = True
+                                
+                                if not blocked:
+                                    count += 1
+                                    ar += adr
+                                    ac += adc
+                                else:
+                                    break
+                        nr += dr
+                        nc += dc
+    return count
+
+def get_legal_moves(board, player):
+    """
+    Generates a list of all legal moves for the player.
+    Each move is a tuple: ((from_r, from_c), (to_r, to_c), (arrow_r, arrow_c))
+    """
+    moves = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r, c] == player:
+                for dr, dc in DIRECTIONS:
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr, nc] == EMPTY:
+                        for adr, adc in DIRECTIONS:
+                            ar, ac = nr + adr, nc + adc
+                            while 0 <= ar < BOARD_SIZE and 0 <= ac < BOARD_SIZE:
+                                blocked = False
+                                if board[ar, ac] != EMPTY:
+                                    if (ar, ac) == (r, c):
+                                        pass
+                                    else:
+                                        blocked = True
+                                
+                                if not blocked:
+                                    moves.append(((r, c), (nr, nc), (ar, ac)))
+                                    ar += adr
+                                    ac += adc
+                                else:
+                                    break
+                        nr += dr
+                        nc += dc
+    return moves
+
+def evaluate(board):
+    """
+    Evaluation function: Mobility difference.
+    Returns (My Mobility - Opponent Mobility).
+    """
+    m1 = count_moves(board, MY_AMAZON)
+    m2 = count_moves(board, OPPONENT_AMAZON)
+    
+    # Terminal states
+    if m1 == 0: return -100000
+    if m2 == 0: return 100000
+    
+    return m1 - m2
+
+def search(board, depth, alpha, beta, maximizing_player):
+    if depth == 0:
+        return evaluate(board)
+    
+    player = MY_AMAZON if maximizing_player else OPPONENT_AMAZON
+    legal_moves = get_legal_moves(board, player)
+    
+    if not legal_moves:
+        return -100000 if maximizing_player else 100000
+
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in legal_moves:
+            (fr, fc), (tr, tc), (ar, ac) = move
+            new_board = board.copy()
+            new_board[fr, fc] = EMPTY
+            new_board[tr, tc] = MY_AMAZON
+            new_board[ar, ac] = ARROW
+            
+            eval_val = search(new_board, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_val)
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            (fr, fc), (tr, tc), (ar, ac) = move
+            new_board = board.copy()
+            new_board[fr, fc] = EMPTY
+            new_board[tr, tc] = OPPONENT_AMAZON
+            new_board[ar, ac] = ARROW
+            
+            eval_val = search(new_board, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_val)
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board):
+    """
+    Main policy function required by the API.
+    """
+    start_time = time.time()
+    
+    # Get all legal moves for myself
+    legal_moves = get_legal_moves(board, MY_AMAZON)
+    
+    # Fallback: If no moves, return empty string (should not happen per rules)
+    if not legal_moves:
+        return ""
+    
+    # Search parameters
+    depth = 3 # 3-ply search is safe for 1s in Python on 6x6
+    best_move = None
+    best_val = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Iterating through moves at root
+    # We shuffle to ensure variety if scores are equal
+    # (Using a simple pseudo-random iteration or just list order)
+    
+    for move in legal_moves:
+        # Time check to ensure we return within limits
+        if time.time() - start_time > 0.95:
+            break
+        
+        (fr, fc), (tr, tc), (ar, ac) = move
+        
+        # Simulate move
+        new_board = board.copy()
+        new_board[fr, fc] = EMPTY
+        new_board[tr, tc] = MY_AMAZON
+        new_board[ar, ac] = ARROW
+        
+        # Search with depth-1 since we made one move
+        val = search(new_board, depth - 1, alpha, beta, False)
+        
+        if val > best_val:
+            best_val = val
+            best_move = move
+        
+        alpha = max(alpha, val)
+    
+    # Fallback if loop didn't finish or no improvement found
+    if best_move is None:
+        best_move = legal_moves[0]
+        
+    r1, c1 = best_move[0]
+    r2, c2 = best_move[1]
+    r3, c3 = best_move[2]
+    
+    return f"{r1},{c1}:{r2},{c2}:{r3},{c3}"

@@ -1,0 +1,162 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    def is_valid_location(col):
+        return board[5][col] == 0 or 0 in [board[row][col] for row in range(5)]
+    
+    def get_valid_locations():
+        return [col for col in range(7) if is_valid_location(col)]
+    
+    def get_next_open_row(col):
+        for r in range(5, -1, -1):
+            if board[r][col] == 0:
+                return r
+        return None
+    
+    def drop_piece(col, player, b):
+        row = get_next_open_row(col)
+        b[row][col] = player
+        return b
+    
+    def is_winning_move(bo, player):
+        # Check horizontal
+        for r in range(6):
+            for c in range(4):
+                if all(bo[r][c+i] == player for i in range(4)):
+                    return True
+        # Check vertical
+        for c in range(7):
+            for r in range(3):
+                if all(bo[r+i][c] == player for i in range(4)):
+                    return True
+        # Check positive diagonal
+        for r in range(3):
+            for c in range(4):
+                if all(bo[r+i][c+i] == player for i in range(4)):
+                    return True
+        # Check negative diagonal
+        for r in range(3):
+            for c in range(4):
+                if all(bo[r+i][c+3-i] == player for i in range(4)):
+                    return True
+        return False
+    
+    def score_position(bo):
+        score = 0
+        
+        # Center column score
+        center_array = [bo[i][3] for i in range(6)]
+        center_count = center_array.count(1)
+        score += center_count * 3
+        center_count = center_array.count(-1)
+        score -= center_count * 3
+        
+        # Horizontal
+        for r in range(6):
+            for c in range(4):
+                window = [bo[r][c+i] for i in range(4)]
+                score += evaluate_window(window, 1)
+                score -= evaluate_window(window, -1)
+        
+        # Vertical
+        for c in range(7):
+            for r in range(3):
+                window = [bo[r+i][c] for i in range(4)]
+                score += evaluate_window(window, 1)
+                score -= evaluate_window(window, -1)
+        
+        # Positive diagonal
+        for r in range(3):
+            for c in range(4):
+                window = [bo[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window, 1)
+                score -= evaluate_window(window, -1)
+        
+        # Negative diagonal
+        for r in range(3):
+            for c in range(4):
+                window = [bo[r+i][c+3-i] for i in range(4)]
+                score += evaluate_window(window, 1)
+                score -= evaluate_window(window, -1)
+        
+        return score
+    
+    def evaluate_window(window, player):
+        opp = -player
+        if window.count(player) == 4:
+            return 100
+        elif window.count(player) == 3 and window.count(0) == 1:
+            return 10
+        elif window.count(player) == 2 and window.count(0) == 2:
+            return 3
+        elif window.count(opp) == 3 and window.count(0) == 1:
+            return -4
+        return 0
+    
+    def minimax(bo, depth, alpha, beta, maximizingPlayer):
+        valid = get_valid_locations_for_board(bo)
+        is_terminal = is_winning_move(bo, 1) or is_winning_move(bo, -1)
+        
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if is_winning_move(bo, 1):
+                    return (1e9, None)
+                elif is_winning_move(bo, -1):
+                    return (-1e9, None)
+                else: # Game is draw
+                    return (0, None)
+            else: # Depth is 0
+                return (score_position(bo), None)
+        
+        if maximizingPlayer:
+            value = -np.inf
+            best_col = valid[0]
+            for col in valid:
+                b_copy = [row[:] for row in bo]
+                b_copy = drop_piece(col, 1, b_copy)
+                new_score, _ = minimax(b_copy, depth-1, alpha, beta, False)
+                if new_score > value:
+                    value = new_score
+                    best_col = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return (value, best_col)
+        else: # Minimizing player
+            value = np.inf
+            best_col = valid[0]
+            for col in valid:
+                b_copy = [row[:] for row in bo]
+                b_copy = drop_piece(col, -1, b_copy)
+                new_score, _ = minimax(b_copy, depth-1, alpha, beta, True)
+                if new_score < value:
+                    value = new_score
+                    best_col = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return (value, best_col)
+    
+    def get_valid_locations_for_board(bo):
+        return [col for col in range(7) if 0 in [bo[row][col] for row in range(6)]]
+    
+    valid = get_valid_locations()
+    
+    # Check for immediate win
+    for col in valid:
+        b_copy = [row[:] for row in board]
+        b_copy = drop_piece(col, 1, b_copy)
+        if is_winning_move(b_copy, 1):
+            return col
+    
+    # Check for opponent's immediate win and block
+    for col in valid:
+        b_copy = [row[:] for row in board]
+        b_copy = drop_piece(col, -1, b_copy)
+        if is_winning_move(b_copy, -1):
+            return col
+    
+    # Use minimax with alpha-beta pruning
+    _, best_col = minimax(board, 4, -np.inf, np.inf, True)
+    return best_col

@@ -1,0 +1,406 @@
+<thinking>
+This is a simplified Blackjack-like game where I need to decide whether to HIT or STAY based on my current hand and a target score.
+
+Key observations:
+1. The deck has exactly 13 cards, one of each rank
+2. Cards are drawn sequentially (without replacement from my own deck)
+3. Target T is between 10 and 30
+4. Aces are worth 11 if hand value <= T, otherwise 1
+5. I bust if my hand value exceeds T
+6. If I don't bust, I want to get as close to T as possible
+
+Strategy considerations:
+- I need to compute the current hand value correctly (handling Aces)
+- I need to decide when to HIT vs STAY
+- Since cards are drawn without replacement, I can track which cards remain in my deck
+- The opponent is playing independently with their own deck
+
+For the decision logic:
+- If my current hand value is already at or very close to T, I should STAY
+- If my hand value is low, I should HIT
+- The key question is: what's the threshold?
+
+Since I don't know what cards I've already drawn (only my current hand), I need to figure out:
+1. What cards are in my hand
+2. What cards remain in my deck
+3. The probability distribution of the next card
+4. Whether hitting is worth the risk
+
+Let me think about a simpler heuristic approach:
+- Calculate current hand value
+- If current value >= some threshold relative to T, STAY
+- Otherwise HIT
+
+The threshold should depend on:
+- How close I am to T
+- The risk of busting
+- The expected value of the next card
+
+A reasonable heuristic:
+- If hand_value >= T - 5 (or some margin), STAY
+- Otherwise HIT
+
+But this doesn't account for the cards remaining. Let me think more carefully.
+
+Actually, I can compute:
+1. Current hand value
+2. Cards remaining in my deck (all 13 cards minus those in my hand)
+3. For each remaining card, would drawing it cause me to bust?
+4. Expected value of drawing
+
+Let me implement a more sophisticated approach:
+- Calculate current hand value
+- Determine remaining cards
+- Calculate the probability of busting if I HIT
+- Calculate the expected value if I HIT vs STAY
+- Make decision based on expected outcome
+
+Actually, since this is competitive, I should think about what maximizes my win probability, not just expected score.
+
+A simpler but effective approach:
+- If current_value >= T, STAY (already at or above target, don't risk busting)
+- If current_value >= T - 3, STAY (very close, don't risk)
+- Calculate bust probability: if more than 50% of remaining cards would bust me, STAY
+- Otherwise HIT
+
+Let me code this up:
+
+```python
+def policy(hand: list[str], target: int) -> str:
+    # Calculate hand value
+    def hand_value(cards, target):
+        value = 0
+        aces = 0
+        for card in cards:
+            if card == 'A':
+                aces += 1
+                value += 11
+            elif card in ['J', 'Q', 'K']:
+                value += 10
+            else:
+                value += int(card)
+        
+        # Adjust aces if needed
+        while value > target and aces > 0:
+            value -= 10
+            aces -= 1
+        
+        return value
+    
+    current_value = hand_value(hand, target)
+    
+    # If we've already met or exceeded target, STAY
+    if current_value >= target:
+        return "STAY"
+    
+    # Determine remaining cards
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = all_cards.copy()
+    for card in hand:
+        remaining.remove(card)
+    
+    # Calculate how many remaining cards would bust us
+    bust_count = 0
+    for card in remaining:
+        # Calculate value if we draw this card
+        new_hand = hand + [card]
+        new_value = hand_value(new_hand, target)
+        if new_value > target:
+            bust_count += 1
+    
+    # If more than 50% would bust, STAY
+    if bust_count > len(remaining) / 2:
+        return "STAY"
+    
+    # If we're very close to target, be conservative
+    if current_value >= target - 3:
+        return "STAY"
+    
+    return "HIT"
+```
+
+Wait, there's an issue with my hand_value function. The Ace rule is: "11 when hand value <= T, or 1 when hand value > T". This means I should count Aces as 11 first, then convert to 1 if the total exceeds T.
+
+Actually, re-reading: "A → 11 (when the hand value is <= T) or 1 (when the hand value is > T)". This is a bit ambiguous. I think it means that Aces are dynamically valued to keep the hand value optimal but not exceeding T if possible (similar to standard Blackjack).
+
+Let me refine the hand value calculation to handle Aces properly.
+
+```python
+def hand_value(cards, target):
+    value = 0
+    aces = 0
+    
+    for card in cards:
+        if card == 'A':
+            aces += 1
+            value += 11
+        elif card in ['J', 'Q', 'K']:
+            value += 10
+        else:
+            value += int(card)
+    
+    # Convert aces from 11 to 1 if needed to avoid exceeding target
+    while value > target and aces > 0:
+        value -= 10
+        aces -= 1
+    
+    return value
+```
+
+This should work correctly. Now for the strategy, let me think about expected value more carefully.
+
+Actually, a good strategy might be:
+1. Calculate expected hand value if we HIT
+2. If expected value after hitting is closer to T than current value (and bust probability is reasonable), HIT
+3. Otherwise STAY
+
+Let me implement a more refined version:
+
+```python
+def policy(hand: list[str], target: int) -> str:
+    def card_value(card, current_sum, target):
+        """Calculate the value a card would add to current sum."""
+        if card == 'A':
+            # Use 11 if it doesn't bust, otherwise 1
+            if current_sum + 11 <= target:
+                return 11
+            else:
+                return 1
+        elif card in ['J', 'Q', 'K']:
+            return 10
+        else:
+            return int(card)
+    
+    def hand_value(cards, target):
+        value = 0
+        aces = 0
+        
+        for card in cards:
+            if card == 'A':
+                aces += 1
+                value += 11
+            elif card in ['J', 'Q', 'K']:
+                value += 10
+            else:
+                value += int(card)
+        
+        while value > target and aces > 0:
+            value -= 10
+            aces -= 1
+        
+        return value
+    
+    current_value = hand_value(hand, target)
+    
+    # If we've busted or met target, STAY
+    if current_value >= target:
+        return "STAY"
+    
+    # Determine remaining cards
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = all_cards.copy()
+    for card in hand:
+        remaining.remove(card)
+    
+    if not remaining:
+        return "STAY"
+    
+    # Calculate expected outcome of hitting
+    bust_count = 0
+    total_new_value = 0
+    
+    for card in remaining:
+        new_hand = hand + [card]
+        new_value = hand_value(new_hand, target)
+        if new_value > target:
+            bust_count += 1
+        else:
+            total_new_value += new_value
+    
+    # If we would definitely bust, STAY
+    if bust_count == len(remaining):
+        return "STAY"
+    
+    # Calculate average value if we don't bust
+    non_bust_count = len(remaining) - bust_count
+    if non_bust_count > 0:
+        avg_non_bust_value = total_new_value / non_bust_count
+    else:
+        avg_non_bust_value = 0
+    
+    # Decision logic
+    bust_probability = bust_count / len(remaining)
+    
+    # If bust probability is too high, STAY
+    if bust_probability > 0.5:
+        return "STAY"
+    
+    # If we're close enough to target, STAY
+    if current_value >= target - 4:
+        return "STAY"
+    
+    return "HIT"
+```
+
+Hmm, let me think about this differently. The optimal strategy depends on what the opponent might do, but since we don't know their hand, maybe the best approach is to maximize our expected score while managing bust risk.
+
+A classic strategy for Blackjack-like games:
+- HIT if current_value < threshold
+- STAY if current_value >= threshold
+
+The threshold typically depends on the target. A common rule of thumb in Blackjack (where target is 21) is to stay on 17 or higher. Scaling this: threshold = target - 4 or target - 5.
+
+But we can be smarter by looking at remaining cards. Let me simplify:
+
+```python
+def policy(hand: list[str], target: int) -> str:
+    def hand_value(cards, target):
+        value = 0
+        aces = 0
+        
+        for card in cards:
+            if card == 'A':
+                aces += 1
+                value += 11
+            elif card in ['J', 'Q', 'K']:
+                value += 10
+            else:
+                value += int(card)
+        
+        while value > target and aces > 0:
+            value -= 10
+            aces -= 1
+        
+        return value
+    
+    current_value = hand_value(hand, target)
+    
+    # If at or above target, STAY
+    if current_value >= target:
+        return "STAY"
+    
+    # Get remaining cards
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = all_cards.copy()
+    for card in hand:
+        remaining.remove(card)
+    
+    if not remaining:
+        return "STAY"
+    
+    # Count how many remaining cards would cause bust
+    bust_count = 0
+    for card in remaining:
+        new_hand = hand + [card]
+        new_value = hand_value(new_hand, target)
+        if new_value > target:
+            bust_count += 1
+    
+    bust_prob = bust_count / len(remaining)
+    
+    # Conservative strategy: STAY if bust probability > 40%
+    # or if we're within 5 of target
+    if bust_prob > 0.4 or current_value >= target - 5:
+        return "STAY"
+    
+    return "HIT"
+```
+
+This seems reasonable. Let me test the logic mentally:
+- If target is 20 and I have 15, I'll HIT unless bust probability > 40%
+- If target is 20 and I have 16, I'll STAY (within 5 of target... wait, that's 4, not within 5)
+
+Let me adjust:
+
+```python
+if bust_prob > 0.4 or current_value > target - 5:
+    return "STAY"
+```
+
+Actually, >= target - 5 means if target is 20 and current is 15, we STAY. That might be too conservative.
+
+Let me think about the math more carefully. If I'm at value V and target is T:
+- Gap = T - V
+- If Gap is small, I should be conservative
+- If Gap is large, I should be aggressive
+
+Maybe:
+- Gap <= 3: STAY (too risky)
+- Gap > 3 and bust_prob < 0.5: HIT
+- Otherwise: STAY
+
+Let me refine once more:
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    """
+    Policy for simplified Blackjack-like game.
+    Returns "HIT" to draw another card, or "STAY" to stop drawing.
+    """
+    
+    def hand_value(cards, target):
+        """Calculate the value of a hand, handling Aces optimally."""
+        value = 0
+        aces = 0
+        
+        for card in cards:
+            if card == 'A':
+                aces += 1
+                value += 11
+            elif card in ['J', 'Q', 'K']:
+                value += 10
+            else:
+                value += int(card)
+        
+        # Convert Aces from 11 to 1 if needed to avoid exceeding target
+        while value > target and aces > 0:
+            value -= 10
+            aces -= 1
+        
+        return value
+    
+    current_value = hand_value(hand, target)
+    
+    # If we've reached or exceeded target, STAY
+    if current_value >= target:
+        return "STAY"
+    
+    # Determine which cards remain in our deck
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = all_cards.copy()
+    for card in hand:
+        remaining.remove(card)
+    
+    # If no cards left, STAY
+    if not remaining:
+        return "STAY"
+    
+    # Calculate how many remaining cards would cause us to bust
+    bust_count = 0
+    for card in remaining:
+        new_hand = hand + [card]
+        new_value = hand_value(new_hand, target)
+        if new_value > target:
+            bust_count += 1
+    
+    # Calculate bust probability
+    bust_prob = bust_count / len(remaining)
+    
+    # Calculate gap to target
+    gap = target - current_value
+    
+    # Decision logic:
+    # - If gap is small (<=3), be very conservative
+    # - If bust probability is high (>50%), STAY
+    # - If gap is moderate and bust prob is reasonable, HIT
+    
+    if gap <= 3:
+        return "STAY"
+    
+    if bust_prob > 0.5:
+        return "STAY"
+    
+    # For larger gaps with acceptable risk, HIT
+    return "HIT"
+</code>

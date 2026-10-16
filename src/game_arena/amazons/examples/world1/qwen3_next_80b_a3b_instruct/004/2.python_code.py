@@ -1,0 +1,283 @@
+
+import numpy as np
+import time
+from copy import deepcopy
+
+def policy(board):
+    """
+    Implements a minimax with alpha-beta pruning and heuristic evaluation
+    to select the best move on a 6x6 Amazons board.
+    """
+    # Start timing to respect 1-second limit
+    start_time = time.time()
+    
+    # Find all my amazons (player 1)
+    my_amazons = np.where(board == 1)
+    my_positions = list(zip(my_amazons[0], my_amazons[1]))
+    
+    # If no amazons found (shouldn't happen), return dummy move
+    if len(my_positions) == 0:
+        return "0,0:0,1:0,2"  # This should not occur in valid games
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(board, my_positions)
+    
+    # If no legal moves (shouldn't happen as per spec), return dummy
+    if len(legal_moves) == 0:
+        return "0,0:0,1:0,2"
+    
+    # For time efficiency, use iterative deepening
+    best_move = legal_moves[0]
+    max_depth = 3  # Start with depth 3, try to go deeper if time allows
+    
+    # Try iterative deepening
+    for depth in range(1, max_depth + 1):
+        if time.time() - start_time > 0.8:  # Leave buffer
+            break
+            
+        # Alpha-beta search
+        alpha = -float('inf')
+        beta = float('inf')
+        _, move = alphabeta(board, depth, alpha, beta, True, start_time, my_positions)
+        
+        if move is not None:
+            best_move = move
+    
+    return best_move
+
+def generate_legal_moves(board, my_positions):
+    """
+    Generate all legal moves for player 1 (my amazons).
+    Each move is a string: "from_row,from_col:to_row,to_col:arrow_row,arrow_col"
+    """
+    moves = []
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    for from_r, from_c in my_positions:
+        # For each possible direction, try all distances (until blocked)
+        for dr, dc in directions:
+            for dist in range(1, 6):  # Max 5 squares on 6x6 board
+                to_r, to_c = from_r + dr * dist, from_c + dc * dist
+                
+                # Check bounds
+                if not (0 <= to_r <= 5 and 0 <= to_c <= 5):
+                    break
+                    
+                # Check if target square is empty (must be 0)
+                if board[to_r][to_c] != 0:
+                    break
+                
+                # Now try shooting arrows from (to_r, to_c) in all 8 directions
+                for adr, adc in directions:
+                    for adist in range(1, 6):
+                        arrow_r, arrow_c = to_r + adr * adist, to_c + adc * adist
+                        
+                        # Check bounds
+                        if not (0 <= arrow_r <= 5 and 0 <= arrow_c <= 5):
+                            break
+                        
+                        # Check if arrow path is clear
+                        # The path from (to_r, to_c) to (arrow_r, arrow_c) must be clear
+                        # We need to check intermediate squares
+                        blocked = False
+                        for step in range(1, adist + 1):
+                            check_r, check_c = to_r + adr * step, to_c + adc * step
+                            # We can pass through the vacated 'from' square (from_r, from_c)
+                            # but not other blockers: 1 (other amazons), 2 (opponent), -1 (arrows)
+                            
+                            # Skip checking the original 'from' position (it's now empty)
+                            if (check_r, check_c) == (from_r, from_c):
+                                continue
+                                
+                            if board[check_r][check_c] != 0:  # blocked by 2 or -1
+                                blocked = True
+                                break
+                        
+                        if not blocked:
+                            # This is a legal move
+                            move_str = f"{from_r},{from_c}:{to_r},{to_c}:{arrow_r},{arrow_c}"
+                            moves.append(move_str)
+    
+    return moves
+
+def alphabeta(board, depth, alpha, beta, maximizing_player, start_time, my_positions):
+    """
+    Alpha-beta pruning with depth-limited search.
+    Returns (score, best_move)
+    """
+    if time.time() - start_time > 0.85:  # Leave safety margin
+        return evaluate_board(board), None
+    
+    # Generate all legal moves for current player
+    if maximizing_player:
+        current_player = 1
+        positions = my_positions
+    else:
+        current_player = 2
+        # Find opponent's amazons
+        opp_amazons = np.where(board == 2)
+        positions = list(zip(opp_amazons[0], opp_amazons[1]))
+    
+    legal_moves = generate_legal_moves(board, positions)
+    
+    # Terminal state: no moves available
+    if len(legal_moves) == 0 or depth == 0:
+        return evaluate_board(board), None
+    
+    # Sort moves for better pruning (move ordering)
+    # Prioritize moves that give good evaluation or kill opponent mobility
+    # This is crucial for alpha-beta efficiency
+    move_scores = []
+    for move in legal_moves:
+        # Try to predict the effect of this move
+        new_board = apply_move(board, move)
+        score = evaluate_board(new_board)
+        move_scores.append((score, move))
+    
+    # Sort by score (descending for max, ascending for min)
+    if maximizing_player:
+        move_scores.sort(key=lambda x: x[0], reverse=True)
+    else:
+        move_scores.sort(key=lambda x: x[0])
+    
+    # Extract sorted moves
+    sorted_moves = [ms[1] for ms in move_scores]
+    
+    # Minimax with alpha-beta
+    if maximizing_player:
+        max_eval = -float('inf')
+        best_move = None
+        
+        for move in sorted_moves:
+            new_board = apply_move(board, move)
+            eval_score, _ = alphabeta(new_board, depth - 1, alpha, beta, False, start_time, my_positions)
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # Beta cutoff
+        
+        return max_eval, best_move
+    
+    else:  # Minimizing player
+        min_eval = float('inf')
+        best_move = None
+        
+        for move in sorted_moves:
+            new_board = apply_move(board, move)
+            eval_score, _ = alphabeta(new_board, depth - 1, alpha, beta, True, start_time, my_positions)
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # Alpha cutoff
+        
+        return min_eval, best_move
+
+def evaluate_board(board):
+    """
+    Heuristic evaluation function for board state.
+    Returns a score where higher is better for player 1.
+    """
+    # Count amazons
+    my_amazons = np.sum(board == 1)
+    opp_amazons = np.sum(board == 2)
+    
+    if my_amazons == 0:
+        return -10000  # Lost
+    if opp_amazons == 0:
+        return 10000   # Won
+    
+    # Calculate mobility (number of legal moves for each player)
+    my_positions = list(zip(*np.where(board == 1)))
+    opp_positions = list(zip(*np.where(board == 2)))
+    
+    my_mobility = len(generate_legal_moves(board, my_positions))
+    opp_mobility = len(generate_legal_moves(board, opp_positions))
+    
+    # Mobility advantage - very important in Amazons
+    mobility_score = my_mobility - opp_mobality
+    
+    # Positional control: number of reachable squares from each amazon
+    my_control = 0
+    opp_control = 0
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    for r, c in my_positions:
+        for dr, dc in directions:
+            for dist in range(1, 6):
+                nr, nc = r + dr * dist, c + dc * dist
+                if not (0 <= nr <= 5 and 0 <= nc <= 5):
+                    break
+                if board[nr][nc] != 0:  # Blocked
+                    break
+                # Count reachable empty squares
+                my_control += 1
+    
+    for r, c in opp_positions:
+        for dr, dc in directions:
+            for dist in range(1, 6):
+                nr, nc = r + dr * dist, c + dc * dist
+                if not (0 <= nr <= 5 and 0 <= nc <= 5):
+                    break
+                if board[nr][nc] != 0:  # Blocked
+                    break
+                opp_control += 1
+    
+    control_score = my_control - opp_control
+    
+    # Center control bonus
+    center_bonus = 0
+    center_region = [(2,2), (2,3), (3,2), (3,3)]
+    
+    for r, c in my_positions:
+        if (r, c) in center_region:
+            center_bonus += 1
+    
+    for r, c in opp_positions:
+        if (r, c) in center_region:
+            center_bonus -= 1
+    
+    # Combine scores with weights
+    # Mobility is most important
+    total_score = (
+        3 * mobility_score + 
+        1.5 * control_score + 
+        2 * center_bonus
+    )
+    
+    # Small random noise for branching (alternative: remove for deterministic)
+    # This is generally not recommended in competitive settings as it makes it non-deterministic
+    
+    return total_score
+
+def apply_move(board, move_str):
+    """
+    Apply a move string to a copy of the board and return the new board.
+    Format: "from_row,from_col:to_row,to_col:arrow_row,arrow_col"
+    """
+    new_board = deepcopy(board)
+    
+    parts = move_str.split(':')
+    from_pos = parts[0].split(',')
+    to_pos = parts[1].split(',')
+    arrow_pos = parts[2].split(',')
+    
+    from_r, from_c = int(from_pos[0]), int(from_pos[1])
+    to_r, to_c = int(to_pos[0]), int(to_pos[1])
+    arrow_r, arrow_c = int(arrow_pos[0]), int(arrow_pos[1])
+    
+    # Move amazon from "from" to "to"
+    new_board[from_r][from_c] = 0  # vacate
+    new_board[to_r][to_c] = 1      # place amazon
+    
+    # Shoot arrow
+    new_board[arrow_r][arrow_c] = -1
+    
+    return new_board

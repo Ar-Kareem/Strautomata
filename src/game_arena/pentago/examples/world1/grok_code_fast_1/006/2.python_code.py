@@ -1,0 +1,138 @@
+
+import numpy as np
+import random
+import time
+
+# Define quadrants as [(start_row, start_col) for quad 0,1,2,3] - 0-indexed
+QUADS = [
+    (0, 0), (0, 3), (3, 0), (3, 3)
+]
+
+# Directions for rotation: L (anticlockwise 90), R (clockwise 90)
+def rotate_quad(board, quad, dir):
+    sr, sc = QUADS[quad]
+    sub = board[sr:sr+3, sc:sc+3].copy()
+    if dir == 'L':
+        sub = np.rot90(sub, 1)  # rot90 with k=1 is anticlockwise
+    elif dir == 'R':
+        sub = np.rot90(sub, -1)  # k=-1 is clockwise
+    board[sr:sr+3, sc:sc+3] = sub
+    return board
+
+def is_full(board):
+    return np.all(board != 0)
+
+def check_win(board, player):
+    # Check rows, columns, diagonals for 5+ in a row
+    for r in range(6):
+        for c in range(2):  # up to 4, since 5 long
+            if np.all(board[r, c:c+5] == player):
+                return True
+    for c in range(6):
+        for r in range(2):
+            if np.all(board[r:r+5, c] == player):
+                return True
+    # Diagonals
+    for r in range(2):
+        for c in range(2):
+            if np.all(np.diag(board[r:r+5, c:c+5]) == player):
+                return True
+            if np.all(np.diag(np.fliplr(board[r:r+5, c:c+5])) == player):
+                return True
+    return False
+
+def get_legal_moves(board, player):
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 0:
+                for q in range(4):
+                    for d in ['L', 'R']:
+                        moves.append((r, c, q, d))
+    return moves
+
+def place_and_rotate(board, r, c, q, d, player):
+    new_board = board.copy()
+    new_board[r, c] = player
+    rotate_quad(new_board, q, d)
+    return new_board
+
+def evaluate_board(board):
+    score = 0
+    for p, val in [(-1, -1), (1, 1)]:  # -1 for opponent, 1 for self
+        if check_win(board, p):
+            return 10000 * val
+        # Count 4-in-a-row
+        for r in range(6):
+            for c in range(3):
+                line = board[r, c:c+4]
+                if np.count_nonzero(line == p) == 4 and np.count_nonzero(line == -p) == 0:
+                    score += 100 * val
+        for c in range(6):
+            for r in range(3):
+                line = board[r:r+4, c]
+                if np.count_nonzero(line == p) == 4 and np.count_nonzero(line == -p) == 0:
+                    score += 100 * val
+        for r in range(3):
+            for c in range(3):
+                diag = np.diag(board[r:r+4, c:c+4])
+                if np.count_nonzero(diag == p) == 4 and np.count_nonzero(diag == -p) == 0:
+                    score += 100 * val
+                diag_f = np.diag(np.fliplr(board[r:r+4, c:c+4]))
+                if np.count_nonzero(diag_f == p) == 4 and np.count_nonzero(diag_f == -p) == 0:
+                    score += 100 * val
+        # Central control bonus
+        center = board[2:4, 2:4]
+        score += val * 10 * np.count_nonzero(center == p)
+    return score
+
+def minimax(board, depth, alpha, beta, maximizing, player):
+    if depth == 0 or is_full(board):
+        return evaluate_board(board), None
+    if maximizing:
+        max_eval = -np.inf
+        best_move = None
+        for move in get_legal_moves(board, player):
+            new_board = place_and_rotate(board, *move, player)
+            eval, _ = minimax(new_board, depth-1, alpha, beta, False, -player)
+            if eval > max_eval:
+                max_eval = eval
+                best_move = move
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = np.inf
+        for move in get_legal_moves(board, -player):
+            new_board = place_and_rotate(board, *move, -player)
+            eval, _ = minimax(new_board, depth-1, alpha, beta, True, player)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval, None
+
+def policy(you, opponent):
+    # Convert to numpy, 1 for you, -1 for opponent, 0 empty
+    board = np.array([[1 if you[i][j] else -1 if opponent[i][j] else 0 for j in range(6)] for i in range(6)])
+    player = 1  # We are player 1
+    # Shuffle moves for variety
+    random.shuffle(get_legal_moves(board, player).__dict__)  # Hack to shuffle in place, wait no - can't modify list here, actually modify inside
+    moves = get_legal_moves(board, player)
+    random.shuffle(moves)
+    # Use minimax
+    try:
+        _, best_move = minimax(board, 3, -np.inf, np.inf, True, player)
+    except:
+        # Fallback: greedy, place in center if possible
+        for r, c in [(3,3), (2,2), (2,3), (3,2)]:  # 1-indexed? No, 0-indexed
+            if board[r, c] == 0:
+                best_move = (r, c, 0, 'L')  # default quad and dir
+                break
+        else:
+            for move in moves:
+                best_move = move
+                break
+    r, c, q, d = best_move
+    return f"{r+1},{c+1},{q},{d}"

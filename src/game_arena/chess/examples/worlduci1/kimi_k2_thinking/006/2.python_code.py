@@ -1,0 +1,446 @@
+
+import time
+
+PIECE_VALUES = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+MATE = 100000
+MAX_DEPTH = 4          # maximum search depth (plies)
+TIME_LIMIT = 0.9        # seconds
+
+# ----- board representation -------------------------------------------------
+files = 'abcdefgh'
+ranks = '12345678'
+square_to_idx = {}
+idx_to_square = {}
+for r in range(8):
+    for f in range(8):
+        sq = files[f] + ranks[r]
+        idx = r * 8 + f
+        square_to_idx[sq] = idx
+        idx_to_square[idx] = sq
+
+# ----- pre‑computed move tables for knights and kings -----------------------
+knight_move_list = [[] for _ in range(64)]
+king_move_list   = [[] for _ in range(64)]
+for idx in range(64):
+    f = idx % 8
+    r = idx // 8
+    # knight
+    for df, dr in [(2, 1), (1, 2), (-1, 2), (-2, 1),
+                   (-2, -1), (-1, -2), (1, -2), (2, -1)]:
+        tf = f + df
+        tr = r + dr
+        if 0 <= tf < 8 and 0 <= tr < 8:
+            knight_move_list[idx].append(tr * 8 + tf)
+    # king
+    for df, dr in [(1, 0), (1, 1), (0, 1), (-1, 1),
+                   (-1, 0), (-1, -1), (0, -1), (1, -1)]:
+        tf = f + df
+        tr = r + dr
+        if 0 <= tf < 8 and 0 <= tr < 8:
+            king_move_list[idx].append(tr * 8 + tf)
+
+# ----- helpers --------------------------------------------------------------
+def opponent(side: str) -> str:
+    return 'b' if side == 'w' else 'w'
+
+def make_move_string(from_sq: str, to_sq: str, promotion: str = None) -> str:
+    if promotion:
+        return from_sq + to_sq + promotion.lower()
+    return from_sq + to_sq
+
+def apply_move(board: dict, move: str) -> dict:
+    """Return a new board after playing *move* (UCI format)."""
+    from_sq = move[:2]
+    to_sq   = move[2:4]
+    promotion = move[4] if len(move) == 5 else None
+    new_board = dict(board)               # shallow copy
+    piece = new_board.pop(from_sq)
+
+    if promotion:
+        new_board[to_sq] = piece[0] + promotion.upper()
+    else:
+        new_board[to_sq] = piece
+
+    # castling – move the rook if the king moved two files
+    if piece[1] == 'K' and abs(ord(from_sq[0]) - ord(to_sq[0])) == 2:
+        if to_sq[0] == 'g':          # kingside
+            rook_from = 'h' + from_sq[1]
+            rook_to   = 'f' + from_sq[1]
+        else:                         # queenside
+            rook_from = 'a' + from_sq[1]
+            rook_to   = 'd' + from_sq[1]
+        rook_piece = new_board.pop(rook_from)
+        new_board[rook_to] = rook_piece
+    return new_board
+
+# ----- attack / check utilities ---------------------------------------------
+def pawn_attacks_square(piece: str, from_idx: int, target_idx: int) -> bool:
+    side = piece[0]
+    from_file = from_idx % 8
+    from_rank = from_idx // 8
+    target_file = target_idx % 8
+    target_rank = target_idx // 8
+    if side == 'w':
+        return target_rank == from_rank + 1 and abs(target_file - from_file) == 1
+    else:
+        return target_rank == from_rank - 1 and abs(target_file - from_file) == 1
+
+def can_piece_attack(piece: str, from_idx: int, to_idx: int,
+                     board: dict) -> bool:
+    """Test whether *piece* can attack *to_idx* (ignoring the target square)."""
+    ptype = piece[1]
+    ff = from_idx % 8
+    fr = from_idx // 8
+    tf = to_idx % 8
+    tr = to_idx // 8
+    df = tf - ff
+    dr = tr - fr
+
+    if ptype == 'N':
+        return (abs(df), abs(dr)) in [(2, 1), (1, 2)]
+    if ptype == 'K':
+        return max(abs(df), abs(dr)) == 1
+
+    if ptype == 'B' and abs(df) == abs(dr):
+        step_f = 1 if df > 0 else -1
+        step_r = 1 if dr > 0 else -1
+        f = ff + step_f
+        r = fr + step_r
+        while f != tf and r != tr:
+            inter_idx = r * 8 + f
+            if idx_to_square[inter_idx] in board:
+                return False
+            f += step_f
+            r += step_r
+        return True
+
+    if ptype == 'R' and (df == 0 or dr == 0):
+        step_f = 0 if df == 0 else (1 if df > 0 else -1)
+        step_r = 0 if dr == 0 else (1 if dr > 0 else -1)
+        f = ff + step_f
+        r = fr + step_r
+        while f != tf or r != tr:
+            inter_idx = r * 8 + f
+            if idx_to_square[inter_idx] in board:
+                return False
+            f += step_f
+            r += step_r
+        return True
+
+    if ptype == 'Q':
+        # diagonal
+        if abs(df) == abs(dr):
+            step_f = 1 if df > 0 else -1
+            step_r = 1 if dr > 0 else -1
+            f = ff + step_f
+            r = fr + step_r
+            while f != tf and r != tr:
+                inter_idx = r * 8 + f
+                if idx_to_square[inter_idx] in board:
+                    return False
+                f += step_f
+                r += step_r
+            return True
+        # orthogonal
+        if df == 0 or dr == 0:
+            step_f = 0 if df == 0 else (1 if df > 0 else -1)
+            step_r = 0 if dr == 0 else (1 if dr > 0 else -1)
+            f = ff + step_f
+            r = fr + step_r
+            while f != tf or r != tr:
+                inter_idx = r * 8 + f
+                if idx_to_square[inter_idx] in board:
+                    return False
+                f += step_f
+                r += step_r
+            return True
+        return False
+
+    return False
+
+def is_square_attacked(board: dict, target_idx: int, attacker: str) -> bool:
+    """Return True if any piece of *attacker* side attacks *target_idx*."""
+    for sq, pc in board.items():
+        if pc[0] != attacker:
+            continue
+        from_idx = square_to_idx[sq]
+        pt = pc[1]
+        if pt == 'P':
+            if pawn_attacks_square(pc, from_idx, target_idx):
+                return True
+        elif pt == 'N':
+            if target_idx in knight_move_list[from_idx]:
+                return True
+        elif pt == 'K':
+            if target_idx in king_move_list[from_idx]:
+                return True
+        else:
+            if can_piece_attack(pc, from_idx, target_idx, board):
+                return True
+    return False
+
+def is_king_in_check(board: dict, side: str) -> bool:
+    king_sq = None
+    for sq, pc in board.items():
+        if pc == side + 'K':
+            king_sq = sq
+            break
+    if king_sq is None:
+        return False
+    king_idx = square_to_idx[king_sq]
+    return is_square_attacked(board, king_idx, opponent(side))
+
+# ----- move generation -------------------------------------------------------
+def pawn_moves(board: dict, square: str, side: str):
+    moves = []
+    idx = square_to_idx[square]
+    f = idx % 8
+    r = idx // 8
+    step = 8 if side == 'w' else -8
+    # one step forward
+    fwd = idx + step
+    if 0 <= fwd < 64:
+        fwd_sq = idx_to_square[fwd]
+        if fwd_sq not in board:
+            # promotion?
+            if (side == 'w' and r == 6) or (side == 'b' and r == 1):
+                for prom in ('q', 'r', 'b', 'n'):
+                    moves.append(make_move_string(square, fwd_sq, prom))
+            else:
+                moves.append(make_move_string(square, fwd_sq))
+            # two squares from start
+            if (side == 'w' and r == 1) or (side == 'b' and r == 6):
+                fwd2 = idx + 2 * step
+                if fwd2 < 64:
+                    fwd2_sq = idx_to_square[fwd2]
+                    if fwd2_sq not in board:
+                        moves.append(make_move_string(square, fwd2_sq))
+    # captures
+    for df in (-1, 1):
+        cap_f = f + df
+        cap_r = r + (1 if side == 'w' else -1)
+        if 0 <= cap_f < 8 and 0 <= cap_r < 8:
+            cap_idx = cap_r * 8 + cap_f
+            cap_sq = idx_to_square[cap_idx]
+            cap_pc = board.get(cap_sq)
+            if cap_pc is not None and cap_pc[0] != side:
+                if (side == 'w' and r == 6) or (side == 'b' and r == 1):
+                    for prom in ('q', 'r', 'b', 'n'):
+                        moves.append(make_move_string(square, cap_sq, prom))
+                else:
+                    moves.append(make_move_string(square, cap_sq))
+    return moves
+
+def knight_moves(board: dict, square: str, side: str):
+    idx = square_to_idx[square]
+    return [make_move_string(square, idx_to_square[t])
+            for t in knight_move_list[idx]
+            if (idx_to_square[t] not in board) or (board[idx_to_square[t]][0] != side)]
+
+def bishop_moves(board: dict, square: str, side: str):
+    idx = square_to_idx[square]
+    moves = []
+    for df, dr in [(1, 1), (-1, 1), (1, -1), (-1, -1)]:
+        f = (idx % 8) + df
+        r = (idx // 8) + dr
+        while 0 <= f < 8 and 0 <= r < 8:
+            t_idx = r * 8 + f
+            t_sq = idx_to_square[t_idx]
+            t_pc = board.get(t_sq)
+            if t_pc is not None:
+                if t_pc[0] != side:
+                    moves.append(make_move_string(square, t_sq))
+                break
+            moves.append(make_move_string(square, t_sq))
+            f += df
+            r += dr
+    return moves
+
+def rook_moves(board: dict, square: str, side: str):
+    idx = square_to_idx[square]
+    moves = []
+    for df, dr in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        f = (idx % 8) + df
+        r = (idx // 8) + dr
+        while 0 <= f < 8 and 0 <= r < 8:
+            t_idx = r * 8 + f
+            t_sq = idx_to_square[t_idx]
+            t_pc = board.get(t_sq)
+            if t_pc is not None:
+                if t_pc[0] != side:
+                    moves.append(make_move_string(square, t_sq))
+                break
+            moves.append(make_move_string(square, t_sq))
+            f += df
+            r += dr
+    return moves
+
+def queen_moves(board: dict, square: str, side: str):
+    # reuse bishop + rook directions
+    return (bishop_moves(board, square, side) +
+            rook_moves(board, square, side))
+
+def king_moves(board: dict, square: str, side: str):
+    idx = square_to_idx[square]
+    return [make_move_string(square, idx_to_square[t])
+            for t in king_move_list[idx]
+            if (idx_to_square[t] not in board) or (board[idx_to_square[t]][0] != side)]
+
+def castling_moves(board: dict, side: str):
+    moves = []
+    if side == 'w':
+        # kingside
+        if (board.get('e1') == 'wK' and
+            'f1' not in board and 'g1' not in board and
+            board.get('h1') == 'wR' and
+            not is_square_attacked(board, square_to_idx['e1'], 'b') and
+            not is_square_attacked(board, square_to_idx['f1'], 'b') and
+            not is_square_attacked(board, square_to_idx['g1'], 'b')):
+            moves.append('e1g1')
+        # queenside
+        if (board.get('e1') == 'wK' and
+            'b1' not in board and 'c1' not in board and 'd1' not in board and
+            board.get('a1') == 'wR' and
+            not is_square_attacked(board, square_to_idx['e1'], 'b') and
+            not is_square_attacked(board, square_to_idx['d1'], 'b') and
+            not is_square_attacked(board, square_to_idx['c1'], 'b')):
+            moves.append('e1c1')
+    else:
+        # kingside
+        if (board.get('e8') == 'bK' and
+            'f8' not in board and 'g8' not in board and
+            board.get('h8') == 'bR' and
+            not is_square_attacked(board, square_to_idx['e8'], 'w') and
+            not is_square_attacked(board, square_to_idx['f8'], 'w') and
+            not is_square_attacked(board, square_to_idx['g8'], 'w')):
+            moves.append('e8g8')
+        # queenside
+        if (board.get('e8') == 'bK' and
+            'b8' not in board and 'c8' not in board and 'd8' not in board and
+            board.get('a8') == 'bR' and
+            not is_square_attacked(board, square_to_idx['e8'], 'w') and
+            not is_square_attacked(board, square_to_idx['d8'], 'w') and
+            not is_square_attacked(board, square_to_idx['c8'], 'w')):
+            moves.append('e8c8')
+    return moves
+
+def generate_pseudo_legal_moves(board: dict, side: str):
+    moves = []
+    for sq, pc in board.items():
+        if pc[0] != side:
+            continue
+        pt = pc[1]
+        if pt == 'P':
+            moves.extend(pawn_moves(board, sq, side))
+        elif pt == 'N':
+            moves.extend(knight_moves(board, sq, side))
+        elif pt == 'B':
+            moves.extend(bishop_moves(board, sq, side))
+        elif pt == 'R':
+            moves.extend(rook_moves(board, sq, side))
+        elif pt == 'Q':
+            moves.extend(queen_moves(board, sq, side))
+        elif pt == 'K':
+            moves.extend(king_moves(board, sq, side))
+    moves.extend(castling_moves(board, side))
+    return moves
+
+def generate_legal_moves(board: dict, side: str):
+    pseudo = generate_pseudo_legal_moves(board, side)
+    legal = []
+    for mv in pseudo:
+        nxt = apply_move(board, mv)
+        if not is_king_in_check(nxt, side):
+            legal.append(mv)
+    return legal
+
+# ----- evaluation -----------------------------------------------------------
+def evaluate(board: dict, side: str) -> float:
+    """Simple material + central‑square bonus."""
+    score = 0.0
+    for sq, pc in board.items():
+        colour = pc[0]
+        pt = pc[1]
+        val = PIECE_VALUES[pt]
+        # tiny central bonus
+        idx = square_to_idx[sq]
+        f = idx % 8
+        r = idx // 8
+        if 2 <= f <= 5 and 2 <= r <= 5:
+            val += 0.05
+        if colour == side:
+            score += val
+        else:
+            score -= val
+    return score
+
+# ----- alpha‑beta search ----------------------------------------------------
+def alphabeta(board: dict, side: str, depth: int,
+              alpha: float, beta: float, maximizing: bool) -> float:
+    legal = generate_legal_moves(board, side)
+    if not legal:
+        # checkmate / stalemate
+        if is_king_in_check(board, side):
+            return -MATE + depth
+        return 0.0
+    if depth == 0:
+        return evaluate(board, side)
+
+    if maximizing:
+        value = -float('inf')
+        for mv in legal:
+            nxt = apply_move(board, mv)
+            value = max(value, alphabeta(nxt, opponent(side),
+                                         depth - 1, alpha, beta, False))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = float('inf')
+        for mv in legal:
+            nxt = apply_move(board, mv)
+            value = min(value, alphabeta(nxt, opponent(side),
+                                         depth - 1, alpha, beta, True))
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+def iterative_deepening(board: dict, side: str) -> str:
+    """Search with increasing depth until time runs out."""
+    start = time.time()
+    legal = generate_legal_moves(board, side)
+    if not legal:
+        return None
+    best_move = legal[0]
+    for depth in range(1, MAX_DEPTH + 1):
+        best_val = -float('inf')
+        current_best = best_move
+        for mv in legal:
+            nxt = apply_move(board, mv)
+            val = -alphabeta(nxt, opponent(side), depth - 1,
+                             -float('inf'), float('inf'), False)
+            if val > best_val:
+                best_val = val
+                current_best = mv
+            # early mate detection
+            if best_val > MATE - 100:
+                break
+            if time.time() - start > TIME_LIMIT:
+                break
+        best_move = current_best
+        if time.time() - start > TIME_LIMIT:
+            break
+    return best_move
+
+# ----- public API -----------------------------------------------------------
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    side = 'w' if to_play == 'white' else 'b'
+    legal = generate_legal_moves(pieces, side)
+    if not legal:
+        return ""          # should never happen
+    if len(legal) == 1:
+        return legal[0]    # forced move
+    best = iterative_deepening(pieces, side)
+    return best if best is not None else legal[0]

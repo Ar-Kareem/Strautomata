@@ -1,0 +1,975 @@
+<thinking>
+The user wants a Python function `policy(you, opponent)` that selects a move in Kalah.
+The game state is `you = [h0, h1, h2, h3, h4, h5, store]` and `opponent = [h0, h1, h2, h3, h4, h5, store]`.
+The function should return an integer `i` (0 to 5) corresponding to the house to move from.
+
+I need to implement the game rules to simulate moves and evaluate their outcomes.
+A common strategy for Kalah is to prioritize moves that:
+1.  Lead to an extra move (last seed lands in your store).
+2.  Lead to a capture.
+3.  Maximize the number of seeds in your store.
+4.  Minimize the number of seeds in the opponent's store (or prevent them from making good moves).
+
+Since there's a 1-second time limit, complex AI algorithms like a deep minimax search with many levels might be too slow. A simpler approach focusing on immediate gains and a limited lookahead might be more appropriate.
+
+Let's break down the implementation:
+
+**1. Game State Representation:**
+The input `you` and `opponent` lists are fine. It's good to make deep copies when simulating moves to avoid modifying the original state.
+
+**2. `make_move(current_you, current_opponent, move_index)` function:**
+This will be the core simulation function. It takes the current player's state, opponent's state, and the chosen house index, and returns the new `(you, opponent)` states, a boolean indicating an extra move, and a boolean indicating if the game ended.
+
+    *   **Sow seeds:**
+        *   Take seeds from `current_you[move_index]`.
+        *   Iterate through `current_you` houses (from `move_index + 1` to `5`), then `current_you[6]` (your store), then `current_opponent` houses (from `0` to `5`), then `current_you` houses again, and so on.
+        *   Crucially, skip `opponent[6]` (opponent's store).
+        *   Keep track of the `last_landed_house_type` (yourself, opponent) and `last_landed_index`.
+
+    *   **Check for Extra Move:**
+        *   If the last seed landed in `current_you[6]`, set `extra_move = True`.
+
+    *   **Check for Capture:**
+        *   If `not extra_move` (capture doesn't happen on an extra move turn)
+        *   If `last_landed_house_type == 'you'` and `0 <= last_landed_index <= 5`:
+        *   And `current_you[last_landed_index]` was 0 *before* the last seed landed (meaning it became 1 from this move),
+        *   And `current_opponent[5 - last_landed_index]` has seeds:
+            *   Capture `current_you[last_landed_index]` and `current_opponent[5 - last_landed_index]`.
+            *   Add them to `current_you[6]`.
+            *   Set `current_you[last_landed_index] = 0` and `current_opponent[5 - last_landed_index] = 0`.
+
+    *   **Check for Game End:**
+        *   After the move and effects, check if `sum(current_you[0:6]) == 0`.
+        *   If so, collect all remaining seeds from `current_opponent[0:6]` into `current_opponent[6]`, then set `current_opponent[0:6]` to `0`. `game_over = True`.
+        *   (Note: opponent's turn to end the game by collecting seeds if `sum(opponent[0:6]) == 0` happens *after* their move. Here we check if *my* houses are empty.)
+        *   The prompt says "The game ends when one player has no seeds in all of their houses (`0..5` all zero). The other player moves all remaining seeds into their store." This happens *at the end of a round*. So if I make a move and my houses become empty, the opponent collects theirs. If I make a move and the opponent's houses become empty *after my sowing*, then I collect mine. The rule is for "one player". It means whoever has no seeds first, the *other* player moves seeds to store. This needs careful handling. Let's assume the check applies after *my* move has completed (including captures, but before passing turn). If `sum(you[0:6]) == 0`, then opponent's seeds go to their store. If `sum(opponent[0:6]) == 0`, then my seeds go to my store.
+
+    *   Return `(new_you, new_opponent, extra_move, game_over)`.
+
+**3. `evaluate(you, opponent)` function:**
+This function will assign a score to a given game state.
+A simple evaluation function could be: `you[6] - opponent[6]`.
+More sophisticated: `(you[6] - opponent[6]) + (sum(you[0:6]) - sum(opponent[0:6])) * weight`
+The number of seeds in houses can be a weak indicator, as they are not "safe". For a simpler approach, `you[6] - opponent[6]` is a good start.
+
+**4. `policy` function (Main Logic):**
+
+    *   Iterate through all possible moves `i` (0 to 5).
+    *   If `you[i] == 0`, it's an illegal move, skip.
+    *   For each legal move:
+        *   Simulate `make_move(you, opponent, i)`.
+        *   Store the result `(next_you, next_opponent, extra_move, game_over)`.
+        *   If `extra_move`: This move is highly desirable. We can potentially chain moves. A simple approach is to prioritize these. If multiple moves give an extra move, we need a tie-breaker (e.g., which one results in the highest score *after* the subsequent turn).
+            *   For now, if an extra move is found, we should somehow reflect this in the score. If it provides another turn, that's like getting two moves for the price of one. We can recursively call `policy` (or a variant) for the *next* turn of the extra move.
+            *   Let's consider a 1-ply lookahead with special handling for extra moves.
+
+    *   **Decision making:**
+        *   Maintain `best_score` and `best_move`.
+        *   Initialize `best_score` to a very low number.
+
+        *   For each `move_index` from `0` to `5`:
+            *   If `you[move_index] == 0`, continue.
+            *   Simulate `current_you, current_opponent, extra_turn, game_over = make_move(you, opponent, move_index)`
+            *   If `game_over`, then this move immediately ends the game. The score would be `current_you[6] - current_opponent[6]`. This is a very strong outcome.
+            *   If `extra_turn`:
+                *   This move gets another turn. We should consider the outcome of *that* turn as well.
+                *   We can recursively call `policy` on `(next_you, next_opponent)` **for the same player**. This will give us the second move.
+                *   `second_best_move_for_extra_turn = policy(current_you, current_opponent)`
+                *   `final_you, final_opponent, _, _ = make_move(current_you, current_opponent, second_best_move_for_extra_turn)`
+                *   The score for this initial move `move_index` would be `evaluate(final_you, final_opponent)`.
+            *   Else (no extra turn):
+                *   The turn passes to the opponent. We want to maximize `my_score - opponent_score`. We assume the opponent plays optimally to minimize our score. So, we effectively want to maximize `(my_store - opponent_store)` *today*, and `-(opponent's_store - my_store)` *tomorrow*.
+                *   It's a simplified minimax idea.
+                *   Let's get `score_after_my_move = evaluate(current_you, current_opponent)`.
+                *   Now, we need to consider the opponent's best response. This is essentially finding the move *for the opponent* that results in the *lowest* score for *us*.
+                *   Simulate opponent's moves:
+                    *   `opponent_best_score_for_them = -infinity` (opponent wants to maximize their score)
+                    *   `scenario_after_opponent_move_you = None`
+                    *   `scenario_after_opponent_move_opponent = None`
+                    *   For each `opponent_move_index` from `0` to `5`:
+                        *   If `current_opponent[opponent_move_index] == 0`, continue.
+                        *   Simulate `op_next_op, op_next_you, op_extra_turn, op_game_over = make_move(current_opponent, current_you, opponent_move_index)` (note the swapped `you`/`opponent` for `make_move`)
+                        *   `op_score = evaluate(op_next_op, op_next_you)`
+                        *   If `op_extra_turn`:
+                            *   This becomes complicated, simulating a chain of opponent's moves. For 1-ply, let's just take the immediate score benefit for the opponent.
+                            *   Perhaps `op_score += BONUS_FOR_EXTRA_TURN`
+                        *   If `op_score > opponent_best_score_for_them`:
+                            *   `opponent_best_score_for_them = op_score`
+                    *   The score for our `move_index` would then be `score_after_my_move - opponent_best_score_for_them`. This is a bit too simplified actually. `score_after_my_move` should be `current_you[6] - current_opponent[6]`, and `opponent_best_score_for_them` would represent the negative impact on *our* score.
+                    *   Let's simplify the evaluation for states after opponent's move:
+                        *   `opponent_worst_outcome_for_me = infinity`
+                        *   For each `opponent_move_index`...
+                            *   `op_next_you, op_next_opponent, op_extra_turn, op_game_over = make_move(current_opponent, current_you, opponent_move_index)`
+                            *   `score_after_op = evaluate(op_next_opponent, op_next_you)` (evaluate *my* new score vs opponent's)
+                            *   If `op_extra_turn`: `score_after_op -= 10` (a penalty for letting opponent get an extra turn) -- This is heuristic.
+                            *   If `score_after_op < opponent_worst_outcome_for_me`:
+                                *   `opponent_worst_outcome_for_me = score_after_op`
+                        *   If `opponent_worst_outcome_for_me` is still `infinity` (opponent has no moves), then we evaluate `current_you, current_opponent` directly to get the score.
+                        *   The score for our `move_index` is `current_you[6] - current_opponent[6]` if there are no opponent moves, otherwise it is `opponent_worst_outcome_for_me`. This is effectively a 1-ply minimax with special handling for extra turns.
+
+    *   Store and return `best_move`.
+
+**Refining `make_move` and game end:**
+
+The game ends when a player has no seeds in their houses. The *other* player's remaining seeds go to their store.
+This check happens *after* a player's full turn (including extra moves and captures).
+
+Let's refine `make_move`:
+```python
+def make_move(you_state: list[int], opp_state: list[int], move_idx: int) -> tuple[list[int], list[int], bool]:
+    # Deep copy to avoid modifying original state
+    next_you = list(you_state)
+    next_opp = list(opp_state)
+    
+    seeds = next_you[move_idx]
+    next_you[move_idx] = 0
+    
+    current_player_houses = next_you
+    current_opponent_houses = next_opp
+
+    last_landed_house_type = None  # 'you' or 'opponent'
+    last_landed_index = -1
+    
+    # Sowing loop
+    board_indices = [] # Order of physical houses/stores around the board
+    board_indices.extend([(next_you, i) for i in range(move_idx + 1, 7)]) # Your houses after move_idx + your store
+    board_indices.extend([(next_opp, i) for i in range(0, 6)])             # Opponent's houses (skip opponent's store)
+    board_indices.extend([(next_you, i) for i in range(0, 7)])             # Your houses/store again
+    board_indices.extend([(next_opp, i) for i in range(0, 6)])             # Opponent's houses again
+    
+    # This list can be pre-calculated or generated more dynamically to avoid very long lists
+    # A cleaner approach is to use modular arithmetic for position tracking.
+
+    current_pos_type = 'you'
+    current_pos_idx = move_idx
+
+    while seeds > 0:
+        current_pos_idx += 1
+        
+        if current_pos_type == 'you':
+            if current_pos_idx < 7: # you[0..6]
+                current_player_houses[current_pos_idx] += 1
+                last_landed_house_type = 'you'
+                last_landed_index = current_pos_idx
+                seeds -= 1
+            else: # Go to opponent's side, reset index
+                current_pos_type = 'opponent'
+                current_pos_idx = -1 # Will become 0 after increment
+        elif current_pos_type == 'opponent':
+            if current_pos_idx < 6: # opp[0..5], skip opp[6]
+                current_opponent_houses[current_pos_idx] += 1
+                last_landed_house_type = 'opponent'
+                last_landed_index = current_pos_idx
+                seeds -= 1
+            else: # Go back to your side, reset index
+                current_pos_type = 'you'
+                current_pos_idx = -1 # Will become 0 after increment
+    
+    extra_turn = False
+    if last_landed_house_type == 'you' and last_landed_index == 6:
+        extra_turn = True
+        
+    # Capture logic (only if last seed landed in empty house AND it wasn't store AND it wasn't an extra turn)
+    # The rule is: "If the last seed lands in one of your houses you[i] (0..5) and it was empty *before the drop*..."
+    # The `current_player_houses[last_landed_index]` already has 1 seed from the drop.
+    # The crucial part is "before the drop", which implies we need the state *before* the last seed landed.
+    # This means the current `current_player_houses[last_landed_index]` should be 1 after sowing and `seeds` was 0.
+    
+    # Let's adjust `make_move` to track actual path more precisely and check 'before drop' more accurately.
+    # Or, infer it: if `prev_you[last_landed_index]` was 0, it means it was empty.
+    # The simpler method is to just track state, and realize that if `current_you[last_landed_index]` is 1, and `extra_turn` is False, and it's 0-5, and `prev_you[last_landed_index]` was 0, then capture applies.
+
+    # Re-simulating with clearer path for seeds to track pre-capture state.
+    original_you_house_seeds = you_state[move_idx] # Seeds originally in the chosen house
+    
+    # Need to keep deep copies for "before capture" checks
+    temp_next_you = list(you_state)
+    temp_next_opp = list(opp_state)
+    temp_next_you[move_idx] = 0 # Empty the chosen house
+
+    current_idx_on_board = move_idx # Start after emptied house
+    
+    while original_you_house_seeds > 0:
+        current_idx_on_board += 1
+        
+        placed_in_own_house = True # flag to check if landed in `you[0..5]`
+        
+        if current_idx_on_board < 6: # You[0..5]
+            temp_next_you[current_idx_on_board] += 1
+            last_landed_house_type = 'you'
+            last_landed_index = current_idx_on_board
+        elif current_idx_on_board == 6: # Your store you[6]
+            temp_next_you[current_idx_on_board] += 1
+            last_landed_house_type = 'you'
+            last_landed_index = current_idx_on_board
+        elif current_idx_on_board < 13: # Opponent's houses opp[0..5] (board_idx 7-12)
+            temp_next_opp[current_idx_on_board - 7] += 1
+            last_landed_house_type = 'opponent'
+            last_landed_index = current_idx_on_board - 7
+            placed_in_own_house = False
+        else: # Wrap around to own houses
+            current_idx_on_board = -1 # Will become 0 next iteration
+            continue # Don't decrement seeds here, will do in next iteration
+            
+        original_you_house_seeds -= 1
+        
+        if original_you_house_seeds == 0:
+            # Last seed landed. Check for specific effects.
+            if last_landed_house_type == 'you' and last_landed_index == 6:
+                extra_turn = True
+            elif last_landed_house_type == 'you' and 0 <= last_landed_index <= 5 : # And it was empty before drop
+                # Check if it was empty *before* this specific round of sowing.
+                # Since we are modifying temp_next_you, if it's 1, and the original you state for that house was 0, it was empty.
+                if you_state[last_landed_index] == 0: # This house was empty in the *original* state
+                     # And opponent's opposite house has seeds
+                    opposite_opp_house_idx = 5 - last_landed_index
+                    if temp_next_opp[opposite_opp_house_idx] > 0:
+                        # Perform capture
+                        captured_seeds = temp_next_you[last_landed_index] + temp_next_opp[opposite_opp_house_idx]
+                        temp_next_you[last_landed_index] = 0
+                        temp_next_opp[opposite_opp_house_idx] = 0
+                        temp_next_you[6] += captured_seeds
+            break # Exit sowing loop after last seed effects
+            
+    # The state after the main sowing loop (and potential capture/extra turn)
+    actual_next_you = temp_next_you
+    actual_next_opp = temp_next_opp
+
+    # Game end condition check -- this applies always after a turn is complete.
+    # The other player collects their seeds.
+    # If I made a move and my houses became empty:
+    if sum(actual_next_you[0:6]) == 0:
+        for i in range(6):
+            actual_next_opp[6] += actual_next_opp[i]
+            actual_next_opp[i] = 0
+    # If the opponent's houses became empty (after my move):
+    elif sum(actual_next_opp[0:6]) == 0:
+        for i in range(6):
+            actual_next_you[6] += actual_next_you[i]
+            actual_next_you[i] = 0
+            
+    return actual_next_you, actual_next_opp, extra_turn
+```
+
+**Revised `policy` structure (1-ply minimax with special extra-move handling):**
+
+```python
+import math
+
+# Constants for evaluation
+EXTRA_TURN_BONUS = 20 # Value of immediately getting another turn (heuristic)
+CAPTURE_BONUS = 50 # Value of a capture (heuristic, can be combined with store gain)
+WIN_SCORE = 1000000 # Large value for winning
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    best_overall_score = -math.inf
+    best_move = -1
+
+    legal_moves = [i for i, seeds in enumerate(you[0:6]) if seeds > 0]
+
+    for my_move in legal_moves:
+        current_you = list(you)
+        current_opponent = list(opponent)
+
+        # Simulate my move
+        temp_you, temp_opponent, extra_turn = simulate_move(current_you, current_opponent, my_move)
+
+        # Calculate score for this move
+        move_score = 0
+
+        if extra_turn:
+            # If I get an extra turn, I evaluate the best outcome of that extra turn.
+            # This is a recursive call to policy (or a simplified version of it) for the immediate next move.
+            # To avoid infinite recursion, we limit the depth or use direct evaluation.
+            
+            # For simplicity, let's assume we pick the move with the highest immediate store gain
+            # from the extra turn.
+            best_extra_turn_sub_score = -math.inf
+            best_extra_turn_sub_move = -1
+            
+            legal_extra_moves = [i for i, seeds in enumerate(temp_you[0:6]) if seeds > 0]
+            
+            if not legal_extra_moves: # No houses left to move in extra turn
+                # This could result in a game end, so evaluate directly.
+                move_score = temp_you[6] - temp_opponent[6]
+            else:
+                for extra_move_idx in legal_extra_moves:
+                    et_you, et_opponent, et_extra_turn = simulate_move(temp_you, temp_opponent, extra_move_idx)
+                    
+                    # For extra turn, we just want to maximize our store difference immediately.
+                    # This simplified evaluation doesn't look another ply deep for the extra turn.
+                    # A more complex strategy would be to recurse further on extra turns.
+                    current_et_score = et_you[6] - et_opponent[6]
+                    if et_extra_turn:
+                        current_et_score += EXTRA_TURN_BONUS # Give a bonus for chaining extra turns
+                    
+                    if current_et_score > best_extra_turn_sub_score:
+                        best_extra_turn_sub_score = current_et_score
+                        best_extra_turn_sub_move = extra_move_idx # Not really needed, just for value
+                
+                # The score of my initial move is the score after my best extra move
+                move_score = best_extra_turn_sub_score
+            
+            # Additional bonus for getting an extra turn. Might need adjustment.
+            # move_score += EXTRA_TURN_BONUS # Can add here, but the sub_score already reflects it.
+
+        else: # No extra turn, opponent's turn next
+            # Evaluate the current state after my move
+            my_immediate_score = temp_you[6] - temp_opponent[6]
+            
+            # Now, simulate opponent's best response (from their perspective).
+            # Opponent wants to maximize (opponent's_store - my_store).
+            # This is equivalent to minimizing (my_store - opponent's_store).
+            
+            opponent_best_response_score_for_me = math.inf # Opponent tries to make my score as low as possible
+            
+            opponent_legal_moves = [i for i, seeds in enumerate(temp_opponent[0:6]) if seeds > 0]
+            
+            if not opponent_legal_moves: # Opponent has no moves, game ends.
+                # My score is determined by the final state after all collections.
+                # `simulate_move` already handles game end collections.
+                opponent_best_response_score_for_me = my_immediate_score # My score doesn't change further from opponent's moves
+            else:
+                for opp_move in opponent_legal_moves:
+                    # Simulate opponent's move (swap you and opponent for simulate_move)
+                    opp_final_opp, opp_final_you, opp_extra_turn = simulate_move(temp_opponent, temp_you, opp_move)
+                    
+                    # Score from my perspective after opponent's move
+                    score_after_opp_move = opp_final_you[6] - opp_final_opp[6]
+
+                    if opp_extra_turn:
+                        # Opponent gets an extra turn. This is bad for me.
+                        # Penalty for this, or simulate their next move?
+                        # For 1-ply, let's just apply a penalty.
+                        score_after_opp_move -= EXTRA_TURN_BONUS
+                        
+                        # More ideal would be to recursively simulate the opponent's extra turn
+                        # by calling a similar function (e.g., policy_opponent, which uses minimax to pick best move for opponent)
+                        # For now, a flat penalty is easier for 1-ply logic.
+                        
+                    if score_after_opp_move < opponent_best_response_score_for_me:
+                        opponent_best_response_score_for_me = score_after_opp_move
+            
+            move_score = opponent_best_response_score_for_me # My score is the worst the opponent can do to me.
+
+        # Update best overall move
+        if move_score > best_overall_score:
+            best_overall_score = move_score
+            best_move = my_move
+            
+    return best_move
+```
+
+**Refining `simulate_move` (renamed from `make_move`):**
+
+The current `simulate_move` has a slight issue with `you_state[last_landed_index] == 0` for capture. This `you_state` is the *initial* state passed. If sowing passes through a house and puts seeds in it *before* the last seed lands, that house is no longer empty according to `you_state`.
+The rule is "it was empty before the drop", which means `you[i]` in the *current* iteration of `simulate_move`, *before* any seeds were sowed into it in the current turn.
+My existing `temp_next_you` gets filled as seeds are sowed. So `temp_next_you[last_landed_index]` will be `1` at the point of capture check. To truly check "was it empty before this turn's sowing?", I need the initial state.
+
+Let's maintain a copy of the state *before any seeds are sowed from the chosen house*.
+
+```python
+def simulate_move(you_state: list[int], opp_state: list[int], move_idx: int) -> tuple[list[int], list[int], bool]:
+    # Deep copy for the working state
+    current_you = list(you_state)
+    current_opponent = list(opp_state)
+
+    # Store initial state of the board houses for capture check
+    initial_house_you = list(you_state[0:6])
+
+    seeds_to_sow = current_you[move_idx]
+    current_you[move_idx] = 0 # Empty the chosen house
+
+    # Define the board traversal order
+    # (player_list_ref, index_in_list)
+    board_order = []
+    # Your houses after move_idx, including your store
+    for i in range(move_idx + 1, 7):
+        board_order.append((current_you, i))
+    # Opponent's houses (skip opponent's store)
+    for i in range(0, 6):
+        board_order.append((current_opponent, i))
+    # Loop back to your houses/store
+    for i in range(0, 7):
+        board_order.append((current_you, i))
+    for i in range(0, 6):
+        board_order.append((current_opponent, i))
+    # Enough to handle cases where there are more seeds than 2 * 13 houses (e.g., 50 seeds)
+    # 2 * (6 + 6 + 1) = 26 houses.
+    # Max seeds possible is 6 * 4 = 24 per side, so 48 total on board. Houses can have more.
+    # Max initial seeds in a house could be 48.
+    # 48 / 26 = 1 full lap + some houses. So list must be long enough.
+    # A simple way is to have board total addresses, e.g., 0-6 for you, 7-12 opponent. Store is at specific indexes.
+    
+    # Path using modular arithmetic to simplify indexing and looping
+    # Total effective holes in the circuit (excluding opponent's store) = 6 (my houses) + 1 (my store) + 6 (opponent's houses) = 13
+    
+    current_hole_on_track = move_idx # logical index on our side
+    
+    # Track the actual last landed position
+    last_landed_target_list = None
+    last_landed_target_idx = -1
+
+    while seeds_to_sow > 0:
+        current_hole_on_track += 1
+        
+        target_list = None
+        target_idx = -1
+
+        if current_hole_on_track < 6: # My houses 0..5
+            target_list = current_you
+            target_idx = current_hole_on_track
+        elif current_hole_on_track == 6: # My store 6
+            target_list = current_you
+            target_idx = current_hole_on_track
+        elif current_hole_on_track < 13: # Opponent's houses 0..5 (map from track index 7-12)
+            target_list = current_opponent
+            target_idx = current_hole_on_track - 7
+        else: # Wrap around to my side
+            current_hole_on_track = 0 # Start from my first house
+            target_list = current_you
+            target_idx = current_hole_on_track
+            
+        target_list[target_idx] += 1
+        seeds_to_sow -= 1
+        
+        last_landed_target_list = target_list
+        last_landed_target_idx = target_idx
+
+    extra_turn = False
+    
+    # Check for extra turn
+    if last_landed_target_list is current_you and last_landed_target_idx == 6:
+        extra_turn = True
+            
+    # Check for capture
+    # If the last seed landed in one of your houses (not store) and it was empty *before* this turn started,
+    # and opponent's opposite house has seeds.
+    if (not extra_turn and
+        last_landed_target_list is current_you and
+        0 <= last_landed_target_idx <= 5 and
+        initial_house_you[last_landed_target_idx] == 0): # This house was empty at the beginning of *this* player's move
+        
+        opposite_opp_house_idx = 5 - last_landed_target_idx
+        if current_opponent[opposite_opp_house_idx] > 0:
+            # Perform capture
+            captured_seeds = current_you[last_landed_target_idx] + current_opponent[opposite_opp_house_idx]
+            current_you[last_landed_target_idx] = 0
+            current_opponent[opposite_opp_house_idx] = 0
+            current_you[6] += captured_seeds
+
+    # Game end condition -- collect remaining seeds
+    # Check if 'you' houses are empty
+    if sum(current_you[0:6]) == 0:
+        for i in range(6):
+            current_opponent[6] += current_opponent[i]
+            current_opponent[i] = 0
+    # Check if 'opponent' houses are empty
+    elif sum(current_opponent[0:6]) == 0:
+        for i in range(6):
+            current_you[6] += current_you[i]
+            current_you[i] = 0
+            
+    return current_you, current_opponent, extra_turn
+```
+
+**Final considerations:**
+*   The `EXTRA_TURN_BONUS` might need fine-tuning. A fixed bonus might not always be optimal.
+*   The evaluation ignores potential future captures, which could be important.
+*   The current policy only looks 1 ply deep for the opponent. For extra turns, it uses simple immediate store gain (and bonus for chained extra turns). A full minimax with fixed depth might be robust, but computationally expensive.
+*   The 'game over' state evaluation: The `simulate_move` function correctly handles collecting seeds. So, `current_you[6] - current_opponent[6]` will correctly reflect the final score if the game ends. I should ensure that `WIN_SCORE` isn't blindly added, but `current_you[6] - current_opponent[6]` itself becomes the `best_overall_score` if the game ends.
+
+Let's test the `simulate_move` logic mentally with an example.
+`you = [1, 0, 0, 0, 0, 0, 0]`, `opponent = [0, 0, 0, 0, 0, 0, 0]`
+Move `you[0]` (1 seed).
+`seeds_to_sow = 1`, `current_you[0] = 0`.
+`current_hole_on_track = 0`.
+
+1.  `current_hole_on_track = 1`. `target_list = current_you`, `target_idx = 1`. `current_you[1] += 1`. `seeds_to_sow = 0`.
+    `last_landed_target_list = current_you`, `last_landed_target_idx = 1`.
+    Loop ends.
+
+2.  `extra_turn = False`.
+
+3.  Capture check:
+    `last_landed_target_list is current_you` and `0 <= last_landed_target_idx <= 5` (1 is) and `initial_house_you[last_landed_target_idx] == 0` (`initial_house_you[1]` was 0).
+    Opposite `opponent[5 - 1] = opponent[4]`. `current_opponent[4]` is 0. No capture.
+
+4.  Game end check:
+    `sum(current_you[0:6])` is `current_you[1]` (which is 1). Not 0.
+    `sum(current_opponent[0:6])` is 0. Yes!
+    Opponent's seeds to my store: `current_you[6]` is 0. Opponent has no seeds anyway.
+
+Result: `you = [0, 1, 0, 0, 0, 0, 0]`, `opponent = [0, 0, 0, 0, 0, 0, 0]`, `extra_turn = False`. Looks correct.
+
+Another example: Capture
+`you = [1, 0, 0, 0, 0, 0, 0]`, `opponent = [0, 0, 0, 0, 2, 0, 0]`
+Move `you[0]` (1 seed).
+`seeds_to_sow = 1`, `current_you[0] = 0`.
+`current_hole_on_track = 0`.
+
+1.  `current_hole_on_track = 1`. `current_you[1] += 1`. `seeds_to_sow = 0`.
+    `last_landed_target_list = current_you`, `last_landed_target_idx = 1`.
+    Loop ends.
+
+2.  `extra_turn = False`.
+
+3.  Capture check:
+    Condition met for house 1. `initial_house_you[1]` was 0.
+    `opposite_opp_house_idx = 5 - 1 = 4`. `current_opponent[4]` is 2. Yes, opponent has seeds.
+    `captured_seeds = current_you[1] (1) + current_opponent[4] (2) = 3`.
+    `current_you[1] = 0`.
+    `current_opponent[4] = 0`.
+    `current_you[6] += 3`. So `current_you[6]` becomes 3.
+
+4.  Game end check:
+    `sum(current_you[0:6])` is 0.
+    Opponent collects `current_opponent[0..5]` into `current_opponent[6]`.
+    `current_opponent` becomes `[0,0,0,0,0,0,0]`.
+
+Result: `you = [0, 0, 0, 0, 0, 0, 3]`, `opponent = [0, 0, 0, 0, 0, 0, 0]`, `extra_turn = False`. Correct.
+
+One more: Extra turn.
+`you = [6, 0, 0, 0, 0, 0, 0]`, `opponent = [0, 0, 0, 0, 0, 0, 0]`
+Move `you[0]` (6 seeds).
+`seeds_to_sow = 6`, `current_you[0] = 0`.
+`current_hole_on_track = 0`.
+
+1.  `current_hole_on_track = 1`. `you[1]+=1`. `seeds_to_sow=5`.
+2.  `current_hole_on_track = 2`. `you[2]+=1`. `seeds_to_sow=4`.
+3.  `current_hole_on_track = 3`. `you[3]+=1`. `seeds_to_sow=3`.
+4.  `current_hole_on_track = 4`. `you[4]+=1`. `seeds_to_sow=2`.
+5.  `current_hole_on_track = 5`. `you[5]+=1`. `seeds_to_sow=1`.
+6.  `current_hole_on_track = 6`. `you[6]+=1`. `seeds_to_sow=0`.
+    `last_landed_target_list = current_you`, `last_landed_target_idx = 6`.
+    Loop ends.
+
+Result before effects: `you = [0, 1, 1, 1, 1, 1, 1]`, `opponent = [0, 0, 0, 0, 0, 0, 0]`.
+
+7.  `extra_turn` check: `last_landed_target_list is current_you and last_landed_target_idx == 6`. True. `extra_turn = True`.
+
+8.  Capture check: `not extra_turn` is false. Skip capture.
+
+9.  Game end check:
+    `sum(current_you[0:6])` is 5. Not 0.
+    `sum(current_opponent[0:6])` is 0. Yes!
+    Opponent collects `current_opponent[0..5]` into `current_opponent[6]`.
+    `current_opponent` becomes `[0,0,0,0,0,0,0]`.
+
+Result: `you = [0, 1, 1, 1, 1, 1, 1]`, `opponent = [0, 0, 0, 0, 0, 0, 0]`, `extra_turn = True`. Correct.
+
+The simulation function seems robust.
+The `policy` function's logic is a 1-ply minimax with special handling for extra turns and an immediate termination if a move ends the game.
+The constants `EXTRA_TURN_BONUS` can be quite impactful. A higher value will prioritize extra turns more heavily. For a standard 4-seed start, `EXTRA_TURN_BONUS = 20` could be roughly equivalent to 5 extra seeds in your store. This seems reasonable. `CAPTURE_BONUS` is not explicitly used by itself, as capture only affects `you[6]` eventually. The score `et_you[6] - et_opponent[6]` will correctly include seed capture outcomes.
+
+A slight optimization in `policy`: if an immediate win (game ends, my store is higher) is found, return that move directly.
+Also, if `extra_turn` and `legal_extra_moves` is empty, then `best_extra_turn_sub_score` would be `-math.inf` from inside the loop if initialized that way. Need to handle that path well. If `legal_extra_moves` is empty, it means `sum(temp_you[0:6])` was 0, so the game would have effectively ended on my *first* move due to my houses emptying. This is handled by `simulate_move` already, making `temp_you[6]` and `temp_opponent[6]` final-ish values.
+So if `not legal_extra_moves`, it means my first move emptied my side and I got an extra turn. This means the game should already be over. `temp_you[6] - temp_opponent[6]` is the final score.
+
+Let's ensure that the first block in the extra turn handling `if not legal_extra_moves:` path is correct.
+If `extra_turn` is true, and `temp_you[0:6]` are all zero, it means I emptied my houses and landed in my store. `simulate_move` handles this: opponent's seeds are moved to their store. So `temp_you` and `temp_opponent` already represent the `game_over` state. `move_score = temp_you[6] - temp_opponent[6]` is correct here.
+
+The `policy` function is designed to return *a* legal move. If multiple moves result in the same `best_overall_score`, the first one encountered is returned. This is fine.
+
+```python
+import math
+import random # For tie-breaking if needed, but not strictly required by the prompt.
+
+# Constants for evaluation - these are heuristic and can be tuned
+EXTRA_TURN_BONUS = 20 # Value of immediately getting another turn. Can be seen as gaining moves/tempo.
+
+# Helper function to simulate a single move
+def simulate_move(you_state: list[int], opp_state: list[int], move_idx: int) -> tuple[list[int], list[int], bool]:
+    # Deep copy for the working state
+    current_you = list(you_state)
+    current_opponent = list(opp_state)
+
+    # Store initial state of the current player's houses for capture check
+    initial_house_you_for_capture_check = list(you_state[0:6])
+
+    seeds_to_sow = current_you[move_idx]
+    current_you[move_idx] = 0 # Empty the chosen house
+
+    # Path using logical indices (0-5 for houses, 6 for store; then 7-12 for opponent's houses)
+    # Total effective holes in the circuit (excluding opponent's store) = 6 (my houses) + 1 (my store) + 6 (opponent's houses) = 13
+    
+    current_logical_idx = move_idx # Start after emptied house
+    
+    # Track the actual last landed position
+    last_landed_target_list = None
+    last_landed_target_idx = -1
+
+    while seeds_to_sow > 0:
+        current_logical_idx += 1
+        
+        target_list = None
+        target_idx = -1
+
+        if current_logical_idx < 6: # My houses 0..5
+            target_list = current_you
+            target_idx = current_logical_idx
+        elif current_logical_idx == 6: # My store 6
+            target_list = current_you
+            target_idx = current_logical_idx
+        elif current_logical_idx < 13: # Opponent's houses 0..5 (maps from logical index 7-12)
+            target_list = current_opponent
+            target_idx = current_logical_idx - 7
+        else: # Wrap around to my side, starting from my first house
+            current_logical_idx = 0 
+            target_list = current_you
+            target_idx = current_logical_idx
+            
+        target_list[target_idx] += 1
+        seeds_to_sow -= 1
+        
+        last_landed_target_list = target_list
+        last_landed_target_idx = target_idx
+
+    extra_turn = False
+    
+    # Check for extra turn
+    if last_landed_target_list is current_you and last_landed_target_idx == 6:
+        extra_turn = True
+            
+    # Check for capture
+    # Conditions:
+    # 1. Not an extra turn.
+    # 2. Last seed landed in one of your houses (not store, 0-5).
+    # 3. That house was empty *before* this move (original state, not `current_you` after partial sowing).
+    # 4. Opponent's opposite house has seeds.
+    if (not extra_turn and
+        last_landed_target_list is current_you and
+        0 <= last_landed_target_idx <= 5 and
+        initial_house_you_for_capture_check[last_landed_target_idx] == 0): # Check against original `you_state` for "empty before drop"
+        
+        opposite_opp_house_idx = 5 - last_landed_target_idx
+        if current_opponent[opposite_opp_house_idx] > 0:
+            # Perform capture
+            captured_seeds = current_you[last_landed_target_idx] + current_opponent[opposite_opp_house_idx]
+            current_you[last_landed_target_idx] = 0
+            current_opponent[opposite_opp_house_idx] = 0
+            current_you[6] += captured_seeds
+
+    # Game end condition -- collect remaining seeds
+    # If current player's houses are all empty
+    if sum(current_you[0:6]) == 0:
+        for i in range(6):
+            current_opponent[6] += current_opponent[i]
+            current_opponent[i] = 0
+    # If opponent's houses are all empty
+    elif sum(current_opponent[0:6]) == 0:
+        for i in range(6):
+            current_you[6] += current_you[i]
+            current_you[i] = 0
+            
+    return current_you, current_opponent, extra_turn
+
+# Main policy function
+def policy(you: list[int], opponent: list[int]) -> int:
+    best_overall_score = -math.inf
+    best_move = -1
+
+    legal_moves = [i for i, seeds in enumerate(you[0:6]) if seeds > 0]
+    
+    # Shuffle legal moves to introduce some randomness for tie-breaking.
+    # This can prevent predictable play patterns if multiple moves have the same score.
+    random.shuffle(legal_moves) 
+
+    for my_move in legal_moves:
+        # Simulate my move
+        temp_you, temp_opponent, extra_turn = simulate_move(you, opponent, my_move)
+
+        move_score = 0
+
+        if extra_turn:
+            # If I get an extra turn, I evaluate the best outcome of that extra turn.
+            # This is a one-level lookahead for the extra turn, prioritizing immediate store gain.
+            
+            best_extra_turn_sub_score = -math.inf
+            legal_extra_moves = [i for i, seeds in enumerate(temp_you[0:6]) if seeds > 0]
+            
+            # If after my first move, I get an extra turn but have no houses to move from,
+            # the game ends. The simulate_move already handled collecting seeds.
+            # So, `temp_you[6] - temp_opponent[6]` is the final score.
+            if not legal_extra_moves:
+                best_extra_turn_sub_score = temp_you[6] - temp_opponent[6]
+            else:
+                # Simulate each possible extra move
+                for extra_move_idx in legal_extra_moves:
+                    et_you, et_opponent, et_extra_turn = simulate_move(temp_you, temp_opponent, extra_move_idx)
+                    
+                    # Score for this extra turn path, primarily based on store difference
+                    current_et_score = et_you[6] - et_opponent[6]
+                    if et_extra_turn:
+                        # Give a bonus for potentially chaining extra turns further.
+                        # This is a heuristic to encourage extra turns.
+                        current_et_score += EXTRA_TURN_BONUS 
+                    
+                    if current_et_score > best_extra_turn_sub_score:
+                        best_extra_turn_sub_score = current_et_score
+                
+            move_score = best_extra_turn_sub_score
+
+        else: # No extra turn, opponent's turn next
+            # Evaluate the current state immediately after my move (before opponent's move)
+            # my_immediate_score = temp_you[6] - temp_opponent[6] # This is just a baseline for my current position without opponent's counterplay.
+            
+            # Simulate opponent's best response (from their perspective, which is my worst outcome).
+            # Opponent wants to maximize (opponent's_store - my_store).
+            # This is equivalent to minimizing (my_store - opponent's_store).
+            
+            opponent_worst_outcome_for_me = math.inf # Opponent tries to make my score as low as possible
+            
+            opponent_legal_moves = [i for i, seeds in enumerate(temp_opponent[0:6]) if seeds > 0]
+            
+            if not opponent_legal_moves: # Opponent has no moves, game ends immediately after my turn.
+                # My score is simply the current state after my move, as no further moves from opponent.
+                opponent_worst_outcome_for_me = temp_you[6] - temp_opponent[6] 
+            else:
+                # For each of opponent's possible moves
+                for opp_move in opponent_legal_moves:
+                    # Simulate opponent's move (swap temporary you and opponent for simulate_move)
+                    # The simulate_move function expects the current player's state first, then opponent's.
+                    # When simulating opponent, THEIR state is `_temp_opponent`, and MY state is `_temp_you`.
+                    op_final_opp, op_final_you, opp_extra_turn = simulate_move(temp_opponent, temp_you, opp_move)
+                    
+                    # Score from my perspective (my_store - opponent_store) after opponent's move
+                    score_after_opp_move = op_final_you[6] - op_final_opp[6]
+
+                    if opp_extra_turn:
+                        # Opponent gets an extra turn. This is generally bad for me.
+                        # Applying a penalty to my score.
+                        score_after_opp_move -= EXTRA_TURN_BONUS
+                        
+                        # More ideal would be to simulate opponent's extra turn as well (minimax with depth 2 etc.)
+                        # But for 1-ply efficiency and meeting time limits, a penalty is a heuristic simplification.
+                        
+                    if score_after_opp_move < opponent_worst_outcome_for_me:
+                        opponent_worst_outcome_for_me = score_after_opp_move
+            
+            # My current move's score is the worst possible outcome for me after the opponent's best counterplay.
+            move_score = opponent_worst_outcome_for_me 
+
+        # Update the best overall move found so far.
+        if move_score > best_overall_score:
+            best_overall_score = move_score
+            best_move = my_move
+            
+    return best_move
+
+```
+
+Seems good to go. The logic covers immediate benefits (extra turns, stores, captures) and a 1-ply lookahead against the opponent. Random shuffle helps with tie-breaking.
+Final check on the game end condition: `sum(you[0:6]) == 0`. My `simulate_move` handles this correctly as per the rules: the *other* player collects their remaining seeds. So `temp_you[6]` and `temp_opponent[6]` will correctly reflect the final scores if the game ends. This makes the `best_overall_score` calculation correct even in game-ending scenarios.
+</thinking>
+```python
+import math
+import random
+
+# Constants for evaluation - these are heuristic and can be tuned
+# Value of immediately getting another turn. Can be seen as gaining moves/tempo.
+# A higher value makes the AI prioritize extra moves more aggressively.
+EXTRA_TURN_BONUS = 20
+
+# Helper function to simulate a single move in Kalah.
+# Returns the new 'you' state, new 'opponent' state, and a boolean indicating if an extra turn was gained.
+def simulate_move(you_state: list[int], opp_state: list[int], move_idx: int) -> tuple[list[int], list[int], bool]:
+    """
+    Simulates a single move in the Kalah game.
+
+    Args:
+        you_state: The current player's board state (houses 0-5, store 6).
+        opp_state: The opponent's board state (houses 0-5, store 6).
+        move_idx: The index of the house (0-5) from which to make the move.
+
+    Returns:
+        A tuple: (new_you_state, new_opp_state, extra_turn_gained_flag).
+    """
+    # Create deep copies of the states to avoid modifying the original game state
+    current_you = list(you_state)
+    current_opponent = list(opp_state)
+
+    # Store the initial state of the current player's houses (0-5) for capture check.
+    # This is needed to verify if a house was empty *before* any seeds from this turn's move were dropped into it.
+    initial_house_you_for_capture_check = list(you_state[0:6])
+
+    seeds_to_sow = current_you[move_idx]
+    current_you[move_idx] = 0 # Empty the chosen house
+
+    # The game board can be thought of as a linear sequence of 13 holes for the current player:
+    # 0-5: current player's houses
+    # 6: current player's store
+    # 7-12: opponent's houses (opponent's store is skipped)
+    
+    current_logical_idx = move_idx # Start distributing seeds from the hole *after* the chosen one.
+    
+    # Track where the last seed landed to check for extra turns or captures.
+    last_landed_target_list = None # Reference to current_you or current_opponent
+    last_landed_target_idx = -1   # Index within that list
+
+    # Sowing loop
+    while seeds_to_sow > 0:
+        current_logical_idx += 1
+        
+        target_list = None
+        target_idx = -1
+
+        if current_logical_idx < 6: # My houses (0-5)
+            target_list = current_you
+            target_idx = current_logical_idx
+        elif current_logical_idx == 6: # My store (index 6)
+            target_list = current_you
+            target_idx = current_logical_idx
+        elif current_logical_idx < 13: # Opponent's houses (logical indices 7-12 map to actual opponent indices 0-5)
+            target_list = current_opponent
+            target_idx = current_logical_idx - 7
+        else: # Wrap around to my side, starting from my first house (logical index 0)
+            current_logical_idx = 0 
+            target_list = current_you
+            target_idx = current_logical_idx
+            
+        target_list[target_idx] += 1
+        seeds_to_sow -= 1
+        
+        last_landed_target_list = target_list
+        last_landed_target_idx = target_idx
+
+    extra_turn_gained = False
+    
+    # Check for an extra turn: last seed landed in current player's store.
+    if last_landed_target_list is current_you and last_landed_target_idx == 6:
+        extra_turn_gained = True
+            
+    # Check for capture:
+    # 1. Not an extra turn (capture and extra turn are mutually exclusive effects for the last seed).
+    # 2. Last seed landed in one of current player's own houses (0-5, not the store).
+    # 3. That house was empty *before* the start of this specific move (checked against `initial_house_you_for_capture_check`).
+    # 4. The opponent's opposite house has seeds.
+    if (not extra_turn_gained and
+        last_landed_target_list is current_you and
+        0 <= last_landed_target_idx <= 5 and
+        initial_house_you_for_capture_check[last_landed_target_idx] == 0):
+        
+        opposite_opp_house_idx = 5 - last_landed_target_idx
+        if current_opponent[opposite_opp_house_idx] > 0:
+            # Perform capture: Move seeds from current player's house and opponent's opposite house to current player's store.
+            captured_seeds = current_you[last_landed_target_idx] + current_opponent[opposite_opp_house_idx]
+            current_you[last_landed_target_idx] = 0
+            current_opponent[opposite_opp_house_idx] = 0
+            current_you[6] += captured_seeds
+
+    # Game end condition check and seed collection:
+    # The game ends when one player has no seeds in all of their houses (0-5).
+    # The other player moves all remaining seeds into their store.
+    
+    # Check if current player's houses are all empty
+    if sum(current_you[0:6]) == 0:
+        for i in range(6):
+            current_opponent[6] += current_opponent[i] # Opponent collects their remaining seeds
+            current_opponent[i] = 0
+    # Check if opponent's houses are all empty
+    elif sum(current_opponent[0:6]) == 0:
+        for i in range(6):
+            current_you[6] += current_you[i] # Current player collects their remaining seeds
+            current_you[i] = 0
+            
+    return current_you, current_opponent, extra_turn_gained
+
+# The main policy function that decides the best move.
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Selects the best move for the current player in Kalah.
+
+    Args:
+        you: The current player's board state (houses 0-5, store 6).
+        opponent: The opponent's board state (houses 0-5, store 6).
+
+    Returns:
+        An integer (0-5) representing the index of the house to move from.
+    """
+    best_overall_score = -math.inf # Initialize with a very low score
+    best_move = -1                 # Placeholder for the best move index
+
+    # Identify all legal moves (houses that are not empty).
+    legal_moves = [i for i, seeds in enumerate(you[0:6]) if seeds > 0]
+    
+    # Shuffle legal moves. This helps in tie-breaking when multiple moves yield the same score,
+    # preventing predictable play patterns and potentially making the AI harder to exploit.
+    random.shuffle(legal_moves) 
+
+    # Iterate through each possible legal move to evaluate its outcome.
+    for my_move in legal_moves:
+        # Simulate my chosen move.
+        temp_you, temp_opponent, extra_turn = simulate_move(you, opponent, my_move)
+
+        move_score = 0 # Initialize score for this specific move
+
+        if extra_turn:
+            # If my move results in an extra turn, I will play again.
+            # Perform a one-level lookahead for this extra turn, prioritizing immediate store gain.
+            
+            best_extra_turn_sub_score = -math.inf
+            legal_extra_moves = [i for i, seeds in enumerate(temp_you[0:6]) if seeds > 0]
+            
+            # If after my first move, I get an extra turn but have no seeds left in my houses,
+            # the game will end. `simulate_move` already handles collecting remaining seeds.
+            if not legal_extra_moves:
+                best_extra_turn_sub_score = temp_you[6] - temp_opponent[6] # Final score for this terminal state.
+            else:
+                # Simulate each possible move for my extra turn.
+                for extra_move_idx in legal_extra_moves:
+                    et_you, et_opponent, et_extra_turn = simulate_move(temp_you, temp_opponent, extra_move_idx)
+                    
+                    # Calculate the score for this specific extra turn path (my store - opponent store).
+                    current_et_score = et_you[6] - et_opponent[6]
+                    
+                    if et_extra_turn:
+                        # Give a bonus for potentially chaining even more extra turns.
+                        # This is a heuristic to encourage sequences of extra moves.
+                        current_et_score += EXTRA_TURN_BONUS 
+                    
+                    # Find the best score achievable from an extra turn.
+                    if current_et_score > best_extra_turn_sub_score:
+                        best_extra_turn_sub_score = current_et_score
+                
+            move_score = best_extra_turn_sub_score
+
+        else: # No extra turn, the turn passes to the opponent.
+            # We want to anticipate the opponent's best counter-move (which is usually the worst outcome for us).
+            
+            opponent_worst_outcome_for_me = math.inf # Initialize with a very high score (opponent tries to minimize this for me).
+            
+            opponent_legal_moves = [i for i, seeds in enumerate(temp_opponent[0:6]) if seeds > 0]
+            
+            # If the opponent has no legal moves, the game ends after my turn.
+            if not opponent_legal_moves:
+                opponent_worst_outcome_for_me = temp_you[6] - temp_opponent[6] # My score is simply final.
+            else:
+                # Simulate each possible move for the opponent.
+                for opp_move in opponent_legal_moves:
+                    # `simulate_move` expects the current player's (`opponent` in this context) state first.
+                    op_final_opp, op_final_you, opp_extra_turn = simulate_move(temp_opponent, temp_you, opp_move)
+                    
+                    # Calculate the score from my perspective (my_store - opponent_store) after the opponent's move.
+                    score_after_opp_move = op_final_you[6] - op_final_opp[6]
+
+                    if opp_extra_turn:
+                        # The opponent getting an extra turn is generally bad for me.
+                        # Apply a penalty to my score to reflect this negative outcome.
+                        score_after_opp_move -= EXTRA_TURN_BONUS
+                        
+                    # The opponent will choose the move that results in the lowest score for me.
+                    if score_after_opp_move < opponent_worst_outcome_for_me:
+                        opponent_worst_outcome_for_me = score_after_opp_move
+            
+            # My current move's overall score is the worst score I can expect after the opponent's optimal counterplay.
+            move_score = opponent_worst_outcome_for_me 
+
+        # Update the `best_overall_score` and `best_move` if this move is better.
+        if move_score > best_overall_score:
+            best_overall_score = move_score
+            best_move = my_move
+            
+    return best_move
+
+```

@@ -1,0 +1,436 @@
+The strategy for this policy is to implement a Greedy Search with Static Exchange Evaluation (SEE) and positional heuristics. Since implementing a full move generator for deep search is computationally expensive in pure Python within the time limit, the policy will focus on evaluating the immediate outcome of legal moves.
+
+The algorithm will:
+1.  **Parse Legal Moves**: Convert Standard Algebraic Notation (SAN) moves (e.g., `Nf3`, `exd5`, `O-O`) into concrete source and destination squares and identify captures/promotions.
+2.  **Simulate Moves**: Construct the resulting board state for each legal move.
+3.  **Evaluate Board State**:
+    *   **Material Balance**: Calculate the difference in material value using standard weights (P=10, N=30, B=30, R=50, Q=90, K=900).
+    *   **Positional Heuristics (PST)**: Add bonuses for piece development (e.g., Knights in the center, Pawns advancing) and King safety (e.g., King castled or on back rank).
+    *   **Static Exchange Evaluation (SEE)**: For captures, determine if the piece is protected. If moving to a square attacked by a defender of equal or lesser value, the capture is discouraged or penalized unless the net material gain is positive.
+4.  **Select Best Move**: Rank moves by the resulting evaluation score, prioritizing checkmates (inferred by King capture or overwhelming score), winning material, and safe development.
+
+<code>
+import sys
+import copy
+
+# --- Piece Values and Constants ---
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000,
+    'p': 100, 'n': 320, 'b': 330, 'r': 500, 'q': 900, 'k': 20000
+}
+
+# Simplified Piece-Square Tables (PST) for positional evaluation
+# Encourage center control and development
+PST = {
+    'P': [
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [50, 50, 50, 50, 50, 50, 50, 50],
+        [10, 10, 20, 30, 30, 20, 10, 10],
+        [5,  5, 10, 25, 25, 10,  5,  5],
+        [0,  0,  0, 20, 20,  0,  0,  0],
+        [5, -5,-10,  0,  0,-10, -5,  5],
+        [5, 10, 10,-20,-20, 10, 10,  5],
+        [0,  0,  0,  0,  0,  0,  0,  0]
+    ],
+    'N': [
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+        [-40,-20,  0,  0,  0,  0,-20,-40],
+        [-30,  0, 10, 15, 15, 10,  0,-30],
+        [-30,  5, 15, 20, 20, 15,  5,-30],
+        [-30,  0, 15, 20, 20, 15,  0,-30],
+        [-30,  5, 10, 15, 15, 10,  5,-30],
+        [-40,-20,  0,  5,  5,  0,-20,-40],
+        [-50,-40,-30,-30,-30,-30,-40,-50]
+    ],
+    # Generic tables for others simplified for speed
+    'B': [[-20,-10,-10,-10,-10,-10,-10,-20]] * 8,
+    'R': [[0,0,0,0,0,0,0,0]] * 8,
+    'Q': [[-20,-10,-10,-5,-5,-10,-10,-20]] * 8,
+    'K': [
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-20,-30,-30,-40,-40,-30,-30,-20],
+        [-10,-20,-20,-20,-20,-20,-20,-10],
+        [20, 20,  0,  0,  0,  0, 20, 20],
+        [20, 30, 10,  0,  0, 10, 30, 20]
+    ]
+}
+
+# Mirror tables for Black
+for p in PST:
+    PST[p.upper()] = PST[p] # White
+    # Create black tables by reversing rows
+    PST[p.lower()] = [row[:] for row in reversed(PST[p])]
+
+# --- Helper Functions ---
+
+def sq_to_coord(sq):
+    return ord(sq[0]) - ord('a'), int(sq[1]) - 1
+
+def coord_to_sq(f, r):
+    return chr(f + ord('a')) + str(r + 1)
+
+def get_piece_at(board, sq):
+    return board.get(sq, None)
+
+def is_color(piece, color):
+    return piece and piece[0] == color
+
+def piece_type(piece):
+    return piece[1] if piece else None
+
+def evaluate(board, color):
+    score = 0
+    my_c = color[0] # 'w' or 'b'
+    op_c = 'b' if my_c == 'w' else 'w'
+    
+    for sq, p_code in board.items():
+        f, r = sq_to_coord(sq)
+        p_type = p_code[1]
+        val = PIECE_VALUES[p_type]
+        
+        # Material
+        if p_code[0] == my_c:
+            score += val
+            # Positional
+            if p_type in PST:
+                score += PST[p_code][r][f]
+        else:
+            score -= val
+            if p_type in PST:
+                score += PST[p_code][r][f] # Note: PST logic handles sign implicitly if stored per color, but here we subtract.
+                # Actually simplified PST above: White is positive, Black is positive in black table.
+                # If I am White: +WhiteVal - BlackVal.
+                # If I am Black: +BlackVal - WhiteVal.
+                # Let's fix logic:
+                # score += (my_piece ? 1 : -1) * (Mat + Pos)
+                
+    # Re-evaluation loop for clarity
+    score = 0
+    for sq, p_code in board.items():
+        f, r = sq_to_coord(sq)
+        p_val = PIECE_VALUES[p_code[1]]
+        p_pos = 0
+        if p_code[1] in PST:
+             p_pos = PST[p_code][r][f]
+             
+        if p_code[0] == my_c:
+            score += (p_val + p_pos)
+        else:
+            score -= (p_val + p_pos)
+            
+    return score
+
+def get_attackers(board, sq, attacker_color):
+    attackers = []
+    f, r = sq_to_coord(sq)
+    
+    # Directions for sliding pieces
+    directions = {
+        'R': [(0,1), (0,-1), (1,0), (-1,0)],
+        'B': [(1,1), (1,-1), (-1,1), (-1,-1)],
+        'N': [(2,1), (2,-1), (-2,1), (-2,-1), (1,2), (1,-2), (-1,2), (-1,-2)],
+        'K': [(0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]
+    }
+    directions['Q'] = directions['R'] + directions['B']
+    
+    # Check sliding and stepping pieces
+    for p_type in ['Q', 'R', 'B', 'N', 'K']:
+        if p_type == 'N' or p_type == 'K':
+            dirs = directions[p_type]
+            for df, dr in dirs:
+                nf, nr = f + df, r + dr
+                if 0 <= nf < 8 and 0 <= nr < 8:
+                    target_sq = coord_to_sq(nf, nr)
+                    piece = get_piece_at(board, target_sq)
+                    if piece and piece[0] == attacker_color and piece[1] == p_type:
+                        attackers.append(piece)
+        else:
+            dirs = directions[p_type]
+            for df, dr in dirs:
+                nf, nr = f + df, r + dr
+                while 0 <= nf < 8 and 0 <= nr < 8:
+                    target_sq = coord_to_sq(nf, nr)
+                    piece = get_piece_at(board, target_sq)
+                    if piece:
+                        if piece[0] == attacker_color and piece[1] == p_type:
+                            attackers.append(piece)
+                        break # Blocked
+                    nf += df
+                    nr += dr
+
+    # Check Pawns
+    # Attacker White (at r-1) attacks sq. Attacker Black (at r+1) attacks sq.
+    pawn_dir = -1 if attacker_color == 'w' else 1
+    for df in [-1, 1]:
+        nf, nr = f + df, r + pawn_dir
+        if 0 <= nf < 8 and 0 <= nr < 8:
+            target_sq = coord_to_sq(nf, nr)
+            piece = get_piece_at(board, target_sq)
+            if piece and piece[0] == attacker_color and piece[1] == 'P':
+                attackers.append(piece)
+                
+    return attackers
+
+# --- Move Parsing and Simulation ---
+
+def simulate_move(board, move_str, to_play):
+    """
+    Parses SAN move string and returns the new board state.
+    Raises ValueError if move cannot be parsed or is illegal.
+    """
+    # Clone board
+    new_board = copy.deepcopy(board)
+    
+    my_c = to_play[0]
+    op_c = 'b' if my_c == 'w' else 'w'
+    
+    # Handle Castling
+    if move_str == 'O-O' or move_str == 'O-O+':
+        # King side
+        rank = '1' if my_c == 'w' else '8'
+        k_from = 'e' + rank
+        k_to = 'g' + rank
+        r_from = 'h' + rank
+        r_to = 'f' + rank
+        del new_board[k_from]
+        del new_board[r_from]
+        new_board[k_to] = my_c + 'K'
+        new_board[r_to] = my_c + 'R'
+        return new_board, k_to, None # Return dest sq of King for eval, no capture
+    
+    if move_str == 'O-O-O' or move_str == 'O-O-O+':
+        # Queen side
+        rank = '1' if my_c == 'w' else '8'
+        k_from = 'e' + rank
+        k_to = 'c' + rank
+        r_from = 'a' + rank
+        r_to = 'd' + rank
+        del new_board[k_from]
+        del new_board[r_from]
+        new_board[k_to] = my_c + 'K'
+        new_board[r_to] = my_c + 'R'
+        return new_board, k_to, None
+
+    # Clean string: remove +, #, !
+    clean_move = move_str.replace('+', '').replace('#', '').replace('!', '')
+    
+    # Check Promotion
+    promotion_piece = None
+    if '=' in clean_move:
+        base, promo = clean_move.split('=')
+        promotion_piece = my_c + promo
+    else:
+        base = clean_move
+        
+    is_capture = 'x' in base
+    
+    # Extract destination square
+    if is_capture:
+        # ex: Bxf5, exd5, axb8
+        parts = base.split('x')
+        dest_sq = parts[-1]
+        if len(dest_sq) > 2: # Handle axb8=Q case where base split weirdly? No, handled above.
+             # Actually logic above handles = first. So base is axb8.
+             pass
+        dest_sq = dest_sq[:2] # Just in case, though dest is always 2 chars
+    else:
+        # ex: Nf3, e4, Ra1
+        dest_sq = base[-2:]
+        
+    # Extract Piece Type
+    if base[0] in 'PNBRQK':
+        p_type = base[0]
+        disambig = base[1:-2] if len(base) > 3 else ''
+    else:
+        p_type = 'P'
+        disambig = base[:-2] # e.g. 'a' in 'axb5' or 'e' in 'e4' (empty)
+        
+    # Find Source Square
+    # We must find a piece of my color, type p_type, that can reach dest_sq
+    # matching disambiguation (file/rank).
+    
+    src_sq = None
+    moved_piece_code = my_c + p_type
+    
+    df, dr = sq_to_coord(dest_sq)
+    
+    # Iterate over board to find candidates
+    candidates = []
+    for sq, pc in board.items():
+        if pc != moved_piece_code:
+            continue
+            
+        # Check disambiguation
+        if disambig:
+            if len(disambig) == 1: # File or Rank
+                if disambig in 'abcdefgh' and sq[0] != disambig: continue
+                if disambig in '12345678' and sq[1] != disambig: continue
+            elif len(disambig) == 2: # File and Rank (rare, usually specific)
+                if sq != disambig: continue
+                
+        sf, sr = sq_to_coord(sq)
+        
+        # Geometric Validation
+        valid_geom = False
+        if p_type == 'N':
+            if (abs(df-sf)==2 and abs(dr-sr)==1) or (abs(df-sf)==1 and abs(dr-sr)==2):
+                valid_geom = True
+        elif p_type == 'K':
+            if abs(df-sf) <= 1 and abs(dr-sr) <= 1:
+                valid_geom = True
+        elif p_type in 'RQ':
+            if df == sf or dr == sr: # Straight
+                # Check path clear
+                valid_geom = True
+                step_f = 0 if df == sf else (1 if df > sf else -1)
+                step_r = 0 if dr == sr else (1 if dr > sr else -1)
+                cf, cr = sf + step_f, sr + step_r
+                while (cf, cr) != (df, dr):
+                    if get_piece_at(board, coord_to_sq(cf, cr)):
+                        valid_geom = False; break
+                    cf += step_f; cr += step_r
+        elif p_type in 'BQ':
+            if abs(df-sf) == abs(dr-sr): # Diagonal
+                valid_geom = True
+                step_f = 1 if df > sf else -1
+                step_r = 1 if dr > sr else -1
+                cf, cr = sf + step_f, sr + step_r
+                while (cf, cr) != (df, dr):
+                    if get_piece_at(board, coord_to_sq(cf, cr)):
+                        valid_geom = False; break
+                    cf += step_f; cr += step_r
+        elif p_type == 'P':
+            direction = -1 if my_c == 'w' else 1
+            # Move
+            if not is_capture:
+                if sf == df:
+                    if sr + direction == dr: valid_geom = True
+                    if (sr == 6 and my_c == 'w' or sr == 1 and my_c == 'b') and sr + 2*direction == dr: valid_geom = True
+            # Capture
+            else:
+                if abs(sf - df) == 1 and sr + direction == dr:
+                    valid_geom = True
+        
+        if valid_geom:
+            candidates.append(sq)
+            
+    if len(candidates) != 1:
+        # Should be 1 if move is legal. If 0, parsing fail. If >1, disambig fail.
+        # Fallback: pick first, though legal_moves ensures validity.
+        # However, for En Passant, the dest might be empty.
+        # Logic above holds for EP pawn capture geometry.
+        src_sq = candidates[0] if candidates else None
+    else:
+        src_sq = candidates[0]
+        
+    if not src_sq:
+        # Should not happen with legal_moves input
+        return None, None, None 
+
+    # Apply Move
+    del new_board[src_sq]
+    
+    captured_code = None
+    if is_capture:
+        target_content = get_piece_at(board, dest_sq)
+        # Standard capture
+        if target_content:
+            captured_code = target_content
+            del new_board[dest_sq]
+        # En Passant capture (pawn captures to empty square)
+        elif p_type == 'P' and not target_content:
+            # Remove the pawn behind dest_sq
+            ep_rank = '3' if my_c == 'w' else '6' # The pawn being captured is on this rank relative to mover?
+            # If White moves e5xd6, captured pawn is d5.
+            # If Black moves e4xd3, captured pawn is d4.
+            cap_sq = dest_sq[0] + str(int(dest_sq[1]) - (-1 if my_c == 'w' else 1))
+            # Verify pawn exists there (sanity)
+            if cap_sq in new_board:
+                 del new_board[cap_sq]
+                 captured_code = 'wP' if my_c == 'b' else 'bP'
+            
+    # Place piece
+    if promotion_piece:
+        new_board[dest_sq] = promotion_piece
+    else:
+        new_board[dest_sq] = moved_piece_code
+        
+    return new_board, dest_sq, captured_code
+
+# --- Main Policy ---
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    """
+    Selects the best move from legal_moves.
+    """
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    my_c = to_play[0]
+    op_c = 'b' if my_c == 'w' else 'w'
+    
+    # Shuffle to add variety if scores equal
+    # (Optional, but good for testing)
+    # import random
+    # random.shuffle(legal_moves)
+    
+    for move in legal_moves:
+        try:
+            new_board, dest_sq, captured = simulate_move(pieces, move, to_play)
+            if not new_board:
+                # Failed to parse, skip (should not happen)
+                continue
+            
+            # 1. Material Evaluation
+            score = evaluate(new_board, to_play)
+            
+            # 2. Safety / Static Exchange Evaluation (SEE)
+            # If the piece we moved is now under attack by an opponent piece of lesser or equal value,
+            # it might be a bad trade.
+            
+            # Only perform SEE if there is a piece on dest_sq (always true, we just moved there)
+            moved_piece = get_piece_at(new_board, dest_sq)
+            val_moved = PIECE_VALUES[moved_piece[1]]
+            
+            attackers = get_attackers(new_board, dest_sq, op_c)
+            if attackers:
+                # Find weakest attacker
+                min_attacker_val = min(PIECE_VALUES[a[1]] for a in attackers)
+                
+                # If capture:
+                if captured:
+                    val_captured = PIECE_VALUES[captured[1]]
+                    # If val_moved > min_attacker_val: we lose material in the trade (assuming recapture)
+                    # Example: I take Pawn (100) with Knight (320). Pawn takes Knight (320). Net: -220.
+                    # Penalty = min_attacker_val - val_captured
+                    # If penalty > 0, it's a bad trade.
+                    penalty = min_attacker_val - val_captured
+                    if penalty > 0:
+                        score -= penalty
+                else:
+                    # Moving to a square defended by opponent
+                    # If we move a Queen to a square attacked by a Pawn, bad.
+                    if val_moved > min_attacker_val:
+                        # Discourage hanging pieces
+                        score -= (val_moved - min_attacker_val) + 50
+            
+            # 3. Checkmate Heuristic
+            # If the move results in the opponent having no legal moves?
+            # We can't generate opponent moves, so we assume high score implies winning.
+            # However, if we captured the King (not in standard chess, but some arenas allow it or represent it as winning),
+            # or if we see the King is gone (bug in some engines), handle it.
+            # Standard chess: King is never captured.
+            
+            if score > best_score:
+                best_score = score
+                best_move = move
+                
+        except Exception as e:
+            # Fallback: if error in parsing/logic, just pick the move as is or skip
+            # To ensure we always return a legal move, we can fallback to current best or iterate
+            pass
+            
+    return best_move
+</code>

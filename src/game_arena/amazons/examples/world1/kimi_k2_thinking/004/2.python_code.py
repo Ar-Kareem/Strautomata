@@ -1,0 +1,137 @@
+
+import numpy as np
+
+# Precomputed directions for queen-like movement
+_DIRECTIONS = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+
+# Center squares for quick lookup
+_CENTER_SQUARES = {(2,2), (2,3), (3,2), (3,3)}
+
+def policy(board):
+    """
+    Main decision function for Amazons policy.
+    Returns a legal move string in format "fr,fc:tr,tc:ar,ac"
+    """
+    # Generate all legal moves for the current player
+    moves = _generate_moves(board)
+    
+    # Fallback for terminal positions
+    if not moves:
+        # Attempt to find any legal move
+        for p in np.argwhere(board == 1):
+            from_pos = (int(p[0]), int(p[1]))
+            for dr, dc in _DIRECTIONS:
+                r, c = from_pos[0] + dr, from_pos[1] + dc
+                if 0 <= r < 6 and 0 <= c < 6 and board[r, c] == 0:
+                    temp = board.copy()
+                    temp[from_pos] = 0
+                    temp[r, c] = 1
+                    arrows = _get_moves_from((r, c), temp)
+                    if arrows:
+                        return _format_move((from_pos, (r, c), arrows[0]))
+        return "0,0:0,0:0,0"
+    
+    # Evaluate moves and select best
+    best_move = moves[0]
+    best_score = float('-inf')
+    
+    for move in moves:
+        score = _evaluate_move(board, move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return _format_move(best_move)
+
+def _generate_moves(board):
+    """Generate all legal moves for player 1 amazons."""
+    moves = []
+    my_amazons = np.argwhere(board == 1)
+    
+    for amazon in my_amazons:
+        from_pos = (int(amazon[0]), int(amazon[1]))
+        # Get all valid destinations for this amazon
+        for dest in _get_moves_from(from_pos, board):
+            # Create temporary board after moving amazon
+            temp_board = board.copy()
+            temp_board[from_pos] = 0
+            temp_board[dest] = 1
+            
+            # Get all valid arrow shots from destination
+            for arrow in _get_moves_from(dest, temp_board):
+                moves.append((from_pos, dest, arrow))
+    
+    return moves
+
+def _get_moves_from(pos, board):
+    """Get all valid destinations from a position (queen-like movement)."""
+    moves = []
+    r, c = pos
+    for dr, dc in _DIRECTIONS:
+        cr, cc = r + dr, c + dc
+        while 0 <= cr < 6 and 0 <= cc < 6 and board[cr, cc] == 0:
+            moves.append((cr, cc))
+            cr += dr
+            cc += dc
+    return moves
+
+def _evaluate_move(board, move):
+    """
+    Fast heuristic evaluation of a move.
+    Combines mobility difference, territory control, and center bonuses.
+    """
+    from_pos, dest, arrow = move
+    
+    # Apply move to board
+    new_board = board.copy()
+    new_board[from_pos] = 0
+    new_board[dest] = 1
+    new_board[arrow] = -1
+    
+    # Mobility calculation: total reachable squares for each player
+    my_mobility = _calculate_total_mobility(new_board, 1)
+    opp_mobility = _calculate_total_mobility(new_board, 2)
+    mobility_score = my_mobility - opp_mobility
+    
+    # Territory control: empty squares within 2 steps of amazons
+    my_territory = _count_territory(new_board, 1)
+    opp_territory = _count_territory(new_board, 2)
+    territory_score = my_territory - opp_territory
+    
+    # Center control bonus for destination
+    center_bonus = 15 if dest in _CENTER_SQUARES else (
+        5 if max(abs(dest[0] - 2.5), abs(dest[1] - 2.5)) <= 1.5 else 0
+    )
+    
+    # Arrow placement bonus
+    arrow_bonus = 8 if arrow in _CENTER_SQUARES else 0
+    
+    # Weighted combination of heuristics
+    return mobility_score * 4 + territory_score * 3 + center_bonus + arrow_bonus
+
+def _calculate_total_mobility(board, player):
+    """Calculate total number of reachable squares for all amazons of a player."""
+    total = 0
+    for p in np.argwhere(board == player):
+        total += len(_get_moves_from((int(p[0]), int(p[1])), board))
+    return total
+
+def _count_territory(board, player):
+    """
+    Count territory: number of empty squares within Chebyshev distance 2
+    of any amazon belonging to the player.
+    """
+    territory = 0
+    for p in np.argwhere(board == player):
+        r, c = int(p[0]), int(p[1])
+        # Check squares in 2-square radius
+        for i in range(max(0, r-2), min(6, r+3)):
+            for j in range(max(0, c-2), min(6, c+3)):
+                if board[i, j] == 0:
+                    territory += 1
+    return territory
+
+def _format_move(move):
+    """Convert move tuple to string format."""
+    from_pos, dest, arrow = move
+    return f"{from_pos[0]},{from_pos[1]}:{dest[0]},{dest[1]}:{arrow[0]},{arrow[1]}"

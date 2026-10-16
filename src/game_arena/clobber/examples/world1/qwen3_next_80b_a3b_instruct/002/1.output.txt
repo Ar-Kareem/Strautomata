@@ -1,0 +1,138 @@
+The strategy is to implement a simple but effective heuristic for Clobber that prioritizes moves that maximize immediate gain while maintaining flexibility. Since Clobber is a partisan impartial game where players alternate and aim to force the opponent into a position with no legal moves, our goal is to choose a move that:
+
+1. Is guaranteed legal (as per problem constraints, at least one exists).
+2. Maximizes the number of opponent pieces captured in the long term by selecting moves that potentially open up more future moves.
+3. Prefers moves that leave our pieces in positions with more adjacent opponent pieces (i.e., increasing future move options).
+4. If multiple moves are equally good, choose one deterministically (e.g., row-major order) for consistency.
+
+A good heuristic:
+- For each of your pieces, check all four orthogonal directions.
+- For each direction, if there's an opponent piece, it's a valid move.
+- Among all valid moves, prefer those where the opponent piece is adjacent to multiple of your pieces (i.e., captures that remove a "hub" piece that might be blocking multiple of your pieces from moving).
+- Alternatively, prioritize moves that capture opponent pieces that have few escape options themselves (i.e., opponent pieces with low degree in the graph of adjacent opponent pieces), as removing them reduces opponent mobility more.
+- If no clear preference, fall back to the first legal move found in row-major order (top-left to bottom-right).
+
+However, for simplicity and robustness, we'll use a "greedy depth-1" heuristic: choose the move that captures an opponent piece that has the fewest adjacent opponent pieces (to remove a vulnerable piece and reduce opponent moves). If there's a tie, pick the one that appears earliest in row-major order.
+
+We'll compute for each opponent piece, how many adjacent opponent pieces it has (its "degree"). Then, for each possible move (your piece → adjacent opponent piece), we calculate the degree of the opponent piece being captured. We choose the move that captures the opponent piece with the lowest degree (if degree 0, it's isolated and good to remove; if higher, it's connected and removing it might break up clusters).
+
+But note: if an opponent piece has degree 0, removing it doesn't help opponent mobility much—it’s already isolated. Actually, removing a high-degree opponent piece might be better, as it was a hub.
+
+Actually, in Clobber, capturing a piece that has many neighbors might break up a cluster and create more open space for your pieces to move. So perhaps we want to capture opponent pieces with higher degrees? However, the goal is to minimize opponent's legal moves. Removing a piece with fewer adjacent opponent pieces might free up space that your other pieces can use to make more moves, while removing a central opponent piece might break up their formation.
+
+Standard wisdom in Clobber AI: capture opponent pieces that have low mobility (few adjacent empty or enemy squares) to reduce their options. But since we only care about immediate and future opponent mobility, we can use:
+
+**Heuristic**: Among all legal moves, choose the one that captures an opponent piece which has the **minimum number of adjacent opponent pieces**. Why? Because such pieces are more "endangered" or "isolated" — removing them doesn't disrupt their structure much but does remove a potential future target. Alternatively, capturing a piece with many neighbors may be more impactful because you’re removing a central node.
+
+But here's a more reliable heuristic from known Clobber AI research: prioritize moves that maximize the number of future moves available to you. Since we can't search deeply, use a light heuristic: count for each possible move, how many future moves your piece will have from the destination square after the capture. But that requires looking ahead, which we can do cheaply.
+
+Plan:
+1. Enumerate all possible legal moves.
+2. For each move (from (r,c) to (nr,nc) capturing opponent at (nr,nc)):
+   - After the move, your piece is at (nr,nc), and the square (r,c) is empty.
+   - Check how many adjacent opponent pieces are now adjacent to your piece at (nr,nc) — this is the number of future captures you can make from that square.
+   - Also consider: if the captured opponent piece had many adjacent opponent pieces, removing it might free up your other pieces.
+   - But we can't easily simulate that.
+
+Simplest effective approach: Choose the move that captures an opponent piece with the **least** number of adjacent opponent pieces. This is because such a piece is more "exposed" and removing it might not block your own future mobility. It's a greedy "remove weakest" strategy.
+
+Alternative (and more commonly used in simple Clobber AIs): pick the move that captures an opponent piece with the **highest** number of adjacent opponent pieces — to break up clusters. I’ll go with this because it reduces opponent connectivity more.
+
+Actually, let me test this reasoning: if an opponent piece is surrounded by 3 other opponent pieces, then it’s a hub. Capturing it leaves your piece in the middle of an opponent cluster, which may allow you to capture multiple pieces in a chain. So we prefer to capture high-degree opponent pieces.
+
+So heuristic:
+- For each legal move (your piece at (r,c) captures opponent at (nr,nc)):
+   - Count the number of opponent pieces adjacent (up/down/left/right) to (nr,nc). (This is the "degree" of the opponent piece in the opponent's graph.)
+   - Choose the move with the **maximum** such degree.
+   - If tie, pick the one with the earliest row, then earliest column (row-major order).
+
+But what if multiple legal moves capture opponent pieces with the same high degree? Then we pick the first one in row-major order (iterate rows 0 to 4, cols 0 to 5).
+
+This is computationally cheap and should work well.
+
+Steps for policy():
+1. Precompute the opponent adjacency degrees for every opponent piece.
+2. For every cell (r, c) where you have a piece, check the 4 directions.
+3. For each direction, if the neighbor has an opponent piece, then it's a candidate move.
+4. Among candidate moves, record the degree of the opponent piece at the target.
+5. Select the candidate with the highest opponent degree. In case of tie, choose the one with smallest row, then smallest column.
+
+Edge: if no moves, we'd have a problem, but problem says at least one exists.
+
+Let’s code accordingly.
+
+We'll use numpy for easier array handling (but it's optional, could use list comprehensions).
+
+Note: board is 5x6.
+
+Example: 
+  opponent[r][c] == 1 means opponent has piece there.
+
+For a cell (i,j), adjacent opponent pieces count:
+  for each of (i-1,j), (i+1,j), (i,j-1), (i,j+1), if within bounds and opponent[i'][j'] == 1, count += 1.
+
+We'll precompute a 5x6 grid `opp_degree` where `opp_degree[i][j] = number of opponent neighbors of (i,j)` for opponent pieces only (if opponent[i][j] == 0, we don't care, but we can compute it anyway).
+
+Then:
+  For each (r,c) in you (you[r][c] == 1), look at 4 directions:
+      dr,dc = (-1,0), (0,1), (1,0), (0,-1)
+      nr, nc = r+dr, c+dc
+      if in bounds and opponent[nr][nc] == 1:
+          candidate = (r, c, direction_str), with opponent_degree[nr][nc]
+
+Then pick max degree, then min row, then min col.
+
+Let's code accordingly.
+
+<code>
+import numpy as np
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    # Convert to numpy arrays for easier handling (5x6)
+    you = np.array(you).reshape(5, 6)
+    opponent = np.array(opponent).reshape(5, 6)
+    
+    # Precompute opponent degree (number of adjacent opponent pieces) for all opponent positions
+    opp_degree = np.zeros((5, 6), dtype=int)
+    # Directions: up, right, down, left
+    dirs = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+    
+    # For each cell that is occupied by opponent, count adjacent opponent pieces
+    for r in range(5):
+        for c in range(6):
+            if opponent[r, c] == 1:
+                count = 0
+                for dr, dc in dirs:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 5 and 0 <= nc < 6 and opponent[nr, nc] == 1:
+                        count += 1
+                opp_degree[r, c] = count
+    
+    best_move = None
+    best_degree = -1  # Will hold the max opponent degree we capture
+    best_row, best_col = 10, 10  # Initialize to invalid, for tie-breaking
+    
+    # Iterate over your pieces in row-major order (0,0) to (4,5)
+    for r in range(5):
+        for c in range(6):
+            if you[r, c] == 1:
+                # Check all four directions for opponent pieces
+                for idx, (dr, dc) in enumerate(dirs):
+                    nr, nc = r + dr, c + dc
+                    # Check bounds and opponent piece
+                    if 0 <= nr < 5 and 0 <= nc < 6 and opponent[nr, nc] == 1:
+                        degree = opp_degree[nr, nc]
+                        # Check if this move is better than the current best
+                        # If degree is higher, it's better
+                        # If equal, prefer smaller row then smaller col (row-major first)
+                        if (degree > best_degree or 
+                            (degree == best_degree and (r < best_row or (r == best_row and c < best_col)))):
+                            best_degree = degree
+                            best_row, best_col = r, c
+                            # Map direction index to letter
+                            direction_char = ['U', 'R', 'D', 'L'][idx]
+                            best_move = f"{r},{c},{direction_char}"
+    
+    # Since we're guaranteed at least one legal move, best_move must be set
+    return best_move
+</code>

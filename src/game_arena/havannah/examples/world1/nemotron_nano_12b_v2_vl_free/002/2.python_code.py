@@ -1,0 +1,158 @@
+
+from collections import defaultdict, deque
+
+def get_hex_neighbors(r, c):
+    # Define the possible hexagonal neighbor offsets
+    directions = [
+        (-1, 0), (1, 0),
+        (0, 1), (0, -1),
+        (-1, -1), (1, -1),
+        (-1, 1), (1, 1)
+    ]
+    neighbors = []
+    for dr, dc in directions:
+        nr = r + dr
+        nc = c + dc
+        if 0 <= nr < 15 and 0 <= nc < 15:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def find(node, parent):
+    if parent[node] != node:
+        parent[node] = find(parent[node], parent)
+    return parent[node]
+
+def union(a, b, parent, rank):
+    a_root = find(a, parent)
+    b_root = find(b, parent)
+    if a_root == b_root:
+        return
+    if rank[a_root] < rank[b_root]:
+        parent[a_root] = b_root
+    else:
+        parent[b_root] = a_root
+        if rank[a_root] == rank[b_root]:
+            rank[a_root] += 1
+
+def build_dsu(cells):
+    parent = {}
+    rank = defaultdict(int)
+    for cell in cells:
+        parent[cell] = cell
+        rank[cell] = 0
+    # Connect each cell with its adjacent cells in the current set
+    for cell in cells:
+        for neighbor in get_hex_neighbors(cell[0], cell[1]):
+            if neighbor in parent:
+                union(cell, neighbor, parent, rank)
+    return parent, rank
+
+def compute_touches_edges(node):
+    r, c = node
+    edges = set()
+    # Check if the node is on any edge (excluding corners)
+    if c == 0:
+        if node not in {(0, 0), (14, 0)}:
+            edges.add('left')
+    elif c == 14:
+        if node not in {(0, 14), (14, 14)}:
+            edges.add('right')
+    if r == 0:
+        if node not in {(0, 0), (0, 14)}:
+            edges.add('top')
+    elif r == 14:
+        if node not in {(14, 0), (14, 14)}:
+            edges.add('bottom')
+    return edges
+
+def check_ring(cell, me_parent, me_rank, me_set):
+    r, c = cell
+    adj_existing = []
+    for neighbor in get_hex_neighbors(r, c):
+        if neighbor in me_set:
+            adj_existing.append(neighbor)
+    # Check all pairs of adjacent existing stones to see if they are connected
+    for i in range(len(adj_existing)):
+        for j in range(i + 1, len(adj_existing)):
+            a = adj_existing[i]
+            b = adj_existing[j]
+            if find(a, me_parent) == find(b, me_parent):
+                return True
+    return False
+
+def check_bridge(cell, me_parent, me_rank, me_set):
+    # Create a temporary DSU including the new cell
+    new_parent = dict(me_parent)
+    new_rank = dict(me_rank)
+    new_parent[cell] = cell
+    new_rank[cell] = 0
+    # Connect new cell to its adjacent me stones
+    for neighbor in get_hex_neighbors(cell[0], cell[1]):
+        if neighbor in me_parent:
+            union(cell, neighbor, new_parent, new_rank)
+    # Check corners connected in the new DSU
+    corners = {(0, 0), (0, 14), (14, 0), (14, 14)}
+    corners_in_new = [corner for corner in corners if corner in new_parent]
+    if len(corners_in_new) < 2:
+        return False
+    # Check all pairs of corners
+    for i in range(len(corners_in_new)):
+        for j in range(i + 1, len(corners_in_new)):
+            a = corners_in_new[i]
+            b = corners_in_new[j]
+            if find(a, new_parent) == find(b, new_parent):
+                return True
+    return False
+
+def check_fork(cell, me_parent, me_rank, me_set):
+    edges = {'left', 'right', 'top', 'bottom'}
+    edge_touches = set()
+    # Simulate adding the new cell and build its DSU
+    new_parent = dict(me_parent)
+    new_parent[cell] = cell
+    new_rank = dict(me_rank)
+    new_rank[cell] = 0
+
+    def is_connected(a, b):
+        return find(a, new_parent) == find(b, new_parent)
+
+    # Propagate edges through connected component
+    edges_touched = set()
+    stack = [cell]
+    visited = set()
+    visited.add(cell)
+    while stack:
+        current = stack.pop()
+        touched = compute_touches_edges(current)
+        edges_touched.update(touched)
+        for neighbor in get_hex_neighbors(current[0], current[1]):
+            if neighbor in new_parent and neighbor in me_set and neighbor not in visited:
+                visited.add(neighbor)
+                stack.append(neighbor)
+    return len(edges_touched) >= 3
+
+def policy(me, opp, valid_mask):
+    # Precompute DSU for current me
+    me_set = set(me)
+    # Precompute DSU for current me
+    me_parent, me_rank = build_dsu(me_set)
+    # Find all valid cells
+    valid_cells = []
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c]:
+                valid_cells.append((r, c))
+    # Prioritize ring moves first
+    for cell in valid_cells:
+        if check_ring(cell, me_parent, me_rank, me_set):
+            return cell
+    # Check bridge moves
+    for cell in valid_cells:
+        if check_bridge(cell, me_parent, me_rank, me_set):
+            return cell
+    # Check fork moves (optional due to complexity, but included for completeness)
+    for cell in valid_cells:
+        if check_fork(cell, me_parent, me_rank, me_set):
+            return cell
+    # No winning move found, return the first valid move
+    return valid_cells[0] if valid_cells else (0, 0)

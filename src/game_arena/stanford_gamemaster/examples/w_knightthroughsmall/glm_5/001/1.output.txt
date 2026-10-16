@@ -1,0 +1,141 @@
+Looking at this game, I need to implement a strategy for Knightthroughsmall where:
+- 6x6 board with knights that can only move forward
+- White moves toward row 6, Black toward row 1
+- First to reach opponent's starting row wins
+- Knights can capture by landing on opponent pieces
+
+**Strategy:**
+1. **Immediate win detection** - If any move reaches the goal row, take it instantly
+2. **Minimax with alpha-beta pruning** - Use depth-limited search to evaluate positions
+3. **Move ordering** - Prioritize winning moves, captures, and advances for better pruning
+4. **Position evaluation** - Score based on how close pieces are to the goal
+
+The key insight is that this is a race game - advancing pieces toward the goal while blocking/capturing opponent threats. Minimax helps find forced wins and avoid blunders.
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    cols = 'abcdef'
+    col_idx = {c: i for i, c in enumerate(cols)}
+    
+    # Parse board
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            c, r, color = prop[1], int(prop[2]), prop[3]
+            board[(col_idx[c], r)] = color
+    
+    is_white = (role == "white")
+    goal = 6 if is_white else 1
+    
+    WHITE_DELTAS = [(2, -1), (2, 1), (1, -2), (1, 2)]
+    BLACK_DELTAS = [(-2, -1), (-2, 1), (-1, -2), (-1, 2)]
+    
+    def get_moves(b, white):
+        deltas = WHITE_DELTAS if white else BLACK_DELTAS
+        my = "white" if white else "black"
+        opp = "black" if white else "white"
+        result = []
+        for (pc, pr), col in list(b.items()):
+            if col != my:
+                continue
+            for dr, dc in deltas:
+                nr, nc = pr + dr, pc + dc
+                if 1 <= nr <= 6 and 0 <= nc < 6:
+                    target = b.get((nc, nr))
+                    if target is None or target == opp:
+                        result.append((pc, pr, nc, nr))
+        return result
+    
+    def apply(b, m):
+        new_b = dict(b)
+        pc, pr, nc, nr = m
+        col = new_b.pop((pc, pr))
+        new_b[(nc, nr)] = col
+        return new_b
+    
+    def is_win(b, white):
+        goal_r = 6 if white else 1
+        color = "white" if white else "black"
+        for (c, r), col in b.items():
+            if r == goal_r and col == color:
+                return True
+        return False
+    
+    def eval_pos(b):
+        if is_win(b, True):
+            return 10000
+        if is_win(b, False):
+            return -10000
+        score = 0
+        for (c, r), col in b.items():
+            if col == "white":
+                score += r * 10
+            else:
+                score -= (7 - r) * 10
+        return score
+    
+    def order_moves(moves, b, white):
+        goal_r = 6 if white else 1
+        def score(m):
+            pc, pr, nc, nr = m
+            s = 0
+            if nr == goal_r:
+                s += 10000
+            if (nc, nr) in b:
+                s += 1000
+            s += nr * 10 if white else (7 - nr) * 10
+            return s
+        return sorted(moves, key=score, reverse=True)
+    
+    def minimax(b, white, depth, alpha, beta):
+        if is_win(b, True):
+            return 10000 - depth
+        if is_win(b, False):
+            return -10000 + depth
+        if depth == 0:
+            return eval_pos(b)
+        
+        moves = get_moves(b, white)
+        if not moves:
+            return eval_pos(b)
+        
+        moves = order_moves(moves, b, white)
+        
+        if white:
+            val = -99999
+            for m in moves:
+                val = max(val, minimax(apply(b, m), False, depth - 1, alpha, beta))
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return val
+        else:
+            val = 99999
+            for m in moves:
+                val = min(val, minimax(apply(b, m), True, depth - 1, alpha, beta))
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return val
+    
+    moves = get_moves(board, is_white)
+    if not moves:
+        return "move(a,1,b,3)"
+    
+    # Immediate win check
+    for m in moves:
+        if m[3] == goal:
+            return f"move({cols[m[0]]},{m[1]},{cols[m[2]]},{m[3]})"
+    
+    # Minimax with depth 4
+    moves = order_moves(moves, board, is_white)
+    best, best_score = moves[0], -99999 if is_white else 99999
+    for m in moves:
+        score = minimax(apply(board, m), not is_white, 4, -99999, 99999)
+        if is_white and score > best_score:
+            best, best_score = m, score
+        elif not is_white and score < best_score:
+            best, best_score = m, score
+    
+    return f"move({cols[best[0]]},{best[1]},{cols[best[2]]},{best[3]})"
+</code>

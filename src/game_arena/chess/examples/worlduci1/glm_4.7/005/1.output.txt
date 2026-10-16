@@ -1,0 +1,446 @@
+The strategy for this policy is to utilize an Alpha-Beta Minimax search algorithm with a depth of 2 plies to evaluate the current chess position. The evaluation function combines material balance using standard piece weights (Pawn=10, Knight=30, etc.) with positional heuristics derived from simplified Piece-Square Tables, incentivizing center control and piece activity. The move generator constructs pseudo-legal moves for all pieces and filters them by ensuring the King does not move into or through check, handling standard moves, pawn promotions (always to Queen for simplicity and value), and castling (validating path clearance and safety). To adhere to the 1-second time limit, moves are sorted by capture value to maximize alpha-beta pruning efficiency.
+
+<code>
+import random
+import math
+
+# Constants
+WHITE = 1
+BLACK = -1
+EMPTY = 0
+
+# Piece encoding: Abs value represents type, Sign represents color
+# 1: King, 2: Queen, 3: Rook, 4: Bishop, 5: Knight, 6: Pawn
+PIECE_VALUES = {1: 20000, 2: 900, 3: 500, 4: 330, 5: 320, 6: 100}
+
+# Simplified Piece-Square Tables (PST) for positional evaluation
+# Values are symmetric for black by reversing index
+PST = {
+    6: [ # Pawn
+        0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5, -5,-10,  0,  0,-10, -5,  5,
+        5, 10, 10,-20,-20, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ],
+    5: [ # Knight
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50
+    ],
+    4: [ # Bishop
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  5,  5, 10, 10,  5,  5,-10,
+        -10,  0, 10, 10, 10, 10,  0,-10,
+        -10, 10, 10, 10, 10, 10, 10,-10,
+        -10,  5,  0,  0,  0,  0,  5,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20
+    ],
+    3: [ # Rook
+        0,  0,  0,  0,  0,  0,  0,  0,
+        5, 10, 10, 10, 10, 10, 10,  5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        0,  0,  0,  5,  5,  0,  0,  0
+    ],
+    2: [ # Queen
+        -20,-10,-10, -5, -5,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5,  5,  5,  5,  0,-10,
+        -5,  0,  5,  5,  5,  5,  0, -5,
+        0,  0,  5,  5,  5,  5,  0, -5,
+        -10,  5,  5,  5,  5,  5,  0,-10,
+        -10,  0,  5,  0,  0,  0,  0,-10,
+        -20,-10,-10, -5, -5,-10,-10,-20
+    ],
+    1: [ # King (Midgame preference)
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -20,-30,-30,-40,-40,-30,-30,-20,
+        -10,-20,-20,-20,-20,-20,-20,-10,
+        20, 20,  0,  0,  0,  0, 20, 20,
+        20, 30, 10,  0,  0, 10, 30, 20
+    ]
+}
+
+# Offsets for move generation
+KNIGHT_DELTAS = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+KING_DELTAS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+ROOK_DELTAS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+BISHOP_DELTAS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def square_to_idx(sq):
+    """Convert algebraic notation (e.g., 'e4') to board index (0-63)."""
+    row = 8 - int(sq[1])
+    col = ord(sq[0]) - ord('a')
+    return row * 8 + col
+
+def idx_to_square(idx):
+    """Convert board index (0-63) to algebraic notation."""
+    row = idx // 8
+    col = idx % 8
+    return chr(col + ord('a')) + str(8 - row)
+
+def parse_pieces(pieces_dict):
+    """Convert the input dictionary to a 64-element list board representation."""
+    board = [EMPTY] * 64
+    for sq, p_code in pieces_dict.items():
+        color = WHITE if p_code[0] == 'w' else BLACK
+        p_type = {'K': 1, 'Q': 2, 'R': 3, 'B': 4, 'N': 5, 'P': 6}[p_code[1]]
+        board[square_to_idx(sq)] = color * p_type
+    return board
+
+def is_on_board(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def is_attacked(board, r, c, attacker_color):
+    """Check if square (r,c) is attacked by any piece of attacker_color."""
+    # Pawn attacks
+    pawn_dir = -1 if attacker_color == WHITE else 1
+    if is_on_board(r + pawn_dir, c - 1) and board[(r + pawn_dir) * 8 + (c - 1)] == attacker_color * 6: return True
+    if is_on_board(r + pawn_dir, c + 1) and board[(r + pawn_dir) * 8 + (c + 1)] == attacker_color * 6: return True
+
+    # Knight attacks
+    for dr, dc in KNIGHT_DELTAS:
+        nr, nc = r + dr, c + dc
+        if is_on_board(nr, nc) and board[nr * 8 + nc] == attacker_color * 5: return True
+
+    # King attacks
+    for dr, dc in KING_DELTAS:
+        nr, nc = r + dr, c + dc
+        if is_on_board(nr, nc) and board[nr * 8 + nc] == attacker_color * 1: return True
+
+    # Sliding attacks (Rook/Queen)
+    for dr, dc in ROOK_DELTAS:
+        nr, nc = r + dr, c + dc
+        while is_on_board(nr, nc):
+            piece = board[nr * 8 + nc]
+            if piece != 0:
+                if piece == attacker_color * 3 or piece == attacker_color * 2: return True
+                break
+            nr += dr
+            nc += dc
+
+    # Sliding attacks (Bishop/Queen)
+    for dr, dc in BISHOP_DELTAS:
+        nr, nc = r + dr, c + dc
+        while is_on_board(nr, nc):
+            piece = board[nr * 8 + nc]
+            if piece != 0:
+                if piece == attacker_color * 4 or piece == attacker_color * 2: return True
+                break
+            nr += dr
+            nc += dc
+            
+    return False
+
+def get_pseudo_legal_moves(board, color):
+    """Generate all pseudo-legal moves (including moves that leave king in check)."""
+    moves = []
+    start_dir = -1 if color == WHITE else 1
+    is_white = color == WHITE
+    
+    for i in range(64):
+        piece = board[i]
+        if piece == 0 or (piece > 0) != is_white: continue
+        
+        r, c = i // 8, i % 8
+        p_type = abs(piece)
+        
+        if p_type == 1: # King
+            for dr, dc in KING_DELTAS:
+                nr, nc = r + dr, c + dc
+                if is_on_board(nr, nc):
+                    target = board[nr * 8 + nc]
+                    if target == 0 or (target > 0) != is_white:
+                        moves.append((i, nr * 8 + nc))
+            # Castling moves (checked for legality later)
+            if is_white and r == 7 and c == 4:
+                if board[63] == 3 and board[62] == 0 and board[61] == 0: moves.append((60, 62)) # K
+                if board[56] == 3 and board[59] == 0 and board[58] == 0 and board[57] == 0: moves.append((60, 58)) # Q
+            if not is_white and r == 0 and c == 4:
+                if board[7] == -3 and board[6] == 0 and board[5] == 0: moves.append((4, 6)) # K
+                if board[0] == -3 and board[1] == 0 and board[2] == 0 and board[3] == 0: moves.append((4, 2)) # Q
+
+        elif p_type == 5: # Knight
+            for dr, dc in KNIGHT_DELTAS:
+                nr, nc = r + dr, c + dc
+                if is_on_board(nr, nc):
+                    target = board[nr * 8 + nc]
+                    if target == 0 or (target > 0) != is_white:
+                        moves.append((i, nr * 8 + nc))
+
+        elif p_type == 3: # Rook
+            for dr, dc in ROOK_DELTAS:
+                nr, nc = r + dr, c + dc
+                while is_on_board(nr, nc):
+                    target = board[nr * 8 + nc]
+                    if target == 0:
+                        moves.append((i, nr * 8 + nc))
+                    else:
+                        if (target > 0) != is_white: moves.append((i, nr * 8 + nc))
+                        break
+                    nr += dr
+                    nc += dc
+
+        elif p_type == 4: # Bishop
+            for dr, dc in BISHOP_DELTAS:
+                nr, nc = r + dr, c + dc
+                while is_on_board(nr, nc):
+                    target = board[nr * 8 + nc]
+                    if target == 0:
+                        moves.append((i, nr * 8 + nc))
+                    else:
+                        if (target > 0) != is_white: moves.append((i, nr * 8 + nc))
+                        break
+                    nr += dr
+                    nc += dc
+
+        elif p_type == 2: # Queen
+            for dr, dc in ROOK_DELTAS + BISHOP_DELTAS:
+                nr, nc = r + dr, c + dc
+                while is_on_board(nr, nc):
+                    target = board[nr * 8 + nc]
+                    if target == 0:
+                        moves.append((i, nr * 8 + nc))
+                    else:
+                        if (target > 0) != is_white: moves.append((i, nr * 8 + nc))
+                        break
+                    nr += dr
+                    nc += dc
+
+        elif p_type == 6: # Pawn
+            nr = r + start_dir
+            if is_on_board(nr, c) and board[nr * 8 + c] == 0:
+                if (is_white and nr == 0) or (not is_white and nr == 7):
+                    moves.append((i, nr * 8 + c, 2)) # Promote to Queen
+                else:
+                    moves.append((i, nr * 8 + c))
+                
+                start_row = 6 if is_white else 1
+                if r == start_row and board[(r + 2 * start_dir) * 8 + c] == 0:
+                    moves.append((i, (r + 2 * start_dir) * 8 + c))
+
+            for dc in [-1, 1]:
+                if is_on_board(nr, c + dc):
+                    target = board[nr * 8 + (c + dc)]
+                    if target != 0 and (target > 0) != is_white:
+                        if (is_white and nr == 0) or (not is_white and nr == 7):
+                            moves.append((i, nr * 8 + (c + dc), 2))
+                        else:
+                            moves.append((i, nr * 8 + (c + dc)))
+    return moves
+
+def get_legal_moves(board, color):
+    """Generate fully legal moves."""
+    pseudo = get_pseudo_legal_moves(board, color)
+    legal = []
+    is_white = color == WHITE
+    
+    for move in pseudo:
+        from_idx, to_idx = move[0], move[1]
+        piece = board[from_idx]
+        captured = board[to_idx]
+        is_promotion = len(move) == 3
+        
+        # Handle castling rook movement
+        is_castle = abs(piece) == 1 and abs(to_idx - from_idx) == 2
+        rook_from, rook_to, rook_piece = -1, -1, 0
+        
+        if is_castle:
+            # Check if currently in check (cannot castle out of check)
+            if is_attacked(board, from_idx // 8, from_idx % 8, -color):
+                continue
+            
+            if to_idx == 62: rook_from, rook_to = 63, 61
+            elif to_idx == 58: rook_from, rook_to = 56, 59
+            elif to_idx == 6: rook_from, rook_to = 7, 5
+            elif to_idx == 2: rook_from, rook_to = 0, 3
+            
+            rook_piece = board[rook_from]
+            board[rook_from] = 0
+            board[rook_to] = rook_piece
+
+        board[from_idx] = 0
+        board[to_idx] = move[2] if is_promotion else piece
+        
+        # Verify king safety
+        king_pos = to_idx if abs(piece) == 1 else -1
+        if king_pos == -1:
+            for i in range(64):
+                if board[i] == color * 1:
+                    king_pos = i
+                    break
+        
+        safe = not is_attacked(board, king_pos // 8, king_pos % 8, -color)
+        
+        # For castling, also check the square the king passed through
+        if safe and is_castle:
+            mid = (from_idx + to_idx) // 2
+            if is_attacked(board, mid // 8, mid % 8, -color):
+                safe = False
+
+        if safe:
+            legal.append(move)
+            
+        # Unmake move
+        board[from_idx] = piece
+        board[to_idx] = captured
+        if is_castle:
+            board[rook_from] = rook_piece
+            board[rook_to] = 0
+            
+    return legal
+
+def evaluate(board):
+    score = 0
+    for i in range(64):
+        p = board[i]
+        if p == 0: continue
+        p_type = abs(p)
+        val = PIECE_VALUES[p_type]
+        
+        # Positional value
+        pst_idx = i if p > 0 else 63 - i
+        pos_val = PST[p_type][pst_idx]
+        
+        score += (val + pos_val) * (1 if p > 0 else -1)
+    return score
+
+def alphabeta(board, depth, alpha, beta, color):
+    if depth == 0:
+        return evaluate(board)
+    
+    legal_moves = get_legal_moves(board, color)
+    if not legal_moves:
+        # Check for checkmate or stalemate
+        king_pos = -1
+        for i in range(64):
+            if board[i] == color * 1:
+                king_pos = i
+                break
+        
+        if is_attacked(board, king_pos // 8, king_pos % 8, -color):
+            return -100000 + (2 - depth) # Checkmate
+        return 0 # Stalemate
+
+    # Simple move ordering: captures first
+    captures = [m for m in legal_moves if board[m[1]] != 0]
+    others = [m for m in legal_moves if board[m[1]] == 0]
+    ordered = captures + others
+
+    max_eval = -float('inf')
+    for move in ordered:
+        from_idx, to_idx = move[0], move[1]
+        piece = board[from_idx]
+        captured = board[to_idx]
+        is_promotion = len(move) == 3
+        
+        is_castle = abs(piece) == 1 and abs(to_idx - from_idx) == 2
+        rook_from, rook_to, rook_piece = -1, -1, 0
+        if is_castle:
+            if to_idx == 62: rook_from, rook_to = 63, 61
+            elif to_idx == 58: rook_from, rook_to = 56, 59
+            elif to_idx == 6: rook_from, rook_to = 7, 5
+            elif to_idx == 2: rook_from, rook_to = 0, 3
+            rook_piece = board[rook_from]
+            board[rook_from] = 0
+            board[rook_to] = rook_piece
+
+        board[from_idx] = 0
+        board[to_idx] = move[2] if is_promotion else piece
+        
+        eval_score = -alphabeta(board, depth - 1, -beta, -alpha, -color)
+        
+        board[from_idx] = piece
+        board[to_idx] = captured
+        if is_castle:
+            board[rook_from] = rook_piece
+            board[rook_to] = 0
+            
+        max_eval = max(max_eval, eval_score)
+        alpha = max(alpha, eval_score)
+        if beta <= alpha:
+            break
+    return max_eval
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    board = parse_pieces(pieces)
+    color = WHITE if to_play == 'white' else BLACK
+    
+    legal_moves = get_legal_moves(board, color)
+    
+    if not legal_moves:
+        return '' # Game over, no move possible
+    
+    best_move = None
+    best_val = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    DEPTH = 2
+    
+    # Sort moves: captures first for better pruning
+    captures = [m for m in legal_moves if board[m[1]] != 0]
+    others = [m for m in legal_moves if board[m[1]] == 0]
+    ordered_moves = captures + others
+
+    for move in ordered_moves:
+        from_idx, to_idx = move[0], move[1]
+        piece = board[from_idx]
+        captured = board[to_idx]
+        is_promotion = len(move) == 3
+        
+        is_castle = abs(piece) == 1 and abs(to_idx - from_idx) == 2
+        rook_from, rook_to, rook_piece = -1, -1, 0
+        if is_castle:
+            if to_idx == 62: rook_from, rook_to = 63, 61
+            elif to_idx == 58: rook_from, rook_to = 56, 59
+            elif to_idx == 6: rook_from, rook_to = 7, 5
+            elif to_idx == 2: rook_from, rook_to = 0, 3
+            rook_piece = board[rook_from]
+            board[rook_from] = 0
+            board[rook_to] = rook_piece
+
+        board[from_idx] = 0
+        board[to_idx] = move[2] if is_promotion else piece
+        
+        val = -alphabeta(board, DEPTH - 1, -beta, -alpha, -color)
+        
+        board[from_idx] = piece
+        board[to_idx] = captured
+        if is_castle:
+            board[rook_from] = rook_piece
+            board[rook_to] = 0
+            
+        if val > best_val:
+            best_val = val
+            best_move = move
+        alpha = max(alpha, val)
+        
+    # Fallback if search fails (should not happen)
+    if best_move is None:
+        best_move = legal_moves[0]
+        
+    from_sq = idx_to_square(best_move[0])
+    to_sq = idx_to_square(best_move[1])
+    promo_char = ''
+    if len(best_move) == 3:
+        promo_map = {2:'q', 3:'r', 4:'b', 5:'n'}
+        promo_char = promo_map[best_move[2]]
+    return from_sq + to_sq + promo_char
+</code>

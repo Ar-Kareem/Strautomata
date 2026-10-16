@@ -1,0 +1,307 @@
+
+import random
+import time
+import sys
+
+# Constants
+INF = 10**9
+BOARD_SIZE = 8
+
+# Direction tables
+man_dirs = {
+    'b': [(-1, -1), (-1, 1)],   # black moves down (row decreases)
+    'w': [(1, -1), (1, 1)]      # white moves up (row increases)
+}
+king_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+# -------------------------------------------------------------------------
+# Board helpers
+# -------------------------------------------------------------------------
+def board_from_lists(my_men, my_kings, opp_men, opp_kings, color):
+    """Build a dict {(r,c): (color, piece_type)} from the API lists."""
+    board = {}
+    opp_color = 'b' if color == 'w' else 'w'
+    for (r, c) in my_men:
+        board[(r, c)] = (color, 'man')
+    for (r, c) in my_kings:
+        board[(r, c)] = (color, 'king')
+    for (r, c) in opp_men:
+        board[(r, c)] = (opp_color, 'man')
+    for (r, c) in opp_kings:
+        board[(r, c)] = (opp_color, 'king')
+    return board
+
+# -------------------------------------------------------------------------
+# Move generation (including mandatory captures)
+# -------------------------------------------------------------------------
+def capture_rec(start, cur, board, color, piece_type, captured):
+    """
+    Recursively explore all continuation jumps after the first capture.
+    Returns a list of (final_square, captured_squares_list).
+    """
+    results = []
+    # choose directions according to piece type
+    if piece_type == 'man':
+        dirs = man_dirs[color]
+    else:
+        dirs = king_dirs
+
+    for dr, dc in dirs:
+        step1 = (cur[0] + dr, cur[1] + dc)
+        step2 = (cur[0] + 2 * dr, cur[1] + 2 * dc)
+        if not (0 <= step1[0] < BOARD_SIZE and 0 <= step1[1] < BOARD_SIZE and
+                0 <= step2[0] < BOARD_SIZE and 0 <= step2[1] < BOARD_SIZE):
+            continue
+        # step1 must contain an opponent piece
+        if board.get(step1) is not None and board[step1][0] != color:
+            # step2 must be empty
+            if board.get(step2) is None:
+                # promotion check
+                new_type = piece_type
+                if piece_type == 'man':
+                    if (color == 'b' and step2[0] == 0) or (color == 'w' and step2[0] == 7):
+                        new_type = 'king'
+
+                # apply the jump on a copy of the board
+                new_board = dict(board)
+                del new_board[step1]          # remove captured piece
+                del new_board[cur]            # remove piece from its current square
+                new_board[step2] = (color, new_type)
+
+                new_captured = captured + [step1]
+
+                if new_type == 'king':
+                    # promotion ends the turn
+                    results.append((step2, new_captured))
+                else:
+                    # continue jumping
+                    sub_res = capture_rec(start, step2, new_board, color, new_type, new_captured)
+                    results.extend(sub_res)
+
+    # if no further jumps are possible and we have already captured something,
+    # the current square is the final destination
+    if not results and captured:
+        results.append((cur, captured))
+    return results
+
+
+def generate_moves(board, color):
+    """Return a list of moves. Each move is (from_sq, to_sq, captured_list)."""
+    opp_color = 'b' if color == 'w' else 'w'
+    moves = []
+
+    # ---- captures first -------------------------------------------------
+    for (r, c), (col, pt) in board.items():
+        if col != color:
+            continue
+        # immediate jumps
+        if pt == 'man':
+            dirs = man_dirs[color]
+        else:
+            dirs = king_dirs
+
+        for dr, dc in dirs:
+            step1 = (r + dr, c + dc)
+            step2 = (r + 2 * dr, c + 2 * dc)
+            if not (0 <= step1[0] < BOARD_SIZE and 0 <= step1[1] < BOARD_SIZE and
+                    0 <= step2[0] < BOARD_SIZE and 0 <= step2[1] < BOARD_SIZE):
+                continue
+            if board.get(step1) is not None and board[step1][0] == opp_color:
+                if board.get(step2) is None:
+                    # capture found – apply it and look for further jumps
+                    new_type = pt
+                    if pt == 'man':
+                        if (color == 'b' and step2[0] == 0) or (color == 'w' and step2[0] == 7):
+                            new_type = 'king'
+
+                    new_board = dict(board)
+                    del new_board[step1]
+                    del new_board[(r, c)]
+                    new_board[step2] = (color, new_type)
+                    captured = [step1]
+
+                    if new_type == 'king':
+                        moves.append(((r, c), step2, captured))
+                    else:
+                        further = capture_rec((r, c), step2, new_board, color, new_type, captured)
+                        for final_to, final_caps in further:
+                            moves.append(((r, c), final_to, final_caps))
+
+    # if any capture exists we must play a capture (mandatory)
+    if moves:
+        # keep only capture moves and sort by number of captured pieces (most first)
+        moves = [m for m in moves if len(m[2]) > 0]
+        moves.sort(key=lambda m: len(m[2]), reverse=True)
+        return moves
+
+    # ---- non‑capture (simple) moves ------------------------------------
+    for (r, c), (col, pt) in board.items():
+        if col != color:
+            continue
+        if pt == 'man':
+            dirs = man_dirs[color]
+        else:
+            dirs = king_dirs
+        for dr, dc in dirs:
+            step1 = (r + dr, c + dc)
+            if 0 <= step1[0] < BOARD_SIZE and 0 <= step1[1] < BOARD_SIZE:
+                if board.get(step1) is None:
+                    moves.append(((r, c), step1, []))
+    # randomise order to avoid deterministic behaviour
+    random.shuffle(moves)
+    return moves
+
+# -------------------------------------------------------------------------
+# Apply a move to a board (returns a new board dict)
+# -------------------------------------------------------------------------
+def apply_move(board, move):
+    from_sq, to_sq, captured = move
+    piece = board[from_sq]               # (color, piece_type)
+    new_board = dict(board)
+
+    # remove captured pieces
+    for cap in captured:
+        if cap in new_board:
+            del new_board[cap]
+
+    # move the piece
+    del new_board[from_sq]
+
+    # promotion check
+    new_type = piece[1]
+    if piece[1] == 'man':
+        if piece[0] == 'b' and to_sq[0] == 0:
+            new_type = 'king'
+        elif piece[0] == 'w' and to_sq[0] == 7:
+            new_type = 'king'
+
+    new_board[to_sq] = (piece[0], new_type)
+    return new_board
+
+# -------------------------------------------------------------------------
+# Evaluation function
+# -------------------------------------------------------------------------
+def evaluate(board, my_color):
+    opp_color = 'b' if my_color == 'w' else 'w'
+    my_men = my_kings = opp_men = opp_kings = 0
+
+    for (r, c), (col, pt) in board.items():
+        if col == my_color:
+            if pt == 'man':
+                my_men += 1
+            else:
+                my_kings += 1
+        else:
+            if pt == 'man':
+                opp_men += 1
+            else:
+                opp_kings += 1
+
+    score = (my_men * 10 + my_kings * 20) - (opp_men * 10 + opp_kings * 20)
+
+    # positional term – reward men closer to promotion
+    for (r, c), (col, pt) in board.items():
+        if pt == 'man':
+            if col == my_color:
+                if my_color == 'w':
+                    score += (7 - r) * 0.1
+                else:  # black
+                    score += r * 0.1
+            else:
+                # opponent's advanced men are a slight minus
+                if col == 'w':
+                    score -= (7 - r) * 0.05
+                else:
+                    score -= r * 0.05
+
+    # tiny random tie‑breaker
+    score += random.uniform(-0.01, 0.01)
+    return score
+
+# -------------------------------------------------------------------------
+# Minimax with alpha‑beta pruning
+# -------------------------------------------------------------------------
+def minimax(board, depth, alpha, beta, is_my_turn, my_color):
+    if depth == 0:
+        return evaluate(board, my_color)
+
+    color = my_color if is_my_turn else ('b' if my_color == 'w' else 'w')
+    moves = generate_moves(board, color)
+
+    if not moves:
+        # no legal moves → loss for the side to move
+        return -100000 if is_my_turn else 100000
+
+    if is_my_turn:
+        max_eval = -INF
+        for move in moves:
+            new_board = apply_move(board, move)
+            ev = minimax(new_board, depth - 1, alpha, beta, False, my_color)
+            if ev > max_eval:
+                max_eval = ev
+            if max_eval > alpha:
+                alpha = max_eval
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = INF
+        for move in moves:
+            new_board = apply_move(board, move)
+            ev = minimax(new_board, depth - 1, alpha, beta, True, my_color)
+            if ev < min_eval:
+                min_eval = ev
+            if min_eval < beta:
+                beta = min_eval
+            if beta <= alpha:
+                break
+        return min_eval
+
+# -------------------------------------------------------------------------
+# Main policy function
+# -------------------------------------------------------------------------
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Return a move as ((from_row, from_col), (to_row, to_col)).
+    """
+    board = board_from_lists(my_men, my_kings, opp_men, opp_kings, color)
+    moves = generate_moves(board, color)
+
+    if not moves:
+        # This should never happen in a real game, but to avoid crash:
+        # Return any plausible move (first piece to any empty square).
+        # In practice the engine will never ask for a move when none exists.
+        for (r, c) in list(board.keys()):
+            if board[(r, c)][0] == color:
+                for dr in [-1, 1]:
+                    for dc in [-1, 1]:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in board:
+                            return ((r, c), (nr, nc))
+        # Ultimate fallback – should never be reached
+        return ((0, 0), (0, 1))
+
+    # iterative deepening – try depth 3 first, maybe upgrade if time permits
+    start_time = time.time()
+    depth = 3
+    best_move = None
+    best_value = -INF
+
+    # moves are already ordered (captures first) – good for alpha‑beta
+    for move in moves:
+        new_board = apply_move(board, move)
+        val = minimax(new_board, depth - 1, -INF, INF, False, color)
+        # tiny random tie‑break
+        if val + random.uniform(0, 0.001) > best_value + random.uniform(0, 0.001):
+            best_value = val
+            best_move = move
+        # time guard – stop if we are near the limit
+        if time.time() - start_time > 0.9:
+            break
+
+    # In the unlikely case no move was selected, pick the first one
+    if best_move is None:
+        best_move = moves[0]
+
+    from_sq, to_sq, _ = best_move
+    return (from_sq, to_sq)

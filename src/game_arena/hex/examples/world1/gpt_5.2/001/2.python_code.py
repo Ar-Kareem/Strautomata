@@ -1,0 +1,358 @@
+
+import heapq
+from typing import List, Tuple, Set, Dict, Optional
+
+N = 11
+INF = 10**9
+
+# Hex adjacency: all 8 neighbors except (r-1,c-1) and (r+1,c+1)
+DIRS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, -1)]
+
+
+def _in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < N and 0 <= c < N
+
+
+def _neighbors(r: int, c: int):
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        if 0 <= rr < N and 0 <= cc < N:
+            yield rr, cc
+
+
+def _cell_id(r: int, c: int) -> int:
+    return r * N + c
+
+
+def _id_cell(x: int) -> Tuple[int, int]:
+    return divmod(x, N)
+
+
+def _opp_color(color: str) -> str:
+    return "w" if color == "b" else "b"
+
+
+def _border_cells(color: str):
+    # Returns (source_border_cells, target_border_cells) as lists of (r,c)
+    if color == "b":  # top to bottom
+        src = [(0, c) for c in range(N)]
+        tgt = [(N - 1, c) for c in range(N)]
+    else:  # left to right
+        src = [(r, 0) for r in range(N)]
+        tgt = [(r, N - 1) for r in range(N)]
+    return src, tgt
+
+
+def _shortest_path(
+    player: Set[Tuple[int, int]],
+    opponent: Set[Tuple[int, int]],
+    color: str,
+    want_parent: bool = True,
+) -> Tuple[int, Optional[List[int]]]:
+    """
+    Weighted shortest path from player's start side to end side.
+    Node cost:
+      - player's stone: 0
+      - empty: 1
+      - opponent's stone: INF (blocked)
+    Returns (distance, parent array) where distance is min #empties needed.
+    """
+    src_border, tgt_border = _border_cells(color)
+
+    V = N * N
+    S = V
+    T = V + 1
+
+    def node_cost(r: int, c: int) -> int:
+        if (r, c) in player:
+            return 0
+        if (r, c) in opponent:
+            return INF
+        return 1
+
+    dist = [INF] * (V + 2)
+    parent = [-1] * (V + 2) if want_parent else None
+
+    dist[S] = 0
+    pq = [(0, S)]
+
+    # Precompute border ids for speed
+    src_ids = [_cell_id(r, c) for r, c in src_border]
+    tgt_ids_set = set(_cell_id(r, c) for r, c in tgt_border)
+
+    while pq:
+        d, u = heapq.heappop(pq)
+        if d != dist[u]:
+            continue
+        if u == T:
+            break
+
+        if u == S:
+            for vid in src_ids:
+                r, c = _id_cell(vid)
+                w = node_cost(r, c)
+                if w >= INF:
+                    continue
+                nd = d + w
+                if nd < dist[vid]:
+                    dist[vid] = nd
+                    if want_parent:
+                        parent[vid] = S
+                    heapq.heappush(pq, (nd, vid))
+            continue
+
+        if u in tgt_ids_set:
+            # Edge to target with 0 additional cost
+            if d < dist[T]:
+                dist[T] = d
+                if want_parent:
+                    parent[T] = u
+                heapq.heappush(pq, (d, T))
+
+        ur, uc = _id_cell(u)
+        for vr, vc in _neighbors(ur, uc):
+            vid = _cell_id(vr, vc)
+            w = node_cost(vr, vc)
+            if w >= INF:
+                continue
+            nd = d + w
+            if nd < dist[vid]:
+                dist[vid] = nd
+                if want_parent:
+                    parent[vid] = u
+                heapq.heappush(pq, (nd, vid))
+
+    return dist[T], parent
+
+
+def _reconstruct_path(parent: List[int]) -> List[int]:
+    """Return list of node ids from S to T (including endpoints), if reachable; else empty."""
+    if not parent:
+        return []
+    V = N * N
+    S = V
+    T = V + 1
+    if parent[T] == -1:
+        return []
+    path = []
+    cur = T
+    while cur != -1:
+        path.append(cur)
+        if cur == S:
+            break
+        cur = parent[cur]
+    path.reverse()
+    return path
+
+
+def _empties_on_path(path: List[int], occupied: Set[Tuple[int, int]]) -> Set[Tuple[int, int]]:
+    V = N * N
+    S = V
+    T = V + 1
+    out = set()
+    for nid in path:
+        if nid == S or nid == T:
+            continue
+        r, c = _id_cell(nid)
+        if (r, c) not in occupied:
+            out.add((r, c))
+    return out
+
+
+def _bridge_candidates(me: Set[Tuple[int, int]], occupied: Set[Tuple[int, int]]) -> Set[Tuple[int, int]]:
+    """
+    Add simple 'bridge' completion points: if we have stones at A and B with a standard
+    hex bridge relation, consider the two empty connector points.
+    Patterns (A -> B):
+      (r,c) and (r+1,c+1): connectors (r,c+1) and (r+1,c)
+      (r,c) and (r+1,c-1): connectors (r,c-1) and (r+1,c)
+      (r,c) and (r-1,c+1): connectors (r-1,c) and (r,c+1)
+      (r,c) and (r-1,c-1): connectors (r-1,c) and (r,c-1)  [note: (r-1,c-1) is not a neighbor, but a bridge]
+    """
+    out = set()
+    me_list = list(me)
+    me_set = me  # alias
+    for r, c in me_list:
+        # (r+1, c+1)
+        b = (r + 1, c + 1)
+        if _in_bounds(*b) and b in me_set:
+            for x in ((r, c + 1), (r + 1, c)):
+                if _in_bounds(*x) and x not in occupied:
+                    out.add(x)
+        # (r+1, c-1)
+        b = (r + 1, c - 1)
+        if _in_bounds(*b) and b in me_set:
+            for x in ((r, c - 1), (r + 1, c)):
+                if _in_bounds(*x) and x not in occupied:
+                    out.add(x)
+        # (r-1, c+1)
+        b = (r - 1, c + 1)
+        if _in_bounds(*b) and b in me_set:
+            for x in ((r - 1, c), (r, c + 1)):
+                if _in_bounds(*x) and x not in occupied:
+                    out.add(x)
+        # (r-1, c-1)
+        b = (r - 1, c - 1)
+        if _in_bounds(*b) and b in me_set:
+            for x in ((r - 1, c), (r, c - 1)):
+                if _in_bounds(*x) and x not in occupied:
+                    out.add(x)
+    return out
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+
+    # Always ensure a legal move exists
+    def any_legal() -> Tuple[int, int]:
+        for r in range(N):
+            for c in range(N):
+                if (r, c) not in occupied:
+                    return (r, c)
+        # Should never happen in normal Hex (board full), but must return something legal-looking.
+        return (0, 0)
+
+    # Opening: center if available
+    center = (N // 2, N // 2)
+    if not occupied and center not in occupied:
+        return center
+    if center not in occupied and len(occupied) <= 2:
+        return center
+
+    # Baseline shortest paths
+    my_d0, my_parent0 = _shortest_path(me_set, opp_set, color, want_parent=True)
+    op_color = _opp_color(color)
+    opp_d0, opp_parent0 = _shortest_path(opp_set, me_set, op_color, want_parent=True)
+
+    my_path0 = _reconstruct_path(my_parent0) if my_parent0 else []
+    opp_path0 = _reconstruct_path(opp_parent0) if opp_parent0 else []
+    my_path_empties = _empties_on_path(my_path0, occupied)
+    opp_path_empties = _empties_on_path(opp_path0, occupied)
+
+    # Candidate generation: focused, but always falls back to any legal move.
+    candidates: Set[Tuple[int, int]] = set()
+
+    # 1) Empty cells on (one) shortest path for each side
+    candidates |= my_path_empties
+    candidates |= opp_path_empties
+
+    # 2) Neighbors of stones
+    for (r, c) in occupied:
+        for rr, cc in _neighbors(r, c):
+            if (rr, cc) not in occupied:
+                candidates.add((rr, cc))
+
+    # 3) Simple bridge completion points
+    candidates |= _bridge_candidates(me_set, occupied)
+
+    # Always include center-ish points as tie breakers
+    for r, c in ((5, 5), (5, 4), (5, 6), (4, 5), (6, 5)):
+        if (r, c) not in occupied:
+            candidates.add((r, c))
+
+    # Remove any illegal candidates
+    candidates = {mv for mv in candidates if _in_bounds(*mv) and mv not in occupied}
+    if not candidates:
+        return any_legal()
+
+    # Defensive tactic: if opponent has an immediate winning move, block it.
+    # Identify actual winning cells by testing a small set (path empties + neighbors).
+    threat_cells: Set[Tuple[int, int]] = set()
+    if opp_d0 <= 2:
+        check_set = set(opp_path_empties)
+        for (r, c) in opp_set:
+            for rr, cc in _neighbors(r, c):
+                if (rr, cc) not in occupied:
+                    check_set.add((rr, cc))
+        for cell in check_set:
+            if cell in occupied:
+                continue
+            test_opp = set(opp_set)
+            test_opp.add(cell)
+            d_after, _ = _shortest_path(test_opp, me_set, op_color, want_parent=False)
+            if d_after == 0:
+                threat_cells.add(cell)
+        if threat_cells:
+            # Pick the best blocking move among threat cells.
+            best_mv = None
+            best_score = -10**18
+            for mv in threat_cells:
+                me2 = set(me_set)
+                me2.add(mv)
+                my_d, _ = _shortest_path(me2, opp_set, color, want_parent=False)
+                opp_d, _ = _shortest_path(opp_set, me2, op_color, want_parent=False)
+                # If we win immediately, do it.
+                if my_d == 0:
+                    return mv
+                # Blocking is primary, then improve our path.
+                score = 10_000 * (opp_d) - 1000 * (my_d)
+                # Tie-break: prefer blocking cells on opp shortest path
+                if mv in opp_path_empties:
+                    score += 50
+                # Center bias
+                r, c = mv
+                score -= 0.5 * (abs(r - 5) + abs(c - 5))
+                if score > best_score:
+                    best_score = score
+                    best_mv = mv
+            if best_mv is not None:
+                return best_mv
+
+    # Main evaluation over candidates
+    # Score balances: increase opponent distance, decrease our distance.
+    # Small bonuses for being on shortest paths and for centrality.
+    best_move = None
+    best_score = -10**18
+
+    # Limit computation if candidate set explodes (shouldn't, but safe)
+    # Keep those most relevant: on paths first, then by proximity to center.
+    if len(candidates) > 60:
+        def key(mv):
+            r, c = mv
+            on_opp = 1 if mv in opp_path_empties else 0
+            on_me = 1 if mv in my_path_empties else 0
+            dist_center = abs(r - 5) + abs(c - 5)
+            return (-on_opp, -on_me, dist_center)
+        candidates = set(sorted(candidates, key=key)[:60])
+
+    for mv in candidates:
+        me2 = set(me_set)
+        me2.add(mv)
+
+        my_d, _ = _shortest_path(me2, opp_set, color, want_parent=False)
+        if my_d == 0:
+            return mv  # immediate win
+
+        opp_d, _ = _shortest_path(opp_set, me2, op_color, want_parent=False)
+
+        # Avoid moves that allow immediate opponent win if possible
+        if opp_d == 0:
+            continue
+
+        # Primary objective: maximize opponent distance, minimize ours
+        score = 1.35 * opp_d - 1.00 * my_d
+
+        # Prefer moves that lie on (a) shortest path(s)
+        if mv in my_path_empties:
+            score += 0.20
+        if mv in opp_path_empties:
+            score += 0.30
+
+        # Prefer central-ish positions (weak bias)
+        r, c = mv
+        score -= 0.015 * (abs(r - 5) + abs(c - 5))
+
+        # Prefer improving relative to baseline
+        score += 0.05 * (my_d0 - my_d) + 0.07 * (opp_d - opp_d0)
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    if best_move is not None and best_move not in occupied:
+        return best_move
+
+    # If all candidates were losing (gave opponent immediate win), just play any legal.
+    return any_legal()

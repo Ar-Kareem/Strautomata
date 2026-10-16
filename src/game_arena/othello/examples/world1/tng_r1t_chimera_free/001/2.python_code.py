@@ -1,0 +1,63 @@
+
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    weight = [
+        [100, -20,  10,   5,   5,  10, -20, 100],
+        [-20, -30,  -5,  -5,  -5,  -5, -30, -20],
+        [ 10,  -5,   1,   1,   1,   1,  -5,  10],
+        [  5,  -5,   1,   1,   1,   1,  -5,   5],
+        [  5,  -5,   1,   1,   1,   1,  -5,   5],
+        [ 10,  -5,   1,   1,   1,   1,  -5,  10],
+        [-20, -30,  -5,  -5,  -5,  -5, -30, -20],
+        [100, -20,  10,   5,   5,  10, -20, 100]
+    ]
+    
+    dangerous = {
+        (0,0): {(0,1), (1,0), (1,1)},
+        (0,7): {(0,6), (1,7), (1,6)},
+        (7,0): {(6,0), (7,1), (6,1)},
+        (7,7): {(6,7), (7,6), (6,6)}
+    }
+    
+    def is_corner(r, c):
+        return (r in {0,7}) and (c in {0,7})
+    
+    def get_moves():
+        moves = set()
+        dirs = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+        for r in range(8):
+            for c in range(8):
+                if you[r,c] == 0 and opponent[r,c] == 0:
+                    for dr, dc in dirs:
+                        nr, nc = r + dr, c + dc
+                        flipped = False
+                        while 0 <= nr <8 and 0 <= nc <8 and opponent[nr,nc]:
+                            nr += dr
+                            nc += dc
+                            flipped = True
+                        if flipped and 0 <= nr <8 and 0 <= nc <8 and you[nr,nc]:
+                            moves.add((r,c))
+                            break
+        return moves
+    
+    legal = get_moves()
+    if not legal:
+        return "pass"
+    
+    best_score = -float('inf')
+    best_move = None
+    
+    for (r,c) in legal:
+        if is_corner(r,c):
+            return f"{chr(c + 97)}{r+1}"
+        score = weight[r][c]
+        for corner in dangerous:
+            cr, cc = corner
+            if you[cr,cc] == 0 and opponent[cr,cc] == 0 and (r,c) in dangerous[corner]:
+                score -= 50
+        if score > best_score:
+            best_score = score
+            best_move = (r,c)
+    
+    return f"{chr(best_move[1] + 97)}{best_move[0] + 1}"

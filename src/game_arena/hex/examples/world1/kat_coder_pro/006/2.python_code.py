@@ -1,0 +1,223 @@
+
+import numpy as np
+from collections import defaultdict
+import random
+import math
+from typing import List, Tuple
+
+# Board size
+BOARD_SIZE = 11
+
+# Directions for adjacent cells in a hexagonal grid
+DIRECTIONS = [
+    (0, -1), (0, 1),  # left, right
+    (-1, 0), (1, 0),  # up, down
+    (-1, 1), (1, -1)  # diagonal
+]
+
+def is_valid_cell(row: int, col: int) -> bool:
+    """Check if a cell is within the board bounds."""
+    return 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE
+
+def get_neighbors(row: int, col: int) -> List[Tuple[int, int]]:
+    """Get the neighbors of a cell."""
+    neighbors = []
+    for dr, dc in DIRECTIONS:
+        nr, nc = row + dr, col + dc
+        if is_valid_cell(nr, nc):
+            neighbors.append((nr, nc))
+    return neighbors
+
+def is_connected_to_edge(stones: List[Tuple[int, int]], color: str) -> bool:
+    """Check if stones are connected to the edge."""
+    if color == 'b':
+        # Black tries to connect top and bottom
+        top_cells = [(0, col) for col in range(BOARD_SIZE)]
+        bottom_cells = [(BOARD_SIZE - 1, col) for col in range(BOARD_SIZE)]
+    else:
+        # White tries to connect left and right
+        left_cells = [(row, 0) for row in range(BOARD_SIZE)]
+        right_cells = [(row, BOARD_SIZE - 1) for row in range(BOARD_SIZE)]
+    
+    # Use BFS to check connectivity
+    for edge_cells in [top_cells, bottom_cells] if color == 'b' else [left_cells, right_cells]:
+        visited = set()
+        queue = []
+        
+        # Start from edge cells
+        for cell in edge_cells:
+            if cell in stones:
+                visited.add(cell)
+                queue.append(cell)
+        
+        # BFS
+        while queue:
+            current = queue.pop(0)
+            for neighbor in get_neighbors(current[0], current[1]):
+                if neighbor in stones and neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        
+        # Check if any cell from the opposite edge is visited
+        for cell in edge_cells:
+            if cell in visited:
+                return True
+    
+    return False
+
+def is_winning_position(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> bool:
+    """Check if the current position is a winning position."""
+    # Check if the current player has won
+    if is_connected_to_edge(me, color):
+        return True
+    
+    # Check if the opponent has won
+    if is_connected_to_edge(opp, 'w' if color == 'b' else 'b'):
+        return True
+    
+    return False
+
+class Node:
+    def __init__(self, me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str, move: Tuple[int, int] = None):
+        self.me = me
+        self.opp = opp
+        self.color = color
+        self.move = move
+        self.visits = 0
+        self.wins = 0
+        self.children = []
+    
+    def is_leaf(self) -> bool:
+        return len(self.children) == 0
+    
+    def is_fully_expanded(self) -> bool:
+        # Check if all possible moves have been explored
+        all_moves = [(r, c) for r in range(BOARD_SIZE) for c in range(BOARD_SIZE)
+                     if (r, c) not in self.me and (r, c) not in self.opp]
+        return len(self.children) >= len(all_moves)
+    
+    def select(self, c: float = 1.4) -> 'Node':
+        """Select a child node using UCB1."""
+        if not self.children:
+            return self
+        
+        # If not all children are visited, select an unvisited child
+        unvisited = [child for child in self.children if child.visits == 0]
+        if unvisited:
+            return random.choice(unvisited)
+        
+        # Calculate UCB1 for each child
+        ucb1_values = []
+        for child in self.children:
+            ucb1 = child.wins / child.visits + c * math.sqrt(math.log(self.visits) / child.visits)
+            ucb1_values.append((ucb1, child))
+        
+        # Select the child with the highest UCB1 value
+        return max(ucb1_values, key=lambda x: x[0])[1]
+    
+    def expand(self) -> 'Node':
+        """Expand the node by adding a new child."""
+        # Get all possible moves
+        all_moves = [(r, c) for r in range(BOARD_SIZE) for c in range(BOARD_SIZE)
+                     if (r, c) not in self.me and (r, c) not in self.opp]
+        
+        # Get moves that have not been explored
+        explored_moves = [child.move for child in self.children]
+        unexplored_moves = [move for move in all_moves if move not in explored_moves]
+        
+        if not unexplored_moves:
+            return None
+        
+        # Select a random unexplored move
+        move = random.choice(unexplored_moves)
+        
+        # Create new child node
+        new_me = self.me.copy()
+        new_opp = self.opp.copy()
+        
+        if self.color == 'b':
+            new_me.append(move)
+        else:
+            new_opp.append(move)
+        
+        child = Node(new_me, new_opp, 'w' if self.color == 'b' else 'b', move)
+        self.children.append(child)
+        
+        return child
+    
+    def simulate(self) -> float:
+        """Simulate a random playout from this node."""
+        # Copy the current state
+        me = self.me.copy()
+        opp = self.opp.copy()
+        color = self.color
+        
+        # Play random moves until the game is over
+        while True:
+            # Check if the current player has won
+            if is_connected_to_edge(me, color):
+                return 1.0 if color == self.color else 0.0
+            
+            # Check if the opponent has won
+            if is_connected_to_edge(opp, 'w' if color == 'b' else 'b'):
+                return 1.0 if color != self.color else 0.0
+            
+            # Get all possible moves
+            all_moves = [(r, c) for r in range(BOARD_SIZE) for c in range(BOARD_SIZE)
+                         if (r, c) not in me and (r, c) not in opp]
+            
+            if not all_moves:
+                # Draw
+                return 0.5
+            
+            # Play a random move
+            move = random.choice(all_moves)
+            
+            if color == 'b':
+                me.append(move)
+            else:
+                opp.append(move)
+            
+            color = 'w' if color == 'b' else 'b'
+    
+    def backpropagate(self, result: float):
+        """Update the node's statistics."""
+        self.visits += 1
+        self.wins += result
+        
+        # If this node has a parent, backpropagate to the parent
+        if hasattr(self, 'parent'):
+            self.parent.backpropagate(1.0 - result)
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    """MCTS policy."""
+    # Create root node
+    root = Node(me, opp, color)
+    
+    # Run MCTS for a fixed number of iterations
+    for _ in range(1000):
+        # Selection
+        node = root
+        while not node.is_leaf() and node.is_fully_expanded():
+            node = node.select()
+        
+        # Expansion
+        if not node.is_fully_expanded():
+            node = node.expand()
+        
+        # Simulation
+        if node:
+            result = node.simulate()
+            node.backpropagate(result)
+    
+    # Choose the move with the highest win rate
+    best_move = None
+    best_win_rate = -1
+    
+    for child in root.children:
+        win_rate = child.wins / child.visits
+        if win_rate > best_win_rate:
+            best_win_rate = win_rate
+            best_move = child.move
+    
+    return best_move

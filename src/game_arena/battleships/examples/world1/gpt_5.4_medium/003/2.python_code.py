@@ -1,0 +1,212 @@
+
+from typing import List, Tuple, Dict
+
+# Ship multiset
+SHIP_MULTIPLICITY: Dict[int, int] = {5: 1, 4: 1, 3: 2, 2: 1}
+BOARD_SIZE = 10
+TARGET_BOOST = 8.0  # exponential emphasis for placements containing hits
+
+
+def _build_placements() -> Dict[int, List[Tuple[int, ...]]]:
+    placements: Dict[int, List[Tuple[int, ...]]] = {2: [], 3: [], 4: [], 5: []}
+    n = BOARD_SIZE
+
+    for length in placements:
+        # Horizontal
+        for r in range(n):
+            for c in range(n - length + 1):
+                cells = tuple(r * n + (c + k) for k in range(length))
+                placements[length].append(cells)
+
+        # Vertical
+        for r in range(n - length + 1):
+            for c in range(n):
+                cells = tuple((r + k) * n + c for k in range(length))
+                placements[length].append(cells)
+
+    return placements
+
+
+PLACEMENTS = _build_placements()
+
+
+def _adjacent_hit_count(flat: List[int], idx: int) -> int:
+    r, c = divmod(idx, BOARD_SIZE)
+    cnt = 0
+    if r > 0 and flat[idx - BOARD_SIZE] == 1:
+        cnt += 1
+    if r + 1 < BOARD_SIZE and flat[idx + BOARD_SIZE] == 1:
+        cnt += 1
+    if c > 0 and flat[idx - 1] == 1:
+        cnt += 1
+    if c + 1 < BOARD_SIZE and flat[idx + 1] == 1:
+        cnt += 1
+    return cnt
+
+
+def _adjacent_unknown_count(flat: List[int], idx: int) -> int:
+    r, c = divmod(idx, BOARD_SIZE)
+    cnt = 0
+    if r > 0 and flat[idx - BOARD_SIZE] == 0:
+        cnt += 1
+    if r + 1 < BOARD_SIZE and flat[idx + BOARD_SIZE] == 0:
+        cnt += 1
+    if c > 0 and flat[idx - 1] == 0:
+        cnt += 1
+    if c + 1 < BOARD_SIZE and flat[idx + 1] == 0:
+        cnt += 1
+    return cnt
+
+
+def _center_closeness(idx: int) -> float:
+    r, c = divmod(idx, BOARD_SIZE)
+    # Larger is better
+    return -((r - 4.5) ** 2 + (c - 4.5) ** 2)
+
+
+def _best_index(
+    candidates: List[int],
+    primary: List[float],
+    secondary: List[float],
+    flat: List[int],
+    prefer_hits: bool,
+) -> int:
+    best = candidates[0]
+    best_key = None
+
+    for idx in candidates:
+        adj_hits = _adjacent_hit_count(flat, idx)
+        adj_unknown = _adjacent_unknown_count(flat, idx)
+        center = _center_closeness(idx)
+
+        if prefer_hits:
+            key = (
+                primary[idx],
+                adj_hits,
+                secondary[idx],
+                adj_unknown,
+                center,
+                -idx,  # deterministic tie-break
+            )
+        else:
+            key = (
+                primary[idx],
+                adj_unknown,
+                adj_hits,
+                center,
+                -idx,  # deterministic tie-break
+            )
+
+        if best_key is None or key > best_key:
+            best_key = key
+            best = idx
+
+    return best
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    n = BOARD_SIZE
+    flat = [board[r][c] for r in range(n) for c in range(n)]
+    unknowns = [i for i, v in enumerate(flat) if v == 0]
+
+    # Emergency fallback: if somehow no legal moves remain.
+    if not unknowns:
+        return (0, 0)
+
+    has_hit = any(v == 1 for v in flat)
+
+    hunt_score = [0.0] * (n * n)
+    target_score = [0.0] * (n * n)
+
+    # Build heatmaps from all placements that avoid misses.
+    for length, mult in SHIP_MULTIPLICITY.items():
+        valid = []
+        for placement in PLACEMENTS[length]:
+            ok = True
+            for idx in placement:
+                if flat[idx] == -1:
+                    ok = False
+                    break
+            if ok:
+                valid.append(placement)
+
+        if not valid:
+            continue
+
+        # Normalize so each ship contributes roughly according to its size,
+        # not just raw placement count.
+        base_weight = mult / len(valid)
+
+        for placement in valid:
+            hit_count = 0
+            zeros = []
+
+            for idx in placement:
+                cell = flat[idx]
+                if cell == 1:
+                    hit_count += 1
+                elif cell == 0:
+                    zeros.append(idx)
+
+            if not zeros:
+                continue
+
+            # Hunt score: generic occupancy probability.
+            for idx in zeros:
+                hunt_score[idx] += base_weight
+
+            # Target score: strongly prefer continuing known hits.
+            if hit_count > 0:
+                t_weight = base_weight * (TARGET_BOOST ** hit_count)
+                for idx in zeros:
+                    target_score[idx] += t_weight
+
+    # If we have useful target information, use it.
+    if has_hit:
+        target_candidates = [idx for idx in unknowns if target_score[idx] > 0.0]
+        if target_candidates:
+            best = _best_index(
+                target_candidates,
+                target_score,
+                hunt_score,
+                flat,
+                prefer_hits=True,
+            )
+            return divmod(best, n)
+
+    # Hunt mode: checkerboard parity restriction since all ships have length >= 2.
+    parity_groups = {0: [], 1: []}
+    for idx in unknowns:
+        r, c = divmod(idx, n)
+        parity_groups[(r + c) & 1].append(idx)
+
+    def parity_total(indices: List[int]) -> float:
+        return sum(hunt_score[idx] for idx in indices)
+
+    p0 = parity_groups[0]
+    p1 = parity_groups[1]
+
+    if p0 and p1:
+        if parity_total(p0) >= parity_total(p1):
+            candidates = p0
+        else:
+            candidates = p1
+    else:
+        candidates = p0 if p0 else p1
+
+    # If scores are degenerate, still pick a legal move.
+    if not candidates:
+        candidates = unknowns
+
+    if all(hunt_score[idx] == 0.0 for idx in candidates):
+        # Fall back to all unknowns before giving up.
+        candidates = unknowns
+
+    best = _best_index(
+        candidates,
+        hunt_score,
+        target_score,
+        flat,
+        prefer_hits=False,
+    )
+    return divmod(best, n)

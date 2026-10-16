@@ -1,0 +1,152 @@
+
+import time
+import math
+from typing import List, Tuple
+
+# Precompute all winning lines on a 4x4 board
+LINES = []
+for r in range(4):
+    LINES.append([r * 4 + c for c in range(4)])
+for c in range(4):
+    LINES.append([r * 4 + c for r in range(4)])
+LINES.append([0, 5, 10, 15])
+LINES.append([3, 6, 9, 12])
+
+SCORES = [0, 1, 10, 50, 10000]
+
+# Position priority: center > corner > edge
+POS_PRIORITY = [1] * 16
+for idx in [5, 6, 9, 10]:
+    POS_PRIORITY[idx] = 3
+for idx in [0, 3, 12, 15]:
+    POS_PRIORITY[idx] = 2
+
+
+def check_winner(board_t: Tuple[int, ...]) -> int:
+    for line in LINES:
+        s = board_t[line[0]] + board_t[line[1]] + board_t[line[2]] + board_t[line[3]]
+        if s == 4:
+            return 1
+        if s == -4:
+            return -1
+    return 0
+
+
+def heuristic(board_t: Tuple[int, ...]) -> int:
+    total = 0
+    for line in LINES:
+        vals = [board_t[i] for i in line]
+        if 1 in vals and -1 in vals:
+            continue
+        count1 = vals.count(1)
+        if count1 > 0:
+            total += SCORES[count1]
+        else:
+            countm1 = vals.count(-1)
+            if countm1 > 0:
+                total -= SCORES[countm1]
+    return total
+
+
+def make_move(board_t: Tuple[int, ...], idx: int, player: int) -> Tuple[int, ...]:
+    b = list(board_t)
+    b[idx] = player
+    return tuple(b)
+
+
+def ordered_moves(board_t: Tuple[int, ...], player: int):
+    empties = [i for i, v in enumerate(board_t) if v == 0]
+
+    def score(idx):
+        b = make_move(board_t, idx, player)
+        if check_winner(b) == player:
+            return 10000
+        return POS_PRIORITY[idx]
+
+    empties.sort(key=score, reverse=True)
+    return empties
+
+
+def negamax(board_t: Tuple[int, ...], player: int, depth: int, alpha: float, beta: float,
+            start: float, max_time: float) -> float:
+    if time.time() - start > max_time:
+        return player * heuristic(board_t)
+
+    winner = check_winner(board_t)
+    if winner != 0:
+        return (10000 + depth) if winner == player else (-10000 - depth)
+
+    empties = [i for i, v in enumerate(board_t) if v == 0]
+    if not empties:
+        return 0
+    if depth == 0:
+        return player * heuristic(board_t)
+
+    value = -math.inf
+    for idx in ordered_moves(board_t, player):
+        new_board = make_move(board_t, idx, player)
+        score = -negamax(new_board, -player, depth - 1, -beta, -alpha, start, max_time)
+        value = max(value, score)
+        alpha = max(alpha, score)
+        if alpha >= beta:
+            break
+        if time.time() - start > max_time:
+            break
+    return value
+
+
+def search_best(board_t: Tuple[int, ...], depth: int, start: float, max_time: float):
+    best_val = -math.inf
+    best_move = None
+    alpha = -math.inf
+    beta = math.inf
+    for idx in ordered_moves(board_t, 1):
+        new_board = make_move(board_t, idx, 1)
+        val = -negamax(new_board, -1, depth - 1, -beta, -alpha, start, max_time)
+        if val > best_val:
+            best_val = val
+            best_move = idx
+        alpha = max(alpha, val)
+        if alpha >= beta:
+            break
+        if time.time() - start > max_time:
+            break
+    return best_val, best_move
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    flat = tuple(cell for row in board for cell in row)
+    empties = [i for i, v in enumerate(flat) if v == 0]
+    if not empties:
+        return (0, 0)  # should not happen
+
+    # Immediate win
+    for idx in empties:
+        if check_winner(make_move(flat, idx, 1)) == 1:
+            return (idx // 4, idx % 4)
+
+    # Immediate block
+    for idx in empties:
+        if check_winner(make_move(flat, idx, -1)) == -1:
+            return (idx // 4, idx % 4)
+
+    nempty = len(empties)
+    if nempty <= 6:
+        max_depth = nempty
+    elif nempty <= 10:
+        max_depth = 6
+    else:
+        max_depth = 5
+
+    start = time.time()
+    max_time = 0.9
+
+    best_move = empties[0]
+    for d in range(1, max_depth + 1):
+        if time.time() - start > max_time:
+            break
+        _, bm = search_best(flat, d, start, max_time)
+        if bm is not None:
+            best_move = bm
+
+    return (best_move // 4, best_move % 4)

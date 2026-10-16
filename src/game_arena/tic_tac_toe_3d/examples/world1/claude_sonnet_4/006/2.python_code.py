@@ -1,0 +1,143 @@
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Get all possible winning lines in 3D tic tac toe
+    def get_all_lines():
+        lines = []
+        
+        # Lines within each z-plane (traditional 2D lines)
+        for z in range(3):
+            # Rows
+            for x in range(3):
+                lines.append([(x, y, z) for y in range(3)])
+            # Columns  
+            for y in range(3):
+                lines.append([(x, y, z) for x in range(3)])
+            # Diagonals in z-plane
+            lines.append([(i, i, z) for i in range(3)])
+            lines.append([(i, 2-i, z) for i in range(3)])
+        
+        # Vertical lines through z-levels
+        for x in range(3):
+            for y in range(3):
+                lines.append([(x, y, z) for z in range(3)])
+        
+        # Diagonal lines through z-levels (along x-axis)
+        for y in range(3):
+            lines.append([(i, y, i) for i in range(3)])
+            lines.append([(i, y, 2-i) for i in range(3)])
+        
+        # Diagonal lines through z-levels (along y-axis)
+        for x in range(3):
+            lines.append([(x, i, i) for i in range(3)])
+            lines.append([(x, i, 2-i) for i in range(3)])
+        
+        # Main 3D diagonals (4 total)
+        lines.append([(i, i, i) for i in range(3)])
+        lines.append([(i, i, 2-i) for i in range(3)])
+        lines.append([(i, 2-i, i) for i in range(3)])
+        lines.append([(2-i, i, i) for i in range(3)])
+        
+        return lines
+    
+    # Get the value at a board position
+    def get_value(pos):
+        x, y, z = pos
+        return board[x][y][z]
+    
+    # Analyze a line and return (my_count, opponent_count, empty_count, empty_positions)
+    def analyze_line(line):
+        my_count = 0
+        opponent_count = 0
+        empty_positions = []
+        
+        for pos in line:
+            val = get_value(pos)
+            if val == 1:
+                my_count += 1
+            elif val == -1:
+                opponent_count += 1
+            else:
+                empty_positions.append(pos)
+        
+        return my_count, opponent_count, len(empty_positions), empty_positions
+    
+    # Get all empty positions
+    def get_empty_positions():
+        empty = []
+        for x in range(3):
+            for y in range(3):
+                for z in range(3):
+                    if board[x][y][z] == 0:
+                        empty.append((x, y, z))
+        return empty
+    
+    # Calculate the strategic value of a position
+    def evaluate_position(pos):
+        score = 0
+        win_move = False
+        block_move = False
+        
+        # Check all lines that contain this position
+        for line in all_lines:
+            if pos in line:
+                my_count, opp_count, empty_count, empty_pos = analyze_line(line)
+                
+                # If placing here wins the game
+                if my_count == 2 and opp_count == 0 and empty_count == 1:
+                    win_move = True
+                    score += 1000
+                
+                # If placing here blocks opponent from winning
+                elif opp_count == 2 and my_count == 0 and empty_count == 1:
+                    block_move = True
+                    score += 500
+                
+                # Strategic value based on line potential
+                elif opp_count == 0:  # Line not blocked by opponent
+                    if my_count == 1 and empty_count == 2:
+                        score += 10  # Good offensive position
+                    elif my_count == 0 and empty_count == 3:
+                        score += 1   # Neutral position
+        
+        # Bonus for center position
+        if pos == (1, 1, 1):
+            score += 20
+        
+        # Bonus for corners
+        corners = [(0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)]
+        if pos in corners:
+            score += 5
+        
+        return score, win_move, block_move
+    
+    all_lines = get_all_lines()
+    empty_positions = get_empty_positions()
+    
+    best_move = None
+    best_score = -1
+    win_available = False
+    block_needed = False
+    
+    # Evaluate all possible moves
+    for pos in empty_positions:
+        score, is_win, is_block = evaluate_position(pos)
+        
+        # Prioritize winning moves
+        if is_win:
+            return pos
+        
+        # Track if we need to block
+        if is_block:
+            block_needed = True
+            if not win_available:  # Only consider blocks if no win available
+                if score > best_score:
+                    best_score = score
+                    best_move = pos
+        
+        # Consider other moves only if no critical moves available
+        elif not block_needed and not win_available:
+            if score > best_score:
+                best_score = score
+                best_move = pos
+    
+    return best_move if best_move else empty_positions[0]

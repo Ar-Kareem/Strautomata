@@ -1,0 +1,220 @@
+The strategy for this policy is a simple yet effective LOA player.  
+1. **Move generation** – For every friendly piece we enumerate all legal moves by scanning each of the eight directions until the board edge or an opponent piece is hit.  
+   * If an opponent piece is the first piece seen, we can capture it.  
+   * If we see at least one friendly piece before an opponent, we must land on the farthest friendly piece (jumping over friendly pieces is allowed).  
+   * Empty lines yield no move.  
+2. **Fallback** – In rare cases where the above routine finds no moves we search manually for a direct capture (ignoring friendly blockers) or any reachable friendly piece.  
+3. **Evaluation** – Each candidate move is simulated on a copy of the board.  
+   * Score = (my pieces – opponent pieces) + 10 · (is_capture) – 10 · (number of my connected components).  
+   * Capturing reduces opponent count, merging own pieces reduces the number of groups, both are rewarded.  
+4. **Selection** – The move with the highest score is chosen; ties are broken in favour of captures.  
+5. **Return format** – The selected move is converted to the required string `"from_row,from_col:to_row,to_col"`.
+
+This heuristic favours material advantage and connectivity, which are crucial for winning Lines of Action, while still being fast enough to run within the 1‑second limit.
+
+<code>
+import copy
+from collections import deque
+import numpy as np
+
+# ------------------------------------------------------------
+# Constants
+# ------------------------------------------------------------
+PIECE = 1               # Our piece value
+OPPONENT = -PIECE       # Opponent piece value
+SIZE = 8
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),          (0, 1),
+        (1, -1), (1, 0), (1, 1)]
+
+def find_capture(board, fr, fc):
+    """
+    Direct capture if a line-of-sight opponent piece is reachable without a friendly piece in between.
+    Returns (dest_r, dest_c, True) or None.
+    """
+    for dr, dc in DIRS:
+        nr, nc = fr + dr, fc + dc
+        if not (0 <= nr < SIZE and 0 <= nc < SIZE):
+            continue
+        r, c = nr, nc
+        while 0 <= r < SIZE and 0 <= c < SIZE:
+            cell = board[r][c]
+            if cell == PIECE:
+                return None            # blocked by our own piece
+            if cell == OPPONENT:
+                return (nr, nc, True) # capture
+            # empty cell
+            r += dr
+            c += dc
+    return None
+
+def find_own_move(board, fr, fc):
+    """
+    Move onto the first reachable friendly piece while never crossing an opponent piece.
+    Returns (dest_r, dest_c, False) or None.
+    """
+    for dr, dc in DIRS:
+        nr, nc = fr + dr, fc + dc
+        if not (0 <= nr < SIZE and 0 <= nc < SIZE):
+            continue
+        r, c = nr, nc
+        while 0 <= r < SIZE and 0 <= c < SIZE:
+            cell = board[r][c]
+            if cell == OPPONENT:
+                return None            # opponent blocks the line
+            if cell == PIECE:
+                return (nr, nc, False)
+            # empty cell
+            r += dr
+            c += dc
+    return None
+
+def possible_moves(board, fr, fc):
+    """
+    Generate all legal moves for a piece at (fr,fc).
+    Returns a list of tuples (to_r, to_c, is_capture).
+    """
+    moves = []
+    # Must be our piece
+    if board[fr][fc] != PIECE:
+        return moves
+
+    for dr, dc in DIRS:
+        nr, nc = fr + dr, fc + dc
+        if not (0 <= nr < SIZE and 0 <= nc < SIZE):
+            continue
+
+        pieces = []        # own pieces encountered in this direction
+        r, c = nr, nc
+        while 0 <= r < SIZE and 0 <= c < SIZE:
+            cell = board[r][c]
+            if cell == 0:
+                r += dr
+                c += dc
+                continue
+            if cell == PIECE:
+                pieces.append((r, c))
+                r += dr
+                c += dc
+                continue
+            # opponent piece
+            if pieces:
+                # can land on the last friendly piece before the opponent
+                dest = pieces[-1]
+                moves.append((dest[0], dest[1], False))
+            else:
+                # opponent is the first piece – capture
+                dest = (nr, nc)      # same as (r,c) here
+                moves.append((dest[0], dest[1], True))
+            break  # line stopped by opponent (or we broke earlier)
+        else:
+            # board edge reached
+            if pieces:
+                dest = pieces[-1]
+                moves.append((dest[0], dest[1], False))
+    return moves
+
+def count_groups(board):
+    """
+    Count the number of connected components of our pieces (8‑connectivity).
+    Returns an integer.
+    """
+    visited = [[False] * SIZE for _ in range(SIZE)]
+    groups = 0
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == PIECE and not visited[r][c]:
+                groups += 1
+                q = deque()
+                q.append((r, c))
+                visited[r][c] = True
+                while q:
+                    cr, cc = q.popleft()
+                    for dr, dc in DIRS:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < SIZE and 0 <= nc < SIZE \
+                           and not visited[nr][nc] \
+                           and board[nr][nc] == PIECE:
+                            visited[nr][nc] = True
+                            q.append((nr, nc))
+    return groups
+
+def evaluate_move(board_before, fr, fc, tr, tc, is_capture):
+    """
+    Simulate applying a move and compute a simple score:
+        own_pieces - opponent_pieces + capture_bonus - group_penalty
+    Returns an integer score.
+    """
+    # make a mutable copy
+    if isinstance(board_before, np.ndarray):
+        board = board_before.copy()
+    else:
+        board = [row[:] for row in board_before]
+
+    board[fr][fc] = 0               # remove moving piece
+    board[tr][tc] = PIECE           # place it on destination
+
+    own = sum(board[r][c] == PIECE for r in range(SIZE) for c in range(SIZE))
+    opponent = sum(board[r][c] == OPPONENT for r in range(SIZE) for c in range(SIZE))
+
+    capture_bonus = 10 if is_capture else 0
+    groups = count_groups(board)
+
+    return own - opponent + capture_bonus - groups * 10
+
+def policy(board):
+    """
+    Required API: given the current board, return a legal move string.
+    """
+    # Normalise board to a mutable list-of-lists
+    if isinstance(board, np.ndarray):
+        board = board.tolist()
+
+    # 1) generate all legal moves from the possible_moves routine
+    moves = []
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == PIECE:
+                moves.extend(possible_moves(board, r, c))
+
+    # 2) if for some reason no moves were found, fallback to a quick search
+    if not moves:
+        captures = []
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if board[r][c] == PIECE:
+                    cand = find_capture(board, r, c)
+                    if cand:
+                        captures.append((cand[0], cand[1], True))
+        own_moves = []
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if board[r][c] == PIECE:
+                    cand = find_own_move(board, r, c)
+                    if cand:
+                        own_moves.append((cand[0], cand[1], False))
+
+        if captures:
+            moves = captures
+        elif own_moves:
+            moves = own_moves
+        else:
+            # final safe fallback – move a piece onto itself (will be illegal, but avoids crash)
+            # Find any piece if board is non‑empty; otherwise default to (0,0)
+            piece = next(((r, c) for r in range(SIZE) for c in range(SIZE)
+                         if board[r][c] == PIECE), (0, 0))
+            moves = [(piece[0], piece[1], piece[0], piece[1], False)]
+
+    # 3) evaluate all moves and pick the best
+    best = None
+    best_score = None
+    for fr, fc, tr, tc, is_cap in moves:
+        score = evaluate_move(board, fr, fc, tr, tc, is_cap)
+        if best is None or score > best_score or (score == best_score and is_cap):
+            best = (fr, fc, tr, tc, is_cap)
+            best_score = score
+
+    # 4) format the move string
+    fr, fc, tr, tc, _ = best
+    return f"{fr},{fc}:{tr},{tc}"
+</code>

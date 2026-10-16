@@ -1,0 +1,265 @@
+
+import time
+from typing import List, Tuple, Optional, Dict
+
+# 4x4 Tic Tac Toe (connect 4 in row/col/diag)
+
+N = 4
+
+# Precompute all winning lines (indices in flattened 16-cell board)
+LINES = []
+# rows
+for r in range(N):
+    LINES.append([r * N + c for c in range(N)])
+# cols
+for c in range(N):
+    LINES.append([r * N + c for r in range(N)])
+# diags
+LINES.append([i * N + i for i in range(N)])
+LINES.append([i * N + (N - 1 - i) for i in range(N)])
+
+CENTER_CELLS = {(1, 1), (1, 2), (2, 1), (2, 2)}
+CORNERS = {(0, 0), (0, 3), (3, 0), (3, 3)}
+
+INF = 10**9
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _flatten(board: List[List[int]]) -> Tuple[int, ...]:
+    return tuple(board[r][c] for r in range(N) for c in range(N))
+
+
+def _unflatten_to_list(state: Tuple[int, ...]) -> List[int]:
+    return list(state)
+
+
+def _check_winner(state: Tuple[int, ...]) -> int:
+    """Return 1 if player 1 wins, -1 if player -1 wins, 0 otherwise."""
+    for line in LINES:
+        s = state[line[0]] + state[line[1]] + state[line[2]] + state[line[3]]
+        if s == 4:
+            return 1
+        if s == -4:
+            return -1
+    return 0
+
+
+def _legal_moves(state: Tuple[int, ...]) -> List[int]:
+    return [i for i, v in enumerate(state) if v == 0]
+
+
+def _idx_to_rc(i: int) -> Tuple[int, int]:
+    return (i // N, i % N)
+
+
+def _rc_to_idx(r: int, c: int) -> int:
+    return r * N + c
+
+
+def _move_order_score(idx: int) -> int:
+    r, c = _idx_to_rc(idx)
+    # Order: center > corner > edge
+    if (r, c) in CENTER_CELLS:
+        return 3
+    if (r, c) in CORNERS:
+        return 2
+    return 1
+
+
+def _heuristic(state: Tuple[int, ...], player: int) -> int:
+    """
+    Evaluate from the perspective of `player` (higher is better for player).
+    Terminal states should be handled outside.
+    """
+    # Line scoring: reward open lines with our marks; penalize opponent similarly.
+    # Strongly weight 3-in-a-row threats.
+    weights = {0: 0, 1: 2, 2: 12, 3: 80}
+
+    score = 0
+
+    for line in LINES:
+        vals = [state[i] for i in line]
+        p = vals.count(player)
+        o = vals.count(-player)
+        if p and o:
+            continue  # blocked line
+        if p:
+            score += weights.get(p, 0)
+        elif o:
+            score -= weights.get(o, 0)
+
+    # Positional: slight preference for center control
+    for i, v in enumerate(state):
+        if v == 0:
+            continue
+        r, c = _idx_to_rc(i)
+        if (r, c) in CENTER_CELLS:
+            score += 2 * (1 if v == player else -1)
+        elif (r, c) in CORNERS:
+            score += 1 * (1 if v == player else -1)
+
+    return score
+
+
+def _apply_move(state_list: List[int], idx: int, player: int) -> None:
+    state_list[idx] = player
+
+
+def _undo_move(state_list: List[int], idx: int) -> None:
+    state_list[idx] = 0
+
+
+def _immediate_winning_move(state: Tuple[int, ...], player: int) -> Optional[int]:
+    """Return an index that wins immediately for player, if any."""
+    st = list(state)
+    for idx in _legal_moves(state):
+        st[idx] = player
+        if _check_winner(tuple(st)) == player:
+            st[idx] = 0
+            return idx
+        st[idx] = 0
+    return None
+
+
+def _negamax(
+    state_list: List[int],
+    player: int,
+    depth: int,
+    alpha: int,
+    beta: int,
+    start_time: float,
+    time_limit: float,
+    tt: Dict[Tuple[Tuple[int, ...], int], Tuple[int, int]],
+) -> int:
+    # Time check
+    if time.perf_counter() - start_time >= time_limit:
+        raise _Timeout
+
+    state_t = tuple(state_list)
+    winner = _check_winner(state_t)
+    if winner != 0:
+        # Prefer faster wins / slower losses
+        return (100000 - (16 - depth)) if winner == player else (-100000 + (16 - depth))
+    if depth == 0:
+        return _heuristic(state_t, player)
+
+    key = (state_t, player)
+    if key in tt:
+        stored_depth, stored_val = tt[key]
+        if stored_depth >= depth:
+            return stored_val
+
+    moves = [i for i, v in enumerate(state_list) if v == 0]
+    if not moves:
+        return 0  # draw
+
+    # Move ordering: immediate winning moves first, then blocks, then positional.
+    # (We can cheaply check immediate win for current player by simulation.)
+    def order_key(idx: int) -> int:
+        # higher is better (sorted reverse)
+        st_val = 0
+        state_list[idx] = player
+        if _check_winner(tuple(state_list)) == player:
+            st_val = 100  # winning move
+        state_list[idx] = 0
+        return st_val * 1000 + _move_order_score(idx)
+
+    moves.sort(key=order_key, reverse=True)
+
+    best = -INF
+    a = alpha
+
+    for idx in moves:
+        _apply_move(state_list, idx, player)
+        val = -_negamax(state_list, -player, depth - 1, -beta, -a, start_time, time_limit, tt)
+        _undo_move(state_list, idx)
+
+        if val > best:
+            best = val
+        if best > a:
+            a = best
+        if a >= beta:
+            break
+
+    tt[key] = (depth, best)
+    return best
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Collect legal moves; always return a legal one.
+    empties = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+    if not empties:
+        return (0, 0)  # should not happen in normal play
+
+    state = _flatten(board)
+
+    # 1) Immediate win
+    win_idx = _immediate_winning_move(state, 1)
+    if win_idx is not None:
+        return _idx_to_rc(win_idx)
+
+    # 2) Immediate block
+    block_idx = _immediate_winning_move(state, -1)
+    if block_idx is not None:
+        return _idx_to_rc(block_idx)
+
+    # 3) Iterative deepening alpha-beta negamax under time limit
+    start = time.perf_counter()
+    time_limit = 0.95  # seconds
+
+    state_list = list(state)
+    legal = [i for i, v in enumerate(state_list) if v == 0]
+
+    # Basic ordering for root
+    legal.sort(key=_move_order_score, reverse=True)
+
+    best_move = legal[0]
+    best_val = -INF
+
+    tt: Dict[Tuple[Tuple[int, ...], int], Tuple[int, int]] = {}
+
+    max_depth = len(legal)
+    # Start from depth 1 to quickly get a decent move
+    for depth in range(1, max_depth + 1):
+        if time.perf_counter() - start >= time_limit:
+            break
+
+        cur_best_move = best_move
+        cur_best_val = -INF
+
+        # Root move ordering: try previous best first, then others
+        root_moves = [best_move] + [m for m in legal if m != best_move]
+
+        try:
+            alpha = -INF
+            beta = INF
+
+            for m in root_moves:
+                if time.perf_counter() - start >= time_limit:
+                    raise _Timeout
+
+                _apply_move(state_list, m, 1)
+                val = -_negamax(state_list, -1, depth - 1, -beta, -alpha, start, time_limit, tt)
+                _undo_move(state_list, m)
+
+                if val > cur_best_val:
+                    cur_best_val = val
+                    cur_best_move = m
+                if val > alpha:
+                    alpha = val
+
+            best_move, best_val = cur_best_move, cur_best_val
+
+        except _Timeout:
+            break
+
+    # Ensure legality
+    r, c = _idx_to_rc(best_move)
+    if 0 <= r < N and 0 <= c < N and board[r][c] == 0:
+        return (r, c)
+
+    # Fallback: first empty
+    return empties[0]

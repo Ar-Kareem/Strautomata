@@ -1,0 +1,107 @@
+
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the best move for a 4x4 Tic Tac Toe game using a minimax algorithm with alpha-beta pruning.
+    """
+
+    def get_legal_moves(board):
+        """
+        Returns a list of legal moves (empty cells) on the board.
+        """
+        legal_moves = []
+        for i in range(4):
+            for j in range(4):
+                if board[i][j] == 0:
+                    legal_moves.append((i, j))
+        return legal_moves
+
+    def check_win(board, player):
+        """
+        Checks if the given player has won the game.
+        """
+        # Check rows
+        for i in range(4):
+            if all(board[i][j] == player for j in range(4)):
+                return True
+
+        # Check columns
+        for j in range(4):
+            if all(board[i][j] == player for i in range(4)):
+                return True
+
+        # Check diagonals
+        if all(board[i][i] == player for i in range(4)):
+            return True
+        if all(board[i][3 - i] == player for i in range(4)):
+            return True
+
+        return False
+
+    def evaluate(board):
+        """
+        Evaluates the board state for the current player.
+        Returns:
+            100 if the player wins.
+            -100 if the opponent wins.
+            0 otherwise.
+        """
+        if check_win(board, 1):
+            return 100
+        if check_win(board, -1):
+            return -100
+        return 0
+
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        """
+        Minimax algorithm with alpha-beta pruning.
+        """
+        if depth == 0 or check_win(board, 1) or check_win(board, -1) or not get_legal_moves(board):
+            return evaluate(board), None
+
+        if maximizing_player:
+            max_eval = float('-inf')
+            best_move = None
+            for move in get_legal_moves(board):
+                row, col = move
+                board[row][col] = 1
+                eval, _ = minimax(board, depth - 1, alpha, beta, False)
+                board[row][col] = 0
+                if eval > max_eval:
+                    max_eval = eval
+                    best_move = move
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = None
+            for move in get_legal_moves(board):
+                row, col = move
+                board[row][col] = -1
+                eval, _ = minimax(board, depth - 1, alpha, beta, True)
+                board[row][col] = 0
+                if eval < min_eval:
+                    min_eval = eval
+                    best_move = move
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    # Get the best move using minimax
+    depth = 3  # Limiting the depth for time constraints
+    _, best_move = minimax(board, depth, float('-inf'), float('inf'), True)
+
+    # If minimax fails or no best move is found, choose a random legal move
+    if best_move is None:
+        legal_moves = get_legal_moves(board)
+        if legal_moves:
+            return random.choice(legal_moves)
+        else:
+            # Should not happen as the game should be over
+            return 0, 0  # Return a default move if no legal moves are available
+
+    return best_move

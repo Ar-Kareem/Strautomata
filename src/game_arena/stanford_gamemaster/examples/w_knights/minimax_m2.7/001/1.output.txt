@@ -1,0 +1,213 @@
+**Strategy Overview**
+
+The policy works by looking ahead two turns (my move → opponent’s reply) and picking the move that gives the best worst‑case result.
+
+* **Move generation** – For the current player all legal knight moves are generated.  
+  * Knights move in the usual L‑shapes.  
+  * A piece may only move forward (white forward = increasing row number, black forward = decreasing row number).  
+  * A move may capture an opponent’s piece; after the capture the piece is removed.
+
+* **Win detection** – If a move reaches the opposite side of the board (white → row 6, black → row 1) the game ends immediately – this move is taken as a winning move.
+
+* **Two‑ply search** – For every legal move we:
+  1. Apply the move to a copy of the board.
+  2. Generate all legal replies for the opponent.
+  3. If the opponent has no reply, the position is a guaranteed win for us.
+  4. Otherwise evaluate every opponent reply with a simple heuristic and keep the *worst* (i.e. smallest) value – the opponent will try to minimise our score.
+  5. Choose the move whose worst‑case value is maximal.
+
+* **Board evaluation (heuristic)** – After the opponent’s reply the position is scored by  
+
+```
+score = (my_pieces - opponent_pieces) * 100 + (my_distance - opponent_distance)
+```
+
+  * `my_pieces` / `opponent_pieces` – number of remaining pieces.  
+  * `my_distance` / `opponent_distance` – sum of Manhattan‑like distances to the opposite side  
+    (white: 6‑row, black: row‑1).  
+  The large weight on piece count makes captures extremely valuable; distance rewards forward progress.
+
+* **Tie‑breaking** – If several moves have the same worst‑case value one is chosen at random.
+
+The algorithm is fast: at most a few hundred board evaluations are needed (≈ 30 moves × ≈ 30 replies), well within the 1 second limit.
+
+---
+
+<code>
+import random
+from typing import Dict, List, Tuple, Optional
+
+# ----------------------------------------------------------------------
+# Constants
+# ----------------------------------------------------------------------
+COLS = 'abcdef'                # columns a..f
+COL_IDX = {c: i for i, c in enumerate(COLS)}
+ROW_MIN, ROW_MAX = 1, 6
+OFFSETS = [(-2, -1), (-2, 1), (-1, -2), (-1, 2),
+           (1, -2),  (1, 2),  (2, -1), (2, 1)]
+
+def opponent_role(role: str) -> str:
+    return "black" if role == "white" else "white"
+
+# ----------------------------------------------------------------------
+# State parsing
+# ----------------------------------------------------------------------
+def parse_state(state: List[List]) -> Dict[Tuple[int, int], str]:
+    """Convert the list of propositions into a board dictionary.
+    Key = (col_idx, row), value = 'white' or 'black'.
+    """
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            col = prop[1]
+            row = int(prop[2])
+            colour = prop[3]
+            board[(COL_IDX[col], row)] = colour
+    return board
+
+# ----------------------------------------------------------------------
+# Move generation
+# ----------------------------------------------------------------------
+def generate_moves(board: Dict[Tuple[int, int], str], role: str) -> List[dict]:
+    """Return a list of possible moves for `role` on `board`.
+    Each entry is a dictionary:
+        {
+            'from'   : (col_idx, row),
+            'to'     : (col_idx, row),
+            'capture': bool,
+            'new_board': dict,
+            'goal'   : bool          # True if the move reaches the opposite side
+        }
+    """
+    moves = []
+    for (col_idx, row), colour in board.items():
+        if colour != role:
+            continue
+        for dx, dy in OFFSETS:
+            new_col = col_idx + dx
+            new_row = row + dy
+            # board bounds
+            if not (0 <= new_col <= 5 and ROW_MIN <= new_row <= ROW_MAX):
+                continue
+            # forward‑only constraint
+            if role == "white" and new_row <= row:
+                continue
+            if role == "black" and new_row >= row:
+                continue
+            target = (new_col, new_row)
+            capture = False
+            if target in board:
+                if board[target] == role:
+                    continue          # own piece blocks
+                else:
+                    capture = True    # opponent piece can be captured
+            # build new board after the move
+            new_board = dict(board)
+            del new_board[(col_idx, row)]          # remove piece from origin
+            if capture:
+                del new_board[target]               # remove captured opponent piece
+            new_board[target] = role                # place piece at destination
+            # check for immediate win
+            goal = (role == "white" and new_row == 6) or (role == "black" and new_row == 1)
+            moves.append({
+                'from': (col_idx, row),
+                'to':   (new_col, new_row),
+                'capture': capture,
+                'new_board': new_board,
+                'goal': goal
+            })
+    return moves
+
+# ----------------------------------------------------------------------
+# Position evaluation
+# ----------------------------------------------------------------------
+def evaluate(board: Dict[Tuple[int, int], str], role: str) -> int:
+    """Simple heuristic: piece advantage + distance advantage."""
+    opp = opponent_role(role)
+    my_pieces = sum(1 for c in board.values() if c == role)
+    opp_pieces = sum(1 for c in board.values() if c == opp)
+
+    if role == "white":
+        my_dist = sum(6 - r for (c, r), col in board.items() if col == role)
+        opp_dist = sum(r - 1 for (c, r), col in board.items() if col == opp)
+    else:
+        my_dist = sum(r - 1 for (c, r), col in board.items() if col == role)
+        opp_dist = sum(6 - r for (c, r), col in board.items() if col == opp)
+
+    # Heavy weight on material, smaller weight on forward progress
+    return (my_pieces - opp_pieces) * 100 + (my_dist - opp_dist)
+
+# ----------------------------------------------------------------------
+# Two‑ply search (minimax)
+# ----------------------------------------------------------------------
+INF = 10 ** 9
+
+def best_move(board: Dict[Tuple[int, int], str], role: str) -> Optional[dict]:
+    """Return the move dictionary chosen by the minimax search."""
+    my_moves = generate_moves(board, role)
+    if not my_moves:
+        return None
+
+    # Immediate winning moves are taken immediately
+    winning = [m for m in my_moves if m['goal']]
+    if winning:
+        # Prefer captures among winning moves
+        return max(winning, key=lambda m: (m['capture'], 0))
+
+    best_value = -float('inf')
+    best_option = None
+
+    for move in my_moves:
+        new_board = move['new_board']
+        opp_moves = generate_moves(new_board, opponent_role(role))
+
+        # If opponent cannot move, we will eventually win
+        if not opp_moves:
+            min_eval = INF
+        else:
+            min_eval = float('inf')
+            for opp_move in opp_moves:
+                # Opponent reaches the opposite side → very bad for us
+                if opp_move['goal']:
+                    eval_after_opp = -INF
+                else:
+                    eval_after_opp = evaluate(opp_move['new_board'], role)
+                if eval_after_opp < min_eval:
+                    min_eval = eval_after_opp
+
+        if min_eval > best_value:
+            best_value = min_eval
+            best_option = move
+
+    # Fallback (should never happen)
+    if best_option is None:
+        best_option = random.choice(my_moves)
+
+    return best_option
+
+# ----------------------------------------------------------------------
+# Formatting a move back into Stanford syntax
+# ----------------------------------------------------------------------
+def format_move(move: dict) -> str:
+    """Turn a move dict into a string like move(a,2,b,4)."""
+    from_col, from_row = move['from']
+    to_col, to_row = move['to']
+    return f"move({COLS[from_col]},{from_row},{COLS[to_col]},{to_row})"
+
+# ----------------------------------------------------------------------
+# Public policy API
+# ----------------------------------------------------------------------
+def policy(state: List[List], role: str) -> str:
+    """Choose a legal move for the given role in the current state."""
+    board = parse_state(state)
+    move = best_move(board, role)
+    # The arena always expects a legal move; if something goes wrong we
+    # fall back to any legal move (should never be needed).
+    if move is None:
+        # ultimate fallback – generate any legal move
+        moves = generate_moves(board, role)
+        move = random.choice(moves) if moves else None
+        if move is None:
+            raise RuntimeError("No legal moves found!")
+    return format_move(move)
+</code>

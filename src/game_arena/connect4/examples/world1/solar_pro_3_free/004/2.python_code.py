@@ -1,0 +1,249 @@
+
+import numpy as np
+
+MAX_DEPTH = 5   # maximum search depth (plies)
+
+
+def legal_moves(board):
+    """Return list of column indices that are not full."""
+    return [c for c in range(7) if board[0][c] == 0]
+
+
+def simulate_move(board, col, player):
+    """
+    Simulate dropping a disc for `player` in `col`.
+    Returns a copy of the board as tuple of tuples (hashable for minimax).
+    """
+    # Convert to mutable list-of-lists
+    mutable = [list(row) for row in board]
+    # Find the lowest empty cell
+    for r in range(5, -1, -1):
+        if mutable[r][col] == 0:
+            mutable[r][col] = player
+            break
+    return tuple(tuple(row) for row in mutable)
+
+
+def check_win(board, player):
+    """Return True if `player` already has a line of four."""
+    np_board = np.array(board)
+    dirs = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for dr, dc in dirs:
+        for r in range(6):
+            for c in range(7):
+                if np_board[r, c] != player:
+                    continue
+                length = 0
+                nr, nc = r, c
+                while 0 <= nr < 6 and 0 <= nc < 7 and np_board[nr, nc] == player:
+                    length += 1
+                    nr += dr
+                    nc += dc
+                if length >= 4:
+                    return True
+    return False
+
+
+def find_best_win(board, player):
+    """Return the first column that wins for `player`, or None."""
+    for col in range(7):
+        if board[0][col] == 0:
+            new = simulate_move(board, col, player)
+            if check_win(new, player):
+                return col
+    return None
+
+
+def find_fork(board, player):
+    """Return a column that creates ≥2 winning threats (a fork), or None."""
+    for col in range(7):
+        if board[0][col] == 0:
+            for r in range(5, -1, -1):
+                if board[r][col] == 0:
+                    row = r
+                    break
+            after = simulate_move(board, col, player)
+            # Count how many winning positions the opponent could obtain next turn
+            threats = []
+            for c2 in range(7):
+                if after[0][c2] == 0:
+                    r2 = 5
+                    while r2 >= 0 and after[r2][c2] != 0:
+                        r2 -= 1
+                    # Simulate opponent's next disc in that column
+                    temp = simulate_move(after, c2, player)
+                    if check_win(temp, player):
+                        threats.append((c2, r2))
+            if len(threats) >= 2:
+                return col
+    return None
+
+
+def get_threat_positions(board, player):
+    """Return list of (col,row) where dropping `player`'s disc would win."""
+    np_board = np.array(board)
+    threats = []
+    for c in range(7):
+        if np_board[0][c] == 0:
+            for r in range(5, -1, -1):
+                if np_board[r][c] == 0:
+                    row = r
+                    break
+            # Simulate that disc
+            temp = np_board.copy()
+            temp[row, c] = player
+            if check_win(temp, player):
+                threats.append((c, row))
+    return threats
+
+
+def evaluate(board, player):
+    """Heuristic evaluation: +10/–10 for four‑lines, +5/–5 for three‑lines,
+       small bonuses for column depth and central columns."""
+    np_board = np.array(board)
+
+    score = 0
+    dirs = [(0, 1), (1, 0), (1, 1), (1, -1)]
+
+    # Own four‑ and three‑lines
+    for dr, dc in dirs:
+        for r in range(6):
+            for c in range(7):
+                if np_board[r, c] != player:
+                    continue
+                length = 0
+                nr, nc = r, c
+                while 0 <= nr < 6 and 0 <= nc < 7 and np_board[nr, nc] == player:
+                    length += 1
+                    nr += dr
+                    nc += dc
+                if length >= 4:
+                    score += 10
+                elif length >= 3:
+                    score += 5
+
+    # Opponent four‑ and three‑lines
+    for dr, dc in dirs:
+        for r in range(6):
+            for c in range(7):
+                if np_board[r, c] != -player:
+                    continue
+                length = 0
+                nr, nc = r, c
+                while 0 <= nr < 6 and 0 <= nc < 7 and np_board[nr, nc] == -player:
+                    length += 1
+                    nr += dr
+                    nc += dc
+                if length >= 4:
+                    score -= 10
+                elif length >= 3:
+                    score -= 5
+
+    # Column height bonuses – reward deeper, more stable columns
+    col_heights = [np_board[r].sum() for r in range(6)]   # number of discs per column
+    for c in range(7):
+        height = col_heights[c]
+        for r in range(6):
+            if np_board[r, c] == player:
+                # deeper disc gives extra stability
+                if r >= 3:          # a disc placed in the lower half of the column
+                    score += 0.2
+                # column‑height incentive
+                score += 0.1 * height
+
+    # Central columns incentive
+    if any(np_board[r, 3] == player for r in range(6)) or any(np_board[r, 4] == player for r in range(6)):
+        score += 0.5
+
+    return score
+
+
+def minimax(state, depth, alpha, beta, player, max_depth):
+    """
+    Alpha‑beta minimax search with depth limit.
+    `player` is the side to move on the current node; `state` is tuple of tuples.
+    Returns the evaluated value for `player`.
+    """
+    # Terminal condition
+    if depth >= max_depth or not legal_moves(state):
+        return evaluate(state, player)
+
+    legal = legal_moves(state)
+
+    # Apply simple move ordering based on evaluation (helps α‑β pruning)
+    scores = [(col, evaluate(state, player) if col == first else 0)
+              for col in legal]   # we will evaluate each child anyway
+    # No need to sort; we evaluate in the loop.
+
+    best = -float('inf') if player == 1 else float('inf')
+
+    for col in legal:
+        # Convert to mutable list to simulate a disc
+        mutable = [list(row) for row in state]
+        # Simulate our move in `col`
+        new_state = simulate_move(state, col, player)
+
+        val = minimax(new_state, depth + 1,
+                      alpha, beta, -player, max_depth)
+
+        if player == 1:
+            if val > best:
+                best = val
+                alpha = max(alpha, best)
+        else:
+            if val < best:
+                best = val
+                beta = min(beta, best)
+
+        # Prune
+        if player == 1 and alpha >= beta:
+            break
+        if player == -1 and beta <= alpha:
+            break
+
+    return best
+
+
+def policy(board):
+    """
+    Main entry point – returns the column (0‑6) for the current player's move.
+    """
+    player = 1           # we always play as player 1
+    opponent = -1
+
+    # 1. Win‑now
+    win_col = find_best_win(board, player)
+    if win_col is not None:
+        return win_col
+
+    # 2. Block‑now
+    block_col = find_best_win(board, opponent)
+    if block_col is not None:
+        return block_col
+
+    # 3. Fork‑now
+    fork_col = find_fork(board, player)
+    if fork_col is not None:
+        return fork_col
+
+    # 4. Depth‑limited minimax fallback
+    legal = legal_moves(board)
+    if not legal:          # should never happen, but be safe
+        return -1
+
+    best_col = None
+    best_score = -float('inf')
+    for col in legal:
+        after_state = simulate_move(board, col, player)
+        val = minimax(after_state, depth=0, alpha=-float('inf'),
+                      beta=float('inf'), player=opponent, max_depth=MAX_DEPTH)
+        if val > best_score:
+            best_score = val
+            best_col = col
+
+    # Tie‑breaker: choose the smallest column when equal scores
+    for col in legal:
+        if col == best_col:
+            return col
+
+    return best_col

@@ -1,0 +1,136 @@
+
+import random
+from typing import List, Tuple
+
+# ----------------------------------------------------------------------
+# Pre‑compute all 49 winning lines in a 3x3x3 board.
+# A line is a list of three (i, j, k) coordinates.
+# ----------------------------------------------------------------------
+def _generate_winning_lines() -> List[List[Tuple[int, int, int]]]:
+    lines = []
+
+    # Straight lines along each axis
+    for i in range(3):
+        for j in range(3):
+            # along k
+            lines.append([(i, j, 0), (i, j, 1), (i, j, 2)])
+            # along j
+            lines.append([(i, 0, j), (i, 1, j), (i, 2, j)])
+            # along i
+            lines.append([(0, i, j), (1, i, j), (2, i, j)])
+
+    # Face diagonals (2 per face, 6 faces)
+    for i in range(3):
+        # xy faces (k fixed)
+        lines.append([(0, 0, i), (1, 1, i), (2, 2, i)])
+        lines.append([(0, 2, i), (1, 1, i), (2, 0, i)])
+        # xz faces (j fixed)
+        lines.append([(0, i, 0), (1, i, 1), (2, i, 2)])
+        lines.append([(0, i, 2), (1, i, 1), (2, i, 0)])
+        # yz faces (i fixed)
+        lines.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+        lines.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+
+    # Space diagonals (4)
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    lines.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+
+    # Remove duplicates that may have been added (there are none but guard anyway)
+    unique = []
+    seen = set()
+    for line in lines:
+        tup = tuple(sorted(line))
+        if tup not in seen:
+            seen.add(tup)
+            unique.append(line)
+    return unique
+
+
+WINNING_LINES = _generate_winning_lines()
+
+
+# ----------------------------------------------------------------------
+# Helper utilities
+# ----------------------------------------------------------------------
+def _empty_cells(board: List[List[List[int]]]) -> List[Tuple[int, int, int]]:
+    empties = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    empties.append((i, j, k))
+    return empties
+
+
+def _line_state(board: List[List[List[int]]], line: List[Tuple[int, int, int]]) -> Tuple[int, int, List[Tuple[int, int, int]]]:
+    """
+    Returns (my_count - opp_count, empty_count, list_of_empty_cells)
+    Actually we care about sum (1 for us, -1 for opponent) and the empty cells.
+    """
+    s = 0
+    empties = []
+    for (i, j, k) in line:
+        val = board[i][j][k]
+        if val == 0:
+            empties.append((i, j, k))
+        s += val
+    return s, len(empties), empties
+
+
+# ----------------------------------------------------------------------
+# Main policy function
+# ----------------------------------------------------------------------
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Return a legal move (i, j, k) for the current player (represented by 1).
+    The board is a 3x3x3 list of ints: 0 empty, 1 our piece, -1 opponent.
+    """
+    # 1. Winning move
+    for line in WINNING_LINES:
+        s, empty_cnt, empties = _line_state(board, line)
+        # Two of our pieces -> sum == 2, exactly one empty cell
+        if s == 2 and empty_cnt == 1:
+            return empties[0]
+
+    # 2. Block opponent's winning move
+    for line in WINNING_LINES:
+        s, empty_cnt, empties = _line_state(board, line)
+        # Two opponent pieces -> sum == -2
+        if s == -2 and empty_cnt == 1:
+            return empties[0]
+
+    # 3. Choose cell participating in most open lines (no opponent pieces)
+    empties = _empty_cells(board)
+    if not empties:
+        # Board full – shouldn't happen, but return dummy
+        return (0, 0, 0)
+
+    best_cell = None
+    best_score = -1
+
+    # Pre‑compute for each empty cell how many "open" lines it belongs to
+    for cell in empties:
+        i, j, k = cell
+        score = 0
+        for line in WINNING_LINES:
+            if cell not in line:
+                continue
+            # line must have no opponent pieces
+            s, empty_cnt, _ = _line_state(board, line)
+            if s >= 0:  # no -1 present (since opponent pieces are -1)
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_cell = cell
+
+    if best_cell is not None and best_score > 0:
+        return best_cell
+
+    # 4. Take centre if available
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+
+    # 5. Fallback – random empty cell
+    return random.choice(empties)

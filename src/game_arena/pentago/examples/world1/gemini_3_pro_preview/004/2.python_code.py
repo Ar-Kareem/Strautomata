@@ -1,0 +1,340 @@
+
+import time
+import copy
+
+def policy(you, opponent) -> str:
+    # Game constants
+    START_TIME = time.time()
+    TIME_LIMIT = 0.90  # Seconds buffer
+    
+    # --- Bitboard Helper Classes & Constants ---
+    
+    # Offsets for Quadrants: 0 (TL), 1 (TR), 2 (BL), 3 (BR)
+    # Indices are row-major 0..35
+    QUAD_OFFSETS = [0, 3, 18, 21]
+    
+    # Precomputed bitmasks for checking wins (32 possible lines of length 5)
+    WIN_MASKS = []
+    
+    def init_win_masks():
+        masks = []
+        # Horizontal (6 rows * 2 positions)
+        for r in range(6):
+            # 5 bits at start of row r
+            base = 0b11111 << (r * 6)
+            masks.append(base)       # Cols 0-4
+            masks.append(base << 1)  # Cols 1-5
+        
+        # Vertical (6 cols * 2 positions)
+        for c in range(6):
+            # 5 bits vertical start at col c
+            base = 0
+            for k in range(5):
+                base |= (1 << ((k * 6) + c))
+            masks.append(base)       # Rows 0-4
+            masks.append(base << 6)  # Rows 1-5 (shift by 1 row)
+            
+        # Diagonals
+        # Main direction step +7 (0,0 to 1,1 is index 0 to 7)
+        base = 0
+        for k in range(5): base |= (1 << (k * 7))
+        # Valid starts for len 5 diagonals with step 7: (0,0), (0,1), (1,0), (1,1)
+        masks.append(base)            # Start (0,0)
+        masks.append(base << 1)       # Start (0,1)
+        masks.append(base << 6)       # Start (1,0)
+        masks.append(base << 7)       # Start (1,1)
+        
+        # Anti-diagonal step +5 (0,5 to 1,4 is index 5 to 10)
+        base = 0
+        for k in range(5): base |= (1 << (5 + k * 5))
+        # Valid starts: (0,5), (0,4), (1,5), (1,4)
+        masks.append(base)            # Start (0,5)
+        masks.append(base >> 1)       # Start (0,4)
+        masks.append(base << 6)       # Start (1,5)
+        masks.append(base << 5)       # Start (1,4) - wait, base<<6 is (1,5), shift right 1 is (1,4). +6-1 = +5.
+        
+        return masks
+
+    WIN_MASKS = init_win_masks()
+    
+    # Precomputed Rotation Mappings
+    # Maps for Q0 (indices 0,1,2,6,7,8,12,13,14) to rotated positions
+    # Then offsets applied for other quads
+    ROT_MAPS = [[(None, None), (None, None)] for _ in range(4)]
+    
+    def init_rot_maps():
+        # Src indices for Q0
+        src_q0 = [0, 1, 2, 6, 7, 8, 12, 13, 14]
+        # Clockwise (R): 0->2, 1->8, 2->14, 6->1, 7->7, 8->13, 12->0, 13->6, 14->12
+        perm_R = {0:2, 1:8, 2:14, 6:1, 7:7, 8:13, 12:0, 13:6, 14:12}
+        perm_L = {v: k for k, v in perm_R.items()} # Inverse for Left
+        
+        maps = [[(None), (None)] for _ in range(4)]
+        
+        for q in range(4):
+            offset = QUAD_OFFSETS[q]
+            # 0 = Left (L), 1 = Right (R)
+            # Create mask for clearing, list of (shift_amount) ? 
+            # Better: list of (src_bit_index, dst_bit_index)
+            
+            map_l = []
+            map_r = []
+            
+            # Quadrant Mask
+            q_mask = 0
+            for idx in src_q0:
+                q_mask |= (1 << (idx + offset))
+            
+            for s, d in perm_L.items():
+                map_l.append((s + offset, d + offset))
+            for s, d in perm_R.items():
+                map_r.append((s + offset, d + offset))
+                
+            maps[q][0] = (q_mask, map_l)
+            maps[q][1] = (q_mask, map_r)
+        return maps
+
+    ROT_DATA = init_rot_maps() # [q][dir] -> (mask, list_of_moves)
+
+    # --- Core Functions ---
+
+    def to_bitboard(arr):
+        b = 0
+        for r in range(6):
+            row = arr[r]
+            for c in range(6):
+                if row[c]:
+                    b |= (1 << (r * 6 + c))
+        return b
+
+    def check_win(b):
+        """Returns True if b has 5 in a row."""
+        for m in WIN_MASKS:
+            if (b & m) == m:
+                return True
+        return False
+
+    def rotate(b_you, b_opp, q, d):
+        """Returns rotated (new_you, new_opp). d=0(L), 1(R)"""
+        mask, mapping = ROT_DATA[q][d]
+        
+        # Extract bits in quadrant
+        y_part = b_you & mask
+        o_part = b_opp & mask
+        
+        # Clear quadrant in result
+        ny = b_you & ~mask
+        no = b_opp & ~mask
+        
+        # Map bits
+        # This loop is small (9 iterations), optimized enough for python
+        for src, dst in mapping:
+            if (y_part >> src) & 1:
+                ny |= (1 << dst)
+            if (o_part >> src) & 1:
+                no |= (1 << dst)
+                
+        return ny, no
+
+    def evaluate(y, o):
+        """Heuristic score. Higher is better for 'y'."""
+        # Simple heuristic: Count potential lines
+        # Check wins first (handled in search usually, but good for leaf)
+        if check_win(y): return 100000
+        if check_win(o): return -100000
+        
+        score = 0
+        
+        # Count streaks using bitwise ANDs
+        # This is a simplified "streak" counter.
+        # We iterate generic masks for 4s, 3s.
+        
+        # Definition of generic masks for checking segments of length L anywhere
+        # This is dynamic and expensive to do fully.
+        # Approximation: Check intersection with Win Masks.
+        # If (y & mask) has k bits, and (o & mask) is 0, it's a potential line.
+        
+        # Optimization: Random Sampling or simplified masks?
+        # Let's simple check 3-in-rows and 4-in-rows that are "open"
+        # Since iterating 32 masks is fast:
+        
+        for m in WIN_MASKS:
+            y_in = (y & m)
+            o_in = (o & m)
+            
+            if o_in == 0:
+                # Potential line for Me
+                c = bin(y_in).count('1')
+                if c == 4: score += 500
+                elif c == 3: score += 50
+                elif c == 2: score += 5
+            elif y_in == 0:
+                # Potential line for Opp
+                c = bin(o_in).count('1')
+                if c == 4: score -= 600 # Defensive bias
+                elif c == 3: score -= 60
+                elif c == 2: score -= 6
+
+        # Center control (indices 7, 8, 9, 10, 13, 14, 15, 16, 19... center 4x4)
+        # Inner 4x4: rows 1-4, cols 1-4.
+        center_mask = 0x007E7E7E7E00 # Approx mask for center
+        y_cent = bin(y & center_mask).count('1')
+        o_cent = bin(o & center_mask).count('1')
+        score += y_cent * 2 - o_cent * 2
+        
+        return score
+
+    # --- Search Logic ---
+
+    my_board = to_bitboard(you)
+    op_board = to_bitboard(opponent)
+    occupied = my_board | op_board
+    
+    # 1. Generate Empty Cells
+    empty_indices = []
+    for i in range(36):
+        if not ((occupied >> i) & 1):
+            empty_indices.append(i)
+
+    # Move Format: (idx, q, d)
+    # d: 0=L, 1=R
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # Candidate lists
+    winning_moves = []
+    safe_moves = [] # (score, move_str)
+
+    # 2. Iterate all legal moves
+    # Total moves ~ 36 * 8 = 288 max.
+    
+    for idx_place in empty_indices:
+        # Optimization: Pre-calculate placement board
+        y_placed = my_board | (1 << idx_place)
+        o_placed = op_board # Opponent doesn't change on placement
+        
+        for q in range(4):
+            for d in range(2):
+                # 2a. Apply Rotation
+                ny, no = rotate(y_placed, o_placed, q, d)
+                
+                # Check outcome
+                me_win = check_win(ny)
+                op_win = check_win(no)
+                
+                mv_str = f"{idx_place//6 + 1},{idx_place%6 + 1},{q},{'L' if d==0 else 'R'}"
+                
+                if me_win and not op_win:
+                    # Immediate clean win. Return immediately.
+                    return mv_str
+                
+                if op_win:
+                    # I moved and opponent won (or draw). Bad or forced draw. 
+                    # If me_win and op_win -> Draw.
+                    # If I have no waiting winning moves, keep as backup draw?
+                    # Generally avoid giving opp a win.
+                    if me_win:
+                         # Draw
+                         pass
+                    else:
+                        # Suicide move
+                        continue
+                
+                # If neither won immediately, this is a candidate for deeper analysis.
+                # However, we must check if Opponent can win on their NEXT turn.
+                safe_moves.append( (ny, no, mv_str) )
+
+    # If we found no immediate wins, we process safe moves.
+    # Heuristic sort to prioritize promising moves before heavy check
+    # But first, we MUST filter out moves where Opponent forces a win.
+    
+    # Limit number of moves checked if too many?
+    # 288 * 288 is too slow (~80k checks).
+    # We need to quickly identify if opponent has a threat.
+    # Check if opponent has ANY winning move from state (ny, no).
+    # Since checking "Does opp have a win?" is an 'Exists' check, it can return early.
+    
+    candidates = []
+    
+    # To save time, just check if opponent has a "Win in 1".
+    # We only check generating all opponent moves.
+    
+    count = 0
+    start_search = time.time()
+    
+    # Prioritize candidates by static eval to prune/sort?
+    # Let's just create a list and sort by eval(ny, no)
+    scored_candidates = []
+    for ny, no, mv in safe_moves:
+        s = evaluate(ny, no)
+        scored_candidates.append((s, ny, no, mv))
+    
+    # Sort descending
+    scored_candidates.sort(key=lambda x: x[0], reverse=True)
+    
+    # Determine depth based on remaining empty spots
+    # If board is very empty (>25), deep search is less critical and slow.
+    skip_deep_check = len(empty_indices) > 28
+    
+    for base_score, ny, no, mv in scored_candidates:
+        # Check time
+        if time.time() - START_TIME > TIME_LIMIT:
+            if best_move is None: best_move = mv # Fallback
+            break
+            
+        # Deep Check: Can opponent win immediately from (ny, no)?
+        # Opponent to move. Opponent places on empty.
+        
+        occ = ny | no
+        # Opponent empty spots
+        op_empties = []
+        for i in range(36):
+            if not ((occ >> i) & 1):
+                op_empties.append(i)
+        
+        is_safe = True
+        
+        # If we have lots of time or board is tight, check thoroughly
+        # Optimization: Only check opponent moves if base_score is decent?
+        # Even a bad scoring move might be the only safe one. So check all "top" ones.
+        
+        # Check if opponent can win
+        for op_idx in op_empties:
+            # Place opp
+            o_next = no | (1 << op_idx)
+            y_next = ny
+            
+            # Check all rotations
+            stop_opp_search = False
+            for oq in range(4):
+                for od in range(2):
+                    # Opp rotates
+                    fin_y, fin_o = rotate(y_next, o_next, oq, od)
+                    if check_win(fin_o) and not check_win(fin_y):
+                        # Opponent wins cleanly
+                        is_safe = False
+                        stop_opp_search = True
+                        break
+                if stop_opp_search: break
+            if not is_safe: break
+        
+        final_score = base_score
+        if not is_safe:
+            final_score = -99999 # Opponent wins next turn
+            
+        if final_score > best_score:
+            best_score = final_score
+            best_move = mv
+            
+    # Fallback if everything leads to loss or list empty (shouldn't happen with valid logic)
+    if best_move is None:
+        if safe_moves:
+            best_move = safe_moves[0][2]
+        else:
+            # No safe moves (all immediate suicide), just pick first legal
+            # Re-generate one local move
+             for idx_place in empty_indices:
+                return f"{idx_place//6 + 1},{idx_place%6 + 1},0,L"
+
+    return best_move

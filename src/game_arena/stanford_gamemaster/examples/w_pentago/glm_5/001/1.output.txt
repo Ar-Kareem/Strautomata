@@ -1,0 +1,165 @@
+Looking at this Pentago game, I need to:
+
+1. **Understand the game mechanics**: 6x6 board divided into 4 quadrants (each 3x3). Players alternate placing a piece then rotating a quadrant 90°. Win by getting 5 in a row.
+
+2. **Parse the state**: Extract phase (place/rotate), control, and board positions from propositions like `["cellholds", "1", "1", "1", "red"]`
+
+3. **Coordinate system**: Quadrant 1 = top-left, 2 = top-right, 3 = bottom-left, 4 = bottom-right. Each has local coords (1-3, 1-3).
+
+4. **Rotation math**: Clockwise: (r,c) → (c, 4-r), Counter-clockwise: (r,c) → (4-c, r)
+
+**Strategy**:
+- **Place phase**: Check for immediate wins (before/after rotation), block opponent wins, then evaluate strategic positions (center preference, line building)
+- **Rotate phase**: Check for winning rotations, then pick rotation that maximizes positional advantage
+
+The policy prioritizes: immediate wins → wins via rotation → blocking opponent wins → blocking opponent rotation wins → strategic placement based on line potential.
+
+```python
+def policy(state: list[list[object]], role: str) -> str:
+    phase = None
+    board = {}
+    for prop in state:
+        if prop[0] == "phase":
+            phase = prop[1]
+        elif prop[0] == "cellholds":
+            q, r, c = int(prop[1]), int(prop[2]), int(prop[3])
+            board[(q, r, c)] = prop[4]
+    
+    opponent = "black" if role == "red" else "red"
+    
+    if phase == "place":
+        return find_place_move(board, role, opponent)
+    return find_rotate_move(board, role, opponent)
+
+
+def find_place_move(board, role, opponent):
+    empty = [(q, r, c) for q in [1, 2, 3, 4] for r in [1, 2, 3] for c in [1, 2, 3] if (q, r, c) not in board]
+    if not empty:
+        return "place(1,1,1)"
+    
+    for cell in empty:
+        new_board = dict(board)
+        new_board[cell] = role
+        if check_win(new_board, role):
+            return f"place({cell[0]},{cell[1]},{cell[2]})"
+    
+    for cell in empty:
+        new_board = dict(board)
+        new_board[cell] = role
+        for q in [1, 2, 3, 4]:
+            for d in ["clockwise", "counterclockwise"]:
+                if check_win(rotate(new_board, q, d), role):
+                    return f"place({cell[0]},{cell[1]},{cell[2]})"
+    
+    for cell in empty:
+        new_board = dict(board)
+        new_board[cell] = opponent
+        if check_win(new_board, opponent):
+            return f"place({cell[0]},{cell[1]},{cell[2]})"
+    
+    for cell in empty:
+        new_board = dict(board)
+        new_board[cell] = opponent
+        for q in [1, 2, 3, 4]:
+            for d in ["clockwise", "counterclockwise"]:
+                if check_win(rotate(new_board, q, d), opponent):
+                    return f"place({cell[0]},{cell[1]},{cell[2]})"
+    
+    best_score, best_cell = -float('inf'), empty[0]
+    for cell in empty:
+        score = evaluate_placement(board, cell, role, opponent)
+        if score > best_score:
+            best_score, best_cell = score, cell
+    return f"place({best_cell[0]},{best_cell[1]},{best_cell[2]})"
+
+
+def find_rotate_move(board, role, opponent):
+    for q in [1, 2, 3, 4]:
+        for d in ["clockwise", "counterclockwise"]:
+            if check_win(rotate(board, q, d), role):
+                return f"rotate({q},{d})"
+    
+    best_score, best_move = -float('inf'), "rotate(1,clockwise)"
+    for q in [1, 2, 3, 4]:
+        for d in ["clockwise", "counterclockwise"]:
+            score = evaluate_board(rotate(board, q, d), role, opponent)
+            if score > best_score:
+                best_score, best_move = score, f"rotate({q},{d})"
+    return best_move
+
+
+def quadrant_to_global(q, r, c):
+    if q == 1: return (r, c)
+    elif q == 2: return (r, c + 3)
+    elif q == 3: return (r + 3, c)
+    return (r + 3, c + 3)
+
+
+def rotate(board, quadrant, direction):
+    new_board = {}
+    for (q, r, c), color in board.items():
+        if q == quadrant:
+            nr, nc = (c, 4 - r) if direction == "clockwise" else (4 - c, r)
+            new_board[(q, nr, nc)] = color
+        else:
+            new_board[(q, r, c)] = color
+    return new_board
+
+
+def get_all_lines():
+    lines = []
+    for r in range(6):
+        lines.extend([[(r, c) for c in range(5)], [(r, c) for c in range(1, 6)]])
+    for c in range(6):
+        lines.extend([[(r, c) for r in range(5)], [(r, c) for r in range(1, 6)]])
+    lines.extend([[(i, i) for i in range(5)], [(i, i+1) for i in range(5)],
+                  [(i+1, i) for i in range(5)], [(i+1, i+1) for i in range(5)]])
+    lines.extend([[(4-i, i) for i in range(5)], [(5-i, i) for i in range(5)],
+                  [(5-i, i+1) for i in range(5)], [(4-i, i+1) for i in range(5)]])
+    return lines
+
+
+def check_win(board, color):
+    grid = [[None]*6 for _ in range(6)]
+    for (q, r, c), col in board.items():
+        gr, gc = quadrant_to_global(q, r, c)
+        grid[gr-1][gc-1] = col
+    return any(all(grid[r][c] == color for r, c in line) for line in get_all_lines())
+
+
+def evaluate_board(board, role, opponent):
+    grid = [[None]*6 for _ in range(6)]
+    for (q, r, c), col in board.items():
+        gr, gc = quadrant_to_global(q, r, c)
+        grid[gr-1][gc-1] = col
+    score = 0
+    for line in get_all_lines():
+        rc = sum(1 for (r, c) in line if grid[r][c] == role)
+        oc = sum(1 for (r, c) in line if grid[r][c] == opponent)
+        if oc == 0 and rc > 0:
+            score += [0, 5, 25, 100, 500][rc]
+        if rc == 0 and oc > 0:
+            score -= [0, 5, 25, 100, 500][oc]
+    return score
+
+
+def evaluate_placement(board, cell, role, opponent):
+    q, r, c = cell
+    score = 20 if (r == 2 and c == 2) else (10 if (r == 2 or c == 2) else 0)
+    new_board = dict(board)
+    new_board[cell] = role
+    grid = [[None]*6 for _ in range(6)]
+    for (q2, r2, c2), col in new_board.items():
+        gr, gc = quadrant_to_global(q2, r2, c2)
+        grid[gr-1][gc-1] = col
+    gr, gc = quadrant_to_global(q, r, c)
+    for line in get_all_lines():
+        if (gr-1, gc-1) in line:
+            rc = sum(1 for (r, c) in line if grid[r][c] == role)
+            oc = sum(1 for (r, c) in line if grid[r][c] == opponent)
+            if oc == 0:
+                score += [0, 3, 15, 60, 300][rc]
+            if rc == 1 and oc > 0:
+                score += oc * 3
+    return score
+```

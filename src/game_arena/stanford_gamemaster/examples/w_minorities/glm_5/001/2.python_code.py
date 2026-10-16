@@ -1,0 +1,116 @@
+
+import random
+
+def policy(state: list[list[object]], role: str) -> str:
+    opponent = 'blue' if role == 'red' else 'red'
+    
+    occupied = set()
+    line_counts = {}
+    direction_wins = {'red': {'letter': 0, 'number': 0, 'vertical': 0},
+                      'blue': {'letter': 0, 'number': 0, 'vertical': 0}}
+    
+    for prop in state:
+        if prop[0] == 'cell':
+            occupied.add((prop[1], prop[2]))
+        elif prop[0] == 'line_count':
+            line_id, player, count = prop[1], prop[2], int(prop[3])
+            if line_id not in line_counts:
+                line_counts[line_id] = {'red': 0, 'blue': 0}
+            line_counts[line_id][player] = count
+        elif prop[0] == 'num_letter_lines':
+            direction_wins[prop[1]]['letter'] = int(prop[2])
+        elif prop[0] == 'num_number_lines':
+            direction_wins[prop[1]]['number'] = int(prop[2])
+        elif prop[0] == 'num_vertical_lines':
+            direction_wins[prop[1]]['vertical'] = int(prop[2])
+    
+    LINE_SIZES = {
+        'a': 5, 'b': 5, 'c': 7, 'd': 7, 'e': 7, 'f': 7, 'g': 7, 'h': 5, 'i': 4,
+        '1': 5, '2': 5, '3': 7, '4': 7, '5': 6, '6': 7, '7': 7, '8': 5, '9': 5,
+        'a5': 5, 'a6': 5, 'a7': 7, 'a8': 7, 'a9': 7, 'b9': 7, 'c9': 7, 'd9': 5, 'e9': 4
+    }
+    UNUSABLE = {'b8', 'd6', 'e2', 'e4', 'f5', 'h5', 'i5'}
+    
+    def get_diagonal(l, n):
+        l_idx = ord(l) - ord('a')
+        diag_sum = l_idx + n
+        if 5 <= diag_sum <= 9:
+            return f'a{diag_sum}'
+        elif 10 <= diag_sum <= 13:
+            return f'{chr(ord("a") + diag_sum - 9)}9'
+        return None
+    
+    def get_direction(line_id):
+        if line_id in 'abcdefghi':
+            return 'letter'
+        elif line_id in '123456789':
+            return 'number'
+        return 'vertical'
+    
+    def majority(size):
+        return (size // 2) + 1
+    
+    empty_cells = []
+    for l in 'abcdefghi':
+        for n in range(1, 10):
+            cell = f'{l}{n}'
+            if cell in UNUSABLE or (l, str(n)) in occupied:
+                continue
+            if get_diagonal(l, n):
+                empty_cells.append((l, str(n)))
+    
+    if not empty_cells:
+        return 'place(a,5)'
+    
+    best_cells, best_score = [], float('-inf')
+    
+    for (l, n) in empty_cells:
+        n_int, score = int(n), 0
+        diag = get_diagonal(l, n_int)
+        
+        for line_id in [l, n, diag]:
+            line_size = LINE_SIZES.get(line_id, 0)
+            if line_size == 0:
+                continue
+            
+            our = line_counts.get(line_id, {}).get(role, 0)
+            opp = line_counts.get(line_id, {}).get(opponent, 0)
+            maj = majority(line_size)
+            direction = get_direction(line_id)
+            
+            if our >= maj or opp >= maj:
+                continue
+            
+            remaining = line_size - our - opp
+            if our + remaining < maj:
+                continue
+            
+            our_wins = direction_wins[role][direction]
+            opp_wins = direction_wins[opponent][direction]
+            
+            dir_bonus = 0
+            if our_wins >= 4:
+                dir_bonus = 15
+            elif our_wins >= 3:
+                dir_bonus = 8
+            if opp_wins >= 4:
+                dir_bonus = max(dir_bonus, 12)
+            elif opp_wins >= 3:
+                dir_bonus = max(dir_bonus, 6)
+            
+            if our + 1 >= maj:
+                score += 20 + dir_bonus
+            elif opp + 1 >= maj:
+                score += 16 + dir_bonus
+            else:
+                diff = our - opp
+                base = 5 + dir_bonus * 0.3
+                score += base + (2 if diff < 0 else 1 if diff > 0 else 1.5)
+        
+        if score > best_score:
+            best_score, best_cells = score, [(l, n)]
+        elif score == best_score:
+            best_cells.append((l, n))
+    
+    best = random.choice(best_cells) if best_cells else ('a', '5')
+    return f'place({best[0]},{best[1]})'

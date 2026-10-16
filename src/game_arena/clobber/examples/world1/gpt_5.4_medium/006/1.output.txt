@@ -1,0 +1,333 @@
+The strategy for this policy is a bitboard-based alpha-beta search with strong tactical move ordering:
+
+- Represent the 5x6 board as two 30-bit integers for speed.
+- Generate all legal clobber captures exactly.
+- Use iterative deepening alpha-beta with a transposition table, so the policy keeps improving its move choice until time runs out.
+- Order moves by tactical quality: prioritize moves that immediately leave the opponent with no move, and otherwise prefer moves that sharply reduce the opponent’s reply options.
+- Use a one-ply tactical heuristic at the frontier, evaluating how good the current player’s best immediate capture looks.
+- Always keep a legal fallback move ready, so the policy always returns a legal move string.
+
+<code>
+import time
+from functools import lru_cache
+
+ROWS = 5
+COLS = 6
+N = ROWS * COLS
+
+DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+
+MOVES_FROM = [[] for _ in range(N)]
+NEIGH = [0] * N
+CELL_DEG = [0] * N
+
+for r in range(ROWS):
+    for c in range(COLS):
+        i = r * COLS + c
+        for dr, dc, ch in DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < ROWS and 0 <= nc < COLS:
+                j = nr * COLS + nc
+                MOVES_FROM[i].append((j, ch))
+                NEIGH[i] |= 1 << j
+        CELL_DEG[i] = len(MOVES_FROM[i])
+
+MATE = 100000
+WIN_NOW = 5000
+INF = 10**9
+
+EXACT = 0
+LOWER = 1
+UPPER = 2
+
+TT = {}
+HISTORY = {}
+
+DEADLINE = 0.0
+NODE_COUNTER = 0
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _check_time():
+    global NODE_COUNTER
+    NODE_COUNTER += 1
+    if (NODE_COUNTER & 255) == 0 and time.perf_counter() >= DEADLINE:
+        raise _Timeout
+
+
+def _to_bits(board):
+    if hasattr(board, "reshape"):
+        flat = board.reshape(-1).tolist()
+    else:
+        try:
+            if len(board) == N and (N == 0 or not isinstance(board[0], (list, tuple))):
+                flat = list(board)
+            else:
+                flat = [x for row in board for x in row]
+        except Exception:
+            flat = list(board)
+    bits = 0
+    for i, v in enumerate(flat):
+        if int(v):
+            bits |= 1 << i
+    return bits
+
+
+@lru_cache(maxsize=200000)
+def gen_moves(me, opp):
+    moves = []
+    bits = me
+    while bits:
+        lsb = bits & -bits
+        src = lsb.bit_length() - 1
+        bits ^= lsb
+        for dst, ch in MOVES_FROM[src]:
+            if opp & (1 << dst):
+                moves.append((src, dst, ch))
+    return tuple(moves)
+
+
+@lru_cache(maxsize=200000)
+def frontier_stats(me, opp):
+    active = 0
+    edges = 0
+    hot = 0
+    pos = 0
+    bits = me
+    while bits:
+        lsb = bits & -bits
+        i = lsb.bit_length() - 1
+        bits ^= lsb
+        d = (NEIGH[i] & opp).bit_count()
+        if d:
+            active += 1
+            edges += d
+            hot += d * d
+            pos += CELL_DEG[i]
+    return active, edges, hot, pos
+
+
+def transition(me, opp, src, dst):
+    srcb = 1 << src
+    dstb = 1 << dst
+    moved_side_after = (me ^ srcb) | dstb
+    other_side_after = opp ^ dstb
+    # Next turn perspective: current player is previous opponent.
+    return other_side_after, moved_side_after
+
+
+def move_code(move):
+    return move[0] * N + move[1]
+
+
+def immediate_move_score(me, opp, move):
+    src, dst, _ = move
+    child_me, child_opp = transition(me, opp, src, dst)
+
+    opp_active, opp_edges, opp_hot, _ = frontier_stats(child_me, child_opp)
+    if opp_edges == 0:
+        return WIN_NOW
+
+    my_active, _, my_hot, _ = frontier_stats(child_opp, child_me)
+
+    captured_pressure = (NEIGH[dst] & me).bit_count()
+    score = (
+        -55 * opp_edges
+        + 20 * (my_active - opp_active)
+        + 6 * (my_hot - opp_hot)
+        + 10 * captured_pressure
+        + 4 * CELL_DEG[dst]
+    )
+    return score
+
+
+@lru_cache(maxsize=200000)
+def heuristic(me, opp):
+    moves = gen_moves(me, opp)
+    if not moves:
+        return -MATE
+
+    best = -INF
+    second = -INF
+    for mv in moves:
+        s = immediate_move_score(me, opp, mv)
+        if s > best:
+            second = best
+            best = s
+        elif s > second:
+            second = s
+
+    my_active, _, my_hot, my_pos = frontier_stats(me, opp)
+    opp_active, _, opp_hot, opp_pos = frontier_stats(opp, me)
+
+    score = best
+    if second > -INF // 2:
+        score += second // 4
+
+    score += 10 * (my_active - opp_active)
+    score += 3 * (my_hot - opp_hot)
+    score += 2 * (my_pos - opp_pos)
+    score += 3 * (me.bit_count() - opp.bit_count())
+    return score
+
+
+def order_moves(me, opp, moves, tt_move=None):
+    tt_code = move_code(tt_move) if tt_move is not None else -1
+    scored = []
+    for mv in moves:
+        sc = immediate_move_score(me, opp, mv) + HISTORY.get(move_code(mv), 0)
+        if move_code(mv) == tt_code:
+            sc += 1_000_000
+        scored.append((sc, mv))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return tuple(mv for _, mv in scored)
+
+
+def negamax(me, opp, depth, alpha, beta):
+    _check_time()
+
+    key = me | (opp << N)
+    alpha0, beta0 = alpha, beta
+    tt_entry = TT.get(key)
+    tt_move = None
+
+    if tt_entry is not None:
+        tt_depth, tt_flag, tt_score, tt_move = tt_entry
+        if tt_depth >= depth:
+            if tt_flag == EXACT:
+                return tt_score
+            if tt_flag == LOWER:
+                if tt_score > alpha:
+                    alpha = tt_score
+            else:
+                if tt_score < beta:
+                    beta = tt_score
+            if alpha >= beta:
+                return tt_score
+
+    moves = gen_moves(me, opp)
+    if not moves:
+        return -MATE
+    if depth <= 0:
+        return heuristic(me, opp)
+
+    ordered = order_moves(me, opp, moves, tt_move)
+    best = -INF
+    best_move = ordered[0]
+
+    for mv in ordered:
+        src, dst, _ = mv
+        child_me, child_opp = transition(me, opp, src, dst)
+        score = -negamax(child_me, child_opp, depth - 1, -beta, -alpha)
+
+        if score > best:
+            best = score
+            best_move = mv
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            HISTORY[move_code(mv)] = HISTORY.get(move_code(mv), 0) + depth * depth
+            break
+
+    if len(TT) > 400000:
+        TT.clear()
+
+    flag = EXACT
+    if best <= alpha0:
+        flag = UPPER
+    elif best >= beta0:
+        flag = LOWER
+    TT[key] = (depth, flag, best, best_move)
+    return best
+
+
+def search_root(me, opp, depth, seed_move=None):
+    key = me | (opp << N)
+    tt_move = seed_move
+    tt_entry = TT.get(key)
+    if tt_entry is not None:
+        tt_move = tt_entry[3]
+
+    moves = gen_moves(me, opp)
+    ordered = order_moves(me, opp, moves, tt_move)
+
+    best = -INF
+    best_move = ordered[0]
+    alpha = -INF
+    beta = INF
+
+    for mv in ordered:
+        _check_time()
+        src, dst, _ = mv
+        child_me, child_opp = transition(me, opp, src, dst)
+        score = -negamax(child_me, child_opp, depth - 1, -beta, -alpha)
+
+        if score > best:
+            best = score
+            best_move = mv
+        if score > alpha:
+            alpha = score
+
+    TT[key] = (depth, EXACT, best, best_move)
+    return best, best_move
+
+
+def format_move(move):
+    src, _, ch = move
+    return f"{src // COLS},{src % COLS},{ch}"
+
+
+def policy(you, opponent):
+    global DEADLINE, NODE_COUNTER
+
+    me = _to_bits(you)
+    opp = _to_bits(opponent)
+
+    moves = gen_moves(me, opp)
+    if not moves:
+        return "0,0,U"  # Should not happen in valid arena calls.
+
+    if len(moves) == 1:
+        return format_move(moves[0])
+
+    # Always keep a legal fallback.
+    ordered0 = order_moves(me, opp, moves, None)
+    best_move = ordered0[0]
+
+    total = (me | opp).bit_count()
+    branching = len(moves)
+
+    if total <= 12:
+        max_depth = total
+    elif total <= 16:
+        max_depth = 12
+    elif branching <= 6:
+        max_depth = 10
+    elif branching <= 10:
+        max_depth = 8
+    else:
+        max_depth = 7
+
+    DEADLINE = time.perf_counter() + 0.92
+    NODE_COUNTER = 0
+
+    depth = 1
+    try:
+        while depth <= max_depth:
+            score, mv = search_root(me, opp, depth, best_move)
+            if mv is not None:
+                best_move = mv
+            if score >= MATE or score <= -MATE:
+                break
+            depth += 1
+    except _Timeout:
+        pass
+    except Exception:
+        # Preserve legality no matter what.
+        pass
+
+    return format_move(best_move)
+</code>

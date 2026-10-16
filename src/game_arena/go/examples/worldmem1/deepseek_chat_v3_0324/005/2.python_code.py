@@ -1,0 +1,149 @@
+
+import random
+from collections import defaultdict
+
+def policy(me, opponent, memory):
+    # Initialize memory if empty
+    if not memory:
+        memory = {
+            'turn': 0,
+            'opening_moves': [],
+            'game_phase': 'opening',
+            'last_move': None
+        }
+    
+    memory['turn'] += 1
+    board_size = 19
+    all_stones = me + opponent
+    occupied = set(all_stones)
+    
+    # Helper functions
+    def is_on_board(point):
+        r, c = point
+        return 1 <= r <= board_size and 1 <= c <= board_size
+    
+    def get_adjacent(point):
+        r, c = point
+        return [(r-1,c), (r+1,c), (r,c-1), (r,c+1)]
+    
+    def get_group(stones, point):
+        if point not in stones:
+            return set()
+        color = stones[point]
+        group = set()
+        queue = [point]
+        while queue:
+            p = queue.pop()
+            if p in group:
+                continue
+            group.add(p)
+            for adj in get_adjacent(p):
+                if adj in stones and stones[adj] == color:
+                    queue.append(adj)
+        return group
+    
+    def has_liberties(group, stones):
+        for r, c in group:
+            for adj in get_adjacent((r,c)):
+                if is_on_board(adj) and adj not in stones:
+                    return True
+        return False
+    
+    # Create stones dictionary for easier access
+    stones = {pos: 'me' for pos in me}
+    stones.update({pos: 'opponent' for pos in opponent})
+    
+    # Check if we need to defend any atari
+    for my_stone in me:
+        my_group = get_group(stones, my_stone)
+        if len(my_group) == 1:  # Single stone
+            adjacents = get_adjacent(my_stone)
+            blocked = sum(1 for adj in adjacents if adj in opponent)
+            if blocked >= 3:  # In atari
+                for adj in adjacents:
+                    if is_on_board(adj) and adj not in occupied:
+                        return (adj, memory)
+    
+    # Check if we can capture opponent stones
+    for opp_stone in opponent:
+        opp_group = get_group(stones, opp_stone)
+        liberties = []
+        for r, c in opp_group:
+            for adj in get_adjacent((r,c)):
+                if is_on_board(adj) and adj not in stones:
+                    liberties.append(adj)
+        if len(liberties) == 1:  # Can capture
+            capture_move = liberties[0]
+            if capture_move not in occupied:
+                return (capture_move, memory)
+    
+    # Opening moves - prefer center and corners
+    if memory['turn'] <= 10:
+        if not me:  # First move
+            memory['game_phase'] = 'opening'
+            center = (10, 10)
+            if center not in occupied:
+                memory['last_move'] = center
+                return (center, memory)
+        
+        # Common opening patterns
+        preferred_openings = [
+            (4, 4), (4, 16), (16, 4), (16, 16),  # Corners
+            (10, 10),  # Tengen
+            (4, 10), (10, 4), (10, 16), (16, 10)  # Star points
+        ]
+        
+        for move in preferred_openings:
+            if move not in occupied:
+                memory['last_move'] = move
+                return (move, memory)
+    
+    # If we have a last move, try to extend
+    if memory['last_move'] and memory['last_move'] in me:
+        last_r, last_c = memory['last_move']
+        possible_extends = [
+            (last_r-1, last_c), (last_r+1, last_c),
+            (last_r, last_c-1), (last_r, last_c+1)
+        ]
+        for move in possible_extends:
+            if is_on_board(move) and move not in occupied:
+                memory['last_move'] = move
+                return (move, memory)
+    
+    # Try to play near opponent stones to form potential attacks
+    for opp_stone in opponent:
+        for adj in get_adjacent(opp_stone):
+            if is_on_board(adj) and adj not in occupied:
+                # Count adjacent friendly stones
+                friendly_count = sum(1 for a in get_adjacent(adj) if a in me)
+                if friendly_count > 0:
+                    memory['last_move'] = adj
+                    return (adj, memory)
+    
+    # Fallback: find any empty spot near existing stones
+    for dist in range(1, 5):
+        for my_stone in me:
+            r, c = my_stone
+            for dr in range(-dist, dist+1):
+                for dc in range(-dist, dist+1):
+                    if abs(dr) + abs(dc) != dist:
+                        continue
+                    move = (r+dr, c+dc)
+                    if is_on_board(move) and move not in occupied:
+                        memory['last_move'] = move
+                        return (move, memory)
+    
+    # Final fallback: return a random legal move
+    empty_spots = []
+    for r in range(1, board_size+1):
+        for c in range(1, board_size+1):
+            if (r,c) not in occupied:
+                empty_spots.append((r,c))
+    
+    if empty_spots:
+        move = random.choice(empty_spots)
+        memory['last_move'] = move
+        return (move, memory)
+    
+    # No moves left (shouldn't happen in normal game)
+    return ((0, 0), memory)

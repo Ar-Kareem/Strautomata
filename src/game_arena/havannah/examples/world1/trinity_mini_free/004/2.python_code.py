@@ -1,0 +1,68 @@
+
+import random
+from collections import deque
+
+def is_connected(start, end, me, opp, valid_mask):
+    if not valid_mask[start[0]][start[1]] or not valid_mask[end[0]][end[1]]:
+        return False
+    directions = [
+        (1, 0),    # down
+        (-1, 0),   # up
+        (0, 1),    # right
+        (0, -1),   # left
+        (1, -1),   # down-left
+        (-1, 1)    # up-right
+    ]
+    visited = set()
+    queue = deque([start])
+    visited.add(start)
+    while queue:
+        r, c = queue.popleft()
+        if (r, c) == end:
+            return True
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 15 and 0 <= nc < 15 and valid_mask[nr][nc]:
+                if (nr, nc) in opp:
+                    continue
+                if (nr, nc) in me or (nr, nc) == end:
+                    if (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+    return False
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    corners = [(0, 0), (0, 14), (14, 0), (14, 14)]
+    edges = [
+        [(0, c) for c in range(15)],
+        [(14, c) for c in range(15)],
+        [(r, 0) for r in range(15)],
+        [(r, 14) for r in range(15)]
+    ]
+    
+    # Check for immediate bridge or fork wins
+    for r in range(15):
+        for c in range(15):
+            if not valid_mask[r][c]:
+                continue
+            candidate = (r, c)
+            for a, b in [(corners[i], corners[j]) for i in range(4) for j in range(i+1, 4)]:
+                if is_connected(a, candidate, me, opp, valid_mask) and is_connected(candidate, b, me, opp, valid_mask):
+                    return candidate
+            edge_count = 0
+            for edge in edges:
+                for cell in edge:
+                    if is_connected(candidate, cell, me, opp, valid_mask):
+                        edge_count += 1
+                        break
+                if edge_count >= 3:
+                    return candidate
+    
+    # Prioritize center if available
+    center = (7, 7)
+    if valid_mask[7][7] and (7, 7) not in me and (7, 7) not in opp:
+        return center
+    
+    # Fallback to random valid move
+    valid_moves = [(r, c) for r in range(15) for c in range(15) if valid_mask[r][c] and (r, c) not in me and (r, c) not in opp]
+    return random.choice(valid_moves)

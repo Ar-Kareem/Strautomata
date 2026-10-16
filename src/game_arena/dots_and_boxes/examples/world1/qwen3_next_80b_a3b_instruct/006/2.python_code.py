@@ -1,0 +1,121 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Define all legal moves and their corresponding box neighbors
+    # We consider the 4x4 grid of boxes, with edges from (0,0) to (4,4)
+    
+    # For each possible move, determine which box(es) it bounds
+    # Horizontal edge at (r,c) bounds boxes (r-1, c-1) and (r, c-1) if they exist
+    # Vertical edge at (r,c) bounds boxes (r-1, c-1) and (r-1, c) if they exist
+    
+    # Step 1: Identify all legal moves
+    legal_moves = []
+    
+    # Check all horizontal edges
+    for r in range(5):
+        for c in range(5):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+    
+    # Check all vertical edges
+    for r in range(5):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+    
+    # If no legal moves (shouldn't happen in valid game), return arbitrary
+    if not legal_moves:
+        return "0,0,H"
+    
+    # Helper: Given an edge, which boxes does it complete or touch?
+    def get_affected_boxes(r, c, direction):
+        boxes = []
+        if direction == 'H':
+            # Horizontal edge (r,c) affects box above and below
+            if r > 0:
+                boxes.append((r-1, c))
+            if r < 4:
+                boxes.append((r, c))
+        elif direction == 'V':
+            # Vertical edge (r,c) affects box to the left and right
+            if c > 0:
+                boxes.append((r, c-1))
+            if c < 4:
+                boxes.append((r, c))
+        return boxes
+    
+    # Helper: Count how many sides of a box are already drawn
+    def count_sides_of_box(r, c):
+        # A box at (r,c) has 4 edges: top, right, bottom, left
+        top = horizontal[r, c]      # top edge
+        right = vertical[r+1, c+1]  # right edge
+        bottom = horizontal[r+1, c] # bottom edge
+        left = vertical[r, c]       # left edge
+        return sum(1 for edge in [top, right, bottom, left] if edge != 0)
+    
+    # Step 2: Check for any winning moves (complete one or more boxes)
+    winning_moves = []
+    for r, c, d in legal_moves:
+        affected = get_affected_boxes(r, c, d)
+        completed = 0
+        for br, bc in affected:
+            if capture[br, bc] == 0:  # only unclaimed boxes count
+                sides = count_sides_of_box(br, bc)
+                if sides == 2:  # This move would complete the box
+                    completed += 1
+        if completed > 0:
+            winning_moves.append((r, c, d))
+    
+    if winning_moves:
+        return f"{winning_moves[0][0]},{winning_moves[0][1]},{winning_moves[0][2]}"
+    
+    # Step 3: Avoid dangerous moves (moves that create a 3-sided box for opponent)
+    safe_moves = []
+    for r, c, d in legal_moves:
+        affected = get_affected_boxes(r, c, d)
+        dangerous = False
+        for br, bc in affected:
+            if capture[br, bc] == 0:  # only unclaimed boxes
+                sides = count_sides_of_box(br, bc)
+                # If this move makes a box have 3 sides, then it's dangerous
+                if sides == 2:
+                    dangerous = True
+                    break
+        if not dangerous:
+            safe_moves.append((r, c, d))
+    
+    if safe_moves:
+        # Among safe moves, prefer those that add to boxes with the fewest sides
+        # This builds toward future captures without helping opponent
+        def score_move(move):
+            r, c, d = move
+            score = 0
+            affected = get_affected_boxes(r, c, d)
+            for br, bc in affected:
+                if capture[br, bc] == 0:
+                    sides = count_sides_of_box(br, bc)
+                    # Lower side count = better (building, not helping opponent)
+                    score += sides
+            return score
+        # Prefer moves that touch boxes with lowest current side count
+        safe_moves.sort(key=score_move)
+        return f"{safe_moves[0][0]},{safe_moves[0][1]},{safe_moves[0][2]}"
+    
+    # Step 4: If no safe moves, we are forced to make a dangerous move (but maybe less dangerous)
+    # Among dangerous moves, pick the one that completes the fewest 3-sided boxes
+    dangerous_moves = []
+    for r, c, d in legal_moves:
+        affected = get_affected_boxes(r, c, d)
+        dangerous_count = 0
+        for br, bc in affected:
+            if capture[br, bc] == 0:
+                sides = count_sides_of_box(br, bc)
+                if sides == 2:
+                    dangerous_count += 1
+        dangerous_moves.append((r, c, d, dangerous_count))
+    
+    # Sort by number of dangerous boxes created, then pick first
+    dangerous_moves.sort(key=lambda x: x[3])
+    best = dangerous_moves[0]
+    return f"{best[0]},{best[1]},{best[2]}"

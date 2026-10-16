@@ -1,0 +1,93 @@
+
+import random
+from typing import Dict, List
+
+PIECE_VALUES = {
+    'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0
+}
+
+CENTRAL_SQUARES = {'d4', 'd5', 'e4', 'e5'}
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str]) -> str:
+    color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if color == 'w' else 'w'
+    
+    # Check for checkmate first
+    for move in legal_moves:
+        if move.endswith('#'):
+            return move
+    
+    # Evaluate all legal moves
+    scored_moves = []
+    for move in legal_moves:
+        score = 0
+        
+        # Check for checks
+        if move.endswith('+'):
+            score += 0.5  # Small bonus for checks
+        
+        # Capture evaluation
+        if 'x' in move:
+            captured_piece = None
+            target_square = move.split('x')[1][:2]
+            if target_square in pieces:
+                captured_piece_code = pieces[target_square]
+                if captured_piece_code[0] == opponent_color:
+                    captured_piece = captured_piece_code[1]
+                    score += PIECE_VALUES.get(captured_piece, 0)
+        
+        # Promotion evaluation
+        if '=Q' in move:
+            score += 8  # Approximate value of queen promotion
+        elif '=R' in move:
+            score += 4
+        elif '=B' in move or '=N' in move:
+            score += 2
+        
+        # Castling bonus
+        if move == 'O-O' or move == 'O-O-O':
+            score += 0.3
+        
+        # Central control bonus
+        target_square = get_target_square(move)
+        if target_square in CENTRAL_SQUARES:
+            score += 0.2
+        
+        # Penalize moving king early
+        if move.startswith('K') and len([p for p in pieces.values() if p[0] == color]) > 8:
+            score -= 0.1
+        
+        scored_moves.append((score, move))
+    
+    # Sort by score and pick the best move
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+    
+    # If multiple moves have same top score, pick randomly among them
+    top_score = scored_moves[0][0]
+    best_moves = [move for score, move in scored_moves if score == top_score]
+    
+    return random.choice(best_moves)
+
+def get_target_square(move: str) -> str:
+    # Handle special cases first
+    if move == 'O-O':
+        return 'g1' if len(move) == 3 else 'c1'
+    if move == 'O-O-O':
+        return 'c1' if len(move) == 5 else 'g1'
+    
+    # Handle promotions
+    if '=' in move:
+        move = move.split('=')[0]
+    
+    # Handle captures
+    if 'x' in move:
+        return move.split('x')[1][:2]
+    
+    # Handle pawn moves
+    if move[0].islower():
+        if len(move) >= 3 and move[1] in '12345678':
+            return move[:2]
+        return move[-2:]
+    
+    # Handle piece moves (N/B/R/Q/K)
+    return move[-2:]

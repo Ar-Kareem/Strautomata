@@ -1,0 +1,145 @@
+The strategy for this policy is a depth‑limited α–β minimax search.  
+It evaluates every legal move with a simple heuristic that rewards captures,
+immediate extra turns (landing in the player’s store), and finally favours pits
+with more seeds while penalising opponent pits.  The search is limited to a
+small depth (≈ √total seeds, capped at 12 plies) so it runs comfortably within
+the 1‑second time budget on modern CPUs.  The move that yields the highest
+value for the current player (us) is returned, guaranteeing a legal move.
+
+<code>
+import math
+from typing import List, Tuple, Union
+
+# --------------------------------------------------------------
+# Helper functions for a single move (apply, evaluate, game‑over)
+# --------------------------------------------------------------
+def apply_move(moving: List[int], static: List[int], pit: int) -> Tuple[List[int], List[int], bool]:
+    """
+    Perform one Kalah move for `moving` (the player who has the turn),
+    given the opposite side `static`.  Returns the new state and whether
+    the mover gets an extra turn (landing in his store).
+    """
+    seeds = moving[pit]
+    new_moving = moving[:]               # copy
+    new_static = static[:]               # copy
+    new_moving[pit] = 0                  # seeds removed from source pit
+    landing = -1                         # index of the final pit visited
+    pos = pit + 1
+
+    for _ in range(seeds):
+        idx = pos % 13                   # 13 cells: 0‑5 (our houses),
+                                         # 6 (our store), 7‑12 (opponent houses)
+        if idx == 6:                     # our store
+            new_moving[6] += 1
+            landing = 6
+        elif idx < 6:                    # our house
+            new_moving[idx] += 1
+            landing = idx
+        else:                            # opponent house
+            new_static[idx - 6] += 1
+            landing = idx - 6
+
+        pos += 1
+
+    # Capture rule – only applicable when the last seed lands in an empty house
+    if 0 <= landing < 6 and new_moving[landing] == 1 and static[5 - landing] > 0:
+        # Take the opposite house and the seed just placed
+        new_moving[6] += 1 + static[5 - landing]
+        new_moving[landing] = 0
+        static[5 - landing] = 0
+
+    extra = landing == 6                # extra turn only if last seed is in our store
+    return new_moving, new_static, extra
+
+
+def evaluate(board_my: List[int], board_op: List[int]) -> int:
+    """
+    Simple heuristic score from the point of view of the player who is about
+    to move.  Positive values are favourable.
+    Primary term – store difference.
+    Secondary term – a small bias towards having more seeds in our pits than
+    in the opponent's pits.
+    """
+    store_diff = board_my[6] - board_op[6]
+    pit_bias = (sum(board_my[:6]) - sum(board_op[:6])) * 0.1
+    return int(store_diff) + pit_bias
+
+
+# --------------------------------------------------------------
+# Alpha‑beta minimax with depth limitation
+# --------------------------------------------------------------
+def alphabeta(board_my: List[int], board_op: List[int],
+             depth: int, us_to_move: bool,
+             alpha: int, beta: int) -> Tuple[int, int]:
+    """
+    Recursive α‑β search.  Returns (score, best_move) where `score` is evaluated
+    from the perspective of the player to move (`us_to_move == True` for us).
+    """
+    # terminal or depth exhausted
+    if depth == 0 or sum(board_my[:6]) == 0 or sum(board_op[:6]) == 0:
+        if us_to_move and sum(board_my[:6]) == 0:
+            # we cannot move → lose
+            return -10**9, None
+        if not us_to_move and sum(board_op[:6]) == 0:
+            # opponent cannot move → we win
+            return 10**9, None
+        return evaluate(board_my, board_op), None
+
+    if us_to_move:          # maximise for us
+        best_score = -10**9
+        best_move = None
+        for i in range(7):   # only pits 0‑5 are legal
+            if board_my[i] > 0:
+                new_my, new_op, extra = apply_move(board_my, board_op, i)
+                score, _ = alphabeta(new_my, new_op, depth - 1, True, alpha, beta)
+                if score > best_score:
+                    best_score = score
+                    best_move = i
+                alpha = max(alpha, best_score)
+                if beta <= alpha:
+                    break                     # prune
+        return best_score, best_move
+    else:                   # minimise for opponent
+        best_score = 10**9
+        best_move = None
+        for i in range(7):
+            if board_op[i] > 0:
+                new_my, new_op, extra = apply_move(board_op, board_my, i)
+                score, _ = alphabeta(new_my, new_op, depth - 1, False, alpha, beta)
+                if score < best_score:
+                    best_score = score
+                    best_move = i
+                beta = min(beta, best_score)
+                if beta <= alpha:
+                    break                     # prune
+        return best_score, best_move
+
+
+def compute_depth(you: List[int], opp: List[int]) -> int:
+    """
+    Dynamic depth based on the total number of seeds on the board.
+    Rough guideline: √(total seeds) + a small constant, capped at 12.
+    """
+    total = sum(you[:6]) + sum(opp[:6])
+    if total == 0:
+        return 0
+    # sqrt gives a good early‑game depth, cap at 12 for deeper endgames
+    depth = max(3, int(math.sqrt(total)) + 2)
+    # When the board is almost empty we increase depth a bit
+    if total < 30:
+        depth = max(depth, total)
+    return min(depth, 12)
+
+
+# --------------------------------------------------------------
+# Required API
+# --------------------------------------------------------------
+def policy(you: List[int], opponent: List[int]) -> int:
+    """
+    Return the index of the legal move (0‑5) that maximises the
+    α‑β evaluated outcome.
+    """
+    depth = compute_depth(you, opponent)
+    _, move = alphabeta(you, opponent, depth, us_to_move=True, alpha=-10**9, beta=10**9)
+    return move
+</code>

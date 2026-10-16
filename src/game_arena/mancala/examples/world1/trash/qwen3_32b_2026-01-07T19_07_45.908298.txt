@@ -1,0 +1,109 @@
+<thinking>
+To solve this problem, we need to implement a move-selection policy for the game Kalah. The goal is to choose the optimal move that maximizes the chances of winning by considering various game mechanics such as extra moves, captures, and store gains. 
+
+### Approach
+1. **Simulation of Moves**: For each legal move, simulate the entire game state after the move is made, including the distribution of seeds and any resulting captures or extra turns.
+2. **Heuristic Evaluation**: Evaluate each move based on a heuristic that prioritizes:
+   - Moves that grant an extra turn.
+   - Moves that result in captures.
+   - Moves that increase the store count.
+3. **Scoring System**: Assign scores to each move based on the above priorities, using weighted values to ensure higher priority objectives dominate the decision-making process.
+
+### Solution Code
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate_move(you_state, opp_state, i):
+        new_you = you_state.copy()
+        new_opp = opp_state.copy()
+        s = new_you[i]
+        new_you[i] = 0
+        current_side = 'you'
+        current_index = i + 1
+        last_position = None
+        last_was_zero_before = False
+        captured = False
+        for seed in range(s):
+            if current_side == 'you':
+                if current_index <= 5:
+                    prev_val = new_you[current_index]
+                    new_you[current_index] += 1
+                    if seed == s - 1:
+                        last_position = ('you', current_index)
+                        last_was_zero_before = (prev_val == 0)
+                else:
+                    new_you[6] += 1
+                    if seed == s - 1:
+                        last_position = ('store', 6)
+            elif current_side == 'store':
+                new_you[6] += 1
+                if seed == s - 1:
+                    last_position = ('store', 6)
+            elif current_side == 'opponent' and current_index <= 5:
+                new_opp[current_index] += 1
+                if seed == s - 1:
+                    last_position = ('opponent', current_index)
+            # Update current_side and current_index for next seed
+            if current_side == 'you' and current_index <= 5:
+                if current_index < 5:
+                    current_index += 1
+                else:
+                    current_side = 'store'
+                    current_index = 6
+            elif current_side == 'you' and current_index == 6:
+                current_side = 'opponent'
+                current_index = 0
+            elif current_side == 'store':
+                current_side = 'opponent'
+                current_index = 0
+            elif current_side == 'opponent' and current_index <= 5:
+                if current_index < 5:
+                    current_index += 1
+                else:
+                    current_side = 'you'
+                    current_index = 0
+        extra_move = False
+        if last_position is not None:
+            if last_position[0] == 'store':
+                extra_move = True
+            elif last_position[0] == 'you':
+                house_idx = last_position[1]
+                if last_was_zero_before:
+                    opp_idx = 5 - house_idx
+                    if new_opp[opp_idx] > 0:
+                        new_you[6] += 1 + new_opp[opp_idx]
+                        new_you[house_idx] = 0
+                        new_opp[opp_idx] = 0
+                        captured = True
+        return new_you, new_opp, extra_move, captured
+    
+    best_move = -1
+    best_score = -float('inf')
+    original_store = you[6]
+    for i in range(6):
+        if you[i] == 0:
+            continue
+        new_you, new_opp, extra, cap = simulate_move(you, opponent, i)
+        store_gain = new_you[6] - original_store
+        score = 0
+        if extra:
+            score += 10000
+        if cap:
+            score += 1000
+        score += store_gain * 10
+        if score > best_score:
+            best_score = score
+            best_move = i
+        elif score == best_score and best_move == -1:
+            best_move = i
+    return best_move
+```
+
+### Explanation
+- **Simulation Function**: This function simulates the placement of seeds and tracks where the last seed falls to determine if any special effects (extra move or capture) occur.
+- **Scoring System**: Each move is evaluated based on:
+  - **Extra Moves**: Moves that allow the current player to take an additional turn are highly prioritized.
+  - **Captures**: Moves that result in capturing opponent's seeds are given a high score increment.
+  - **Store Gains**: The increase in the store count is weighted to encourage moves that contribute directly to the score.
+- **Policy Function**: The main function evaluates all possible moves and selects the one with the highest score according to the defined heuristic.
+
+This approach ensures that the AI selects moves that are strategically advantageous, leveraging both immediate gains and long-term benefits.

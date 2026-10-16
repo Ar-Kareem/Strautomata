@@ -1,0 +1,235 @@
+**Strategy Overview**
+
+The policy uses a shallow search (depth 2) to evaluate every legal move of the current role.  
+For each candidate move it:
+
+1. **Simulates** the move, obtaining a temporary board.  
+2. **Generates** all possible replies of the opponent.  
+3. **Evaluates** the board after each opponent reply using a lightweight heuristic that favours  
+   * material advantage (more fighters = +10 each),  
+   * forward advancement (distance of own pieces toward the enemy side),  
+   * mobility (number of available moves), and  
+   * immediate capture opportunities (both our own and those the opponent threatens).  
+4. The opponent is assumed to pick the reply that *minimises* our evaluation (worst‑case for us).  
+5. The move that maximises this worst‑case value is chosen.
+
+If no legal move exists (theoretically impossible in a normal position) a fallback move is generated.  
+The heuristic balances aggressive captures with positional progress, enabling the agent to win fights while steadily advancing its pieces.
+
+```code
+import sys
+from typing import List, Tuple, Dict
+
+# ----------------------------------------------------------------------
+# Constants
+BOARD_SIZE = 5
+MATERIAL_WEIGHT = 10.0
+POS_WEIGHT = 0.5      # per square of forward distance
+MOBILITY_WEIGHT = 0.2
+CAPTURE_WEIGHT = 1.0  # per immediate capture threat
+
+# ----------------------------------------------------------------------
+# Data structures
+Cell = Tuple[int, int]            # (row, col)
+Board = Dict[Cell, Tuple[int, str]]  # (value, role)
+
+# ----------------------------------------------------------------------
+# Helper functions
+def parse_state(state: List[List[object]]) -> Board:
+    """Convert the list of propositions into a compact board dictionary."""
+    board: Board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            r = int(prop[1])
+            c = int(prop[2])
+            val = int(prop[3])
+            role = prop[4]
+            board[(r, c)] = (val, role)
+        # other facts (control, step, capture) are ignored for move generation
+    return board
+
+
+def forward_dir(role: str) -> int:
+    """Return the column change that constitutes a forward move for the given role."""
+    return 1 if role == "red" else -1
+
+
+def can_capture(attacker_val: int, defender_val: int) -> bool:
+    """Check whether the attacker can capture the defender according to the game rule."""
+    if attacker_val == 1 and defender_val == 5:
+        return True
+    if attacker_val == 5 and defender_val == 1:
+        return False
+    return attacker_val >= defender_val
+
+
+def generate_moves(board: Board, role: str) -> List[Tuple[int, int, int, int, bool]]:
+    """
+    Generate all legal moves for `role` on `board`.
+    Each move is a tuple (r1,c1,r2,c2, is_capture).
+    """
+    moves: List[Tuple[int, int, int, int, bool]] = []
+    fdir = forward_dir(role)
+    for (r, c), (val, piece_role) in board.items():
+        if piece_role != role:
+            continue
+
+        # ---------- forward (empty) moves ----------
+        for dr in (-1, 0, 1):          # stay, up, down
+            nr = r + dr
+            nc = c + fdir
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                if (nr, nc) not in board:                 # empty
+                    moves.append((r, c, nr, nc, False))
+
+        # ---------- capture (diagonal) moves ----------
+        for dr in (-1, 1):
+            for dc in (-1, 1):
+                nr = r + dr
+                nc = c + dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                    target = board.get((nr, nc))
+                    if target is not None and target[1] != role:   # opponent piece
+                        if can_capture(val, target[0]):
+                            moves.append((r, c, nr, nc, True))
+    return moves
+
+
+def apply_move(board: Board, move: Tuple[int, int, int, int, bool]) -> Board:
+    """Return a new board after performing `move` on `board`."""
+    r1, c1, r2, c2, is_capture = move
+    new_board: Board = dict(board)
+    val, role = new_board[(r1, c1)]
+    del new_board[(r1, c1)]
+    if is_capture:
+        del new_board[(r2, c2)]
+    new_board[(r2, c2)] = (val, role)
+    return new_board
+
+
+def evaluate(board: Board, role: str) -> float:
+    """
+    Heuristic evaluation of `board` from the perspective of `role`.
+    Higher scores are better for `role`.
+    """
+    opp_role = "green" if role == "red" else "red"
+
+    # Material
+    my_cnt = sum(1 for (_, r) in board.values() if r == role)
+    opp_cnt = sum(1 for (_, r) in board.values() if r == opp_role)
+    material = (my_cnt - opp_cnt) * MATERIAL_WEIGHT
+
+    # Positional: advance toward the enemy side
+    forward = 1 if role == "red" else -1
+    my_dist = sum(
+        (c - 1) if role == "red" else (BOARD_SIZE - c)
+        for (r, c), (_, r_) in board.items() if r_ == role
+    )
+    opp_dist = sum(
+        (c - 1) if opp_role == "red" else (BOARD_SIZE - c)
+        for (r, c), (_, r_) in board.items() if r_ == opp_role
+    )
+    pos = (my_dist - opp_dist) * POS_WEIGHT
+
+    # Mobility
+    my_moves = len(generate_moves(board, role))
+    opp_moves = len(generate_moves(board, opp_role))
+    mobility = (my_moves - opp_moves) * MOBILITY_WEIGHT
+
+    # Capture threats
+    my_cap = 0
+    for (r, c), (val, _) in board.items():
+        if val is None:
+            continue
+        for dr in (-1, 1):
+            for dc in (-1, 1):
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                    tgt = board.get((nr, nc))
+                    if tgt is not None and tgt[1] == opp_role:
+                        if can_capture(val, tgt[0]):
+                            my_cap += 1
+
+    opp_cap = 0
+    for (r, c), (val, _) in board.items():
+        if val is None:
+            continue
+        for dr in (-1, 1):
+            for dc in (-1, 1):
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                    tgt = board.get((nr, nc))
+                    if tgt is not None and tgt[1] == role:
+                        if can_capture(val, tgt[0]):
+                            opp_cap += 1
+
+    capture = (my_cap - opp_cap) * CAPTURE_WEIGHT
+
+    return material + pos + mobility + capture
+
+
+# ----------------------------------------------------------------------
+# Main policy function
+def policy(state: List[List[object]], role: str) -> str:
+    """
+    Choose the best legal move for `role` given the current `state`.
+    Returns a move string such as "move(1,1,1,2)".
+    """
+    board = parse_state(state)
+
+    # Generate all legal moves for the active role
+    own_moves = generate_moves(board, role)
+    if not own_moves:
+        # Fallback – try to find any move (should not happen in normal play)
+        for (r, c), (val, _) in board.items():
+            if val is None:
+                continue
+            fdir = forward_dir(role)
+            # try forward empty squares
+            for dr in (-1, 0, 1):
+                nr, nc = r + dr, c + fdir
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE and (nr, nc) not in board:
+                    return f"move({r},{c},{nr},{nc})"
+            # try captures
+            for dr in (-1, 1):
+                for dc in (-1, 1):
+                    nr, nc = r + dr, c + dc
+                    if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                        tgt = board.get((nr, nc))
+                        if tgt is not None and tgt[1] != role:
+                            if can_capture(val, tgt[0]):
+                                return f"move({r},{c},{nr},{nc})"
+        # If still nothing, return a dummy (should never be reached)
+        return "move(1,1,1,2)"
+
+    opp_role = "green" if role == "red" else "red"
+
+    best_move = None
+    best_value = -float('inf')
+
+    for move in own_moves:
+        board_after = apply_move(board, move)
+
+        # Opponent's replies
+        opp_moves = generate_moves(board_after, opp_role)
+        if not opp_moves:
+            # Opponent cannot move – treat as terminal
+            value = evaluate(board_after, role)
+        else:
+            # Assume opponent minimises our evaluation
+            worst = float('inf')
+            for opp_move in opp_moves:
+                opp_board = apply_move(board_after, opp_move)
+                val = evaluate(opp_board, role)
+                if val < worst:
+                    worst = val
+            value = worst
+
+        if value > best_value:
+            best_value = value
+            best_move = move
+
+    # Unpack the selected move
+    r1, c1, r2, c2, _ = best_move
+    return f"move({r1},{c1},{r2},{c2})"
+```

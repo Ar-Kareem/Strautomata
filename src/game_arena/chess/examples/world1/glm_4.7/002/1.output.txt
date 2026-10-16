@@ -1,0 +1,415 @@
+The strategy for this policy is to implement a single-ply search with a robust evaluation function. The policy parses the provided move strings in Standard Algebraic Notation (SAN) to identify source and destination squares, simulates the move on a virtual board, and scores the resulting position. The evaluation considers material balance, piece-square table (PST) values for positional play (center control, king safety), and a simple static check to penalize moving pieces to squares that are actively attacked by the opponent (blunder prevention). Immediate checkmates and queen promotions are prioritized.
+
+<code>
+import random
+import copy
+
+# --- Constants and Piece Values ---
+# Values: P=100, N=320, B=330, R=500, Q=900, K=20000
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+}
+
+# Piece-Square Tables (simplified)
+# Values are relative to the board from White's perspective. 
+# For Black, we mirror the board (row 7 - row).
+PST = {
+    'P': [
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [50, 50, 50, 50, 50, 50, 50, 50],
+        [10, 10, 20, 30, 30, 20, 10, 10],
+        [5,  5, 10, 25, 25, 10,  5,  5],
+        [0,  0,  0, 20, 20,  0,  0,  0],
+        [5, -5,-10,  0,  0,-10, -5,  5],
+        [5, 10, 10,-20,-20, 10, 10,  5],
+        [0,  0,  0,  0,  0,  0,  0,  0]
+    ],
+    'N': [
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+        [-40,-20,  0,  0,  0,  0,-20,-40],
+        [-30,  0, 10, 15, 15, 10,  0,-30],
+        [-30,  5, 15, 20, 20, 15,  5,-30],
+        [-30,  0, 15, 20, 20, 15,  0,-30],
+        [-30,  5, 10, 15, 15, 10,  5,-30],
+        [-40,-20,  0,  5,  5,  0,-20,-40],
+        [-50,-40,-30,-30,-30,-30,-40,-50]
+    ],
+    'B': [
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5, 10, 10,  5,  0,-10],
+        [-10,  5,  5, 10, 10,  5,  5,-10],
+        [-10,  0, 10, 10, 10, 10,  0,-10],
+        [-10, 10, 10, 10, 10, 10, 10,-10],
+        [-10,  5,  0,  0,  0,  0,  5,-10],
+        [-20,-10,-10,-10,-10,-10,-10,-20]
+    ],
+    'R': [
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [5, 10, 10, 10, 10, 10, 10,  5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [0,  0,  0,  5,  5,  0,  0,  0]
+    ],
+    'Q': [
+        [-20,-10,-10, -5, -5,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5,  5,  5,  5,  0,-10],
+        [-5,  0,  5,  5,  5,  5,  0, -5],
+        [0,  0,  5,  5,  5,  5,  0, -5],
+        [-10,  5,  5,  5,  5,  5,  0,-10],
+        [-10,  0,  5,  0,  0,  0,  0,-10],
+        [-20,-10,-10, -5, -5,-10,-10,-20]
+    ],
+    'K': [
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-20,-30,-30,-40,-40,-30,-30,-20],
+        [-10,-20,-20,-20,-20,-20,-20,-10],
+        [20, 20,  0,  0,  0,  0, 20, 20],
+        [20, 30, 10,  0,  0, 10, 30, 20]
+    ]
+}
+
+# --- Helper Functions ---
+
+def sq_to_idx(sq):
+    """Converts 'e4' to (3, 4) (row, col)."""
+    return (8 - int(sq[1]), ord(sq[0]) - ord('a'))
+
+def idx_to_sq(r, c):
+    """Converts (3, 4) to 'e4'."""
+    return chr(c + ord('a')) + str(8 - r)
+
+def get_piece_at(board, r, c):
+    if 0 <= r < 8 and 0 <= c < 8:
+        return board.get((r, c))
+    return None
+
+def is_attacked(board, r, c, attacker_color):
+    """Checks if square (r,c) is attacked by attacker_color."""
+    # Check for Knight attacks
+    knight_offsets = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+    for dr, dc in knight_offsets:
+        pr, pc = r + dr, c + dc
+        p = get_piece_at(board, pr, pc)
+        if p and p[0] == attacker_color and p[1] == 'N':
+            return True
+            
+    # Check for linear attacks (Rook/Queen)
+    linear_dirs = [(0,1), (0,-1), (1,0), (-1,0)]
+    for dr, dc in linear_dirs:
+        pr, pc = r + dr, c + dc
+        while 0 <= pr < 8 and 0 <= pc < 8:
+            p = get_piece_at(board, pr, pc)
+            if p:
+                if p[0] == attacker_color and p[1] in ['R', 'Q']:
+                    return True
+                break
+            pr += dr
+            pc += dc
+            
+    # Check for diagonal attacks (Bishop/Queen)
+    diag_dirs = [(1,1), (1,-1), (-1,1), (-1,-1)]
+    for dr, dc in diag_dirs:
+        pr, pc = r + dr, c + dc
+        while 0 <= pr < 8 and 0 <= pc < 8:
+            p = get_piece_at(board, pr, pc)
+            if p:
+                if p[0] == attacker_color and p[1] in ['B', 'Q']:
+                    return True
+                # Check Pawn captures
+                if p[1] == 'P':
+                    # White pawns attack "up" (-1), Black "down" (+1) relative to board array rows
+                    # But wait, board array is row 0 to 7. White is at row 6-7 usually (indices), moves to 0.
+                    # Wait, standard mapping: a8 is (0,0). a1 is (7,0).
+                    # White starts at rank 1-2 (indices 7, 6). Moves towards 0.
+                    # Black starts at rank 7-8 (indices 1, 0). Moves towards 7.
+                    # My sq_to_idx: rank 8 -> row 0. rank 1 -> row 7.
+                    # White pawns at row 6 (rank 2). Move to row 5. Attack row 5.
+                    # White pawns move -1 in row.
+                    if attacker_color == 'w' and pr == r - 1 and abs(pc - c) == 1: return True
+                    if attacker_color == 'b' and pr == r + 1 and abs(pc - c) == 1: return True
+                break
+            pr += dr
+            pc += dc
+
+    # Check for King attacks
+    king_offsets = [(0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]
+    for dr, dc in king_offsets:
+        pr, pc = r + dr, c + dc
+        p = get_piece_at(board, pr, pc)
+        if p and p[0] == attacker_color and p[1] == 'K':
+            return True
+            
+    return False
+
+# --- Move Parsing and Evaluation ---
+
+def parse_move(move_str, pieces, color):
+    """Returns (source_sq, target_sq, piece_type, promotion_piece) or None."""
+    
+    # 1. Handle Castling
+    if move_str == 'O-O' or move_str == 'O-O+':
+        row = 0 if color == 'black' else 7
+        return (('e'+str(8-row)), ('g'+str(8-row)), 'K', None)
+    if move_str == 'O-O-O' or move_str == 'O-O-O+':
+        row = 0 if color == 'black' else 7
+        return (('e'+str(8-row)), ('c'+str(8-row)), 'K', None)
+
+    # 2. Clean string
+    clean = move_str
+    if clean.endswith('+') or clean.endswith('#'):
+        clean = clean[:-1]
+    
+    # 3. Extract Target Square
+    target = clean[-2:]
+    if '=' in target:
+        target, prom = target.split('=')
+    else:
+        prom = None
+        
+    # 4. Piece Type and Disambiguation
+    rest = clean[:-2]
+    piece_type = 'P'
+    if rest and rest[0].isupper():
+        piece_type = rest[0]
+        rest = rest[1:]
+        
+    is_capture = 'x' in rest
+    rest = rest.replace('x', '')
+    
+    # Identify candidates
+    my_color_char = 'w' if color == 'white' else 'b'
+    candidates = []
+    for sq, pc in pieces.items():
+        if pc[0] == my_color_char and pc[1] == piece_type:
+            candidates.append(sq)
+            
+    # Filter by Disambiguation (file/rank)
+    if len(rest) > 0:
+        new_candidates = []
+        for c in candidates:
+            match = True
+            if 'a' <= rest[0] <= 'h' and c[0] != rest[0]: match = False
+            if len(rest) > 1 and '1' <= rest[1] <= '8' and c[1] != rest[1]: match = False
+            # Handle rank-only disambig if len=1 and is digit
+            if len(rest) == 1 and '1' <= rest[0] <= '8' and c[1] != rest[0]: match = False
+            if match: new_candidates.append(c)
+        candidates = new_candidates
+
+    # Filter by Reachability (Geometry)
+    target_r, target_c = sq_to_idx(target)
+    
+    for src in candidates:
+        src_r, src_c = sq_to_idx(src)
+        dr, dc = target_r - src_r, target_c - src_c
+        
+        # Pawn logic
+        if piece_type == 'P':
+            direction = -1 if color == 'white' else 1
+            start_rank = 6 if color == 'white' else 1
+            
+            if not is_capture:
+                # Move forward 1
+                if dc == 0 and dr == direction:
+                    # Check empty target (implied by legal move)
+                    return (src, target, piece_type, prom)
+                # Move forward 2
+                if dc == 0 and dr == 2 * direction and src_r == start_rank:
+                    return (src, target, piece_type, prom)
+            else:
+                # Capture
+                if abs(dc) == 1 and dr == direction:
+                    return (src, target, piece_type, prom)
+
+        # Knight
+        elif piece_type == 'N':
+            if (abs(dr), abs(dc)) in [(1,2), (2,1)]:
+                return (src, target, piece_type, prom)
+                
+        # King
+        elif piece_type == 'K':
+            if abs(dr) <= 1 and abs(dc) <= 1:
+                return (src, target, piece_type, prom)
+                
+        # Sliding pieces (R, B, Q)
+        else:
+            step_r, step_c = 0, 0
+            if dr == 0 or dc == 0: # Rook/Queen slide
+                if dr != 0: step_r = 1 if dr > 0 else -1
+                if dc != 0: step_c = 1 if dc > 0 else -1
+                if piece_type == 'B': continue # Bishop can't move straight
+            elif abs(dr) == abs(dc): # Bishop/Queen slide
+                step_r = 1 if dr > 0 else -1
+                step_c = 1 if dc > 0 else -1
+                if piece_type == 'R': continue # Rook can't move diag
+            else:
+                continue # Invalid geometry
+            
+            # Check obstacles
+            cr, cc = src_r + step_r, src_c + step_c
+            blocked = False
+            while (cr, cc) != (target_r, target_c):
+                if (cr, cc) in [(r, c) for (r, c), _ in pieces.items()]: # Simple hit test
+                    blocked = True
+                    break
+                cr += step_r
+                cc += step_c
+            if not blocked:
+                return (src, target, piece_type, prom)
+                
+    return None # Should not happen for legal moves
+
+def evaluate(board_pieces, to_play):
+    score = 0
+    for sq, pc in board_pieces.items():
+        color = pc[0]
+        ptype = pc[1]
+        r, c = sq_to_idx(sq)
+        
+        val = PIECE_VALUES[ptype]
+        
+        # Add PST value
+        pst_row = r if color == 'w' else (7 - r)
+        pst_val = PST[ptype][pst_row][c]
+        
+        if color == 'w':
+            score += val + pst_val
+        else:
+            score -= (val + pst_val)
+            
+    return score if to_play == 'white' else -score
+
+def simulate_move(board_pieces, move_info, color):
+    # board_pieces is a dict {(r,c): 'wP'}
+    new_board = dict(board_pieces)
+    
+    src, tgt, ptype, prom = move_info
+    src_idx = sq_to_idx(src)
+    tgt_idx = sq_to_idx(tgt)
+    
+    # Remove source
+    moving_piece = new_board.pop(src_idx)
+    
+    # Handle Capture / En Passant
+    # En Passant: Pawn captures diagonally but target is empty in `pieces` dict
+    # In our simulation, we need to check if we are capturing.
+    # Since we don't have the full game history for EP state, we infer from the move.
+    # If pawn capture and target empty -> EP.
+    
+    if tgt_idx in new_board:
+        # Normal capture
+        new_board.pop(tgt_idx)
+    elif ptype == 'P' and src_idx[1] != tgt_idx[1]:
+        # Pawn moved diagonally but no piece at target -> En Passant
+        # Remove the pawn being captured (behind the target)
+        dir_r = -1 if color == 'white' else 1
+        captured_pawn_idx = (tgt_idx[0] - dir_r, tgt_idx[1])
+        if captured_pawn_idx in new_board:
+            new_board.pop(captured_pawn_idx)
+            
+    # Handle Castling (Move Rook too)
+    if ptype == 'K' and abs(src_idx[1] - tgt_idx[1]) == 2:
+        # Kingside
+        if tgt_idx[1] > src_idx[1]:
+            rook_src = (src_idx[0], 7)
+            rook_tgt = (src_idx[0], 5)
+            if rook_src in new_board:
+                r = new_board.pop(rook_src)
+                new_board[rook_tgt] = r
+        # Queenside
+        else:
+            rook_src = (src_idx[0], 0)
+            rook_tgt = (src_idx[0], 3)
+            if rook_src in new_board:
+                r = new_board.pop(rook_src)
+                new_board[rook_tgt] = r
+                
+    # Place piece
+    final_code = moving_piece
+    if prom:
+        final_code = moving_piece[0] + prom
+        
+    new_board[tgt_idx] = final_code
+    return new_board
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    
+    # Preprocess pieces dict to (r,c) keys for easier internal manipulation
+    # but keep original for parsing if needed? parse_move needs sq strings.
+    # Let's convert to (r,c) map for simulation/eval.
+    idx_pieces = {}
+    for sq, pc in pieces.items():
+        idx_pieces[sq_to_idx(sq)] = pc
+        
+    best_move = None
+    best_score = -999999999
+    
+    # Immediate Mate Check
+    for move in legal_moves:
+        if '#' in move:
+            return move
+            
+    # Shuffle to add variety to equal moves
+    random.shuffle(legal_moves)
+    
+    opponent_color = 'b' if to_play == 'white' else 'w'
+    
+    for move in legal_moves:
+        # Parse
+        # Note: parse_move uses the original string keys 'e4' etc, so we pass 'pieces'
+        move_info = parse_move(move, pieces, to_play)
+        if not move_info: continue # Should not happen
+        
+        src, tgt, ptype, prom = move_info
+        
+        # Heuristic Pruning / Boosting based on move string only (fast)
+        # This helps if we can't evaluate all.
+        move_score_boost = 0
+        if '=' in move: move_score_boost += 800 # Promotion
+        if 'x' in move: 
+            # Capture check (simple heuristic)
+            # We know target piece from 'pieces'
+            if tgt in pieces:
+                victim = pieces[tgt][1]
+                move_score_boost += PIECE_VALUES.get(victim, 0)
+        
+        # Simulation
+        # We need to map 'src' and 'tgt' to (r,c) for idx_pieces
+        src_idx = sq_to_idx(src)
+        tgt_idx = sq_to_idx(tgt)
+        
+        # Check for hang (safety)
+        # If the target square is attacked by opponent, we might lose the piece.
+        # Static check: Is tgt_idx attacked by opponent in CURRENT state?
+        # Better: Check in NEXT state.
+        # To be fast, just check if `tgt` is currently attacked by a pawn or minor piece?
+        # Let's just simulate and check attack in the new state.
+        
+        new_idx_pieces = simulate_move(idx_pieces, move_info, to_play)
+        
+        # Basic Safety Check
+        safety_penalty = 0
+        # If the piece we just moved is attacked, subtract value
+        # Check if tgt_idx is attacked by opponent
+        if is_attacked(new_idx_pieces, tgt_idx[0], tgt_idx[1], opponent_color):
+            # We lost the material we gained/kept?
+            # Approximation: penalize by value of moving piece
+            val = PIECE_VALUES[prom if prom else ptype]
+            # Unless it's a pawn protected by a pawn? Too slow.
+            safety_penalty = val 
+            
+        final_eval = evaluate(new_idx_pieces, to_play) + move_score_boost - safety_penalty
+        
+        if final_eval > best_score:
+            best_score = final_eval
+            best_move = move
+            
+    return best_move
+</code>

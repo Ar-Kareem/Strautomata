@@ -1,0 +1,120 @@
+
+import random
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Policy for 3x3x3 3D Tic Tac Toe.
+    Returns the best move as (z, y, x) coordinates.
+    """
+    n = 3
+    
+    # Helper function to get all lines in the 3D board
+    def get_all_lines():
+        lines = []
+        
+        # Lines parallel to x-axis
+        for z in range(n):
+            for y in range(n):
+                lines.append([(z, y, x) for x in range(n)])
+        
+        # Lines parallel to y-axis
+        for z in range(n):
+            for x in range(n):
+                lines.append([(z, y, x) for y in range(n)])
+        
+        # Lines parallel to z-axis
+        for y in range(n):
+            for x in range(n):
+                lines.append([(z, y, x) for z in range(n)])
+        
+        # Diagonals in xy-plane (for each z)
+        for z in range(n):
+            lines.append([(z, i, i) for i in range(n)])
+            lines.append([(z, i, n-1-i) for i in range(n)])
+        
+        # Diagonals in xz-plane (for each y)
+        for y in range(n):
+            lines.append([(i, y, i) for i in range(n)])
+            lines.append([(i, y, n-1-i) for i in range(n)])
+        
+        # Diagonals in yz-plane (for each x)
+        for x in range(n):
+            lines.append([(i, i, x) for i in range(n)])
+            lines.append([(i, n-1-i, x) for i in range(n)])
+        
+        # 4 space diagonals
+        lines.append([(i, i, i) for i in range(n)])
+        lines.append([(i, i, n-1-i) for i in range(n)])
+        lines.append([(i, n-1-i, i) for i in range(n)])
+        lines.append([(n-1-i, i, i) for i in range(n)])
+        
+        return lines
+    
+    def evaluate_line(line, player):
+        """Evaluate a line for a given player. Returns score and empty cell if applicable."""
+        values = [board[z][y][x] for z, y, x in line]
+        player_count = values.count(player)
+        opponent_count = values.count(-player)
+        empty_count = values.count(0)
+        
+        if opponent_count > 0 and player_count > 0:
+            return 0, None  # Blocked line
+        
+        if player_count == 2 and empty_count == 1:
+            # Can win or block
+            empty_pos = line[values.index(0)]
+            return 1000 if player == 1 else 100, empty_pos
+        
+        if player_count == 1 and empty_count == 2:
+            return 10 if player == 1 else 5, None
+        
+        return 0, None
+    
+    # Get all possible lines
+    all_lines = get_all_lines()
+    
+    # First, check if we can win immediately
+    for line in all_lines:
+        score, pos = evaluate_line(line, 1)
+        if score == 1000 and pos:
+            return pos
+    
+    # Second, check if we need to block opponent from winning
+    for line in all_lines:
+        score, pos = evaluate_line(line, -1)
+        if score == 100 and pos:
+            return pos
+    
+    # Third, find the best strategic move
+    move_scores = {}
+    for z in range(n):
+        for y in range(n):
+            for x in range(n):
+                if board[z][y][x] == 0:
+                    score = 0
+                    # Center and corners are more valuable
+                    if (z, y, x) == (1, 1, 1):  # Center of cube
+                        score += 50
+                    elif z == 1 and y == 1 or z == 1 and x == 1 or y == 1 and x == 1:
+                        score += 20
+                    
+                    # Count how many lines this move participates in
+                    for line in all_lines:
+                        if (z, y, x) in line:
+                            line_score, _ = evaluate_line(line, 1)
+                            score += line_score / 10
+                    
+                    move_scores[(z, y, x)] = score
+    
+    if move_scores:
+        best_move = max(move_scores, key=move_scores.get)
+        return best_move
+    
+    # Fallback: return any empty cell
+    for z in range(n):
+        for y in range(n):
+            for x in range(n):
+                if board[z][y][x] == 0:
+                    return (z, y, x)
+    
+    return (0, 0, 0)  # Should never reach here in a valid game

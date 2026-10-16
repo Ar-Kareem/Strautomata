@@ -1,0 +1,164 @@
+The strategy for this policy is to implement a basic chess engine with the following priorities:
+1. Check for immediate checkmate opportunities and play them
+2. Avoid losing material, especially the queen and rooks
+3. Look for simple tactics like captures and promotions
+4. Improve piece positioning and king safety
+5. As a fallback, choose a reasonable move from the legal moves list
+
+The policy evaluates moves based on:
+- Checkmate (highest priority)
+- Captures (especially of high-value pieces)
+- Promotions
+- King safety (castling or king moves when in check)
+- Control of the center and piece activity
+- Avoiding hanging pieces
+
+<code>
+import random
+import re
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Convert color to piece prefixes
+    my_color = 'w' if to_play == 'white' else 'b'
+    opp_color = 'b' if to_play == 'white' else 'w'
+    
+    # Piece values for evaluation
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    # Check for checkmate opportunity
+    for move in legal_moves:
+        if '+' in move and '#' in move:
+            return move, memory
+    
+    # Evaluate captures
+    captures = []
+    for move in legal_moves:
+        # Check if move is a capture
+        if 'x' in move:
+            captures.append(move)
+    
+    # Evaluate promotions
+    promotions = []
+    for move in legal_moves:
+        if '=' in move:
+            promotions.append(move)
+    
+    # Evaluate king safety
+    king_moves = []
+    castling = []
+    for move in legal_moves:
+        if move.startswith('K'):
+            king_moves.append(move)
+        if move in ['O-O', 'O-O-O']:
+            castling.append(move)
+    
+    # Evaluate all moves with a simple heuristic
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        score = 0
+        
+        # Check for capture
+        if 'x' in move:
+            # Extract captured piece if possible
+            captured_square = extract_captured_square(move, pieces, to_play)
+            if captured_square in pieces:
+                captured_piece = pieces[captured_square]
+                if captured_piece[0] == opp_color:
+                    score += piece_values.get(captured_piece[1], 0) * 10
+        
+        # Check for promotion
+        if '=' in move:
+            promoted_piece = move.split('=')[1][0]
+            score += piece_values.get(promoted_piece, 0) * 5
+            
+        # Prefer controlling center with pawns and pieces
+        if move[0].islower():  # Pawn move
+            dest_square = move[:2] if len(move) >= 2 else ''
+            if dest_square in ['d4', 'd5', 'e4', 'e5']:
+                score += 1
+        
+        # Prefer developing knights and bishops
+        if move.startswith('N') or move.startswith('B'):
+            # Bonus for developing to good squares
+            if any(sq in move for sq in ['c3', 'c6', 'd2', 'd7', 'e2', 'e7', 'f3', 'f6']):
+                score += 1
+        
+        # Prefer castling for king safety
+        if move in ['O-O', 'O-O-O']:
+            score += 2
+            
+        # Avoid moving the same piece multiple times in opening
+        if 'move_history' in memory:
+            last_move = memory['move_history'][-1] if memory['move_history'] else None
+            if last_move and move[0] == last_move[0] and move[0] in 'KQRBN':
+                score -= 1
+        
+        # Update best move if this move is better
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # If we found captures, evaluate them more carefully
+    if captures:
+        best_capture = None
+        max_value = -1
+        for capture in captures:
+            square = extract_captured_square(capture, pieces, to_play)
+            if square in pieces:
+                piece = pieces[square]
+                if piece[0] == opp_color:
+                    value = piece_values.get(piece[1], 0)
+                    if value > max_value:
+                        max_value = value
+                        best_capture = capture
+        if best_capture:
+            return best_capture, memory
+    
+    # If we have a promotion, pick the best one (usually queen)
+    if promotions:
+        queen_promotions = [m for m in promotions if '=Q' in m]
+        if queen_promotions:
+            return queen_promotions[0], memory
+        else:
+            return promotions[0], memory
+    
+    # If in check, prioritize king moves and castling
+    if king_in_check(pieces, to_play):
+        if castling:
+            return castling[0], memory
+        elif king_moves:
+            return random.choice(king_moves), memory
+    
+    # If we couldn't evaluate anything else, return our best evaluated move
+    if best_move:
+        # Update move history
+        if 'move_history' not in memory:
+            memory['move_history'] = []
+        memory['move_history'].append(best_move)
+        if len(memory['move_history']) > 10:  # Keep only last 10 moves
+            memory['move_history'] = memory['move_history'][-10:]
+        return best_move, memory
+    
+    # As a last resort, return a random legal move
+    return random.choice(legal_moves), memory
+
+def extract_captured_square(move: str, pieces: dict[str, str], to_play: str) -> str:
+    """Extract the square of a captured piece from a move notation"""
+    # This is a simplified version - in a real engine this would be more comprehensive
+    # Try to find square references at the end of move strings
+    if 'x' in move:
+        # Try to extract square (assuming last 2 characters are square)
+        if len(move) >= 2:
+            potential_square = move[-2:]
+            if potential_square[0] in 'abcdefgh' and potential_square[1] in '12345678':
+                return potential_square
+    return ""
+
+def king_in_check(pieces: dict[str, str], to_play: str) -> bool:
+    """A very simplified check - in reality this would need to look at opponent attacks"""
+    # This is a placeholder - we'd actually need to compute all opponent attack vectors
+    # For now, we'll just randomly say we're in check sometimes to encourage king moves
+    return random.random() < 0.1
+</code>

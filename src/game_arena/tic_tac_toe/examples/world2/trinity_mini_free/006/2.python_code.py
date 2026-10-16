@@ -1,0 +1,85 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Define all possible lines (rows, columns, diagonals)
+    lines = []
+    # Rows
+    for i in range(4):
+        lines.append([i*4 + j for j in range(4)])
+    # Columns
+    for j in range(4):
+        lines.append([i*4 + j for i in range(4)])
+    # Diagonals
+    lines.append([i*4 + i for i in range(4)])  # Main diagonal
+    lines.append([i*4 + (3 - i) for i in range(4)])  # Anti-diagonal
+    
+    # Step 1: Check for immediate win (sum 3)
+    for line in lines:
+        s = sum(board[i] for i in line)
+        if s == 3:
+            for idx in line:
+                if board[idx] == 0:
+                    return (idx // 4, idx % 4)
+    
+    # Step 2: Check for blocking opponent's win (sum -3)
+    for line in lines:
+        s = sum(board[i] for i in line)
+        if s == -3:
+            for idx in line:
+                if board[idx] == 0:
+                    return (idx // 4, idx % 4)
+    
+    # Step 3: Check for forks (two winning threats)
+    empty_cells = [(i, j) for i in range(4) for j in range(4) if board[i*4 + j] == 0]
+    for (i, j) in empty_cells:
+        idx = i * 4 + j
+        count = 0
+        for line in lines:
+            if idx in line:
+                # Count empty cells in this line
+                empty_count = sum(1 for pos in line if board[pos] == 0)
+                if empty_count == 1 and board[idx] == 0:
+                    s = sum(board[pos] for pos in line if pos != idx)
+                    if s == 2:  # Would become a win
+                        count += 1
+                    elif s == 1:  # Would create a threat
+                        count += 1
+        if count >= 2:
+            return (i, j)
+    
+    # Step 4: Create a single threat (sum 2)
+    for (i, j) in empty_cells:
+        idx = i * 4 + j
+        for line in lines:
+            if idx in line:
+                empty_count = sum(1 for pos in line if board[pos] == 0)
+                if empty_count == 1 and board[idx] == 0:
+                    s = sum(board[pos] for pos in line if pos != idx)
+                    if s == 1:  # Would create a threat
+                        return (i, j)
+    
+    # Step 5: Block opponent's threat (sum -2)
+    for (i, j) in empty_cells:
+        idx = i * 4 + j
+        for line in lines:
+            if idx in line:
+                empty_count = sum(1 for pos in line if board[pos] == 0)
+                if empty_count == 1 and board[idx] == 0:
+                    s = sum(board[pos] for pos in line if pos != idx)
+                    if s == -2:  # Blocks opponent's threat
+                        return (i, j)
+    
+    # Step 6: Position-based moves (center, corners)
+    center = (1, 1)  # Center cell (index 5)
+    if board[5] == 0:
+        return (1, 1)
+    corners = [(0, 0), (0, 3), (3, 0), (3, 3)]  # Corner cells
+    for (i, j) in corners:
+        idx = i * 4 + j
+        if board[idx] == 0:
+            return (i, j)
+    
+    # Default: Any empty cell (should not occur in valid play)
+    for i in range(4):
+        for j in range(4):
+            if board[i*4 + j] == 0:
+                return (i, j)

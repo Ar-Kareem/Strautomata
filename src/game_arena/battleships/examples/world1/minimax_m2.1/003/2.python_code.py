@@ -1,0 +1,125 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Smart Battleship policy using targeted hunting and probabilistic search.
+    
+    Strategy:
+    1. If there are hits, target adjacent unknown cells to complete ships
+    2. If no hits, use probabilistic search to find the best cells to fire at
+    3. Fall back to checkerboard pattern for exploration
+    """
+    # Find all unknown cells
+    unknown_cells = []
+    for row in range(10):
+        for col in range(10):
+            if board[row][col] == 0:
+                unknown_cells.append((row, col))
+    
+    if not unknown_cells:
+        return (0, 0)
+    
+    # Find all hit cells
+    hit_cells = []
+    for row in range(10):
+        for col in range(10):
+            if board[row][col] == 1:
+                hit_cells.append((row, col))
+    
+    # Mode 1: Targeted hunting around hits
+    if hit_cells:
+        best_target = None
+        best_orientations = -1
+        best_unexplored = -1
+        
+        for row, col in hit_cells:
+            # Check all 4 directions from this hit
+            directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # up, down, left, right
+            orientation_found = {}
+            
+            for d_row, d_col in directions:
+                # Count consecutive unknown cells in this direction
+                count = 0
+                r, c = row + d_row, col + d_col
+                while 0 <= r < 10 and 0 <= c < 10 and board[r][c] == 0:
+                    count += 1
+                    r += d_row
+                    c += d_col
+                
+                if count > 0:
+                    # Determine if horizontal or vertical
+                    orientation = 'vertical' if d_row != 0 else 'horizontal'
+                    if orientation not in orientation_found:
+                        orientation_found[orientation] = 0
+                    orientation_found[orientation] += count
+            
+            if orientation_found:
+                # Prefer orientation with more unexplored cells
+                total_unexplored = sum(orientation_found.values())
+                orientations = len(orientation_found)
+                
+                # Priority: more orientations is better (helps determine ship direction)
+                # then more unexplored cells
+                if orientations > best_orientations or \
+                   (orientations == best_orientations and total_unexplored > best_unexplored):
+                    best_orientations = orientations
+                    best_unexplored = total_unexplored
+                    
+                    # Find the first adjacent unknown cell for this hit
+                    for d_row, d_col in directions:
+                        r, c = row + d_row, col + d_col
+                        if 0 <= r < 10 and 0 <= c < 10 and board[r][c] == 0:
+                            best_target = (r, c)
+                            break
+        
+        if best_target:
+            return best_target
+    
+    # Mode 2: Probabilistic search (no hits or no good targets)
+    # Calculate placement scores for each unknown cell
+    ship_sizes = [2, 3, 3, 4, 5]
+    best_score = -1
+    best_cell = None
+    
+    for row, col in unknown_cells:
+        score = 0
+        
+        # Check how many ships could potentially be placed covering this cell
+        for ship_length in ship_sizes:
+            # Check horizontal placements
+            for start_col in range(max(0, col - ship_length + 1), min(10 - ship_length, col) + 1):
+                valid = True
+                for offset in range(ship_length):
+                    check_col = start_col + offset
+                    if board[row][check_col] != 0:
+                        valid = False
+                        break
+                if valid:
+                    score += 1
+            
+            # Check vertical placements
+            for start_row in range(max(0, row - ship_length + 1), min(10 - ship_length, row) + 1):
+                valid = True
+                for offset in range(ship_length):
+                    check_row = start_row + offset
+                    if board[check_row][col] != 0:
+                        valid = False
+                        break
+                if valid:
+                    score += 1
+        
+        if score > best_score:
+            best_score = score
+            best_cell = (row, col)
+    
+    if best_cell:
+        return best_cell
+    
+    # Fallback: checkerboard pattern
+    best_score = -1
+    for row, col in unknown_cells:
+        score = (row + col) % 2  # Parity-based scoring
+        if score > best_score:
+            best_score = score
+            best_cell = (row, col)
+    
+    return best_cell

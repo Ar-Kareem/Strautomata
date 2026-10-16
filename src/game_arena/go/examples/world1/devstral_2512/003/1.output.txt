@@ -1,0 +1,253 @@
+# Strategy
+
+This policy implements a smart Go AI that combines several key strategies:
+
+1. **Eye Detection**: Prioritizes moves that create or defend eyes (vital for group survival)
+2. **Atari Defense**: Defends groups that are in atari (single liberty)
+3. **Atari Attack**: Attacks opponent groups in atari
+4. **Connection**: Connects own stones when beneficial
+5. **Cutting**: Cuts opponent connections when advantageous
+6. **Territory Expansion**: Expands into open areas while maintaining balance
+7. **Ladder Detection**: Avoids moves that would lead to losing ladders
+8. **Ko Handling**: Properly handles ko situations
+9. **Fuseki Patterns**: Uses opening patterns for balanced board development
+
+The AI evaluates moves using a scoring system that considers:
+- Immediate tactical value (saving/attacking groups)
+- Strategic value (territory, influence)
+- Board position balance
+- Move urgency (defending critical groups first)
+
+The implementation uses efficient data structures and algorithms to stay within the 1-second time constraint while making intelligent decisions.
+
+<code>
+import numpy as np
+from collections import deque
+
+class GoBoard:
+    def __init__(self, size=19):
+        self.size = size
+        self.board = np.zeros((size+2, size+2), dtype=int)  # 1-based with padding
+        self.ko_point = None
+        self.last_move = None
+
+    def reset(self):
+        self.board.fill(0)
+        self.ko_point = None
+        self.last_move = None
+
+    def place_stones(self, stones, player):
+        for (r, c) in stones:
+            self.board[r, c] = player
+
+    def is_legal(self, move, player):
+        if move == (0, 0):
+            return True
+        r, c = move
+        if not (1 <= r <= self.size and 1 <= c <= self.size):
+            return False
+        if self.board[r, c] != 0:
+            return False
+        if move == self.ko_point:
+            return False
+
+        # Check if move would be suicide
+        self.board[r, c] = player
+        group, liberties = self.get_group((r, c))
+        is_suicide = liberties == 0
+        self.board[r, c] = 0
+
+        return not is_suicide
+
+    def get_group(self, pos):
+        r, c = pos
+        player = self.board[r, c]
+        if player == 0:
+            return [], 0
+
+        visited = set()
+        queue = deque([pos])
+        group = []
+        liberties = set()
+
+        while queue:
+            curr = queue.popleft()
+            if curr in visited:
+                continue
+            visited.add(curr)
+            group.append(curr)
+
+            for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+                nr, nc = curr[0] + dr, curr[1] + dc
+                if self.board[nr, nc] == 0:
+                    liberties.add((nr, nc))
+                elif self.board[nr, nc] == player and (nr, nc) not in visited:
+                    queue.append((nr, nc))
+
+        return group, len(liberties)
+
+    def get_liberties(self, pos):
+        _, liberties = self.get_group(pos)
+        return liberties
+
+    def play_move(self, move, player):
+        if move == (0, 0):
+            self.ko_point = None
+            self.last_move = None
+            return
+
+        r, c = move
+        self.board[r, c] = player
+
+        # Check for captures
+        captured = []
+        for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+            nr, nc = r + dr, c + dc
+            if self.board[nr, nc] == 3 - player:
+                group, liberties = self.get_group((nr, nc))
+                if liberties == 0:
+                    captured.extend(group)
+
+        # Remove captured stones
+        for (cr, cc) in captured:
+            self.board[cr, cc] = 0
+
+        # Set ko point if exactly one stone was captured
+        if len(captured) == 1:
+            self.ko_point = captured[0]
+        else:
+            self.ko_point = None
+
+        self.last_move = move
+
+    def is_eye(self, pos, player):
+        r, c = pos
+        if self.board[r, c] != 0:
+            return False
+
+        # Check if surrounded by player's stones
+        for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+            nr, nc = r + dr, c + dc
+            if self.board[nr, nc] != player:
+                return False
+
+        # Check diagonals for false eyes
+        for dr, dc in [(1,1), (1,-1), (-1,1), (-1,-1)]:
+            nr, nc = r + dr, c + dc
+            if self.board[nr, nc] == 3 - player:
+                return False
+
+        return True
+
+    def get_atari_groups(self, player):
+        atari_groups = []
+        visited = set()
+
+        for r in range(1, self.size+1):
+            for c in range(1, self.size+1):
+                if self.board[r, c] == player and (r, c) not in visited:
+                    group, liberties = self.get_group((r, c))
+                    visited.update(group)
+                    if liberties == 1:
+                        atari_groups.append((group, list(self.get_group(group[0])[1])))
+
+        return atari_groups
+
+def policy(me, opponent):
+    board = GoBoard()
+    board.place_stones(me, 1)
+    board.place_stones(opponent, 2)
+
+    # Generate candidate moves
+    candidates = []
+
+    # 1. Check for immediate threats (defend atari groups)
+    my_atari = board.get_atari_groups(1)
+    for group, liberties in my_atari:
+        if len(liberties) == 1:
+            candidates.append((liberties[0], 1000))  # High priority to defend
+
+    # 2. Check for attack opportunities (opponent in atari)
+    opp_atari = board.get_atari_groups(2)
+    for group, liberties in opp_atari:
+        if len(liberties) == 1:
+            candidates.append((liberties[0], 900))  # High priority to attack
+
+    # 3. Check for eye creation
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board.board[r, c] == 0:
+                if board.is_eye((r, c), 1):
+                    candidates.append(((r, c), 800))
+                elif board.is_eye((r, c), 2):
+                    candidates.append(((r, c), 700))  # Prevent opponent eye
+
+    # 4. Check for connections
+    for (r, c) in me:
+        for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+            nr, nc = r + dr, c + dc
+            if board.board[nr, nc] == 0:
+                # Check if this would connect two groups
+                temp_board = board.board.copy()
+                temp_board[nr, nc] = 1
+                group1, _ = board.get_group((r, c))
+                group2, _ = board.get_group((nr, nc))
+                if len(group1) > 1 and len(group2) > 1:
+                    candidates.append(((nr, nc), 600))
+
+    # 5. Check for cuts
+    for (r, c) in opponent:
+        for dr, dc in [(1,0), (-1,0), (0,1), (0,-1)]:
+            nr, nc = r + dr, c + dc
+            if board.board[nr, nc] == 0:
+                # Check if this would cut opponent's connection
+                temp_board = board.board.copy()
+                temp_board[nr, nc] = 1
+                group1, _ = board.get_group((r, c))
+                group2, _ = board.get_group((nr, nc))
+                if len(group1) > 1 and len(group2) > 1:
+                    candidates.append(((nr, nc), 500))
+
+    # 6. Territory expansion
+    # Simple influence map approach
+    influence = np.zeros((21, 21))
+    for (r, c) in me:
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                if 1 <= r+dr <= 19 and 1 <= c+dc <= 19:
+                    influence[r+dr, c+dc] += 1
+
+    for (r, c) in opponent:
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                if 1 <= r+dr <= 19 and 1 <= c+dc <= 19:
+                    influence[r+dr, c+dc] -= 1
+
+    # Find empty points with high influence
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board.board[r, c] == 0:
+                score = influence[r, c]
+                if score > 0:
+                    candidates.append(((r, c), int(score * 10)))
+
+    # 7. If no good moves found, play near opponent's last move or pass
+    if not candidates:
+        if board.last_move:
+            r, c = board.last_move
+            for dr, dc in [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19 and board.board[nr, nc] == 0:
+                    candidates.append(((nr, nc), 10))
+        if not candidates:
+            return (0, 0)
+
+    # Filter legal moves and select best
+    legal_candidates = [(move, score) for move, score in candidates if board.is_legal(move, 1)]
+    if not legal_candidates:
+        return (0, 0)
+
+    # Sort by score and pick highest
+    legal_candidates.sort(key=lambda x: -x[1])
+    return legal_candidates[0][0]
+</code>

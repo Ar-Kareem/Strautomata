@@ -1,0 +1,124 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Returns the next legal move for a 4×4 Dots‑and‑Boxes board.
+    """
+    # ------------------------------------------------------------------
+    # 1. Gather all empty edges (legal moves)
+    # ------------------------------------------------------------------
+    h_edges = [(r, c, 'H') for r in range(4) for c in range(5) if horizontal[r, c] == 0]
+    v_edges = [(r, c, 'V') for r in range(5) for c in range(4) if vertical[r, c] == 0]
+    empty_edges = h_edges + v_edges
+
+    if not empty_edges:
+        # No legal move – game already finished.
+        return ""
+
+    # Map from edge tuple to index in the list for fast access
+    edge_to_idx = {e: i for i, e in enumerate(empty_edges)}
+    n = len(empty_edges)
+
+    # ------------------------------------------------------------------
+    # 2. Build adjacency based on sharing a grid point
+    # ------------------------------------------------------------------
+    adj = [[] for _ in range(n)]
+    for idx, (r, c, d) in enumerate(empty_edges):
+        if d == 'H':
+            # vertical neighbours at the two endpoints
+            if vertical[r, c] == 0:
+                adj[idx].extend(edge_to_idx.get((r, c, 'V'), []))
+            if vertical[r, c + 1] == 0:
+                adj[idx].extend(edge_to_idx.get((r, c + 1, 'V'), []))
+            # horizontal neighbours left / right
+            if c - 1 >= 0 and horizontal[r, c - 1] == 0:
+                adj[idx].extend(edge_to_idx.get((r, c - 1, 'H'), []))
+            if c + 1 < 4 and horizontal[r, c + 1] == 0:
+                adj[idx].extend(edge_to_idx.get((r, c + 1, 'H'), []))
+        else:  # 'V'
+            # horizontal neighbours at the two endpoints
+            if horizontal[r, c] == 0:
+                adj[idx].extend(edge_to_idx.get((r, c, 'H'), []))
+            if c + 1 < 4 and horizontal[r, c + 1] == 0:
+                adj[idx].extend(edge_to_idx.get((r, c + 1, 'H'), []))
+            # vertical neighbours above / below
+            if r - 1 >= 0 and vertical[r - 1, c] == 0:
+                adj[idx].extend(edge_to_idx.get((r - 1, c, 'V'), []))
+            if r + 1 < 4 and vertical[r + 1, c] == 0:
+                adj[idx].extend(edge_to_idx.get((r + 1, c, 'V'), []))
+
+    # ------------------------------------------------------------------
+    # 3. Find connected components (chains of empty edges)
+    # ------------------------------------------------------------------
+    comp_id = [-1] * n          # component id for each edge
+    order_in_comp = [-1] * n    # position of the edge inside its component (0‑based)
+    components = []             # list of lists of edge indices
+
+    for i, e in enumerate(empty_edges):
+        if comp_id[i] == -1:
+            stack = [i]
+            comp_id[i] = len(components)
+            while stack:
+                node = stack.pop()
+                components[-1].append(node)
+                order_in_comp[node] = len(components[-1]) - 1
+                for nb in adj[node]:
+                    if comp_id[nb] == -1:
+                        comp_id[nb] = len(components)
+                        stack.append(nb)
+            components.append([])
+
+    # Length of each component
+    comp_len = [len(components[comp_id[i]]) for i in range(n)]
+
+    # ------------------------------------------------------------------
+    # 4. Determine how many boxes each edge would capture
+    # ------------------------------------------------------------------
+    boxes_captured = np.zeros(n, dtype=int)
+
+    for idx, (r, c, d) in enumerate(empty_edges):
+        # Horizontal edge can belong to box (r,c) [top] and (r-1,c) [bottom]
+        if d == 'H':
+            # top box
+            if r < 4 and capture[r, c] == 0 and horizontal[r, c] == 0:
+                if horizontal[r + 1, c] != 0 and vertical[r, c] != 0 and vertical[r, c + 1] != 0:
+                    boxes_captured[idx] += 1
+            # bottom box
+            if r > 0 and capture[r - 1, c] == 0 and horizontal[r, c] == 0:
+                if horizontal[r - 1, c] != 0 and vertical[r - 1, c] != 0 and vertical[r - 1, c + 1] != 0:
+                    boxes_captured[idx] += 1
+        else:  # 'V'
+            # left box
+            if c < 4 and capture[r, c] == 0 and vertical[r, c] == 0:
+                if horizontal[r, c] != 0 and horizontal[r, c + 1] != 0 and horizontal[r + 1, c] != 0:
+                    boxes_captured[idx] += 1
+            # right box
+            if c > 0 and capture[r, c - 1] == 0 and vertical[r, c] == 0:
+                if horizontal[r, c - 1] != 0 and horizontal[r, c] != 0 and horizontal[r + 1, c - 1] != 0:
+                    boxes_captured[idx] += 1
+
+    # ------------------------------------------------------------------
+    # 5. Evaluate every legal edge and pick the best one
+    # ------------------------------------------------------------------
+    scores = []   # (priority tuple, edge index)
+    for idx, (r, c, d) in enumerate(empty_edges):
+        degree = len(adj[idx])               # how many adjacent empty edges
+        pos = order_in_comp[idx]
+        clen = comp_len[idx]
+        interior = (pos > 0) and (pos < clen - 1)   # not an endpoint
+
+        if boxes_captured[idx] > 0:
+            # Capture move – highest priority
+            #  - capture two boxes first
+            #  - interior edges of long chains are better (they break the chain)
+            scores.append(( (0, -boxes_captured[idx], interior, degree, r, c), idx))
+        else:
+            # Safe move – try to stay out of long chains
+            scores.append(( (1, degree, clen, r, c), idx))
+
+    scores.sort()          # tuple comparison gives the desired ordering
+    chosen_idx = scores[0][1]
+    r, c, d = empty_edges[chosen_idx]
+    return f"{r},{c},{d}"

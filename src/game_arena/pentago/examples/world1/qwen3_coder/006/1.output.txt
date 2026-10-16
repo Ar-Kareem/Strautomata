@@ -1,0 +1,206 @@
+The strategy for this policy is to implement a multi-layered approach for choosing moves in Pentago:
+
+1. **Win Immediately**: If there's a move that results in an immediate win (5 in a row), take it.
+2. **Prevent Immediate Loss**: If the opponent can win on their next move, block it if possible.
+3. **Setup Future Win**: Look for moves that create threats or setup future winning positions.
+4. **Control Center**: Prefer moves that control central positions of the board.
+5. **Avoid Giving Opponent Advantage**: Avoid moves that create strong opportunities for the opponent.
+6. **Default Policy**: If none of the above apply, use a heuristic-based approach focusing on mobility and positional advantage.
+
+The policy evaluates potential moves by:
+- Checking all empty positions for placement
+- For each placement, evaluating both rotation directions for all quadrants
+- Using a scoring function that considers: immediate win/loss, potential future wins (4 in a row), and positional factors like controlling center positions
+- Preferring moves that don't give the opponent immediate winning chances
+- Using minimax principles with a depth of 1 to anticipate opponent's best response
+
+<code>
+import numpy as np
+from itertools import product
+
+# Define quadrants
+QUAD_POSITIONS = {
+    0: (slice(0, 3), slice(0, 3)),
+    1: (slice(0, 3), slice(3, 6)),
+    2: (slice(3, 6), slice(0, 3)),
+    3: (slice(3, 6), slice(3, 6))
+}
+
+def rotate_quad(board, quad, direction):
+    """Rotate a quadrant of the board."""
+    r_slice, c_slice = QUAD_POSITIONS[quad]
+    quad_copy = board[r_slice, c_slice].copy()
+    if direction == 'R':
+        quad_copy = np.rot90(quad_copy, k=-1)
+    else:  # 'L'
+        quad_copy = np.rot90(quad_copy, k=1)
+    new_board = board.copy()
+    new_board[r_slice, c_slice] = quad_copy
+    return new_board
+
+def check_winner(board):
+    """Check if there's a winner on the board."""
+    # Check rows, columns, and diagonals for 5 consecutive 1s
+    for i in range(6):
+        # Rows
+        for j in range(2):
+            if all(board[i, j+k] == 1 for k in range(5)):
+                return True
+        # Columns
+        for j in range(2):
+            if all(board[j+k, i] == 1 for k in range(5)):
+                return True
+    
+    # Check diagonals
+    for i in range(2):
+        for j in range(2):
+            # Main diagonal
+            if all(board[i+k, j+k] == 1 for k in range(5)):
+                return True
+            # Anti-diagonal
+            if all(board[i+k, j+4-k] == 1 for k in range(5)):
+                return True
+    return False
+
+def evaluate_position(you_board, opp_board):
+    """Evaluate position for heuristic scoring."""
+    score = 0
+    
+    # Count potential 4-in-a-row (one move away from winning)
+    for i in range(6):
+        for j in range(3):
+            # Rows
+            you_count = sum(you_board[i, j+k] for k in range(5))
+            opp_count = sum(opp_board[i, j+k] for k in range(5))
+            empty_count = sum(1 - you_board[i, j+k] - opp_board[i, j+k] for k in range(5))
+            if you_count == 4 and empty_count == 1:
+                score += 10
+            if opp_count == 4 and empty_count == 1:
+                score -= 10
+                
+            # Columns
+            you_count = sum(you_board[j+k, i] for k in range(5))
+            opp_count = sum(opp_board[j+k, i] for k in range(5))
+            empty_count = sum(1 - you_board[j+k, i] - opp_board[j+k, i] for k in range(5))
+            if you_count == 4 and empty_count == 1:
+                score += 10
+            if opp_count == 4 and empty_count == 1:
+                score -= 10
+    
+    # Check diagonals for 4-in-a-row
+    for i in range(2):
+        for j in range(2):
+            # Main diagonal
+            you_count = sum(you_board[i+k, j+k] for k in range(5))
+            opp_count = sum(opp_board[i+k, j+k] for k in range(5))
+            empty_count = sum(1 - you_board[i+k, j+k] - opp_board[i+k, j+k] for k in range(5))
+            if you_count == 4 and empty_count == 1:
+                score += 10
+            if opp_count == 4 and empty_count == 1:
+                score -= 10
+                
+            # Anti-diagonal
+            you_count = sum(you_board[i+k, j+4-k] for k in range(5))
+            opp_count = sum(opp_board[i+k, j+4-k] for k in range(5))
+            empty_count = sum(1 - you_board[i+k, j+4-k] - opp_board[i+k, j+4-k] for k in range(5))
+            if you_count == 4 and empty_count == 1:
+                score += 10
+            if opp_count == 4 and empty_count == 1:
+                score -= 10
+    
+    # Prefer center positions
+    center_positions = [(2,2), (2,3), (3,2), (3,3)]
+    for r, c in center_positions:
+        if you_board[r, c] == 1:
+            score += 1
+        if opp_board[r, c] == 1:
+            score -= 1
+            
+    return score
+
+def policy(you, opponent) -> str:
+    you_board = np.array(you)
+    opp_board = np.array(opponent)
+    
+    # Find all empty positions
+    empty_positions = [(r, c) for r in range(6) for c in range(6) 
+                      if you_board[r, c] == 0 and opp_board[r, c] == 0]
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # Try all possible moves
+    for r, c in empty_positions:
+        # Place marble
+        new_you = you_board.copy()
+        new_you[r, c] = 1
+        
+        # Try all rotations
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                # Rotate quadrant
+                rotated_you = rotate_quad(new_you, quad, direction)
+                rotated_opp = rotate_quad(opp_board, quad, direction)
+                
+                # Check for immediate win
+                if check_winner(rotated_you):
+                    return f"{r+1},{c+1},{quad},{direction}"
+                
+                # Check if this gives opponent a win next turn
+                opp_can_win = False
+                for opp_r, opp_c in [(x, y) for x in range(6) for y in range(6) 
+                                   if rotated_you[x, y] == 0 and rotated_opp[x, y] == 0]:
+                    opp_board_temp = rotated_opp.copy()
+                    opp_board_temp[opp_r, opp_c] = 1
+                    
+                    # Check all opponent rotations for immediate win
+                    for opp_quad in range(4):
+                        for opp_dir in ['L', 'R']:
+                            opp_rotated = rotate_quad(opp_board_temp, opp_quad, opp_dir)
+                            if check_winner(opp_rotated):
+                                opp_can_win = True
+                                break
+                        if opp_can_win:
+                            break
+                    if opp_can_win:
+                        break
+                
+                if opp_can_win:
+                    continue  # Skip this move as it helps opponent win
+                
+                # Evaluate position
+                score = evaluate_position(rotated_you, rotated_opp)
+                
+                # Bonus for moves that create 4-in-a-row
+                for i in range(6):
+                    for j in range(2):
+                        # Rows
+                        you_count = sum(rotated_you[i, j+k] for k in range(5))
+                        opp_count = sum(rotated_opp[i, j+k] for k in range(5))
+                        empty_count = sum(1 - rotated_you[i, j+k] - rotated_opp[i, j+k] for k in range(5))
+                        if you_count == 4 and empty_count == 1:
+                            score += 20
+                        if opp_count == 4 and empty_count == 1:
+                            score -= 20
+                            
+                        # Columns
+                        you_count = sum(rotated_you[j+k, i] for k in range(5))
+                        opp_count = sum(rotated_opp[j+k, i] for k in range(5))
+                        empty_count = sum(1 - rotated_you[j+k, i] - rotated_opp[j+k, i] for k in range(5))
+                        if you_count == 4 and empty_count == 1:
+                            score += 20
+                        if opp_count == 4 and empty_count == 1:
+                            score -= 20
+                
+                # Prefer moves that don't give opponent easy wins
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c, quad, direction)
+    
+    # If no good move found that doesn't help opponent, pick first available
+    if best_move is None:
+        r, c = empty_positions[0]
+        return f"{r+1},{c+1},0,L"
+    
+    return f"{best_move[0]+1},{best_move[1]+1},{best_move[2]},{best_move[3]}"
+</code>

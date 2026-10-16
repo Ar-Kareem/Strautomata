@@ -1,0 +1,270 @@
+```python
+from typing import List, Tuple
+import copy
+
+def generate_lines(n: int):
+    """
+    Generate all winning lines (as lists of (x,y,z) tuples) for an n x n x n 3D Tic Tac Toe board.
+    """
+    lines = []
+
+    # Straight lines along x (vary x), for each fixed y,z
+    for y in range(n):
+        for z in range(n):
+            lines.append([(x, y, z) for x in range(n)])
+
+    # Straight lines along y (vary y), for each fixed x,z
+    for x in range(n):
+        for z in range(n):
+            lines.append([(x, y, z) for y in range(n)])
+
+    # Straight lines along z (vary z), for each fixed x,y
+    for x in range(n):
+        for y in range(n):
+            lines.append([(x, y, z) for z in range(n)])
+
+    # Diagonals in planes parallel to XY (fixed z)
+    for z in range(n):
+        lines.append([(i, i, z) for i in range(n)])
+        lines.append([(i, n - 1 - i, z) for i in range(n)])
+
+    # Diagonals in planes parallel to XZ (fixed y)
+    for y in range(n):
+        lines.append([(i, y, i) for i in range(n)])
+        lines.append([(i, y, n - 1 - i) for i in range(n)])
+
+    # Diagonals in planes parallel to YZ (fixed x)
+    for x in range(n):
+        lines.append([(x, i, i) for i in range(n)])
+        lines.append([(x, i, n - 1 - i) for i in range(n)])
+
+    # 4 main space diagonals
+    lines.append([(i, i, i) for i in range(n)])
+    lines.append([(i, i, n - 1 - i) for i in range(n)])
+    lines.append([(i, n - 1 - i, i) for i in range(n)])
+    lines.append([(n - 1 - i, i, i) for i in range(n)])
+
+    # Remove duplicates (some lines can be added twice when n == 1 or small symmetry)
+    unique = []
+    seen = set()
+    for ln in lines:
+        key = tuple(ln)
+        if key not in seen:
+            seen.add(key)
+            unique.append(ln)
+    return unique
+
+def get_empty_cells(board: List[List[List[int]]]):
+    n = len(board)
+    empties = []
+    for x in range(n):
+        for y in range(n):
+            for z in range(n):
+                if board[x][y][z] == 0:
+                    empties.append((x, y, z))
+    return empties
+
+def line_stats(board: List[List[List[int]]], line: List[Tuple[int,int,int]]):
+    s = 0
+    zeros = 0
+    for (x,y,z) in line:
+        v = board[x][y][z]
+        s += v
+        if v == 0:
+            zeros += 1
+    return s, zeros
+
+def smallest_position(positions):
+    return min(positions)
+
+def policy(board: List[List[List[int]]]) -> Tuple[int,int,int]:
+    """
+    Choose a move for 3D Tic Tac Toe.
+    Strategy:
+    1. If there is a winning move, play it.
+    2. If opponent has a winning move, block it.
+    3. Create a fork if possible (move that creates >=2 immediate threats).
+    4. Block opponent forks if possible.
+    5. Take center if available.
+    6. Take a corner if available.
+    7. Else pick the move that maximizes our potential (most non-blocked lines / marks).
+    Tie-break deterministically by smallest lexicographic coordinate.
+    """
+    n = len(board)
+    me = 1
+    opp = -1
+
+    lines = generate_lines(n)
+    empties = get_empty_cells(board)
+    if not empties:
+        # No moves left; return something (shouldn't happen in normal play)
+        return (0, 0, 0)
+
+    # Quick helpers
+    def find_immediate_win(player: int):
+        target = player * (n - 1)
+        for line in lines:
+            s, zeros = line_stats(board, line)
+            # For player immediate win: line must have n-1 of player's marks and exactly 1 empty
+            if s == target and zeros == 1:
+                # return the empty cell in that line
+                for pos in line:
+                    x,y,z = pos
+                    if board[x][y][z] == 0:
+                        return pos
+        return None
+
+    # 1. Winning move
+    win_move = find_immediate_win(me)
+    if win_move is not None:
+        return win_move
+
+    # 2. Block opponent winning move
+    block_move = find_immediate_win(opp)
+    if block_move is not None:
+        return block_move
+
+    # Precompute lines that are still "winnable" for a player (no opponent marks)
+    def lines_winnable_for(player: int, b: List[List[List[int]]]):
+        res = []
+        for line in lines:
+            has_opp = False
+            for (x,y,z) in line:
+                if b[x][y][z] == -player:
+                    has_opp = True
+                    break
+            if not has_opp:
+                res.append(line)
+        return res
+
+    # 3. Create a fork: choose empty that after placing gives >=2 lines that are one move from winning.
+    def count_future_threats_if_move(pos, player):
+        # simulate
+        bx = copy.deepcopy(board)
+        x,y,z = pos
+        bx[x][y][z] = player
+        count = 0
+        for line in lines:
+            s, zeros = line_stats(bx, line)
+            # after move, a line that is one move from win for player:
+            if s == player * (n - 1) and zeros == 1:
+                count += 1
+        return count
+
+    best_fork_moves = []
+    best_fork_score = 0
+    for pos in empties:
+        score = count_future_threats_if_move(pos, me)
+        if score > best_fork_score:
+            best_fork_score = score
+            best_fork_moves = [pos]
+        elif score == best_fork_score and score > 0:
+            best_fork_moves.append(pos)
+    if best_fork_score >= 2:
+        # choose lexicographically smallest fork move
+        return smallest_position(best_fork_moves)
+
+    # 4. Block opponent forks. Try moves that reduce opponent fork possibilities.
+    # First see if opponent has any fork moves
+    opp_best_forks = []
+    opp_best_score = 0
+    for pos in empties:
+        sc = count_future_threats_if_move(pos, opp)
+        if sc > opp_best_score:
+            opp_best_score = sc
+            opp_best_forks = [pos]
+        elif sc == opp_best_score and sc > 0:
+            opp_best_forks.append(pos)
+    if opp_best_score >= 2:
+        # We need to block. One way is to play into one of their fork positions (if available).
+        # Otherwise, choose a move that minimizes opponent's maximum fork count after our move.
+        # Try to play any empty cell that is in opp_best_forks if possible.
+        # (Often playing into the fork spot blocks it.)
+        intersection = [pos for pos in empties if pos in opp_best_forks]
+        if intersection:
+            return smallest_position(intersection)
+        # Otherwise simulate each candidate empty move and pick one that results in minimal opp_best_score next.
+        best_moves = []
+        best_after = None
+        for mymove in empties:
+            bx = copy.deepcopy(board)
+            x,y,z = mymove
+            bx[x][y][z] = me
+            # compute opponent's best fork score after this move
+            emps = []
+            for x2 in range(n):
+                for y2 in range(n):
+                    for z2 in range(n):
+                        if bx[x2][y2][z2] == 0:
+                            emps.append((x2,y2,z2))
+            next_best = 0
+            for pos2 in emps:
+                cnt = 0
+                bx2 = copy.deepcopy(bx)
+                px,py,pz = pos2
+                bx2[px][py][pz] = opp
+                for line in lines:
+                    s, zeros = line_stats(bx2, line)
+                    if s == opp * (n - 1) and zeros == 1:
+                        cnt += 1
+                if cnt > next_best:
+                    next_best = cnt
+            if best_after is None or next_best < best_after:
+                best_after = next_best
+                best_moves = [mymove]
+            elif next_best == best_after:
+                best_moves.append(mymove)
+        if best_moves:
+            return smallest_position(best_moves)
+
+    # 5. Take center if available (for odd n)
+    if n % 2 == 1:
+        mid = n // 2
+        if board[mid][mid][mid] == 0:
+            return (mid, mid, mid)
+
+    # 6. Take a corner if available
+    corners = []
+    for x in [0, n - 1]:
+        for y in [0, n - 1]:
+            for z in [0, n - 1]:
+                if board[x][y][z] == 0:
+                    corners.append((x, y, z))
+    if corners:
+        return smallest_position(corners)
+
+    # 7. Otherwise pick move that maximizes our potential:
+    # For each empty cell, sum over lines containing it:
+    # - if line contains opponent mark -> 0 contribution
+    # - else contribution = number of our marks in that line (prefer augmenting existing lines)
+    best_moves = []
+    best_score = None
+    for pos in empties:
+        x0,y0,z0 = pos
+        score = 0
+        for line in lines:
+            if pos in line:
+                has_opp = False
+                my_marks = 0
+                for (x,y,z) in line:
+                    v = board[x][y][z]
+                    if v == opp:
+                        has_opp = True
+                        break
+                    if v == me:
+                        my_marks += 1
+                if not has_opp:
+                    # prefer lines where we already have marks (closer to win)
+                    score += (1 + my_marks)
+        if best_score is None or score > best_score:
+            best_score = score
+            best_moves = [pos]
+        elif score == best_score:
+            best_moves.append(pos)
+
+    if best_moves:
+        return smallest_position(best_moves)
+
+    # Fallback: return smallest empty
+    return smallest_position(empties)
+```

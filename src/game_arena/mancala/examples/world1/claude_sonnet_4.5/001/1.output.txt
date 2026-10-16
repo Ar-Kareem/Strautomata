@@ -1,0 +1,342 @@
+<thinking>
+Let me think about a good strategy for Kalah:
+
+1. **Extra moves are valuable**: Landing in your store gives an extra turn, which is very powerful.
+2. **Captures are valuable**: Capturing opponent's seeds can swing the game.
+3. **Defense matters**: Avoid leaving seeds in positions where the opponent can capture them.
+4. **Endgame**: When the game is close to ending, we want to maximize our store count.
+
+For a competitive policy, I should implement:
+- A minimax search with alpha-beta pruning to look ahead several moves
+- Evaluation function that considers:
+  - Store differential (most important)
+  - Seed positioning
+  - Potential captures
+  - Extra move opportunities
+
+Let me implement a reasonably strong AI with:
+1. Minimax with alpha-beta pruning
+2. Iterative deepening to manage time
+3. Good evaluation function
+4. Move ordering (try extra-turn moves first)
+
+The key insight is that extra turns are essentially "free" moves, so we should prioritize them highly. Also, we need to simulate the game state correctly including captures and extra turns.
+
+Let me code this:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Simulate a move and return the resulting state
+    def simulate_move(you, opponent, move):
+        you = you[:]
+        opponent = opponent[:]
+        
+        if you[move] == 0:
+            return None, None, False  # Invalid move
+        
+        seeds = you[move]
+        you[move] = 0
+        pos = move
+        
+        # Distribute seeds
+        while seeds > 0:
+            pos += 1
+            
+            # Your houses (0-5) and store (6)
+            if pos <= 6:
+                you[pos] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_pos = ('you', pos)
+            # Opponent houses (0-5), skip opponent store
+            elif pos <= 12:
+                opp_pos = pos - 7
+                opponent[opp_pos] += 1
+                seeds -= 1
+                if seeds == 0:
+                    last_pos = ('opponent', opp_pos)
+            # Wrap around to your houses
+            else:
+                pos = -1  # Will become 0 in next iteration
+        
+        # Check for extra turn
+        extra_turn = (last_pos[0] == 'you' and last_pos[1] == 6)
+        
+        # Check for capture
+        if last_pos[0] == 'you' and 0 <= last_pos[1] <= 5:
+            land_house = last_pos[1]
+            if you[land_house] == 1:  # Was empty before
+                opposite = 5 - land_house
+                if opponent[opposite] > 0:
+                    # Capture
+                    you[6] += you[land_house] + opponent[opposite]
+                    you[land_house] = 0
+                    opponent[opposite] = 0
+        
+        return you, opponent, extra_turn
+    
+    # Check if game is over
+    def is_terminal(you, opponent):
+        return sum(you[:6]) == 0 or sum(opponent[:6]) == 0
+    
+    # Evaluate a position
+    def evaluate(you, opponent):
+        # If terminal, calculate final scores
+        if sum(you[:6]) == 0:
+            you_final = you[6]
+            opp_final = opponent[6] + sum(opponent[:6])
+        elif sum(opponent[:6]) == 0:
+            you_final = you[6] + sum(you[:6])
+            opp_final = opponent[6]
+        else:
+            you_final = you[6]
+            opp_final = opponent[6]
+        
+        return you_final - opp_final
+    
+    # Minimax with alpha-beta pruning
+    def minimax(you, opponent, depth, alpha, beta, maximizing):
+        if depth == 0 or is_terminal(you, opponent):
+            return evaluate(you, opponent), None
+        
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        if not legal_moves:
+            # No moves available, opponent collects remaining
+            final_you = you[6]
+            final_opp = opponent[6] + sum(opponent[:6])
+            return final_you - final_opp, None
+        
+        if maximizing:
+            max_eval = float('-inf')
+            best_move = legal_moves[0]
+            
+            # Try moves that land in store first (extra turns)
+            ordered_moves = []
+            for move in legal_moves:
+                if you[move] == 6 - move:  # Lands in store
+                    ordered_moves.insert(0, move)
+                else:
+                    ordered_moves.append(move)
+            
+            for move in ordered_moves:
+                new_you, new_opp, extra_turn = simulate_move(you, opponent, move)
+                
+                if extra_turn:
+                    # We get another turn
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                else:
+                    # Opponent's turn
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = None
+            
+            legal_moves = [i for i in range(6) if you[i] > 0]
+            if not legal_moves:
+                final_you = you[6]
+                final_opp = opponent[6] + sum(opponent[:6])
+                return final_you - final_opp, None
+            
+            for move in legal_moves:
+                new_you, new_opp, extra_turn = simulate_move(you, opponent, move)
+                
+                if extra_turn:
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                else:
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+                
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return min_eval, best_move
+    
+    # Search with increasing depth
+    best_move = None
+    for depth in range(1, 10):
+        _, move = minimax(you, opponent, depth, float('-inf'), float('inf'), True)
+        if move is not None:
+            best_move = move
+    
+    # Fallback: return any legal move
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+```
+
+Wait, I need to be more careful about the simulation. Let me re-think the distribution logic and make sure I handle wrapping correctly.
+
+Actually, let me reconsider the distribution. Starting from house `i`:
+- Remove all seeds from `you[i]`
+- Distribute them counter-clockwise:
+  - `you[i+1], you[i+2], ..., you[5], you[6]` (your store)
+  - `opponent[0], opponent[1], ..., opponent[5]` (skip opponent[6])
+  - `you[0], you[1], ..., you[5], you[6]`
+  - And repeat...
+
+Let me rewrite this more carefully.
+</thinking>
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate_move(you_state, opp_state, move):
+        """Simulate a move and return new state and whether we get extra turn."""
+        you = you_state[:]
+        opp = opp_state[:]
+        
+        seeds = you[move]
+        you[move] = 0
+        
+        # Track position in circular board
+        pos = move
+        player_side = 'you'
+        
+        while seeds > 0:
+            pos += 1
+            
+            if player_side == 'you':
+                if pos <= 5:
+                    # Your houses
+                    you[pos] += 1
+                    seeds -= 1
+                    last_side, last_pos = 'you', pos
+                elif pos == 6:
+                    # Your store
+                    you[6] += 1
+                    seeds -= 1
+                    last_side, last_pos = 'you', 6
+                else:
+                    # Switch to opponent side
+                    player_side = 'opp'
+                    pos = -1
+            else:  # player_side == 'opp'
+                if pos <= 5:
+                    # Opponent houses
+                    opp[pos] += 1
+                    seeds -= 1
+                    last_side, last_pos = 'opp', pos
+                else:
+                    # Skip opponent store, switch back to your side
+                    player_side = 'you'
+                    pos = -1
+        
+        # Check for extra turn
+        extra_turn = (last_side == 'you' and last_pos == 6)
+        
+        # Check for capture
+        if last_side == 'you' and 0 <= last_pos <= 5:
+            if you[last_pos] == 1:  # Was empty before the last seed
+                opposite = 5 - last_pos
+                if opp[opposite] > 0:
+                    # Capture
+                    you[6] += you[last_pos] + opp[opposite]
+                    you[last_pos] = 0
+                    opp[opposite] = 0
+        
+        return you, opp, extra_turn
+    
+    def is_terminal(you_state, opp_state):
+        return sum(you_state[:6]) == 0 or sum(opp_state[:6]) == 0
+    
+    def evaluate(you_state, opp_state):
+        """Evaluate position from current player's perspective."""
+        you_score = you_state[6]
+        opp_score = opp_state[6]
+        
+        # If terminal, add remaining seeds
+        if sum(you_state[:6]) == 0:
+            opp_score += sum(opp_state[:6])
+        elif sum(opp_state[:6]) == 0:
+            you_score += sum(you_state[:6])
+        
+        return you_score - opp_score
+    
+    def minimax(you_state, opp_state, depth, alpha, beta, maximizing):
+        """Minimax with alpha-beta pruning."""
+        if depth == 0 or is_terminal(you_state, opp_state):
+            return evaluate(you_state, opp_state), None
+        
+        legal_moves = [i for i in range(6) if you_state[i] > 0]
+        
+        if not legal_moves:
+            return evaluate(you_state, opp_state), None
+        
+        if maximizing:
+            max_eval = float('-inf')
+            best_move = legal_moves[0]
+            
+            # Prioritize moves that give extra turns
+            def move_priority(m):
+                # Moves that land in store come first
+                if you_state[m] == 6 - m:
+                    return 0
+                return 1
+            
+            legal_moves.sort(key=move_priority)
+            
+            for move in legal_moves:
+                new_you, new_opp, extra_turn = simulate_move(you_state, opp_state, move)
+                
+                if extra_turn:
+                    # We move again
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                else:
+                    # Opponent moves
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            
+            for move in legal_moves:
+                new_you, new_opp, extra_turn = simulate_move(you_state, opp_state, move)
+                
+                if extra_turn:
+                    eval_score, _ = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                else:
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+                
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return min_eval, None
+    
+    # Try increasing depths
+    best_move = None
+    for depth in range(1, 12):
+        _, move = minimax(you, opponent, depth, float('-inf'), float('inf'), True)
+        if move is not None:
+            best_move = move
+    
+    # Safety fallback
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+</code>

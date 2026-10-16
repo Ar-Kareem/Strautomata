@@ -1,0 +1,220 @@
+<thinking>
+I will implement a hunt/target Battleship policy in a single Python file.
+
+Key ideas:
+- Hunt mode: compute a probability heatmap by enumerating all legal placements of the remaining ships (lengths 5,4,3,3,2) that do not overlap known misses. Each legal placement increments the probability for each cell it would occupy. Choose the unknown cell with highest cumulative count.
+- Target mode: when there are hits, identify connected components of hits (4-neighbor). Pick the largest component and try to finish that ship first:
+  - If the component has orientation (2+ hits in a line), attempt to extend at its endpoints along that orientation to unknown cells.
+  - If orientation is unknown (single hit), consider its 4 adjacent unknown neighbors and pick the one with highest probability from a heatmap that only allows ship placements consistent with finishing this component (i.e., placements may include hits in this component but not hits in other components).
+- If all targeted extension cells are blocked, fall back to the global heatmap.
+- Ties are broken randomly.
+
+This approach is fast (enumerates ~1000 placements max) and balances parity-style hunting with focused finishing behavior.
+
+Now I will provide the Python source implementing this policy.
+</thinking>
+<code>
+import numpy as np
+import random
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship targeting policy for 10x10 board.
+    board: list of lists with values:
+      0 = unknown, -1 = miss, 1 = hit
+    Returns (row, col) with 0 <= row,col < 10 and board[row][col] == 0
+    """
+    # Convert to numpy array for convenience
+    B = np.array(board, dtype=int)
+    n = 10
+    ships = [5, 4, 3, 3, 2]  # ship lengths
+    
+    # Helper: find unknown cells
+    unknown_mask = (B == 0)
+    unknown_indices = np.argwhere(unknown_mask)
+    if unknown_indices.size == 0:
+        # No unknowns left (shouldn't happen in normal play) - return (0,0)
+        return (0, 0)
+    
+    # Helper: find connected hit components (4-neighbor)
+    def hit_components():
+        visited = np.zeros((n, n), dtype=bool)
+        comps = []
+        for r in range(n):
+            for c in range(n):
+                if B[r, c] == 1 and not visited[r, c]:
+                    # BFS
+                    q = deque()
+                    q.append((r, c))
+                    visited[r, c] = True
+                    comp = []
+                    while q:
+                        x, y = q.popleft()
+                        comp.append((x, y))
+                        for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
+                            nx, ny = x+dx, y+dy
+                            if 0 <= nx < n and 0 <= ny < n and not visited[nx, ny] and B[nx, ny] == 1:
+                                visited[nx, ny] = True
+                                q.append((nx, ny))
+                    comps.append(comp)
+        return comps
+
+    comps = hit_components()
+
+    # Generate heatmap by enumerating all legal placements.
+    # If target_comp is provided (set of coords), placements cannot cover hits outside that comp.
+    def generate_heatmap(target_comp_coords=None):
+        heat = np.zeros((n, n), dtype=int)
+        # Precompute hit set if provided
+        hit_set = set()
+        if target_comp_coords is not None:
+            target_set = set(target_comp_coords)
+            # hits outside target set:
+            other_hits = set((r, c) for r in range(n) for c in range(n) if B[r, c] == 1 and (r, c) not in target_set)
+        else:
+            other_hits = set((r, c) for r in range(n) for c in range(n) if B[r, c] == 1)
+        for L in ships:
+            # For each starting cell and orientation
+            for r in range(n):
+                for c in range(n):
+                    # horizontal
+                    if c + L <= n:
+                        cells = [(r, c + k) for k in range(L)]
+                        # Check placement validity: cannot overlap miss (-1)
+                        invalid = False
+                        for (x, y) in cells:
+                            if B[x, y] == -1:
+                                invalid = True
+                                break
+                        if invalid:
+                            pass
+                        else:
+                            # If there are hits outside the target component, placement must not cover them
+                            covers_other_hit = any((x, y) in other_hits for (x, y) in cells)
+                            if not covers_other_hit:
+                                # This placement is considered possible; increment heat for its cells
+                                for (x, y) in cells:
+                                    heat[x, y] += 1
+                    # vertical
+                    if r + L <= n:
+                        cells = [(r + k, c) for k in range(L)]
+                        invalid = False
+                        for (x, y) in cells:
+                            if B[x, y] == -1:
+                                invalid = True
+                                break
+                        if invalid:
+                            pass
+                        else:
+                            covers_other_hit = any((x, y) in other_hits for (x, y) in cells)
+                            if not covers_other_hit:
+                                for (x, y) in cells:
+                                    heat[x, y] += 1
+        return heat
+
+    # If there are hit components, enter target mode for the largest component
+    if comps:
+        # pick largest component (most hits); tie-breaker: random
+        comps_sorted = sorted(comps, key=lambda comp: (-len(comp), random.random()))
+        target_comp = comps_sorted[0]
+        target_set = set(target_comp)
+        # Try smart finishing:
+        # If orientation known (>=2 hits), determine orientation and try to extend at endpoints
+        if len(target_comp) >= 2:
+            rows = [r for r, _ in target_comp]
+            cols = [c for _, c in target_comp]
+            if all(r == rows[0] for r in rows):
+                orientation = 'H'
+            elif all(c == cols[0] for c in cols):
+                orientation = 'V'
+            else:
+                orientation = None
+            if orientation == 'H':
+                r0 = rows[0]
+                minc = min(cols)
+                maxc = max(cols)
+                candidates = []
+                # extend left
+                left = (r0, minc - 1)
+                if 0 <= left[1] < n and B[left] == 0:
+                    candidates.append(left)
+                # extend right
+                right = (r0, maxc + 1)
+                if 0 <= right[1] < n and B[right] == 0:
+                    candidates.append(right)
+                if candidates:
+                    # Evaluate candidates using heatmap that focuses on target component
+                    heat = generate_heatmap(target_comp)
+                    best_val = -1
+                    best_choices = []
+                    for (x, y) in candidates:
+                        val = heat[x, y]
+                        if val > best_val:
+                            best_val = val
+                            best_choices = [(x, y)]
+                        elif val == best_val:
+                            best_choices.append((x, y))
+                    return random.choice(best_choices)
+                # else fall back to more general targeting below
+            elif orientation == 'V':
+                c0 = cols[0]
+                minr = min(rows)
+                maxr = max(rows)
+                candidates = []
+                up = (minr - 1, c0)
+                if 0 <= up[0] < n and B[up] == 0:
+                    candidates.append(up)
+                down = (maxr + 1, c0)
+                if 0 <= down[0] < n and B[down] == 0:
+                    candidates.append(down)
+                if candidates:
+                    heat = generate_heatmap(target_comp)
+                    best_val = -1
+                    best_choices = []
+                    for (x, y) in candidates:
+                        val = heat[x, y]
+                        if val > best_val:
+                            best_val = val
+                            best_choices = [(x, y)]
+                        elif val == best_val:
+                            best_choices.append((x, y))
+                    return random.choice(best_choices)
+                # else fall through to single-hit logic
+
+        # Single-hit or fallback: consider adjacent unknown cells to any cell in target_comp
+        adj_candidates = []
+        for (r, c) in target_comp:
+            for dr, dc in ((1,0),(-1,0),(0,1),(0,-1)):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < n and 0 <= nc < n and B[nr, nc] == 0:
+                    adj_candidates.append((nr, nc))
+        if adj_candidates:
+            # Score using heatmap that allows placements consistent with this component
+            heat = generate_heatmap(target_comp)
+            # pick candidate with highest heat, break ties randomly
+            best_val = -1
+            best_choices = []
+            for (x, y) in adj_candidates:
+                val = heat[x, y]
+                if val > best_val:
+                    best_val = val
+                    best_choices = [(x, y)]
+                elif val == best_val:
+                    best_choices.append((x, y))
+            return random.choice(best_choices)
+        # If no adj candidates or none viable, fall back to global heatmap
+
+    # Hunt mode or fallback: compute global heatmap (no placements covering hits outside none)
+    heat_global = generate_heatmap(target_comp_coords=None)
+    # Mask out already-shot cells
+    heat_global[~unknown_mask] = -1  # ensure we don't pick fired cells
+    max_val = heat_global.max()
+    if max_val <= 0:
+        # no informative placements (possible if many misses/hits). Pick random unknown
+        unk = tuple(random.choice(unknown_indices.tolist()))
+        return (int(unk[0]), int(unk[1]))
+    # choose among max cells randomly
+    max_positions = np.argwhere(heat_global == max_val)
+    choice = tuple(max_positions[random.randrange(len(max_positions))])
+    return (int(choice[0]), int(choice[1]))

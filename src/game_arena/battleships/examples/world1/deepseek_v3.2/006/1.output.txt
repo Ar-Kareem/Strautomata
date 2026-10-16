@@ -1,0 +1,308 @@
+<thinking>
+I need to write a targeting policy for a Battleship game. The board is 10x10, ships are lengths 5, 4, 3, 3, 2. I can see:
+- 0: unknown/not fired at
+- -1: miss
+- 1: hit
+
+I need to implement a smart targeting algorithm. The classic approach for Battleship AI is:
+1. Hunt mode: When no hits, use probability density to target cells
+2. Target mode: When a hit is found, pursue the ship in all directions until sunk
+
+I should implement a probability-based approach:
+- Precompute all possible ship placements
+- Calculate probabilities for each cell based on possible ship placements
+- When we have hits, switch to targeting mode
+
+But I need to be careful about execution time (1 second limit).
+
+Better approach: Implement a combination of parity-based hunting and probability targeting.
+
+I'll structure the code:
+1. Parse the board to find unknown cells
+2. If there are any hits with adjacent unknown cells (ship not sunk yet), prioritize those
+3. Otherwise, use probability density or parity targeting
+
+For parity: In Battleship, ships occupy at least 2 consecutive cells, so we can use a checkerboard pattern. But ships of length 2 exist, so the optimal pattern is to target every other cell? Actually, the classic optimal pattern targets half the board with a checkerboard.
+
+But with modern computers, I can compute probability density efficiently. Let me think about the algorithm:
+
+1. Generate all possible ship placements (orientation + position) for each ship
+2. For each cell, count how many possible placements include it
+3. Choose the cell with highest probability
+
+But with 10x10 grid and 5 ships, that's:
+- Length 5: 2 orientations × (10×6 + 10×6) = 120 placements
+- Length 4: 2 orientations × (10×7 + 10×7) = 140 placements  
+- Length 3: 2 orientations × (10×8 + 10×8) = 160 placements × 2 ships = 320
+- Length 2: 2 orientations × (10×9 + 10×9) = 180 placements
+Total: 120 + 140 + 320 + 180 = 760 placements
+
+That's manageable. But I need to filter placements based on current board state (hits and misses).
+
+Actually, let me think about a simpler but effective approach:
+1. First find all hits that have adjacent unknown cells (target mode)
+2. If multiple, prioritize based on direction (if we have 2+ hits in a line)
+3. Otherwise, use probability density
+
+Actually, for probability density, I need to consider that ships can't overlap with misses or be placed where they would conflict with known hits.
+
+Wait, I need to be careful: We have hits on ship cells, but we don't know which ship or when it's sunk. However, if a hit has no adjacent unknown cells (all adjacent are misses or hits), then that ship segment is likely surrounded.
+
+Actually, the simplest good approach:
+1. Find all unsunk hits (cells with value 1 that have at least one adjacent 0)
+2. For each such hit, check adjacent cells (up/down/left/right)
+3. If multiple hits in a line, extend in that direction
+4. Otherwise, fire at adjacent cells
+5. If no unsunk hits, use probability targeting
+
+For probability targeting, I can compute for each cell:
+- How many ship placements of each length would fit given current constraints
+- Sum them up (weight by ship length maybe)
+- Choose highest probability
+
+But that might be expensive. Instead, I can use a simpler parity approach: target cells with (row+col)%2 == 0 first, or use a more sophisticated pattern.
+
+Actually, let me implement a hybrid:
+- First check for hits to target
+- If none, use probability density with memoization
+
+I'll implement the probability density by generating all possible placements for remaining ships.
+
+Let me outline the code structure:
+1. Define ship lengths [5, 4, 3, 3, 2]
+2. Find all hits with adjacent unknowns
+3. If found, target adjacent cells
+4. If multiple hits form a line, extend the line
+5. Otherwise, compute probability density
+6. Return cell with highest probability
+
+For probability density:
+- Generate all placements for each ship
+- Filter placements that are consistent with board (don't overlap misses, include all hits if they would be part of that ship)
+- Count for each cell how many valid placements include it
+- Choose cell with highest count
+
+But this might be expensive. I can memoize or precompute.
+
+Actually, let me implement a simpler but effective probability approach: Use a heatmap based on:
+1. Cells far from misses are better
+2. Consider ship shapes
+
+Alternatively, I can implement the "Hunt/Target" algorithm:
+- Hunt mode: Fire with checkerboard pattern
+- Target mode: When hit, fire in adjacent cells
+
+But checkerboard might not be optimal since ships of length 2 exist. Actually, the optimal pattern for hunting is a diamond pattern or something.
+
+Given time constraints, I'll implement:
+1. Target mode with line extension
+2. Hunt mode with probability density using a simpler calculation
+
+Let me write the code.
+</thinking>
+
+<code>
+import random
+from collections import defaultdict
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Targeting policy for Battleship game.
+    Returns (row, col) of next shot.
+    """
+    SIZE = 10
+    # Ship lengths remaining (we don't know which are sunk, but we can infer)
+    # We'll work with the standard set
+    SHIPS = [5, 4, 3, 3, 2]
+    
+    # Helper function to get cell value safely
+    def get_cell(r, c):
+        if 0 <= r < SIZE and 0 <= c < SIZE:
+            return board[r][c]
+        return None
+    
+    # Phase 1: Check for hits that might be part of unsunk ships
+    # We look for hits (1) that have at least one adjacent unknown (0)
+    hits = []
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == 1:
+                # Check if this hit has any adjacent unknown cells
+                # If all adjacent are misses (-1) or hits (1), ship might be sunk
+                # But we can't be sure, so we check for unknowns
+                adj_unknown = False
+                for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+                    nr, nc = r + dr, c + dc
+                    val = get_cell(nr, nc)
+                    if val == 0:
+                        adj_unknown = True
+                        break
+                if adj_unknown:
+                    hits.append((r, c))
+    
+    # If we have hits to pursue
+    if hits:
+        # Try to find a line of hits
+        # Group hits by connected components
+        visited = set()
+        components = []
+        
+        for hit in hits:
+            if hit in visited:
+                continue
+            # BFS to find connected hits
+            stack = [hit]
+            component = set()
+            while stack:
+                r, c = stack.pop()
+                if (r, c) in component:
+                    continue
+                component.add((r, c))
+                visited.add((r, c))
+                # Check adjacent hits
+                for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+                    nr, nc = r + dr, c + dc
+                    if get_cell(nr, nc) == 1 and (nr, nc) not in component:
+                        stack.append((nr, nc))
+            
+            if len(component) >= 2:
+                components.append(list(component))
+        
+        # If we have connected hits (line)
+        if components:
+            # Process each component
+            for component in components:
+                if len(component) >= 2:
+                    # Check if they're in a line horizontally or vertically
+                    rows = sorted({r for r, c in component})
+                    cols = sorted({c for r, c in component})
+                    
+                    # Horizontal line
+                    if len(rows) == 1:
+                        # All in same row
+                        row = rows[0]
+                        cols_sorted = sorted([c for r, c in component if r == row])
+                        # Check left and right extensions
+                        left_col = min(cols_sorted) - 1
+                        right_col = max(cols_sorted) + 1
+                        
+                        # Try left
+                        if get_cell(row, left_col) == 0:
+                            return (row, left_col)
+                        # Try right
+                        if get_cell(row, right_col) == 0:
+                            return (row, right_col)
+                    
+                    # Vertical line
+                    if len(cols) == 1:
+                        # All in same column
+                        col = cols[0]
+                        rows_sorted = sorted([r for r, c in component if c == col])
+                        # Check up and down extensions
+                        up_row = min(rows_sorted) - 1
+                        down_row = max(rows_sorted) + 1
+                        
+                        # Try up
+                        if get_cell(up_row, col) == 0:
+                            return (up_row, col)
+                        # Try down
+                        if get_cell(down_row, col) == 0:
+                            return (down_row, col)
+        
+        # If no line found or couldn't extend line, fire at adjacent unknown of any hit
+        # Prioritize hits that have fewer adjacent unknowns (to localize)
+        candidates = []
+        for r, c in hits:
+            for dr, dc in [(0,1), (0,-1), (1,0), (-1,0)]:
+                nr, nc = r + dr, c + dc
+                if get_cell(nr, nc) == 0:
+                    candidates.append((nr, nc))
+        
+        if candidates:
+            # Choose randomly from candidates
+            return random.choice(candidates)
+    
+    # Phase 2: No hits to pursue, use probability density
+    # We'll compute a simple probability heatmap
+    heatmap = [[0 for _ in range(SIZE)] for _ in range(SIZE)]
+    
+    # For each cell, compute how many ship placements could include it
+    # We'll use a simplified approach that's faster
+    
+    # First, get all unknown cells
+    unknown_cells = [(r, c) for r in range(SIZE) for c in range(SIZE) if board[r][c] == 0]
+    
+    # If very few unknown cells, just pick one
+    if len(unknown_cells) <= 5:
+        return random.choice(unknown_cells)
+    
+    # Generate all possible ship placements
+    # We'll do this for each ship length
+    ship_placements_count = [[0 for _ in range(SIZE)] for _ in range(SIZE)]
+    
+    for length in SHIPS:
+        # Horizontal placements
+        for r in range(SIZE):
+            for c in range(SIZE - length + 1):
+                # Check if this placement is possible (no misses in the way)
+                valid = True
+                for k in range(length):
+                    if board[r][c + k] == -1:  # Miss blocks placement
+                        valid = False
+                        break
+                if valid:
+                    # Add to heatmap
+                    for k in range(length):
+                        if board[r][c + k] == 0:  # Only count unknown cells
+                            ship_placements_count[r][c + k] += 1
+        
+        # Vertical placements
+        for r in range(SIZE - length + 1):
+            for c in range(SIZE):
+                valid = True
+                for k in range(length):
+                    if board[r + k][c] == -1:  # Miss blocks placement
+                        valid = False
+                        break
+                if valid:
+                    for k in range(length):
+                        if board[r + k][c] == 0:
+                            ship_placements_count[r + k][c] += 1
+    
+    # Also add bonus for cells that are far from misses
+    # And for cells that follow a checkerboard pattern (good for hunting)
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == 0:
+                # Checkerboard bonus (hunting pattern)
+                if (r + c) % 2 == 0:
+                    heatmap[r][c] += 2
+                
+                # Distance from misses bonus
+                min_dist_to_miss = float('inf')
+                for mr in range(SIZE):
+                    for mc in range(SIZE):
+                        if board[mr][mc] == -1:
+                            dist = abs(mr - r) + abs(mc - c)
+                            min_dist_to_miss = min(min_dist_to_miss, dist)
+                
+                if min_dist_to_miss < float('inf'):
+                    heatmap[r][c] += min(5, min_dist_to_miss)
+    
+    # Combine ship placements count with heatmap
+    max_score = -1
+    best_cells = []
+    
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == 0:
+                score = ship_placements_count[r][c] * 10 + heatmap[r][c]
+                if score > max_score:
+                    max_score = score
+                    best_cells = [(r, c)]
+                elif score == max_score:
+                    best_cells.append((r, c))
+    
+    # Choose randomly among best cells
+    return random.choice(best_cells) if best_cells else random.choice(unknown_cells)
+</code>

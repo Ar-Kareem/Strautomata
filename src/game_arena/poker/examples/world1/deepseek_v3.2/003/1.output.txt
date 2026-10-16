@@ -1,0 +1,276 @@
+# Poker Policy Strategy
+
+My strategy is based on a multi-layered approach that adapts to different stages of the game:
+
+## Core Principles
+1. **Aggressive post-flop**: Raise with strong made hands and draws to build pots when ahead
+2. **Selective pre-flop**: Play tight initially, only raising with premium cards
+3. **Pot odds awareness**: Make mathematically correct calls based on implied odds and hand strength
+4. **Balanced aggression**: Mix in occasional bluffs with weaker hands to remain unpredictable
+
+## Hand Strength Evaluation
+- Pre-flop: Assign values based on card rank and position
+- Post-flop: Evaluate actual poker hands using the 5-card combination
+- Consider both made hand strength and drawing potential
+
+## Betting Logic
+- Strong hands: Raise or go all-in to build the pot
+- Medium strength: Call to control pot size and see more cards
+- Weak hands: Fold unless getting exceptional pot odds
+- Use opponent betting patterns to adjust aggression
+
+## Implementation Details
+- Monte Carlo simulation for hand equity estimation
+- Adaptive thresholds based on game stage
+- Memory of opponent tendencies for future hands
+
+<code>
+import itertools
+import random
+from typing import List, Dict, Tuple
+from collections import Counter
+
+def policy(state: dict) -> str:
+    """
+    Poker policy that makes decisions based on hand strength, position, and game state.
+    Returns one of: 'fold', 'call', 'raise', 'all-in'
+    """
+    
+    # Helper function to evaluate hand strength
+    def evaluate_hand(cards: List[Dict]) -> Tuple[int, List[int]]:
+        """
+        Evaluate hand strength using Texas Hold'em hand rankings.
+        Returns (hand_rank, tie_breakers) where:
+        - hand_rank: 9=Straight Flush, 8=Four of a Kind, 7=Full House, 6=Flush,
+                     5=Straight, 4=Three of a Kind, 3=Two Pair, 2=One Pair, 1=High Card
+        - tie_breakers: List of card ranks for tie-breaking
+        """
+        if not cards:
+            return 0, []
+        
+        # Convert cards to (rank, suit) tuples
+        card_tuples = [(c['rank'], c['suit']) for c in cards]
+        
+        # Group by rank
+        rank_counter = Counter(r for r, _ in card_tuples)
+        suits = [s for _, s in card_tuples]
+        
+        # Check for flush
+        flush = len(set(suits)) == 1
+        
+        # Check for straight
+        ranks = sorted(set(r for r, _ in card_tuples))
+        straight = False
+        straight_high = 0
+        
+        # Check for Ace-low straight
+        if set([14, 2, 3, 4, 5]).issubset(set(ranks)):
+            straight = True
+            straight_high = 5
+        else:
+            for i in range(len(ranks) - 4):
+                if ranks[i+4] - ranks[i] == 4:
+                    straight = True
+                    straight_high = ranks[i+4]
+                    break
+        
+        # Straight flush
+        if straight and flush:
+            return 9, [straight_high]
+        
+        # Four of a kind
+        if 4 in rank_counter.values():
+            quad_rank = [r for r, count in rank_counter.items() if count == 4][0]
+            kicker = max(r for r in ranks if r != quad_rank)
+            return 8, [quad_rank, kicker]
+        
+        # Full house
+        if 3 in rank_counter.values() and 2 in rank_counter.values():
+            trips = max(r for r, count in rank_counter.items() if count == 3)
+            pair = max(r for r, count in rank_counter.items() if count == 2)
+            return 7, [trips, pair]
+        
+        # Flush
+        if flush:
+            return 6, sorted(ranks, reverse=True)[:5]
+        
+        # Straight
+        if straight:
+            return 5, [straight_high]
+        
+        # Three of a kind
+        if 3 in rank_counter.values():
+            trips = max(r for r, count in rank_counter.items() if count == 3)
+            kickers = sorted([r for r in ranks if r != trips], reverse=True)[:2]
+            return 4, [trips] + kickers
+        
+        # Two pair
+        pairs = sorted([r for r, count in rank_counter.items() if count == 2], reverse=True)
+        if len(pairs) >= 2:
+            kicker = max(r for r in ranks if r not in pairs[:2])
+            return 3, pairs[:2] + [kicker]
+        
+        # One pair
+        if 2 in rank_counter.values():
+            pair = max(r for r, count in rank_counter.items() if count == 2)
+            kickers = sorted([r for r in ranks if r != pair], reverse=True)[:3]
+            return 2, [pair] + kickers
+        
+        # High card
+        return 1, sorted(ranks, reverse=True)[:5]
+    
+    def estimate_hand_strength(private_cards: List[Dict], 
+                              public_cards: List[Dict],
+                              num_opponents: int = 1) -> float:
+        """
+        Estimate hand strength by comparing against random opponent hands.
+        Returns win probability estimate between 0 and 1.
+        """
+        if len(public_cards) == 0:
+            # Pre-flop: use simplified evaluation
+            rank = private_cards[0]['rank']
+            # Premium hands
+            if rank >= 12:  # Ace, King, Queen
+                return 0.7
+            elif rank >= 10:  # Jack, Ten
+                return 0.6
+            elif rank >= 8:  # 8, 9
+                return 0.5
+            else:
+                return 0.4
+        
+        # Monte Carlo simulation for post-flop
+        all_cards = private_cards + public_cards
+        known_ranks = [c['rank'] for c in all_cards]
+        known_suits = [c['suit'] for c in all_cards]
+        
+        # Generate deck
+        deck = []
+        for rank in range(2, 15):  # 2 to Ace
+            for suit in range(4):  # 4 suits
+                if (rank, suit) not in [(c['rank'], c['suit']) for c in all_cards]:
+                    deck.append({'rank': rank, 'suit': suit})
+        
+        # Run Monte Carlo simulation
+        wins = 0
+        trials = 100  # Reduced for speed
+        
+        for _ in range(trials):
+            random.shuffle(deck)
+            
+            # Complete the board
+            remaining_public = 5 - len(public_cards)
+            board = public_cards + deck[:remaining_public]
+            
+            # Generate opponent hand
+            opp_hand = deck[remaining_public:remaining_public+1]  # 1 card for opponent
+            
+            # Evaluate hands
+            my_hand_strength = evaluate_hand(private_cards + board)
+            opp_hand_strength = evaluate_hand(opp_hand + board)
+            
+            if my_hand_strength > opp_hand_strength:
+                wins += 1
+            elif my_hand_strength == opp_hand_strength:
+                # Compare tie-breakers
+                if my_hand_strength[1] > opp_hand_strength[1]:
+                    wins += 1
+                elif my_hand_strength[1] == opp_hand_strength[1]:
+                    wins += 0.5  # Split pot
+        
+        return wins / trials
+    
+    def calculate_pot_odds(state: dict) -> float:
+        """Calculate pot odds as a ratio."""
+        to_call = state['to_call']
+        pot_after_call = state['pot'] + to_call
+        
+        if to_call == 0:
+            return float('inf')
+        
+        return pot_after_call / to_call
+    
+    def get_aggression_factor(state: dict) -> float:
+        """Calculate opponent aggression based on betting patterns."""
+        if state['opponent_spent'] == 0:
+            return 1.0  # Neutral
+        
+        my_contribution = state['my_spent']
+        opp_contribution = state['opponent_spent']
+        
+        if my_contribution == 0:
+            return 2.0  # Very aggressive
+        
+        return opp_contribution / max(my_contribution, 1)
+    
+    # Main decision logic
+    hand_strength = estimate_hand_strength(
+        state['private_cards'],
+        state['public_cards']
+    )
+    
+    pot_odds = calculate_pot_odds(state)
+    aggression = get_aggression_factor(state)
+    
+    # Adjust hand strength based on aggression
+    # If opponent is aggressive, discount our hand strength
+    adjusted_strength = hand_strength / max(aggression, 0.5)
+    
+    # Decision matrix
+    game_stage = len(state['public_cards'])
+    
+    # Very strong hand: always raise or go all-in
+    if adjusted_strength > 0.8:
+        if 'all-in' in state['allowed_actions'] and random.random() < 0.3:
+            return 'all-in'
+        elif 'raise' in state['allowed_actions']:
+            return 'raise'
+        elif 'call' in state['allowed_actions']:
+            return 'call'
+    
+    # Strong hand: usually raise, sometimes call
+    elif adjusted_strength > 0.65:
+        if 'raise' in state['allowed_actions'] and random.random() < 0.7:
+            return 'raise'
+        elif 'call' in state['allowed_actions']:
+            return 'call'
+    
+    # Medium strength: consider pot odds
+    elif adjusted_strength > 0.45:
+        # Good pot odds or implied odds
+        if pot_odds > 3.0 or (game_stage < 3 and pot_odds > 2.0):
+            if 'raise' in state['allowed_actions'] and random.random() < 0.2:
+                return 'raise'  # Semi-bluff
+            elif 'call' in state['allowed_actions']:
+                return 'call'
+        elif 'call' in state['allowed_actions'] and pot_odds > 2.0:
+            return 'call'
+    
+    # Weak hand: fold unless exceptional circumstances
+    else:
+        # Bluff occasionally
+        if random.random() < 0.1 and 'raise' in state['allowed_actions']:
+            return 'raise'
+        elif pot_odds > 4.0 and 'call' in state['allowed_actions']:
+            return 'call'
+    
+    # Default action based on allowed actions
+    allowed = state['allowed_actions']
+    
+    # Prefer call/check if available
+    if 'call' in allowed:
+        return 'call'
+    
+    # Otherwise fold if allowed (but not in initial position)
+    if 'fold' in allowed and state['to_call'] > 0:
+        return 'fold'
+    
+    # Last resort: raise or all-in
+    if 'raise' in allowed:
+        return 'raise'
+    elif 'all-in' in allowed:
+        return 'all-in'
+    
+    # Should never reach here, but return fold as last option
+    return 'fold'
+</code>

@@ -1,0 +1,360 @@
+The strategy for this policy is a fast tactical minimax with strong heuristics and guaranteed legal fallback.
+
+Key ideas:
+- Always generate only legal moves.
+- First check for immediate winning moves.
+- Prefer moves that avoid allowing the opponent an immediate win.
+- Use alpha-beta search to a small adaptive depth for tactical strength within time limits.
+- Evaluate positions using:
+  - advancement toward promotion,
+  - material,
+  - immediate promotion threats,
+  - central control,
+  - piece safety/support,
+  - mobility.
+- If search ever fails to find a move for any reason, fall back to a deterministic legal move so the policy always returns a legal action.
+
+<code>
+from __future__ import annotations
+
+from typing import List, Tuple, Set, Optional
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> Move:
+    me_t = tuple(me)
+    opp_t = tuple(opp)
+    move = _choose_move(me_t, opp_t, color)
+    if move is None:
+        legal = _legal_moves(me_t, opp_t, color)
+        if legal:
+            return legal[0]
+        # Should never happen in valid non-terminal inputs, but remain safe.
+        if me:
+            r, c = me[0]
+            dr = 1 if color == 'w' else -1
+            nr = max(0, min(7, r + dr))
+            nc = c
+            return ((r, c), (nr, nc))
+        return ((0, 0), (0, 0))
+    return move
+
+
+def _choose_move(me: Tuple[Tuple[int, int], ...], opp: Tuple[Tuple[int, int], ...], color: str) -> Optional[Move]:
+    legal = _ordered_moves(me, opp, color)
+    if not legal:
+        return None
+
+    # Immediate win.
+    for mv in legal:
+        nme, nopp = _apply_move(me, opp, mv)
+        if _is_win(nme, nopp, color):
+            return mv
+
+    # Filter out moves that allow an immediate opponent winning reply, if possible.
+    safe_moves = []
+    opp_color = _opp_color(color)
+    for mv in legal:
+        nme, nopp = _apply_move(me, opp, mv)
+        opp_moves = _legal_moves(nopp, nme, opp_color)
+        opp_can_win = False
+        for omv in opp_moves:
+            onme, onopp = _apply_move(nopp, nme, omv)
+            if _is_win(onme, onopp, opp_color):
+                opp_can_win = True
+                break
+        if not opp_can_win:
+            safe_moves.append(mv)
+
+    candidates = safe_moves if safe_moves else legal
+
+    total_pieces = len(me) + len(opp)
+    if total_pieces <= 8:
+        depth = 5
+    elif total_pieces <= 14:
+        depth = 4
+    else:
+        depth = 3
+
+    best_score = -10**18
+    best_move = candidates[0]
+    alpha = -10**18
+    beta = 10**18
+
+    for mv in candidates:
+        nme, nopp = _apply_move(me, opp, mv)
+        score = -_alphabeta(nopp, nme, _opp_color(color), depth - 1, -beta, -alpha, color)
+        # Small tie-break preference from move ordering already embedded by first-found.
+        if score > best_score:
+            best_score = score
+            best_move = mv
+        if score > alpha:
+            alpha = score
+
+    return best_move
+
+
+def _alphabeta(me: Tuple[Tuple[int, int], ...],
+               opp: Tuple[Tuple[int, int], ...],
+               color_to_move: str,
+               depth: int,
+               alpha: int,
+               beta: int,
+               root_color: str) -> int:
+    if _is_win(me, opp, color_to_move):
+        return 1_000_000_000 + depth
+    if _is_win(opp, me, _opp_color(color_to_move)):
+        return -1_000_000_000 - depth
+
+    legal = _ordered_moves(me, opp, color_to_move)
+    if not legal:
+        return -1_000_000_000 - depth
+
+    if depth == 0:
+        return _evaluate(me, opp, color_to_move, root_color)
+
+    best = -10**18
+    opp_color = _opp_color(color_to_move)
+
+    for mv in legal:
+        nme, nopp = _apply_move(me, opp, mv)
+        if _is_win(nme, nopp, color_to_move):
+            score = 1_000_000_000 + depth
+        else:
+            score = -_alphabeta(nopp, nme, opp_color, depth - 1, -beta, -alpha, root_color)
+
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best
+
+
+def _evaluate(me: Tuple[Tuple[int, int], ...],
+              opp: Tuple[Tuple[int, int], ...],
+              color_to_move: str,
+              root_color: str) -> int:
+    # Evaluate from root_color perspective.
+    if color_to_move == root_color:
+        my_pieces, op_pieces = me, opp
+        my_color, op_color = color_to_move, _opp_color(color_to_move)
+    else:
+        my_pieces, op_pieces = opp, me
+        my_color, op_color = root_color, color_to_move
+
+    my_set = set(my_pieces)
+    op_set = set(op_pieces)
+    occupied = my_set | op_set
+
+    score = 0
+
+    # Material.
+    score += 220 * (len(my_pieces) - len(op_pieces))
+
+    # Advancement and near-promotion pressure.
+    my_adv = 0
+    op_adv = 0
+    my_best = -1
+    op_best = -1
+
+    for r, c in my_pieces:
+        prog = r if my_color == 'w' else (7 - r)
+        my_adv += prog
+        if prog > my_best:
+            my_best = prog
+        # Centrality.
+        score += 6 - abs(c - 3.5) * 2
+        # Support.
+        if _is_supported(r, c, my_set, my_color):
+            score += 18
+        # Vulnerability.
+        if _is_attackable(r, c, op_set, op_color):
+            score -= 22
+        # Passed-lane-ish bonus.
+        if _lane_pressure(r, c, op_set, my_color):
+            score += 20
+
+    for r, c in op_pieces:
+        prog = r if op_color == 'w' else (7 - r)
+        op_adv += prog
+        if prog > op_best:
+            op_best = prog
+        score -= 6 - abs(c - 3.5) * 2
+        if _is_supported(r, c, op_set, op_color):
+            score -= 18
+        if _is_attackable(r, c, my_set, my_color):
+            score += 22
+        if _lane_pressure(r, c, my_set, op_color):
+            score -= 20
+
+    score += 28 * (my_adv - op_adv)
+    score += 60 * (my_best - op_best)
+
+    # Strong threat bonuses near last rank.
+    my_goal_row = 7 if my_color == 'w' else 0
+    op_goal_row = 7 if op_color == 'w' else 0
+    for r, c in my_pieces:
+        dist = abs(my_goal_row - r)
+        if dist == 1:
+            score += 140
+        elif dist == 2:
+            score += 55
+    for r, c in op_pieces:
+        dist = abs(op_goal_row - r)
+        if dist == 1:
+            score -= 140
+        elif dist == 2:
+            score -= 55
+
+    # Mobility.
+    score += 5 * (len(_legal_moves(my_pieces, op_pieces, my_color)) - len(_legal_moves(op_pieces, my_pieces, op_color)))
+
+    # Immediate winning threats next move.
+    if _has_immediate_win(my_pieces, op_pieces, my_color):
+        score += 500
+    if _has_immediate_win(op_pieces, my_pieces, op_color):
+        score -= 500
+
+    return int(score)
+
+
+def _lane_pressure(r: int, c: int, opp_set: Set[Tuple[int, int]], color: str) -> bool:
+    dr = 1 if color == 'w' else -1
+    rr = r + dr
+    if not (0 <= rr <= 7):
+        return True
+    blocked = 0
+    for nc in (c - 1, c, c + 1):
+        if 0 <= nc <= 7 and (rr, nc) in opp_set:
+            blocked += 1
+    return blocked == 0
+
+
+def _is_supported(r: int, c: int, my_set: Set[Tuple[int, int]], color: str) -> bool:
+    back = -1 if color == 'w' else 1
+    rr = r + back
+    return (rr, c - 1) in my_set or (rr, c + 1) in my_set
+
+
+def _is_attackable(r: int, c: int, opp_set: Set[Tuple[int, int]], opp_color: str) -> bool:
+    # Can opponent capture this piece on their next move?
+    back = -1 if opp_color == 'w' else 1
+    rr = r + back
+    return (rr, c - 1) in opp_set or (rr, c + 1) in opp_set
+
+
+def _has_immediate_win(me: Tuple[Tuple[int, int], ...], opp: Tuple[Tuple[int, int], ...], color: str) -> bool:
+    for mv in _legal_moves(me, opp, color):
+        nme, nopp = _apply_move(me, opp, mv)
+        if _is_win(nme, nopp, color):
+            return True
+    return False
+
+
+def _is_win(me: Tuple[Tuple[int, int], ...], opp: Tuple[Tuple[int, int], ...], color: str) -> bool:
+    if not opp:
+        return True
+    goal_row = 7 if color == 'w' else 0
+    for r, _ in me:
+        if r == goal_row:
+            return True
+    return False
+
+
+def _opp_color(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+
+def _apply_move(me: Tuple[Tuple[int, int], ...],
+                opp: Tuple[Tuple[int, int], ...],
+                mv: Move) -> Tuple[Tuple[Tuple[int, int], ...], Tuple[Tuple[int, int], ...]]:
+    src, dst = mv
+    me_list = list(me)
+    idx = me_list.index(src)
+    me_list[idx] = dst
+    opp_list = list(opp)
+    if dst in opp_list:
+        opp_list.remove(dst)
+    return tuple(me_list), tuple(opp_list)
+
+
+def _legal_moves(me: Tuple[Tuple[int, int], ...], opp: Tuple[Tuple[int, int], ...], color: str) -> List[Move]:
+    my_set = set(me)
+    op_set = set(opp)
+    occupied = my_set | op_set
+    dr = 1 if color == 'w' else -1
+    moves: List[Move] = []
+
+    for r, c in me:
+        nr = r + dr
+        if not (0 <= nr <= 7):
+            continue
+
+        # Forward
+        if (nr, c) not in occupied:
+            moves.append(((r, c), (nr, c)))
+
+        # Diagonals: may move if empty or capture opponent.
+        nc = c - 1
+        if 0 <= nc <= 7:
+            if (nr, nc) not in my_set:
+                if (nr, nc) not in occupied or (nr, nc) in op_set:
+                    moves.append(((r, c), (nr, nc)))
+
+        nc = c + 1
+        if 0 <= nc <= 7:
+            if (nr, nc) not in my_set:
+                if (nr, nc) not in occupied or (nr, nc) in op_set:
+                    moves.append(((r, c), (nr, nc)))
+
+    return moves
+
+
+def _ordered_moves(me: Tuple[Tuple[int, int], ...], opp: Tuple[Tuple[int, int], ...], color: str) -> List[Move]:
+    op_set = set(opp)
+    dr = 1 if color == 'w' else -1
+    goal_row = 7 if color == 'w' else 0
+
+    scored = []
+    for mv in _legal_moves(me, opp, color):
+        (r, c), (nr, nc) = mv
+        score = 0
+
+        # Immediate win priority.
+        if nr == goal_row:
+            score += 1_000_000
+
+        # Captures.
+        if (nr, nc) in op_set:
+            score += 20_000
+
+        # Advancement.
+        score += 500 * (nr - r) * (1 if color == 'w' else -1)
+
+        # Prefer center a bit.
+        score -= int(abs(nc - 3.5) * 10)
+
+        # Prefer moves that become supported.
+        my_set_after = set(me)
+        my_set_after.remove((r, c))
+        my_set_after.add((nr, nc))
+        if _is_supported(nr, nc, my_set_after, color):
+            score += 200
+
+        # Discourage obviously hanging moves.
+        if _is_attackable(nr, nc, op_set - ({(nr, nc)} if (nr, nc) in op_set else set()), _opp_color(color)):
+            score -= 180
+
+        # Encourage diagonal progress slightly.
+        if nc != c:
+            score += 25
+
+        scored.append((score, mv))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [mv for _, mv in scored]
+</code>

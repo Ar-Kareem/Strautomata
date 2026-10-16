@@ -1,0 +1,147 @@
+
+import numpy as np
+
+def policy(you, opponent):
+    # Convert to numpy arrays for vectorized ops
+    you_houses = np.array(you[:6], dtype=int)
+    opp_houses = np.array(opponent[:6], dtype=int)
+    my_store = you[6]
+    opp_store = opponent[6]
+
+    # Identify legal moves (non-empty houses)
+    legal = you_houses > 0
+    legal_moves = np.flatnonzero(legal)
+
+    # Heuristic evaluation function
+    def evaluate(yh, oh, ms, os):
+        # Base score: store difference
+        score = (ms - os) * 1.0
+
+        # Add seeds in our houses (potential to score)
+        score += yh.sum() * 0.5
+
+        # Subtract opponent seeds in houses
+        score -= oh.sum() * 0.4
+
+        # Bonus for move opportunities (number of non-empty houses)
+        score += (yh > 0).sum() * 0.2
+        score -= (oh > 0).sum() * 0.15
+
+        return score
+
+    # Simulate a move
+    def simulate_move(yh, oh, ms, os, move):
+        seeds = yh[move]
+        yh = yh.copy()
+        oh = oh.copy()
+        yh[move] = 0
+
+        # Distribute seeds
+        idx = move + 1
+        while seeds > 0:
+            # Land on our store
+            if idx == 6:
+                ms += 1
+                seeds -= 1
+                if seeds == 0:
+                    # Extra move
+                    return yh, oh, ms, os, True
+                idx = 0
+            # Land on our houses
+            elif idx < 6:
+                yh[idx] += 1
+                seeds -= 1
+                if seeds == 0:
+                    # Check capture
+                    if yh[idx] == 1 and oh[5 - idx] > 0:
+                        ms += 1 + oh[5 - idx]
+                        yh[idx] = 0
+                        oh[5 - idx] = 0
+                    return yh, oh, ms, os, False
+            # Land on opponent houses
+            elif idx < 12:
+                oh[idx - 6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    return yh, oh, ms, os, False
+                idx += 1
+            else:
+                # Wrap around
+                idx = 0
+        return yh, oh, ms, os, False
+
+    # If only one legal move, take it
+    if len(legal_moves) == 1:
+        return int(legal_moves[0])
+
+    best_score = -1e9
+    best_move = legal_moves[0]
+
+    # Evaluate each move with a 2-ply lookahead
+    for move in legal_moves:
+        # First ply
+        yh1, oh1, ms1, os1, extra = simulate_move(you_houses, opp_houses, my_store, opp_store, move)
+
+        # If extra move, look ahead one more of our moves
+        if extra:
+            best_extra_score = -1e9
+            for m2 in np.flatnonzero(yh1):
+                yh2, oh2, ms2, os2, _ = simulate_move(yh1, oh1, ms1, os1, m2)
+                score = evaluate(yh2, oh2, ms2, os2)
+                if score > best_extra_score:
+                    best_extra_score = score
+            final_score = best_extra_score
+        else:
+            # Opponent's best response (minimize our score)
+            opp_legal = oh1 > 0
+            if opp_legal.any():
+                best_opp_score = 1e9
+                for om in np.flatnonzero(opp_legal):
+                    # Simulate opponent move
+                    oh_temp = oh1.copy()
+                    yh_temp = yh1.copy()
+                    os_temp = os1
+                    ms_temp = ms1
+                    seeds = oh_temp[om]
+                    oh_temp[om] = 0
+
+                    idx = om + 1
+                    while seeds > 0:
+                        # Opponent's store
+                        if idx == 6:
+                            os_temp += 1
+                            seeds -= 1
+                            if seeds == 0:
+                                break
+                            idx = 0
+                        elif idx < 6:
+                            yh_temp[idx] += 1
+                            seeds -= 1
+                            if seeds == 0:
+                                break
+                            idx += 1
+                        elif idx < 12:
+                            oh_temp[idx - 6] += 1
+                            seeds -= 1
+                            if seeds == 0:
+                                # Capture check for opponent
+                                if oh_temp[idx - 6] == 1 and yh_temp[5 - (idx - 6)] > 0:
+                                    os_temp += 1 + yh_temp[5 - (idx - 6)]
+                                    oh_temp[idx - 6] = 0
+                                    yh_temp[5 - (idx - 6)] = 0
+                                break
+                            idx += 1
+                        else:
+                            idx = 0
+                    score = evaluate(yh_temp, oh_temp, ms_temp, os_temp)
+                    if score < best_opp_score:
+                        best_opp_score = score
+                final_score = best_opp_score
+            else:
+                final_score = evaluate(yh1, oh1, ms1, os1)
+
+        if final_score > best_score:
+            best_score = final_score
+            best_move = move
+
+    return int(best_move)

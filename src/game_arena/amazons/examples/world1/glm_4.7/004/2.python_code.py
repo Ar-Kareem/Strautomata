@@ -1,0 +1,148 @@
+
+import numpy as np
+import random
+
+# Directions for Amazon movement (Queen-like moves)
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
+              (0, -1),           (0, 1),
+              (1, -1),  (1, 0),  (1, 1)]
+
+BOARD_SIZE = 6
+
+def is_valid(r, c):
+    return 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE
+
+def get_landing_mobility(board, player):
+    """
+    Counts the number of unique empty squares reachable by the player's amazons.
+    This serves as a fast and effective heuristic for evaluating game states.
+    """
+    count = 0
+    rows, cols = np.where(board == player)
+    for r, c in zip(rows, cols):
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            while is_valid(nr, nc) and board[nr, nc] == 0:
+                count += 1
+                nr += dr
+                nc += dc
+    return count
+
+def generate_moves(board, player):
+    """
+    Generates all legal full moves (from, to, arrow) for the given player.
+    Correctly handles the rule where an arrow can pass through the vacated 'from' square.
+    """
+    moves = []
+    rows, cols = np.where(board == player)
+    for r, c in zip(rows, cols):
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            # Move Amazon
+            while is_valid(nr, nc) and board[nr, nc] == 0:
+                # Shoot Arrow from (nr, nc)
+                for adr, adc in DIRECTIONS:
+                    ar, ac = nr + adr, nc + adc
+                    while is_valid(ar, ac):
+                        # Check if arrow landing spot is valid.
+                        # It must be empty (0) in the original board OR be the original source (r,c)
+                        # because the amazon has vacated it.
+                        # It cannot be the current amazon position (nr, nc), but loop starts after that.
+                        if (ar, ac) == (r, c) or board[ar, ac] == 0:
+                            moves.append((r, c, nr, nc, ar, ac))
+                            ar += adr
+                            ac += adc
+                        else:
+                            # Path blocked by an obstacle that is not the vacated square
+                            break
+                nr += dr
+                nc += dc
+    return moves
+
+def policy(board):
+    """
+    Selects the best move using Depth 2 Minimax with Alpha-Beta pruning.
+    """
+    # 1. Identify all legal moves for the current player (Player 1)
+    my_moves = generate_moves(board, 1)
+    
+    if not my_moves:
+        # Should not happen if the environment calls policy correctly,
+        # but we must return a string.
+        return "0,0:0,1:0,2"
+
+    # Randomize moves to ensure variety in case of equal scores
+    random.shuffle(my_moves)
+
+    best_move = my_moves[0]
+    best_score = -float('inf')
+
+    # 2. Iterative Deepening / Search
+    # We stick to Depth 2 to ensure robust performance within 1 second.
+    # Depth 2: My Move -> Opponent Move -> Evaluation
+    
+    for fr, fc, tr, tc, ar, ac in my_moves:
+        # Apply My Move
+        board[fr, fc] = 0
+        board[tr, tc] = 1
+        board[ar, ac] = -1
+
+        # Check for immediate win (Opponent has 0 mobility)
+        # If opponent cannot move, I win.
+        opp_mobility = get_landing_mobility(board, 2)
+        if opp_mobility == 0:
+            # Revert and return winning move immediately
+            board[ar, ac] = 0
+            board[tr, tc] = 0
+            board[fr, fc] = 1
+            return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+        # Opponent's Turn (Minimizing Layer)
+        # Generate opponent moves
+        opp_moves = generate_moves(board, 2)
+        
+        min_opp_score = float('inf')
+        
+        # Heuristic prune: If opponent has too many moves, limit search to a subset 
+        # to guarantee time limit? 
+        # On 6x6, full search is usually fine, but let's set a safe limit if needed.
+        # For safety, we check all, but logic is efficient enough.
+        
+        for ofr, ofc, otr, otc, oar, oac in opp_moves:
+            # Apply Opponent Move
+            board[ofr, ofc] = 0
+            board[otr, otc] = 2
+            board[oar, oac] = -1
+            
+            # Evaluate State
+            # Score = (My Mobility) - (Opponent Mobility)
+            # We want to maximize this difference.
+            score = get_landing_mobility(board, 1) - get_landing_mobility(board, 2)
+            
+            if score < min_opp_score:
+                min_opp_score = score
+            
+            # Undo Opponent Move
+            board[oar, oac] = 0
+            board[otr, otc] = 2
+            board[ofr, ofc] = 0
+            
+            # Alpha-Beta Pruning
+            # If the opponent can force a score worse than our current best, 
+            # stop exploring this branch.
+            if min_opp_score < best_score:
+                break
+        
+        # Update Best Move
+        if min_opp_score > best_score:
+            best_score = min_opp_score
+            best_move = (fr, fc, tr, tc, ar, ac)
+            
+        # Undo My Move
+        board[ar, ac] = 0
+        board[tr, tc] = 0
+        board[fr, fc] = 1
+
+    # Format the best move
+    fr, fc, tr, tc, ar, ac = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"

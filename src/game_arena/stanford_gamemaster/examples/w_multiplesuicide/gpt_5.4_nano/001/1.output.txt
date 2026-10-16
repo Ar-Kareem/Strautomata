@@ -1,0 +1,174 @@
+The strategy for this policy is to play **Suicide (avoid making 3-in-a-row on the middle board only)** with a lightweight minimax lookahead:
+1. Parse the state to find marks already on each of the 9 boards (board id given by the 3rd/4th indices in `cell(boardRow,boardCol,innerRow,innerCol,…)` style facts).
+2. For the **middle board only** (the board whose outer coordinates are `(2,2)`), compute legal empty cells.
+3. For each candidate move, evaluate the resulting position by:
+   - **Immediate loss check**: if the move creates any 3-in-a-row in rows/cols/diagonals on the middle board, heavily penalize it.
+   - Otherwise, compute a heuristic “danger” score based on how many near-completions (2-in-a-row with 1 empty) the move leaves to the opponent.
+4. Use a **1-ply (opponent immediate reply) minimax**: choose the move that maximizes our safety after assuming the opponent plays the most dangerous legal response (again avoiding creating 3-in-a-row when possible).
+
+This is strong enough to consistently avoid collapsing on the only scoring board while still pressuring by forcing the opponent into risky placements.
+
+<code>
+import re
+from typing import List, Tuple, Optional
+
+def policy(state: List[List[object]], role: str) -> str:
+    # Role marks are 'x' and 'o'
+    me = role
+    opp = 'o' if me == 'x' else 'x'
+
+    # Board representation:
+    # Facts like ["cell", r1, c1, r2, c2, b] where:
+    #   (r1,c1) = outer board coordinates in {1,2,3}
+    #   (r2,c2) = inner cell coordinates in {1,2,3}
+    #   b is in {'x','o','b'} (blank)
+    outer_to_inner = {}  # (outer_r, outer_c) -> grid[(inner_r,inner_c)] = 'x'/'o'/'b'
+    for fact in state:
+        if len(fact) >= 6 and fact[0] == "cell":
+            try:
+                orr = int(fact[1]); occ = int(fact[2]); irr = int(fact[3]); icc = int(fact[4])
+                val = str(fact[5])
+            except Exception:
+                continue
+            outer_to_inner.setdefault((orr, occ), {})
+            outer_to_inner[(orr, occ)][(irr, icc)] = val
+
+    # We only care about the middle board: outer (2,2)
+    inner_grid = outer_to_inner.get((2, 2), {})
+    # If somehow not present, treat all as blank
+    for irr in (1, 2, 3):
+        for icc in (1, 2, 3):
+            inner_grid.setdefault((irr, icc), 'b')
+
+    # Determine empty cells
+    empties = [(r, c) for r in (1, 2, 3) for c in (1, 2, 3) if inner_grid.get((r, c), 'b') == 'b']
+
+    # If board is full (should be terminal), return any legal-looking move string by using existing empties
+    if not empties:
+        # Fallback (shouldn't happen): try mark at some cell in middle board with our role.
+        return "mark(2,2,1,1)"
+
+    # Winning triples for 3-in-a-row
+    lines = []
+    # rows
+    for r in (1, 2, 3):
+        lines.append([(r, 1), (r, 2), (r, 3)])
+    # cols
+    for c in (1, 2, 3):
+        lines.append([(1, c), (2, c), (3, c)])
+    # diags
+    lines.append([(1, 1), (2, 2), (3, 3)])
+    lines.append([(1, 3), (2, 2), (3, 1)])
+
+    def creates_three(g, r, c, mark_char) -> bool:
+        # g is dict inner->char
+        g2 = g.copy()
+        g2[(r, c)] = mark_char
+        for ln in lines:
+            if all(g2[pos] == mark_char for pos in ln):
+                return True
+        return False
+
+    def danger(g, whose) -> int:
+        """
+        Heuristic: count how many lines have exactly 2 of 'whose' and 1 blank (i.e., opponent could be forced into completion).
+        In Suicide, we avoid creating 3 ourselves, but also dislike leaving 2-in-a-row threats.
+        """
+        cnt = 0
+        for ln in lines:
+            vals = [g[pos] for pos in ln]
+            if vals.count(whose) == 2 and vals.count('b') == 1:
+                cnt += 1
+        return cnt
+
+    def score_after_move(move_rc: Tuple[int,int], g_current, player_char: str) -> Tuple[int, int]:
+        """
+        Returns (loss_flag, heuristic_score) from me's perspective for the position after player_char plays at move_rc.
+        We primarily avoid creating 3-in-a-row for whoever just played (i.e., if player_char == me, that's immediate loss).
+        """
+        r, c = move_rc
+        if g_current.get((r, c)) != 'b':
+            return (1, -10**9)
+
+        # If player_char makes a 3-in-a-row, they lose immediately in Suicide.
+        loss = 1 if creates_three(g_current, r, c, player_char) else 0
+
+        g2 = g_current.copy()
+        g2[(r, c)] = player_char
+
+        # Heuristic: leaving opponent (opp) with many "almost" lines is bad for us,
+        # leaving ourselves with many almost lines is also bad (we might be forced to complete).
+        # We'll compute danger for both.
+        my_d = danger(g2, me)
+        opp_d = danger(g2, opp)
+
+        # Combine: prefer low threats for both, but prioritize avoiding our own imminent danger.
+        # Also incorporate that if opp has many almost-lines, they may be able to force us later.
+        h = (opp_d * 10) + (my_d * 7)
+        # Lower h is better for us.
+        return (loss, h)
+
+    # 1-ply minimax: choose move that minimizes our danger after worst opponent response,
+    # while strongly avoiding our immediate loss.
+    best_move: Optional[Tuple[int,int]] = None
+    best_key = None  # smaller is better by our preference
+
+    for mv in empties:
+        # Apply our move, check immediate loss
+        loss_me, h1 = score_after_move(mv, inner_grid, me)
+        if loss_me == 1:
+            # Don't ever choose immediate suicide if avoidable
+            continue
+
+        # Opponent chooses among their legal replies on the same middle board:
+        # In suicide, if they can avoid losing too, they will.
+        # For safety evaluation, we assume opponent plays the move that maximizes our heuristic risk.
+        opp_losses = []
+        opp_best_h = None  # highest h among non-losing replies
+        found_non_losing = False
+
+        g_after_me = inner_grid.copy()
+        g_after_me[mv] = me
+
+        # generate empties after our move
+        empties_after = [(r, c) for (r, c) in empties if (r, c) != mv]
+
+        if not empties_after:
+            # game over; just pick this
+            opp_best_h = h1
+            found_non_losing = True
+        else:
+            for omv in empties_after:
+                loss_opp, h2 = score_after_move(omv, g_after_me, opp)
+                if loss_opp == 0:
+                    found_non_losing = True
+                    # opponent wants to increase our risk => maximize h
+                    if opp_best_h is None or h2 > opp_best_h:
+                        opp_best_h = h2
+                else:
+                    opp_losses.append(h2)
+
+            if not found_non_losing:
+                # If opponent has no non-losing moves, we consider that they are forced to lose soon.
+                # In that case, it's great for us.
+                # Use a very low value.
+                opp_best_h = -10**6
+
+        # Our key: minimize (opp_best_h), with tie-breaking by further preference for leaving low own/opp danger.
+        # Since we're using only one ply, just use opp_best_h and minor secondary.
+        my_second = danger(g_after_me, me)
+        key = (opp_best_h, my_second)
+
+        if best_key is None or key < best_key:
+            best_key = key
+            best_move = mv
+
+    # If all moves were immediate loss (rare near terminal), pick the first legal one.
+    if best_move is None:
+        best_move = empties[0]
+
+    r, c = best_move
+    # Return in Stanford syntax: mark(outer_r,outer_c,inner_r,inner_c)
+    # Outer middle board is (2,2)
+    return f"mark(2,2,{r},{c})"
+</code>

@@ -1,0 +1,109 @@
+
+import itertools
+
+# Precompute all winning lines (49 lines) for 3x3x3 Tic Tac Toe
+def _generate_winning_lines():
+    lines = []
+    # Rows (i varies, j,k fixed)
+    for j in range(3):
+        for k in range(3):
+            line = tuple((i, j, k) for i in range(3))
+            lines.append(line)
+    # Columns (j varies, i,k fixed)
+    for i in range(3):
+        for k in range(3):
+            line = tuple((i, j, k) for j in range(3))
+            lines.append(line)
+    # Depth (k varies, i,j fixed)
+    for i in range(3):
+        for j in range(3):
+            line = tuple((i, j, k) for k in range(3))
+            lines.append(line)
+    # Diagonals in xy planes (fixed k)
+    for k in range(3):
+        line1 = tuple((i, k, i) for i in range(3))
+        line2 = tuple((i, k, 2-i) for i in range(3))
+        lines.append(line1)
+        lines.append(line2)
+    # Diagonals in xz planes (fixed j)
+    for j in range(3):
+        line1 = tuple((i, j, i) for i in range(3))
+        line2 = tuple((i, j, 2-i) for i in range(3))
+        lines.append(line1)
+        lines.append(line2)
+    # Diagonals in yz planes (fixed i)
+    for i in range(3):
+        line1 = tuple((i, j, j) for j in range(3))
+        line2 = tuple((i, j, 2-j) for j in range(3))
+        lines.append(line1)
+        lines.append(line2)
+    # Space diagonals
+    lines.append(((0,0,0), (1,1,1), (2,2,2)))
+    lines.append(((0,0,2), (1,1,1), (2,2,0)))
+    lines.append(((0,2,0), (1,1,1), (2,0,2)))
+    lines.append(((0,2,2), (1,1,1), (2,0,0)))
+    return lines
+
+winning_lines = _generate_winning_lines()
+cell_to_lines = {}
+for line in winning_lines:
+    for cell in line:
+        if cell not in cell_to_lines:
+            cell_to_lines[cell] = []
+        cell_to_lines[cell].append(line)
+
+center_bonus = 5
+center = (1, 1, 1)
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Step 1: Check for winning move
+    for cell in cell_to_lines:
+        if board[cell[0]][cell[1]][cell[2]] == 0:
+            for line in cell_to_lines[cell]:
+                count_ones = 0
+                for c in line:
+                    if c == cell: continue
+                    if board[c[0]][c[1]][c[2]] == 1:
+                        count_ones += 1
+                if count_ones == 2:
+                    return cell
+                    
+    # Step 2: Check for opponent's winning move (block)
+    for cell in cell_to_lines:
+        if board[cell[0]][cell[1]][cell[2]] == 0:
+            for line in cell_to_lines[cell]:
+                count_minus = 0
+                for c in line:
+                    if c == cell: continue
+                    if board[c[0]][c[1]][c[2]] == -1:
+                        count_minus += 1
+                if count_minus == 2:
+                    return cell
+                    
+    # Step 3: Evaluate remaining moves
+    best_score = -1
+    best_move = None
+    for cell in cell_to_lines:
+        if board[cell[0]][cell[1]][cell[2]] != 0:
+            continue
+            
+        score = 0
+        for line in cell_to_lines[cell]:
+            count1 = 0
+            count0 = 0
+            for c in line:
+                if c == cell: continue
+                val = board[c[0]][c[1]][c[2]]
+                if val == 1: count1 += 1
+                elif val == 0: count0 += 1
+            # Winy: line would have 3 ones (step 1 prevented this)
+            if count1 == 1 and count0 == 1:
+                score += 1
+                if center in line:
+                    score += center_bonus
+                    
+        if score > best_score or (score == best_score and cell[0] < best_move[0]) if best_move else True:
+            best_score = score
+            best_move = cell
+            
+    return best_move

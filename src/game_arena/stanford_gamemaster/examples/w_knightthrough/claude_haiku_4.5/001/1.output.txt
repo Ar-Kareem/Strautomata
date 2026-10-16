@@ -1,0 +1,98 @@
+# Strategy
+
+The strategy for this policy is to implement a greedy forward-advancing approach with some tactical awareness:
+
+1. **Primary Objective**: Move pieces forward as quickly as possible to reach the opponent's side (row 8 for white, row 1 for black). This is the winning condition.
+
+2. **Knight Move Mechanics**: Knights move in an L-shape. For forward movement:
+   - White pieces (rows 1-2) move toward row 8, with valid forward knight moves being: (+1,+2), (+1,-2), (+2,+1), (+2,-1)
+   - Black pieces (rows 7-8) move toward row 1, with valid forward knight moves being: (-1,+2), (-1,-2), (-2,+1), (-2,-1)
+
+3. **Move Selection Priority**:
+   - First, prioritize moves that advance pieces closest to the goal (maximize row progress for white, minimize for black)
+   - Among equally good moves, prefer moves that are closer to the opponent's starting pieces to block them or move away from congestion
+   - Always ensure the target square is empty (no friendly or enemy piece)
+
+4. **Legal Move Validation**:
+   - Convert board notation (a-h, 1-8) to coordinates
+   - Check that the destination is within bounds
+   - Check that the destination doesn't contain a piece of our color
+   - Ensure the move is a valid knight L-shape move that goes forward
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the state to build a board representation
+    board = {}  # (col, row) -> color
+    
+    for fact in state:
+        if fact[0] == "cell":
+            col = fact[1]  # 'a' to 'h'
+            row = int(fact[2])  # 1 to 8
+            color = fact[3]  # 'white' or 'black'
+            board[(col, row)] = color
+    
+    # Helper functions for coordinate conversion
+    def col_to_num(col):
+        return ord(col) - ord('a')
+    
+    def num_to_col(num):
+        return chr(ord('a') + num)
+    
+    # Find all pieces of our color
+    our_pieces = []
+    for (col, row), color in board.items():
+        if color == role:
+            our_pieces.append((col, row))
+    
+    # Generate legal moves
+    valid_moves = []
+    
+    for col, row in our_pieces:
+        col_num = col_to_num(col)
+        
+        if role == "white":
+            # White moves upward (increasing row)
+            knight_moves = [
+                (1, 2), (1, -2), (2, 1), (2, -1),
+                (-1, 2), (-1, -2), (-2, 1), (-2, -1)
+            ]
+            # Filter for forward moves only (increasing row)
+            forward_moves = [(dc, dr) for dc, dr in knight_moves if dr > 0]
+        else:  # black
+            # Black moves downward (decreasing row)
+            knight_moves = [
+                (1, 2), (1, -2), (2, 1), (2, -1),
+                (-1, 2), (-1, -2), (-2, 1), (-2, -1)
+            ]
+            # Filter for forward moves only (decreasing row)
+            forward_moves = [(dc, dr) for dc, dr in knight_moves if dr < 0]
+        
+        for dc, dr in forward_moves:
+            new_col_num = col_num + dc
+            new_row = row + dr
+            
+            # Check bounds
+            if 0 <= new_col_num < 8 and 1 <= new_row <= 8:
+                new_col = num_to_col(new_col_num)
+                
+                # Check if destination is empty or occupied by opponent
+                if (new_col, new_row) not in board or board[(new_col, new_row)] != role:
+                    # Calculate progress toward goal
+                    if role == "white":
+                        progress = new_row
+                    else:
+                        progress = 8 - new_row
+                    
+                    valid_moves.append((progress, col, row, new_col, new_row))
+    
+    # Sort by progress (descending) to prioritize advancing furthest
+    valid_moves.sort(reverse=True)
+    
+    if valid_moves:
+        # Pick the best move
+        _, from_col, from_row, to_col, to_row = valid_moves[0]
+        return f"move({from_col},{from_row},{to_col},{to_row})"
+    
+    # Fallback: shouldn't reach here if state is valid
+    return "move(a,1,b,3)"
+</code>

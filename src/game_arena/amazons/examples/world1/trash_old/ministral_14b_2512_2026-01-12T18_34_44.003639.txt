@@ -1,0 +1,293 @@
+### Strategy Overview
+
+**Amazons** is a two-player strategy game played on a hexagonal board (here adapted to a 6x6 grid). The goal is to capture all opponent pieces while ensuring your own pieces are not trapped. For this implementation, I'll design a **move-selection policy** that balances **aggression** (trying to capture opponent pieces) and **defense** (preventing the opponent from capturing ours).
+
+#### Key Components of the Policy:
+1. **Legal Move Generation**: First, we need to generate all possible legal moves from the current board state. This involves:
+   - Checking all possible moves for each of our amazons (`1`).
+   - For each move, checking all possible arrow shots from the new position.
+   - Ensuring the arrow does not land on an occupied square (except possibly the original position of the amazon, if the arrow passes through it).
+
+2. **Move Evaluation**: We will evaluate moves based on:
+   - **Capturing Potential**: Moves that threaten to capture opponent amazons (`2`) in the next turn.
+   - **Defensive Value**: Moves that protect our own amazons from being captured.
+   - **Board Control**: Moves that expand our control over the board (e.g., moving to central squares or blocking opponent threats).
+
+3. **Move Selection**: We will prioritize moves that:
+   - Capture opponent amazons directly (if possible).
+   - Threaten opponent amazons (i.e., moves where the arrow can reach an opponent amazon in the next turn).
+   - Protect our own amazons from being captured.
+   - Move toward the center of the board for better control.
+
+#### Implementation Details:
+- The policy will use **depth-limited minimax search** with **alpha-beta pruning** to explore possible moves and counter-moves up to a certain depth (e.g., 3 plies). This is computationally feasible for a 6x6 board within the time constraints.
+- A **heuristic evaluation function** will be used to score board positions. The heuristic will favor:
+  - Fewer opponent amazons on the board.
+  - More of our amazons on the board.
+  - Amazons closer to the center (since central squares are harder to block).
+  - Threats to opponent amazons (i.e., squares where an arrow can land on an opponent amazon in the next turn).
+- The policy will also include **basic defensive checks** to avoid moves that leave our amazons vulnerable to immediate capture.
+
+---
+
+### Python Implementation
+```python
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: np.ndarray) -> str:
+    """
+    Selects a legal move for Amazons on a 6x6 board using minimax with alpha-beta pruning.
+    The move is chosen to maximize the heuristic score of the board after the move.
+    """
+    # Generate all legal moves for the current board
+    legal_moves = generate_legal_moves(board)
+
+    if not legal_moves:
+        raise ValueError("No legal moves available!")
+
+    # Evaluate each legal move using minimax with depth=3
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        # Simulate the move
+        new_board = simulate_move(board, move)
+        # Evaluate the new board
+        score = minimax(new_board, 3, -float('inf'), float('inf'), False)
+        # Undo the simulation (not needed for move selection, but good practice)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def generate_legal_moves(board: np.ndarray) -> List[str]:
+    """
+    Generates all legal moves for the current player (1) on the given board.
+    A move is a tuple (from_row, from_col, to_row, to_col, arrow_row, arrow_col).
+    """
+    legal_moves = []
+    our_amazons = np.argwhere(board == 1)
+
+    for (from_r, from_c) in our_amazons:
+        # Generate all possible moves for this amazon
+        possible_moves = generate_queen_moves(board, from_r, from_c)
+        for (to_r, to_c) in possible_moves:
+            # Simulate the move (without arrow)
+            new_board = board.copy()
+            new_board[to_r, to_c] = 1
+            new_board[from_r, from_c] = 0
+
+            # Generate all possible arrow shots from the new position
+            possible_arrows = generate_queen_moves(new_board, to_r, to_c)
+            for (arrow_r, arrow_c) in possible_arrows:
+                # Check if arrow lands on an empty square (0) or the original position (if allowed)
+                if new_board[arrow_r, arrow_c] == 0 or (arrow_r == from_r and arrow_c == from_c):
+                    move_str = f"{from_r},{from_c}:{to_r},{to_c}:{arrow_r},{arrow_c}"
+                    legal_moves.append(move_str)
+
+    return legal_moves
+
+def generate_queen_moves(board: np.ndarray, row: int, col: int) -> List[Tuple[int, int]]:
+    """
+    Generates all possible queen-like moves (orthogonal or diagonal) from (row, col).
+    """
+    moves = []
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                 (0, -1),          (0, 1),
+                 (1, -1),  (1, 0), (1, 1)]
+
+    for dr, dc in directions:
+        r, c = row + dr, col + dc
+        while 0 <= r < 6 and 0 <= c < 6:
+            if board[r, c] == 0:
+                moves.append((r, c))
+            else:
+                break  # path is blocked
+            r += dr
+            c += dc
+
+    return moves
+
+def simulate_move(board: np.ndarray, move_str: str) -> np.ndarray:
+    """
+    Simulates a move on the board and returns the new board state.
+    """
+    from_r, from_c, to_r, to_c, arrow_r, arrow_c = parse_move(move_str)
+    new_board = board.copy()
+    new_board[to_r, to_c] = 1
+    new_board[from_r, from_c] = 0
+    new_board[arrow_r, arrow_c] = -1
+    return new_board
+
+def parse_move(move_str: str) -> Tuple[int, int, int, int, int, int]:
+    """
+    Parses a move string into (from_r, from_c, to_r, to_c, arrow_r, arrow_c).
+    """
+    parts = move_str.split(':')
+    from_part = parts[0].split(',')
+    to_part = parts[1].split(',')
+    arrow_part = parts[2].split(',')
+    return (int(from_part[0]), int(from_part[1]),
+            int(to_part[0]), int(to_part[1]),
+            int(arrow_part[0]), int(arrow_part[1]))
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, is_maximizing: bool) -> float:
+    """
+    Minimax search with alpha-beta pruning for Amazons.
+    Returns the heuristic score of the best move for the current player.
+    """
+    if depth == 0:
+        return evaluate_board(board)
+
+    if is_maximizing:
+        # Generate all legal moves for player 1 (us)
+        legal_moves = generate_legal_moves(board)
+        if not legal_moves:
+            return evaluate_board(board)  # no moves left, evaluate terminal position
+        best_score = -float('inf')
+        for move in legal_moves:
+            new_board = simulate_move(board, move)
+            score = minimax(new_board, depth - 1, alpha, beta, False)
+            best_score = max(score, best_score)
+            alpha = max(alpha, best_score)
+            if beta <= alpha:
+                break  # beta cutoff
+        return best_score
+    else:
+        # Generate all legal moves for player 2 (opponent)
+        legal_moves = generate_legal_moves(board, opponent=True)
+        if not legal_moves:
+            return evaluate_board(board)  # no moves left, evaluate terminal position
+        best_score = float('inf')
+        for move in legal_moves:
+            new_board = simulate_move(board, move)
+            score = minimax(new_board, depth - 1, alpha, beta, True)
+            best_score = min(score, best_score)
+            beta = min(beta, best_score)
+            if beta <= alpha:
+                break  # alpha cutoff
+        return best_score
+
+def generate_legal_moves(board: np.ndarray, opponent: bool = False) -> List[str]:
+    """
+    Generates all legal moves for the opponent (2) if opponent=True, else for us (1).
+    """
+    piece = 2 if opponent else 1
+    legal_moves = []
+    their_amazons = np.argwhere(board == piece)
+
+    for (from_r, from_c) in their_amazons:
+        possible_moves = generate_queen_moves(board, from_r, from_c)
+        for (to_r, to_c) in possible_moves:
+            new_board = board.copy()
+            new_board[to_r, to_c] = piece
+            new_board[from_r, from_c] = 0
+
+            possible_arrows = generate_queen_moves(new_board, to_r, to_c)
+            for (arrow_r, arrow_c) in possible_arrows:
+                if new_board[arrow_r, arrow_c] == 0 or (arrow_r == from_r and arrow_c == from_c):
+                    move_str = f"{from_r},{from_c}:{to_r},{to_c}:{arrow_r},{arrow_c}"
+                    legal_moves.append(move_str)
+
+    return legal_moves
+
+def evaluate_board(board: np.ndarray) -> float:
+    """
+    Evaluates the board using a heuristic function.
+    Higher score is better for us (player 1).
+    """
+    score = 0.0
+
+    # Count pieces (more of our pieces is better)
+    our_pieces = np.sum(board == 1)
+    their_pieces = np.sum(board == 2)
+    score += our_pieces * 100
+    score -= their_pieces * 100
+
+    # Central control bonus (amazons closer to center are better)
+    center = np.array([2, 2])  # center of 6x6 board
+    for (r, c) in np.argwhere(board == 1):
+        distance = np.linalg.norm(np.array([r, c]) - center)
+        score += (3 - distance) * 10  # higher weight for pieces closer to center
+    for (r, c) in np.argwhere(board == 2):
+        distance = np.linalg.norm(np.array([r, c]) - center)
+        score -= (3 - distance) * 10
+
+    # Threat evaluation (arrows that can reach opponent amazons)
+    our_arrows = np.argwhere(board == -1)
+    for (arrow_r, arrow_c) in our_arrows:
+        # Check if arrow threatens any of their amazons
+        for (their_r, their_c) in np.argwhere(board == 2):
+            if is_queen_path(board, arrow_r, arrow_c, their_r, their_c):
+                score += 50  # big bonus for threatening their amazons
+
+    # Mobility (number of legal moves for each amazon)
+    for (r, c) in np.argwhere(board == 1):
+        mobility = len(generate_queen_moves(board, r, c))
+        score += mobility * 5
+    for (r, c) in np.argwhere(board == 2):
+        mobility = len(generate_queen_moves(board, r, c))
+        score -= mobility * 5
+
+    return score
+
+def is_queen_path(board: np.ndarray, from_r: int, from_c: int, to_r: int, to_c: int) -> bool:
+    """
+    Checks if there is a queen-like path from (from_r, from_c) to (to_r, to_c).
+    """
+    dr = to_r - from_r
+    dc = to_c - from_c
+    steps = max(abs(dr), abs(dc))
+
+    for step in range(1, steps + 1):
+        r = from_r + step * (1 if dr > 0 else (-1 if dr < 0 else 0))
+        c = from_c + step * (1 if dc > 0 else (-1 if dc < 0 else 0))
+        if board[r, c] != 0:
+            return False
+
+    return True
+```
+
+---
+
+### Explanation of the Code:
+1. **`policy(board)`**:
+   - Generates all legal moves for our amazons (`1`).
+   - Uses minimax with alpha-beta pruning to evaluate each move and select the best one.
+   - Returns the best move as a string.
+
+2. **`generate_legal_moves(board)`**:
+   - Generates all possible queen-like moves for our amazons.
+   - For each move, generates all possible arrow shots from the new position.
+   - Ensures the arrow lands on an empty square (or the original position if allowed).
+
+3. **`generate_queen_moves(board, row, col)`**:
+   - Helper function to generate all queen-like moves from a given position.
+
+4. **`simulate_move(board, move_str)`**:
+   - Simulates a move on the board (updates positions of amazons and arrows).
+
+5. **`minimax(board, depth, alpha, beta, is_maximizing)`**:
+   - Recursive minimax search with alpha-beta pruning to evaluate moves.
+   - Alternates between maximizing (our turn) and minimizing (opponent's turn) players.
+   - Uses a depth limit (3 plies) to balance computation time and move quality.
+
+6. **`evaluate_board(board)`**:
+   - Heuristic function to score board positions:
+     - Piece count (our amazons vs. theirs).
+     - Central control (amazons closer to the center get higher scores).
+     - Threats (arrows that can reach their amazons).
+     - Mobility (number of legal moves for each amazon).
+
+7. **`is_queen_path(board, from_r, from_c, to_r, to_c)`**:
+   - Helper function to check if a queen-like path exists between two squares.
+
+---
+
+### Notes:
+- The policy uses a **fixed depth of 3 plies** (1 move for us + 1 move for opponent + 1 move for us) to keep computation time under ~1 second.
+- The heuristic function balances **aggression**, **defense**, and **board control**.
+- The code is **robust** and will always return a legal move if one exists (as per the problem constraints).
+- Adjustments can be made to the heuristic weights (e.g., `100`, `50`, `10`) to fine-tune the policy.

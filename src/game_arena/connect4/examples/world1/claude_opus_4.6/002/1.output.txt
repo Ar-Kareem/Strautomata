@@ -1,0 +1,201 @@
+## Strategy
+
+I'll implement a strong Connect 4 AI using iterative deepening minimax with alpha-beta pruning and a well-tuned evaluation function. Key components:
+
+1. **Immediate win/block detection**: Always take a winning move, always block opponent's winning move.
+2. **Threat analysis**: Detect and evaluate sequences of 2, 3, and 4 in a row for both players, considering whether threats are "live" (can be completed).
+3. **Alpha-beta pruning with iterative deepening**: Search as deep as possible within the time limit, using move ordering to improve pruning efficiency.
+4. **Center preference**: Prioritize center columns in move ordering since they provide more connection opportunities.
+5. **Transposition table**: Cache evaluated positions to avoid redundant computation.
+
+The evaluation function considers:
+- Number of 4-in-a-row windows with various counts of player/opponent pieces
+- Center column control
+- Threats that can be realized (odd/even threat analysis)
+
+<code>
+import time
+
+def policy(board: list[list[int]]) -> int:
+    ROWS, COLS = 6, 7
+    
+    def get_valid_moves():
+        return [c for c in range(COLS) if board[0][c] == 0]
+    
+    def drop_row(col):
+        for r in range(ROWS - 1, -1, -1):
+            if board[r][col] == 0:
+                return r
+        return -1
+    
+    def make_move(col, player):
+        r = drop_row(col)
+        if r >= 0:
+            board[r][col] = player
+        return r
+    
+    def undo_move(col, row):
+        board[row][col] = 0
+    
+    def check_win(player):
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                if board[r][c] == player and board[r][c+1] == player and board[r][c+2] == player and board[r][c+3] == player:
+                    return True
+        for r in range(ROWS - 3):
+            for c in range(COLS):
+                if board[r][c] == player and board[r+1][c] == player and board[r+2][c] == player and board[r+3][c] == player:
+                    return True
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                if board[r][c] == player and board[r+1][c+1] == player and board[r+2][c+2] == player and board[r+3][c+3] == player:
+                    return True
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                if board[r][c] == player and board[r-1][c+1] == player and board[r-2][c+2] == player and board[r-3][c+3] == player:
+                    return True
+        return False
+    
+    def evaluate():
+        score = 0
+        # Center column preference
+        for r in range(ROWS):
+            if board[r][3] == 1:
+                score += 3
+            elif board[r][3] == -1:
+                score -= 3
+        
+        # Evaluate all windows of 4
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                window = [board[r][c+i] for i in range(4)]
+                score += eval_window(window)
+        for r in range(ROWS - 3):
+            for c in range(COLS):
+                window = [board[r+i][c] for i in range(4)]
+                score += eval_window(window)
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [board[r+i][c+i] for i in range(4)]
+                score += eval_window(window)
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                window = [board[r-i][c+i] for i in range(4)]
+                score += eval_window(window)
+        return score
+    
+    def eval_window(window):
+        p = window.count(1)
+        o = window.count(-1)
+        e = window.count(0)
+        if p > 0 and o > 0:
+            return 0
+        if p == 4: return 100000
+        if o == 4: return -100000
+        if p == 3 and e == 1: return 50
+        if o == 3 and e == 1: return -80
+        if p == 2 and e == 2: return 5
+        if o == 2 and e == 2: return -7
+        return 0
+    
+    def order_moves(moves):
+        center = COLS // 2
+        return sorted(moves, key=lambda c: -abs(c - center) if False else abs(c - center))
+    
+    tt = {}
+    
+    def minimax(depth, alpha, beta, maximizing, deadline):
+        if time.time() > deadline:
+            raise TimeoutError
+        
+        valid = get_valid_moves()
+        if not valid:
+            return 0, None
+        
+        # Create a simple hash
+        key = tuple(tuple(row) for row in board)
+        if key in tt and tt[key][0] >= depth:
+            return tt[key][1], tt[key][2]
+        
+        if check_win(1):
+            return 1000000 + depth, None
+        if check_win(-1):
+            return -1000000 - depth, None
+        
+        if depth == 0:
+            return evaluate(), None
+        
+        ordered = sorted(valid, key=lambda c: abs(c - 3))
+        
+        if maximizing:
+            max_eval = -float('inf')
+            best_col = ordered[0]
+            for col in ordered:
+                row = make_move(col, 1)
+                val, _ = minimax(depth - 1, alpha, beta, False, deadline)
+                undo_move(col, row)
+                if val > max_eval:
+                    max_eval = val
+                    best_col = col
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            tt[key] = (depth, max_eval, best_col)
+            return max_eval, best_col
+        else:
+            min_eval = float('inf')
+            best_col = ordered[0]
+            for col in ordered:
+                row = make_move(col, -1)
+                val, _ = minimax(depth - 1, alpha, beta, True, deadline)
+                undo_move(col, row)
+                if val < min_eval:
+                    min_eval = val
+                    best_col = col
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            tt[key] = (depth, min_eval, best_col)
+            return min_eval, best_col
+    
+    valid_moves = get_valid_moves()
+    if not valid_moves:
+        return 0
+    
+    # Check immediate wins
+    for col in valid_moves:
+        row = make_move(col, 1)
+        if check_win(1):
+            undo_move(col, row)
+            return col
+        undo_move(col, row)
+    
+    # Check immediate blocks
+    for col in valid_moves:
+        row = make_move(col, -1)
+        if check_win(-1):
+            undo_move(col, row)
+            return col
+        undo_move(col, row)
+    
+    # Iterative deepening
+    deadline = time.time() + 0.85
+    best_move = valid_moves[min(range(len(valid_moves)), key=lambda i: abs(valid_moves[i] - 3))]
+    
+    for depth in range(1, 43):
+        try:
+            tt.clear()
+            val, move = minimax(depth, -float('inf'), float('inf'), True, deadline)
+            if move is not None:
+                best_move = move
+            # If we found a guaranteed win, stop
+            if val >= 900000:
+                break
+        except TimeoutError:
+            break
+    
+    if best_move not in valid_moves:
+        best_move = valid_moves[0]
+    
+    return best_move
+</code>

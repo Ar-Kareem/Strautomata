@@ -1,0 +1,334 @@
+The strategy for this policy is to implement a hybrid approach combining threat detection, connectivity expansion, and minimax-style lookahead for critical moves. Since Hex is a connection game, the core idea is to:
+1. Prioritize moves that complete or extend my own connection paths toward my target edges.
+2. Block opponent's immediate threats (e.g., if opponent has two stones in a row toward their goal, block the connection).
+3. Use a lightweight 2-ply lookahead for high-value positions: simulate my move and opponent's best response, favoring moves that leave opponent with no good replies.
+4. For initial moves, favor central positions (e.g., (5,5)) to maximize connectivity options.
+5. Use flood-fill/BFS to detect connected components and identify critical gaps in my path.
+
+We'll use coordinate neighbor definitions for hexagonal grid: for a cell (i, j), the 6 neighbors are:
+(i-1, j-1), (i-1, j), (i, j-1), (i, j+1), (i+1, j), (i+1, j+1) — but wait, the problem states: “every stone not on the edge is touching exactly 6 other stones... two in same row, two in top row, two in bottom row” and “example: (4,1) touches (4,0), (4,2) [same row]; (5,1), (5,0) [bottom]; (3,1), (3,2) [top]”.
+
+From example: (4,1) → neighbors: 
+- same row: (4,0), (4,2)
+- top row: (3,1), (3,2)
+- bottom row: (5,1), (5,0)
+
+This pattern reveals: for a cell (i, j), neighbors are:
+- (i, j-1)
+- (i, j+1)
+- (i-1, j)   ← this is directly above
+- (i-1, j+1) ← above-right
+- (i+1, j)   ← below
+- (i+1, j-1) ← below-left
+
+Wait: (4,1) → top: (3,1) and (3,2) — so (i-1, j) and (i-1, j+1)
+bottom: (5,1) and (5,0) — so (i+1, j) and (i+1, j-1)
+
+So the six neighbors of (i,j) are:
+- (i-1, j)
+- (i-1, j+1)
+- (i, j-1)
+- (i, j+1)
+- (i+1, j-1)
+- (i+1, j)
+
+This is standard for “odd-r” hex grid offset coordinates.
+
+We'll define neighbor offsets as:
+[(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+
+We'll use a BFS to find connected components, and prioritize:
+- Critical connection moves (if I have two groups separated by one gap, fill it)
+- Moves that create multiple threats (forks)
+- Direct blocking of opponent’s 2-stone chains
+- Central control first
+
+For speed (1s limit on 11x11), we can evaluate candidate moves (at most 121 board, but typically <50 empty) with lookahead of 1–2 ply.
+
+We'll use a simple heuristic: value = (my connected components score) - (opponent connected components score) + bonus for edge adjacency.
+
+We'll implement:
+1. A function to get all neighbors
+2. A function to calculate connected components (using BFS/DFS)
+3. A function to check if a player has won
+4. A move generator with filtering for legal moves
+5. A minimax-like evaluation for top 5 candidate moves (lookahead 1 opponent move)
+
+But since we're limited to 1 second, and board is small, we can do full 1-ply lookahead (my move, then opponent best response) for all 20–30 candidate moves. The number of empty cells is usually ≤ 70–80, but we can limit to top 10–20 candidates (prioritized by strategic value).
+
+Strategy:
+- If board is empty: play (5,5) for symmetry.
+- Else: generate all legal moves.
+- For each candidate move, simulate placing my stone.
+- Evaluate board state: compute score = my connection rating - opponent connection rating
+- Then simulate opponent’s best move (maximizing their rating) on the new board
+- Choose the move that minimizes opponent's best response (minimax idea)
+- Use a simple rating: number of stones in largest connected component to target edge (with edge adjacency bonus), and number of threats (gaps that could be filled to connect)
+
+We'll define:
+- For black ('b'): target edges are row 0 and row 10
+- For white ('w'): target edges are col 0 and col 10
+
+Connectivity score: size of largest connected component that touches at least one target edge + bonus for touching both.
+
+To avoid heavy computation, we'll do BFS only once per evaluation, and precompute edges.
+
+Let's code accordingly.
+
+<code>
+import heapq
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    # Define hex neighbor offsets for (i, j)
+    # Based on example: (4,1) touches (4,0), (4,2), (3,1), (3,2), (5,1), (5,0)
+    # So offsets: (i, j) -> (i-1, j), (i-1, j+1), (i, j-1), (i, j+1), (i+1, j-1), (i+1, j)
+    neighbors_offsets = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+    
+    # Convert to sets for fast lookup
+    my_set = set(me)
+    opp_set = set(opp)
+    occupied = my_set | opp_set
+    
+    # If board is empty, play center
+    if len(occupied) == 0:
+        return (5, 5)
+    
+    # Determine target edges
+    if color == 'b':
+        target_edges = set((0, j) for j in range(11)) | set((10, j) for j in range(11))
+    else:  # color == 'w'
+        target_edges = set((i, 0) for i in range(11)) | set((i, 10) for i in range(11))
+    
+    def get_neighbors(i, j):
+        """Return list of valid neighbor coordinates for (i, j)"""
+        nbrs = []
+        for di, dj in neighbors_offsets:
+            ni, nj = i + di, j + dj
+            if 0 <= ni <= 10 and 0 <= nj <= 10:
+                nbrs.append((ni, nj))
+        return nbrs
+    
+    def bfs_component(start, player_set):
+        """BFS to find connected component from start, returning set of stones in component"""
+        if start not in player_set:
+            return set()
+        component = set()
+        queue = deque([start])
+        component.add(start)
+        while queue:
+            i, j = queue.popleft()
+            for ni, nj in get_neighbors(i, j):
+                if (ni, nj) in player_set and (ni, nj) not in component:
+                    component.add((ni, nj))
+                    queue.append((ni, nj))
+        return component
+    
+    def get_largest_component_size(player_set):
+        """Return size of largest connected component in player_set"""
+        if not player_set:
+            return 0
+        visited = set()
+        max_size = 0
+        for stone in player_set:
+            if stone not in visited:
+                component = bfs_component(stone, player_set)
+                visited |= component
+                max_size = max(max_size, len(component))
+        return max_size
+    
+    def get_component_with_edge_hits(player_set):
+        """Return a tuple: (size of largest component that touches target edge, has_both_edges)"""
+        if not player_set:
+            return (0, False)
+        visited = set()
+        max_size = 0
+        has_both = False
+        for stone in player_set:
+            if stone not in visited:
+                component = bfs_component(stone, player_set)
+                visited |= component
+                # Check edge contacts
+                touches_top_or_bottom = False
+                touches_left_or_right = False
+                for s in component:
+                    if s in target_edges:
+                        if color == 'b':
+                            # For black, target edges are top and bottom
+                            if s[0] == 0 or s[0] == 10:
+                                touches_top_or_bottom = True
+                        else:
+                            # For white, target edges are left and right
+                            if s[1] == 0 or s[1] == 10:
+                                touches_top_or_bottom = True
+                # If it touches target edge, consider it
+                if touches_top_or_bottom:
+                    size = len(component)
+                    # For black, check if this component touches both top and bottom
+                    if color == 'b':
+                        touches_top = any(s[0] == 0 for s in component)
+                        touches_bottom = any(s[0] == 10 for s in component)
+                        if touches_top and touches_bottom:
+                            has_both = True
+                    else: # white
+                        touches_left = any(s[1] == 0 for s in component)
+                        touches_right = any(s[1] == 10 for s in component)
+                        if touches_left and touches_right:
+                            has_both = True
+                    max_size = max(max_size, size)
+        return max_size, has_both
+    
+    def evaluate_board():
+        """Return a heuristic board value: my advantage"""
+        my_size, my_has_both = get_component_with_edge_hits(my_set)
+        opp_size, opp_has_both = get_component_with_edge_hits(opp_set)
+        
+        # If I have won (connected both edges), very high value
+        if my_has_both:
+            return float('inf')
+        # If opponent has won
+        if opp_has_both:
+            return float('-inf')
+        
+        # Base score: 10 * my_component_size - 10 * opp_component_size
+        # Bonus for touching target edge
+        my_edge_bonus = 0
+        opp_edge_bonus = 0
+        for stone in my_set:
+            if stone in target_edges:
+                my_edge_bonus += 1
+        for stone in opp_set:
+            if stone in target_edges:
+                opp_edge_bonus += 1
+        
+        # For black: stones on top/bottom are good
+        # For white: stones on left/right are good
+        # We also add a penalty for opponent's potential paths
+        
+        # Ensure we don't overvalue edge touches without connectivity
+        # So we use component size as primary, edge count as secondary
+        score = 10 * my_size - 10 * opp_size + my_edge_bonus - opp_edge_bonus
+        
+        return score
+    
+    def can_win_in_one_move(player_set, empty_set):
+        """Check if player can win by placing one stone (i.e., any empty cell completes connection)"""
+        for move in empty_set:
+            test_set = player_set | {move}
+            _, has_both = get_component_with_edge_hits(test_set)
+            if has_both:
+                return move
+        return None
+    
+    # Check if we can win immediately
+    empty_cells = set((i, j) for i in range(11) for j in range(11)) - occupied
+    immediate_win = can_win_in_one_move(my_set, empty_cells)
+    if immediate_win is not None:
+        return immediate_win
+    
+    # Check if opponent can win in one move — if so, block it
+    immediate_loss = can_win_in_one_move(opp_set, empty_cells)
+    if immediate_loss is not None:
+        return immediate_loss
+    
+    # Generate candidate moves: prioritize center, then edges, then all
+    # Heuristic: prefer central moves, then moves adjacent to own stones, then any
+    candidate_moves = []
+    
+    # Moves adjacent to my stones (expansion)
+    expansion_moves = set()
+    for i, j in my_set:
+        for ni, nj in get_neighbors(i, j):
+            if (ni, nj) in empty_cells:
+                expansion_moves.add((ni, nj))
+    
+    # Moves adjacent to opponent's stones (blocking)
+    block_moves = set()
+    for i, j in opp_set:
+        for ni, nj in get_neighbors(i, j):
+            if (ni, nj) in empty_cells:
+                block_moves.add((ni, nj))
+    
+    # Center priority: high value for center
+    center = (5, 5)
+    if center in empty_cells:
+        candidate_moves.append(center)
+    
+    # Add expansion and block moves
+    for move in expansion_moves:
+        candidate_moves.append(move)
+    for move in block_moves:
+        if move not in candidate_moves:
+            candidate_moves.append(move)
+    
+    # Fallback: add all empty cells if we have none yet
+    if len(candidate_moves) == 0:
+        candidate_moves = list(empty_cells)
+    
+    # Limit candidate moves to avoid too many evaluations
+    candidate_moves = candidate_moves[:30]  # cap at 30 to stay within time
+    
+    best_move = None
+    best_score = float('-inf')
+    
+    # For each candidate move, do 1-ply lookahead
+    for move in candidate_moves:
+        # Simulate my move
+        new_my = my_set | {move}
+        new_occupied = new_my | opp_set
+        new_empty = empty_cells - {move}
+        
+        # Evaluate board after my move
+        my_score = evaluate_board()  # uses my_set and opp_set — we need a version with new_my
+        
+        # Deep copy needed? We'll just compute with new_my
+        # Recompute evaluation with new_my
+        new_my_size, new_my_has_both = get_component_with_edge_hits(new_my)
+        new_opp_size, new_opp_has_both = get_component_with_edge_hits(opp_set)
+        # Recompute edge bonuses
+        my_edge_bonus = sum(1 for stone in new_my if stone in target_edges)
+        opp_edge_bonus = sum(1 for stone in opp_set if stone in target_edges)
+        if new_my_has_both:
+            score_after_my_move = float('inf')
+        elif new_opp_has_both:
+            score_after_my_move = float('-inf')
+        else:
+            score_after_my_move = 10 * new_my_size - 10 * new_opp_size + my_edge_bonus - opp_edge_bonus
+        
+        if score_after_my_move == float('inf'):
+            return move  # immediate win found
+        
+        # Now simulate opponent's best response
+        opp_best_response_score = float('-inf')
+        for opp_move in new_empty:
+            # Simulate opponent move
+            new_opp = opp_set | {opp_move}
+            # Evaluate board with opponent's move
+            opp_my_size, opp_my_has_both = get_component_with_edge_hits(new_my)
+            opp_opp_size, opp_opp_has_both = get_component_with_edge_hits(new_opp)
+            opp_my_edge_bonus = sum(1 for stone in new_my if stone in target_edges)
+            opp_opp_edge_bonus = sum(1 for stone in new_opp if stone in target_edges)
+            if opp_opp_has_both:
+                opp_response_score = float('inf')
+            elif opp_my_has_both:
+                opp_response_score = float('-inf')
+            else:
+                opp_response_score = 10 * opp_my_size - 10 * opp_opp_size + opp_my_edge_bonus - opp_opp_edge_bonus
+            opp_best_response_score = max(opp_best_response_score, opp_response_score)
+        
+        # We want to choose the move that minimizes the opponent's best response
+        # But we also like high own score
+        # Combine: final score for this move = score_after_my_move - 1.5 * opp_best_response_score
+        # Weight opponent's score more heavily because we are minimizing their gain
+        final_score = score_after_my_move - 1.5 * opp_best_response_score
+        
+        if final_score > best_score:
+            best_score = final_score
+            best_move = move
+    
+    # If no move was chosen (shouldn't happen), pick first legal move
+    if best_move is None:
+        best_move = list(empty_cells)[0]
+    
+    return best_move
+</code>

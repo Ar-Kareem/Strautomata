@@ -1,0 +1,90 @@
+
+import numpy as np
+import time
+
+def policy(you, opponent) -> str:
+    you = np.array(you, dtype=np.int8)
+    opponent = np.array(opponent, dtype=np.int8)
+    
+    QUAD_OFFSETS = [(0,0),(0,3),(3,0),(3,3)]
+    
+    def rotate_quad(board_you, board_opp, quad, direction):
+        by = board_you.copy()
+        bo = board_opp.copy()
+        r0, c0 = QUAD_OFFSETS[quad]
+        qy = by[r0:r0+3, c0:c0+3]
+        qo = bo[r0:r0+3, c0:c0+3]
+        if direction == 'L':
+            by[r0:r0+3, c0:c0+3] = np.rot90(qy, 1)
+            bo[r0:r0+3, c0:c0+3] = np.rot90(qo, 1)
+        else:
+            by[r0:r0+3, c0:c0+3] = np.rot90(qy, -1)
+            bo[r0:r0+3, c0:c0+3] = np.rot90(qo, -1)
+        return by, bo
+
+    # All possible 5-in-a-row lines
+    lines = []
+    for r in range(6):
+        for c in range(2):
+            lines.append([(r, c+i) for i in range(5)])
+    for c in range(6):
+        for r in range(2):
+            lines.append([(r+i, c) for i in range(5)])
+    for r in range(2):
+        for c in range(2):
+            lines.append([(r+i, c+i) for i in range(5)])
+    for r in range(2):
+        for c in range(4, 6):
+            lines.append([(r+i, c-i) for i in range(5)])
+
+    def check_win(board):
+        for line in lines:
+            if all(board[r][c] == 1 for r, c in line):
+                return True
+        return False
+
+    def evaluate(by, bo):
+        score = 0
+        weights = [0, 1, 10, 100, 10000]
+        for line in lines:
+            yc = sum(by[r][c] for r, c in line)
+            oc = sum(bo[r][c] for r, c in line)
+            if oc == 0 and yc > 0:
+                score += weights[yc]
+            if yc == 0 and oc > 0:
+                score -= weights[oc] * 1.1
+        return score
+
+    empty_cells = [(r, c) for r in range(6) for c in range(6) if you[r][c] == 0 and opponent[r][c] == 0]
+    rotations = [(q, d) for q in range(4) for d in ['L', 'R']]
+    
+    best_score = -float('inf')
+    best_move = None
+    start = time.time()
+    
+    for r, c in empty_cells:
+        if time.time() - start > 0.8:
+            break
+        by = you.copy()
+        by[r][c] = 1
+        for q, d in rotations:
+            fy, fo = rotate_quad(by, opponent, q, d)
+            yw = check_win(fy)
+            ow = check_win(fo)
+            if yw and not ow:
+                return f"{r+1},{c+1},{q},{d}"
+            if yw and ow:
+                sc = 50000  # draw from winning position is okay
+            elif ow:
+                sc = -100000
+            else:
+                sc = evaluate(fy, fo)
+            if sc > best_score:
+                best_score = sc
+                best_move = f"{r+1},{c+1},{q},{d}"
+    
+    if best_move is None:
+        r, c = empty_cells[0]
+        best_move = f"{r+1},{c+1},0,L"
+    
+    return best_move

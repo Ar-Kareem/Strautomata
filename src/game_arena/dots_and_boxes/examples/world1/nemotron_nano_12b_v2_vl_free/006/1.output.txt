@@ -1,0 +1,146 @@
+### Strategy Overview
+
+The policy for playing Dots and Boxes on a 4x4 board aims to maximize captures while minimizing opportunities for the opponent to capture boxes. The strategy prioritizes moves that:
+
+1. **Capture boxes immediately** (any move that completes a box is highly prioritized).
+2. **Avoid moves that leave boxes with exactly three edges drawn**, as these are vulnerable to the opponent completing the box.
+3. If neither of the above is possible, **prioritize moves that minimize the number of boxes the opponent can complete**.
+
+This approach balances immediate gains (capturing boxes) with defensive play (avoiding giving the opponent easy opportunities to score).
+
+---
+
+### ✅ Move Selection Logic
+
+- **Legal Moves**: The function begins by generating all legal moves, which are edges (horizontal or vertical) that haven't been drawn yet.
+- **Evaluate Each Move**:
+  - **Simulate the move** by modifying the horizontal and vertical edge arrays.
+  - **Check if the move completes any boxes**: A box is captured if all four edges are drawn, regardless of which player drew them.
+  - **Count the number of boxes captured** by the move.
+  - **Count the number of boxes that now have exactly three edges drawn** (i.e., "unsafe" boxes that the opponent can complete on their turn).
+- **Prioritization**:
+  - Moves that capture boxes are prioritized.
+  - Among capturing moves, the one with the most captures is selected.
+  - If there's a tie in captures, the move that leaves the fewest unsafe boxes is chosen.
+  - If no captures are possible, the move that creates the least number of unsafe boxes is selected.
+
+---
+
+### 🧠 Implementation Details
+
+- **Edge Type Detection**:
+  - Horizontal edges are part of the `horizontal` array (5x4).
+  - Vertical edges are part of the `vertical` array (4x5).
+- **Box Capture Logic**:
+  - After drawing an edge, the function checks the adjacent boxes (depending on the edge type) to see if they are completed.
+- **Unsafe Move Detection**:
+  - After simulating a move, the function scans all boxes to count how many have exactly three edges drawn, which are vulnerable to the opponent's next move.
+- **Efficiency**:
+  - The code uses `numpy.copy()` to simulate moves without altering the original state.
+  - It avoids unnecessary checks by only examining the relevant boxes affected by the move.
+
+---
+
+### 🧾 Python Implementation
+
+```python
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Step 1: Generate all legal moves
+    legal_moves = []
+
+    # Horizontal edges are 5x4 grid
+    for i in range(5):
+        for j in range(4):
+            if horizontal[i, j] == 0:
+                legal_moves.append((i, j, 'H'))
+
+    # Vertical edges are 4x5 grid
+    for i in range(4):
+        for j in range(5):
+            if vertical[i, j] == 0:
+                legal_moves.append((i, j, 'V'))
+
+    # Step 2: Evaluate each legal move
+    move_details = []
+
+    for move in legal_moves:
+        i, j, edge_type = move
+
+        new_h = np.copy(horizontal)
+        new_v = np.copy(vertical)
+
+        if edge_type == 'H':
+            new_h[i, j] = 1
+            boxes_to_check = [(i, j)]
+            if i > 0:
+                boxes_to_check.append((i - 1, j))
+        else:  # 'V'
+            new_v[i, j] = 1
+            boxes_to_check = [(i, j)]
+            if j > 0:
+                boxes_to_check.append((i, j - 1))
+
+        # Count captured boxes
+        captured = 0
+        for (b_row, b_col) in boxes_to_check:
+            top = new_h[b_row, b_col]
+            bottom = new_h[b_row + 1, b_col]
+            left = new_v[b_row, b_col]
+            right = new_v[b_row, b_col + 1]
+
+            if top != 0 and bottom != 0 and left != 0 and right != 0:
+                captured += 1
+
+        # Count unsafe boxes
+        unsafe_live = 0
+        for b_row in range(4):
+            for b_col in range(4):
+                top = new_h[b_row, b_col]
+                bottom = new_h[b_row + 1, b_col]
+                left = new_v[b_row, b_col]
+                right = new_v[b_row, b_col + 1]
+
+                num_edges = (top != 0) + (bottom != 0) + (left != 0) + (right != 0)
+                if num_edges == 3:
+                    unsafe_live += 1
+
+        move_details.append((captured, unsafe_live, move))
+
+    # Step 3: Select the best move
+    best_move = None
+
+    # Group moves by captured boxes
+    capture_moves = [(c, u, move) for c, u, move in move_details if c > 0]
+    if capture_moves:
+        # Prioritize moves with maximum captured boxes
+        max_caps = max([c for c, u, m in capture_moves])
+        filtered = [(u, move) for c, u, move in move_details if c == max_caps]
+        # Choose the one with least unsafe_live
+        filtered.sort(key=lambda x: (x[0],))
+        best_move = filtered[0][1]
+    else:
+        # No captures possible
+        safe_moves = [(u, move) for u, move in move_details if u == 0]
+        if safe_moves:
+            best_move = safe_moves[0][1]
+        else:
+            # No safe moves; choose one with least unsafe
+            unsorted = [(u, move) for u, move in move_details if c == 0]
+            unsorted.sort(key=lambda x: (x[0],))
+            best_move = unsorted[0][1]
+
+    # Return the chosen move in the correct format
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+```
+
+---
+
+### 📌 Summary of Strategy
+
+- **Immediate Gains**: Always go for capturing a box if possible.
+- **Defensive Play**: Avoid moves that leave the opponent with an easy box to capture.
+- **Efficiency**: Uses a greedy heuristic to select moves quickly, suitable for the 4x4 grid and 1-second time constraint.
+
+This policy balances offensive and defensive play, making it a strong and reliable choice for the game.

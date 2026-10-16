@@ -1,0 +1,192 @@
+<thinking>
+We need to implement a Tic Tac Toe policy that chooses the best move for the player represented by 1, given a 3x3 board with 0 (empty), 1 (us), and -1 (opponent). The game is two-player, deterministic, perfect information. We can use the minimax algorithm with alpha-beta pruning to ensure optimal play within the time constraint (1 second). Since the game tree is small (9! at worst, but much less), we can even use simple heuristic or just minimax without pruning. But alpha-beta is fine.
+
+We need to decide on a strategy:
+- If it's the first move (empty board), we can choose center or corner. Typically center is best.
+- But we'll let minimax decide.
+
+We'll implement minimax with depth, maximizing for player 1, minimizing for player -1.
+We'll evaluate terminal states: win for 1 -> +10, win for -1 -> -10, draw -> 0.
+We can also add depth penalty to prefer quicker wins/later losses.
+
+Alternatively, we can use a simple rule-based approach: first check if we can win, then block opponent win, then take center, then take corners, etc. But minimax is straightforward and optimal.
+
+Let's implement minimax with alpha-beta.
+
+Steps:
+1. Define function to check if a player has won.
+2. Define minimax that returns a score for a given board state from the perspective of maximizing player.
+3. In policy, if board is empty, maybe return (1,1) directly for speed? Not necessary.
+4. Iterate over all empty cells, simulate placing our piece, call minimax for the opponent, choose move with highest score.
+
+Since the board is small, we can also use iterative deepening but not needed.
+
+Edge cases: board may be full? But policy is called only when there is a move? Assume there is at least one empty.
+
+Let's code.
+
+Potential improvement: Use a lookup table for all states? Not needed.
+
+We'll implement a simple evaluation: if terminal, return score; else recursively score moves.
+
+We'll use depth to slightly prefer faster wins: score = (10 - depth) for win, (-10 + depth) for loss.
+
+Implementation:
+
+Check win: lines: rows, columns, two diagonals.
+
+Minimax parameters: board, depth, isMaximizing, alpha, beta.
+
+We'll write helper functions.
+
+Let's plan code structure:
+
+def check_winner(board):
+    # returns 1 if 1 wins, -1 if -1 wins, 0 otherwise.
+
+def minimax(board, depth, isMaximizing, alpha, beta):
+    winner = check_winner(board)
+    if winner != 0:
+        return (10 - depth) if winner == 1 else (-10 + depth)
+    # check draw
+    if all(cell != 0 for row in board for cell in row):
+        return 0
+
+    if isMaximizing:
+        best = -float('inf')
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = 1
+                    score = minimax(board, depth+1, False, alpha, beta)
+                    board[i][j] = 0
+                    best = max(best, score)
+                    alpha = max(alpha, score)
+                    if beta <= alpha:
+                        break
+        return best
+    else:
+        best = float('inf')
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = -1
+                    score = minimax(board, depth+1, True, alpha, beta)
+                    board[i][j] = 0
+                    best = min(best, score)
+                    beta = min(beta, score)
+                    if beta <= alpha:
+                        break
+        return best
+
+Then in policy:
+    best_score = -float('inf')
+    best_move = None
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = 1
+                score = minimax(board, 0, False, -float('inf'), float('inf'))
+                board[i][j] = 0
+                if score > best_score:
+                    best_score = score
+                    best_move = (i, j)
+    return best_move
+
+That's it.
+
+We must ensure we don't exceed recursion depth? Max depth 9, fine.
+
+One optimization: order moves: center, corners, edges for better pruning.
+
+But not needed.
+
+Let's write the code.
+</thinking>
+<code>
+import sys
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Check if board is empty for first move (optimization)
+    if all(board[i][j] == 0 for i in range(3) for j in range(3)):
+        return (1, 1)  # center is best first move
+
+    def winner(board):
+        # rows
+        for i in range(3):
+            if board[i][0] == board[i][1] == board[i][2] and board[i][0] != 0:
+                return board[i][0]
+        # columns
+        for j in range(3):
+            if board[0][j] == board[1][j] == board[2][j] and board[0][j] != 0:
+                return board[0][j]
+        # diagonals
+        if board[0][0] == board[1][1] == board[2][2] and board[0][0] != 0:
+            return board[0][0]
+        if board[0][2] == board[1][1] == board[2][0] and board[0][2] != 0:
+            return board[0][2]
+        return 0
+
+    def minimax(state, depth, is_max, alpha, beta):
+        win = winner(state)
+        if win != 0:
+            # win for maximizing player (1) gives positive, for minimizing (-1) negative
+            # adjust by depth to prefer quicker wins
+            return (10 - depth) if win == 1 else (-10 + depth)
+        # draw
+        if all(state[i][j] != 0 for i in range(3) for j in range(3)):
+            return 0
+
+        if is_max:
+            best = -sys.maxsize
+            for i in range(3):
+                for j in range(3):
+                    if state[i][j] == 0:
+                        state[i][j] = 1
+                        score = minimax(state, depth + 1, False, alpha, beta)
+                        state[i][j] = 0
+                        best = max(best, score)
+                        alpha = max(alpha, score)
+                        if beta <= alpha:
+                            break
+                else:
+                    continue
+                break
+            return best
+        else:
+            best = sys.maxsize
+            for i in range(3):
+                for j in range(3):
+                    if state[i][j] == 0:
+                        state[i][j] = -1
+                        score = minimax(state, depth + 1, True, alpha, beta)
+                        state[i][j] = 0
+                        best = min(best, score)
+                        beta = min(beta, score)
+                        if beta <= alpha:
+                            break
+                else:
+                    continue
+                break
+            return best
+
+    best_val = -sys.maxsize
+    best_move = None
+    # Try to order moves for better pruning: center, corners, edges
+    move_order = [(1, 1), (0, 0), (0, 2), (2, 0), (2, 2), (0, 1), (1, 0), (1, 2), (2, 1)]
+    for (i, j) in move_order:
+        if board[i][j] == 0:
+            board[i][j] = 1
+            move_val = minimax(board, 0, False, -sys.maxsize, sys.maxsize)
+            board[i][j] = 0
+            if move_val > best_val:
+                best_val = move_val
+                best_move = (i, j)
+    # fallback (should not happen if there is a move)
+    if best_move is None:
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    return (i, j)
+    return best_move
+</code>

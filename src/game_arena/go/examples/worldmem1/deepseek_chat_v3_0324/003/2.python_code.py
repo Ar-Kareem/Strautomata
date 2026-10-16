@@ -1,0 +1,277 @@
+
+import numpy as np
+import random
+import time
+from collections import defaultdict
+
+def policy(me, opponent, memory):
+    start_time = time.time()
+    
+    # Initialize memory if empty
+    if not memory:
+        memory = {
+            'move_heatmap': np.zeros((19, 19)),
+            'move_counts': defaultdict(int),
+            'game_phase': 'early'  # early, mid, late
+        }
+    
+    # Create board representation (0=empty, 1=me, 2=opponent)
+    board = np.zeros((19, 19), dtype=int)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = 2
+    
+    # Update game phase based on stones played
+    total_stones = len(me) + len(opponent)
+    if total_stones > 120:
+        memory['game_phase'] = 'late'
+    elif total_stones > 60:
+        memory['game_phase'] = 'mid'
+    
+    # Get all legal moves
+    legal_moves = []
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] == 0 and is_legal_move(r+1, c+1, board, 1):
+                legal_moves.append((r+1, c+1))
+    
+    if not legal_moves:
+        return ((0, 0), memory)
+    
+    # Heuristic scoring for each move
+    move_scores = {}
+    for r, c in legal_moves:
+        score = 0
+        
+        # Basic position value (center is better in early game)
+        if memory['game_phase'] == 'early':
+            center_dist = abs(r - 10) + abs(c - 10)
+            score += (36 - center_dist) * 0.5  # max 18+18=36
+        
+        # Captures
+        captures = count_captures(r, c, board, 1)
+        score += captures * 10
+        
+        # Defense (prevent our groups from being captured)
+        defense = count_defense(r, c, board, 1)
+        score += defense * 8
+        
+        # Forming eyes
+        eye_potential = count_eye_potential(r, c, board, 1)
+        score += eye_potential * 5
+        
+        # Encourage patterns from previous good moves
+        score += memory['move_heatmap'][r-1, c-1] * 0.5
+        
+        move_scores[(r, c)] = score
+    
+    # Select top 5 moves by score for further evaluation
+    top_moves = sorted(legal_moves, key=lambda x: move_scores.get(x, 0), reverse=True)[:5]
+    
+    # Quick evaluation of top moves with random playouts (limited by time)
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in top_moves:
+        if time.time() - start_time > 0.8:  # time safety margin
+            break
+            
+        r, c = move
+        temp_board = board.copy()
+        temp_board[r-1, c-1] = 1
+        
+        # Run quick simulations
+        total = 0
+        wins = 0
+        for _ in range(10):  # limited for time
+            result = simulate_game(temp_board, 2)  # opponent moves next
+            if result > 0:  # positive means we won
+                wins += 1
+            total += result
+        
+        avg_score = wins / 10 if total > 0 else wins
+        composite_score = move_scores[move] + avg_score * 15
+        
+        if composite_score > best_score:
+            best_score = composite_score
+            best_move = move
+    
+    # Fallback if we didn't evaluate all moves (time constraints)
+    if best_move is None:
+        # Middle game: try to expand or attack
+        if memory['game_phase'] == 'mid':
+            best_move = find_expansion_move(legal_moves, board)
+        # Late game: play on biggest area
+        elif memory['game_phase'] == 'late':
+            best_move = find_biggest_area_move(legal_moves, board)
+        # Default: just pick highest heuristic score
+        else:
+            best_move = max(move_scores.items(), key=lambda x: x[1])[0]
+    
+    # Update memory
+    memory['move_heatmap'][best_move[0]-1, best_move[1]-1] += 1
+    memory['move_counts'][best_move] += 1
+    
+    return (best_move, memory)
+
+def is_legal_move(r, c, board, player):
+    """Check if a move is legal (no suicide, respects Ko)"""
+    # Simplified check - real implementation would check liberties, captures, etc.
+    if board[r-1, c-1] != 0:
+        return False
+    return True
+
+def count_captures(r, c, board, player):
+    """Count how many opponent stones would be captured by this move"""
+    opponent = 3 - player  # 1 -> 2, 2 -> 1
+    captures = 0
+    
+    # Check neighboring opponent groups
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = r-1 + dr, c-1 + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == opponent:
+            if count_liberties(nr, nc, board) == 1:
+                captures += count_group_size(nr, nc, board)
+    
+    return min(captures, 5)  # cap at 5 to prevent overfitting
+
+def count_defense(r, c, board, player):
+    """Count how many of our groups are saved from capture by this move"""
+    defended = 0
+    
+    # Check if this move secures liberties for our groups
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = r-1 + dr, c-1 + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == player:
+            if count_liberties(nr, nc, board) == 1:
+                defended += count_group_size(nr, nc, board)
+    
+    return min(defended, 5)  # cap at 5
+
+def count_eye_potential(r, c, board, player):
+    """Count potential to form eyes (group life)"""
+    eye_potential = 0
+    
+    # Check for potential to form an eye space
+    same_color_neighbors = 0
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = r-1 + dr, c-1 + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == player:
+            same_color_neighbors += 1
+    
+    if same_color_neighbors >= 2:
+        eye_potential = 1
+    
+    return eye_potential
+
+def count_liberties(r, c, board, visited=None):
+    """Count liberties of a stone group using flood fill"""
+    if visited is None:
+        visited = set()
+    
+    if (r, c) in visited or board[r, c] == 0:
+        return 0
+    
+    player = board[r, c]
+    visited.add((r, c))
+    liberties = 0
+    
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19:
+            if board[nr, nc] == 0:
+                liberties += 1
+            elif board[nr, nc] == player and (nr, nc) not in visited:
+                liberties += count_liberties(nr, nc, board, visited)
+    
+    return liberties
+
+def count_group_size(r, c, board, visited=None):
+    """Count size of a stone group using flood fill"""
+    if visited is None:
+        visited = set()
+    
+    if (r, c) in visited or board[r, c] == 0:
+        return 0
+    
+    player = board[r, c]
+    visited.add((r, c))
+    size = 1
+    
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == player:
+            size += count_group_size(nr, nc, board, visited)
+    
+    return size
+
+def simulate_game(board, current_player):
+    """Run a quick random simulation from current position"""
+    # Simplified for speed - doesn't track all Go rules
+    temp_board = board.copy()
+    passes = 0
+    
+    for _ in range(40):  # limit simulation length
+        # Get all legal moves (simplified)
+        legal_moves = []
+        for r in range(19):
+            for c in range(19):
+                if temp_board[r, c] == 0:
+                    legal_moves.append((r+1, c+1))
+        
+        if not legal_moves:
+            passes += 1
+            if passes >= 2:
+                break
+            current_player = 3 - current_player
+            continue
+        
+        # Random move selection
+        move = random.choice(legal_moves)
+        r, c = move
+        temp_board[r-1, c-1] = current_player
+        current_player = 3 - current_player
+        passes = 0
+    
+    # Very simple scoring (count territory roughly)
+    my_score = np.sum(temp_board == 1)
+    opp_score = np.sum(temp_board == 2)
+    return my_score - opp_score
+
+def find_expansion_move(legal_moves, board):
+    """Find a move that expands our biggest group"""
+    best_move = random.choice(legal_moves)
+    best_score = -1
+    
+    for r, c in legal_moves:
+        score = 0
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r-1 + dr, c-1 + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 1:
+                score += 1
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    return best_move
+
+def find_biggest_area_move(legal_moves, board):
+    """Find move with most empty adjacent spaces (for area scoring)"""
+    best_move = random.choice(legal_moves)
+    best_count = -1
+    
+    for r, c in legal_moves:
+        count = 0
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                nr, nc = r-1 + dr, c-1 + dc
+                if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                    count += 1
+        
+        if count > best_count:
+            best_count = count
+            best_move = (r, c)
+    
+    return best_move

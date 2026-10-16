@@ -1,0 +1,305 @@
+<thinking>
+I need to design a policy for a simplified Blackjack-like game. The key elements:
+- Single suit of 13 cards: A, 2-10, J, Q, K.
+- Card values: 2-10 = face value, J/Q/K = 10, A = 11 if hand value ≤ target, else 1.
+- Target T is randomly chosen between 10 and 30 and given as input.
+- We have our own 13-card deck (one copy of each rank), opponent has separate deck.
+- We need to decide HIT or STAY based on current hand and target.
+- If we go over target, we bust and lose immediately.
+- If opponent busts and we don't, we win.
+- If both bust, draw.
+- If neither busts, player closer to target wins.
+
+Important: We don't know opponent's hand or what cards have been drawn from our deck. We only see our current hand and the target.
+
+We need to maximize expected outcome. Since we don't know opponent's state, we need to make probabilistic decisions.
+
+First, I need to compute current hand value given target T. The tricky part is Aces: value depends on whether hand value > T.
+
+Actually, the rules say: "A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T). This means for each Ace, we need to decide its value based on whether using 11 would make total > T. But careful: The rule says "when the hand value is <= T" not "when using 11 would keep total <= T". Actually reading: "A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T). This is ambiguous: Is it per Ace or overall? Typically in Blackjack, Aces can be 1 or 11, and you choose to maximize hand without busting. Here it says "when the hand value is <= T" meaning if the total value of the hand (with Aces as 11) is <= T, then Aces are 11, else 1. But that's per Ace? Actually it's probably: For each Ace, if the total hand value (with that Ace as 11) would be <= T, then count it as 11, otherwise 1. But that's interdependent.
+
+Let's parse: The card value definition is for each card. So for an Ace, its value is 11 if the hand value is <= T, else 1. But "the hand value" presumably includes that Ace. So if adding 11 keeps total ≤ T, then it's 11, else 1. But what if there are multiple Aces? The rule might apply to each Ace individually based on the hand value at the time of adding? Actually in implementation, we need to compute total hand value given list of cards. Standard approach: Count aces as 11 initially, then if total > T, reduce ace values to 1 one by one until total ≤ T or no more aces. That would maximize total without busting. Since we want to get as close as possible to T without going over, we should compute hand value that way.
+
+So algorithm to compute hand value given hand list and target T:
+1. Count number of aces.
+2. Sum non-ace cards: 2-10 = face, JQK = 10.
+3. Start with aces as 11 each: total = sum + 11*num_aces.
+4. While total > T and num_aces > 0: subtract 10 from total (change an ace from 11 to 1), decrement num_aces.
+5. Return total.
+
+If total > T after converting all aces to 1, then we bust. Actually if after converting all aces to 1, total still > T, we bust immediately.
+
+Now, policy decision: We need to decide HIT or STAY. We want to maximize probability of winning. We don't know opponent's hand or deck state, but we know our own deck composition: initially 13 distinct cards. We have seen some cards (our hand). So we know which cards remain in our deck.
+
+Let remaining cards = all 13 cards minus cards in hand. Actually we might have drawn duplicates? No, because we have one copy of each rank. So we cannot draw a card we already have. So remaining cards = set of all 13 ranks minus set of ranks in hand.
+
+We need to consider probabilities of drawing each remaining card. Since opponent has separate deck, we don't know what they've drawn; but opponent's deck composition doesn't affect our draws.
+
+We want to compute expected outcome if we hit vs stay. However, we also need to consider opponent's behavior. We don't know opponent's policy. The opponent might be using some strategy. Since we're in a competition, we need to assume opponent is also rational. But we have no information about opponent's hand or their draws.
+
+We could model opponent as using similar reasoning with their own deck. But we don't know their hand. So perhaps we need to assume opponent's hand value distribution.
+
+Alternatively, we could try to maximize our chance of not busting and getting close to target, without considering opponent. But that might be suboptimal because if opponent busts, we win as long as we don't bust. So sometimes it's good to stay early and let opponent bust.
+
+Given we know nothing about opponent's hand, we might assume they follow an optimal policy for their own deck. But we can't compute that without knowing their hand.
+
+Perhaps we can use a heuristic: If our current hand value is close to target, we should stay. If low, we should hit. Also consider risk of busting.
+
+We can compute probability of busting if we hit: For each remaining card, compute new hand value (with optimal ace adjustment). If new value > T, then bust. Probability of bust = number of bust cards / total remaining.
+
+But also we need to consider expected gain: If we don't bust, what's expected new hand value? We want to get as close as possible to T.
+
+Also we need to consider that after hitting, we might have another decision. But policy is called each turn; we can decide then.
+
+So perhaps a simple threshold strategy: Stay if current hand value >= some threshold relative to T. But threshold should depend on T and remaining cards.
+
+We can compute expected value of hitting: For each card in remaining, compute new hand value if we draw that card. Then compute some metric.
+
+We also need to consider that opponent might bust. Without info, we could estimate probability opponent busts given they also have a deck of 13 cards. But opponent's deck is separate, so they have same card ranks but unknown which they've drawn. We can assume uniform distribution over opponent's possible hands? That's complex.
+
+Maybe simpler: Since we can't know opponent, we focus on maximizing our own probability of winning assuming opponent is perfect? But we don't know their hand.
+
+Given time constraint, I'll implement a policy that uses Monte Carlo simulation of possible opponent hands and our own future draws to estimate win probability if we hit or stay. We can simulate many random opponent hands and deck draws.
+
+Steps for policy:
+1. Compute current hand value. If already > T, we've busted but function wouldn't be called? Actually if we bust, game ends immediately, so policy wouldn't be called. So we assume hand value ≤ T.
+2. Determine remaining cards in our deck.
+3. If we stay, our final hand value = current.
+4. We need to estimate probability of winning if we stay vs hit.
+
+To estimate win probability:
+- Simulate many random opponent hands and remaining draws for opponent.
+- Opponent has their own deck of 13 cards. They start with empty hand and draw until they decide to stay or bust. But we don't know opponent's policy. We need to assume opponent uses some strategy. We could assume opponent uses same policy as us? That would be circular. Alternatively, we can assume opponent uses a simple threshold strategy: stay if hand value >= some threshold like 17 if T is 21? But T varies.
+
+We can assume opponent follows optimal strategy for their own deck given they know T and their own hand, but they don't know our hand. That is similar to our problem.
+
+We could implement a recursive expectimax search limited by time? But with 1 second limit and Python, we can do Monte Carlo.
+
+Idea: For each action (STAY or HIT), simulate many random games where opponent uses a reasonable policy (like threshold based on T) and we follow our policy? But that's circular.
+
+Alternatively, we can compute expected value of our hand after hitting and compare to target. Perhaps we can use a heuristic: If current hand value is less than T-10, hit; else if less than T-5, hit with low bust probability; else stay.
+
+But we can do better: Compute probability of improving (getting closer to T) vs busting.
+
+Define: current value v. For each remaining card c, compute new value v' = value after adding c. If v' > T, bust (loss). Else, we have new value v'. Then we need to compare v' to v. But we also have option to hit again later.
+
+We can approximate by assuming we will stop after this hit. Then we can compute expected squared distance to target: E[(v' - T)^2] if no bust, else loss. But we need to compare to staying.
+
+We could compute expected utility: Utility if we bust = 0 (loss), if we stay = probability we win given opponent's distribution. But again need opponent model.
+
+Perhaps we can assume opponent's final hand value distribution is uniform over possible values they could achieve? That might be reasonable.
+
+Let's attempt Monte Carlo approach:
+- Simulate N random opponent hands and their drawing process using a simple opponent policy.
+- For each simulation, compute opponent's final hand value (or bust).
+- Then for our action:
+   - If STAY: our final value = current v.
+   - If HIT: draw random card from remaining, compute new v', if bust then loss, else we could decide to hit again? But we only consider one-step lookahead? Actually we could simulate our own future draws using our own policy recursively? That would be too heavy.
+
+Given time, perhaps implement a one-step lookahead with assumption that after hitting we will stay. Then compute win probability against opponent distribution.
+
+We need to define opponent policy. Let's assume opponent uses a threshold: stay if hand value >= min(T, 17) maybe? But T can be as low as 10. Actually for T=10, staying at 10 is good. So threshold could be T or T-1? Hmm.
+
+Better: Assume opponent uses same algorithm as us but with one-step lookahead? That's recursive.
+
+Given complexity, I'll implement a simpler heuristic: 
+
+We compute current hand value v.
+Compute remaining cards and their values.
+Compute bust probability if hit: For each card, if v + card_value > T (assuming worst case for Ace? Actually need to compute with ace adjustment), then bust. Let bust_prob = count_bust / n_remaining.
+
+If bust_prob == 0, then hitting is safe, so we should hit if v < T.
+If bust_prob > 0, we need to weigh.
+
+We can also compute expected value after hitting (excluding bust cards): expected_new_v = average of new values for non-bust cards.
+
+If expected_new_v > v and bust_prob < 0.5, maybe hit.
+
+Also consider that if v is already close to T, staying is better.
+
+Let's define a threshold function: 
+- If v >= T, stay (but v cannot be > T, so v == T).
+- If v <= T - 10, hit.
+- Else, compute bust probability. If bust_prob < 0.3, hit else stay.
+
+But need to adjust based on remaining cards.
+
+Actually, we can compute the probability that we can get closer to T by hitting. For each card, compute new distance |v' - T|. If |v' - T| < |v - T|, then it's improvement. Count improving cards. If improvement probability > 0.5, hit.
+
+But also consider that if we bust, distance is infinite (loss). So we should penalize bust.
+
+Let's define utility: If we stay, utility = -|v - T| (neg distance). If we hit, for each card compute utility: if bust, utility = -inf (or large negative), else utility = -|v' - T|. Then expected utility.
+
+We can compute expected utility for hitting: sum over cards (utility * 1/n) ignoring bust? Actually bust utility = -1000 (big penalty). Then compare to staying utility.
+
+We need to choose threshold for hitting.
+
+Implement:
+1. Compute current value v.
+2. If v == T, return "STAY".
+3. Compute remaining cards.
+4. For each card c in remaining:
+   - Compute new hand value v' after adding c.
+   - If v' > T: utility = -1000.
+   - Else: utility = -abs(v' - T).
+5. expected_utility_hit = average of utilities.
+6. utility_stay = -abs(v - T).
+7. If expected_utility_hit > utility_stay, return "HIT", else "STAY".
+
+But need to handle ace value adjustment properly.
+
+Let's test with examples.
+
+Edge cases: If remaining cards empty? Actually we can only have up to 13 cards in hand, so if hand has all 13 cards, remaining is empty. Then we must stay.
+
+Also, if v > T? Shouldn't happen.
+
+We need to define function to compute hand value given hand list and target.
+
+Implementation plan:
+
+- Define card_value(c, current_sum, target) but actually we need to compute total hand value with aces adjustment.
+
+Better: function hand_value(hand, target):
+   sum_non_ace = 0
+   num_aces = 0
+   for card in hand:
+       if card == 'A':
+           num_aces += 1
+       elif card in ['J','Q','K']:
+           sum_non_ace += 10
+       else: # 2-10
+           sum_non_ace += int(card)
+   # Start with aces as 11
+   total = sum_non_ace + 11 * num_aces
+   # Reduce aces to 1 if total > target
+   while total > target and num_aces > 0:
+       total -= 10  # 11 -> 1
+       num_aces -= 1
+   return total
+
+If total > target after converting all aces, then bust, but we assume hand is legal (since game would have ended).
+
+Now for each remaining card, we compute new hand = hand + [card], then compute new value.
+
+We need to know which cards remain. We can create list of all cards, remove those in hand.
+
+Let's code.
+
+Potential issue: The ace adjustment when adding a new card: The function hand_value will handle it correctly.
+
+Now, for expected utility, we need to set bust penalty. What value? Since distance max could be around 30, set bust penalty = -1000.
+
+Let's implement.
+
+We'll also add a small randomness if utilities are equal? But we can just choose HIT if expected_utility_hit > utility_stay.
+
+But this might be too risk-averse: Sometimes hitting even with bust probability could be good if staying is poor (e.g., v far from T). Our utility_stay already accounts for distance.
+
+Let's test mentally: T=21, v=12. Remaining cards: many. For each card, compute v'. Expected utility hit likely better because can get closer. So hit.
+
+v=20, T=21. Remaining cards: A,2,... etc. If draw A, v'=21 (since A=11? Actually with v=20, adding A=11 would make 31>21, so A becomes 1, v'=21). So improvement. If draw 2, v'=22>21 bust. So bust probability low. Expected utility hit likely better? Actually staying distance=1, hitting with A gives distance 0, with 2 gives bust, others give larger distance. Expected utility might be worse due to bust. So maybe stay.
+
+Our calculation: utility_stay = -1.
+For card A: v'=21, utility=-0.
+For card 2: v'=22 bust, utility=-1000.
+For other cards: e.g., 3: v'=23 bust, etc. Actually any card >=2 will bust because v=20, adding any card >=2 makes at least 22 >21, except A becomes 1. So only A is safe. So bust_prob = 12/13. Expected_utility_hit = (1/13)*(-0) + (12/13)*(-1000) ≈ -923. So stay is better. Good.
+
+What about v=16, T=21. Many cards safe. Expected utility hit likely better.
+
+Now consider T=10, v=9. Remaining cards: many. Drawing A: A=11? v=9+11=20>10, so A becomes 1, v'=10. Improvement. Drawing 2: v'=11>10 bust. So only A is safe? Actually drawing 1? There is no 1. So only A safe. So bust_prob high. Expected utility hit likely worse. So stay.
+
+But maybe we should hit if v is low relative to T. For T=10, v=5. Drawing 2: 7 safe, 3:8 safe, etc. So many safe. So hit.
+
+Our algorithm should handle.
+
+Potential improvement: Instead of assuming we stay after hitting, we could consider that after hitting we may hit again. But that's multi-step. We could do a simple recursion limited depth, but with 1 second we can do shallow.
+
+Given time, I'll implement the one-step lookahead.
+
+Also, we can add a tie-breaker: if expected_utility_hit == utility_stay, maybe hit if v < T else stay.
+
+Let's code.
+
+We'll need to import random for simulation? Not needed for deterministic policy.
+
+We'll compute all cards list.
+
+Potential bug: When computing new hand value for each remaining card, we need to consider that the new card might be an ace and affect existing aces? Our hand_value function recalculates total from scratch, so it's fine.
+
+Now, output.
+
+We need to write complete Python file with policy function and any helper functions.
+
+Also include imports if needed. We don't need numpy.
+
+Let's write code.
+
+</thinking>
+
+<code>
+def hand_value(hand, target):
+    """Calculate total value of hand according to the rules."""
+    sum_non_ace = 0
+    num_aces = 0
+    for card in hand:
+        if card == 'A':
+            num_aces += 1
+        elif card in ('J', 'Q', 'K'):
+            sum_non_ace += 10
+        else:  # '2'..'10'
+            sum_non_ace += int(card)
+    
+    # Start with all aces as 11
+    total = sum_non_ace + 11 * num_aces
+    
+    # Convert aces from 11 to 1 if we are above target
+    while total > target and num_aces > 0:
+        total -= 10
+        num_aces -= 1
+    
+    return total
+
+
+def policy(hand: list[str], target: int) -> str:
+    # All possible cards in the deck
+    all_cards = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+    
+    # Cards still in our deck (not yet drawn)
+    remaining = [c for c in all_cards if c not in hand]
+    
+    # If no cards left, we must stay
+    if not remaining:
+        return "STAY"
+    
+    current_val = hand_value(hand, target)
+    
+    # If we are already at target, staying is optimal
+    if current_val == target:
+        return "STAY"
+    
+    # Compute utility of staying: negative distance to target
+    stay_utility = -abs(current_val - target)
+    
+    # Compute expected utility of drawing one more card and then staying
+    hit_utilities = []
+    bust_penalty = -1000  # large negative for busting
+    
+    for card in remaining:
+        new_hand = hand + [card]
+        new_val = hand_value(new_hand, target)
+        if new_val > target:
+            # Bust
+            hit_utilities.append(bust_penalty)
+        else:
+            # Not bust, utility is negative distance
+            hit_utilities.append(-abs(new_val - target))
+    
+    expected_hit_utility = sum(hit_utilities) / len(hit_utilities)
+    
+    # Choose action with higher expected utility
+    if expected_hit_utility > stay_utility:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

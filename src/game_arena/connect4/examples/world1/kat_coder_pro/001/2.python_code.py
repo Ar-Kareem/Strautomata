@@ -1,0 +1,198 @@
+
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Connect 4 policy using minimax with alpha-beta pruning.
+    Returns the best column to play.
+    """
+    
+    # Convert to numpy array for easier manipulation
+    grid = np.array(board)
+    
+    # Get valid moves (non-full columns)
+    valid_moves = [col for col in range(7) if grid[0][col] == 0]
+    
+    if not valid_moves:
+        return 0  # Should not happen in normal play
+    
+    # If only one valid move, take it
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+    
+    # If center column is available, prefer it (good opening strategy)
+    if 3 in valid_moves and np.sum(grid) == 0:  # Empty board
+        return 3
+    
+    # Use minimax to find best move
+    best_score = float('-inf')
+    best_col = valid_moves[0]
+    
+    # Try each valid move
+    for col in valid_moves:
+        # Make the move
+        new_grid = grid.copy()
+        row = get_next_open_row(new_grid, col)
+        new_grid[row][col] = 1  # Current player is 1
+        
+        # Evaluate this move using minimax
+        score = minimax(new_grid, 5, float('-inf'), float('inf'), False)
+        
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    return best_col
+
+def get_next_open_row(grid: np.ndarray, col: int) -> int:
+    """Find the next open row in the given column."""
+    for row in range(5, -1, -1):
+        if grid[row][col] == 0:
+            return row
+    return -1
+
+def is_valid_move(grid: np.ndarray, col: int) -> bool:
+    """Check if a move is valid (column is not full)."""
+    return grid[0][col] == 0
+
+def drop_piece(grid: np.ndarray, row: int, col: int, piece: int) -> None:
+    """Place a piece on the grid."""
+    grid[row][col] = piece
+
+def winning_move(grid: np.ndarray, piece: int) -> bool:
+    """Check if the given piece has won."""
+    # Check horizontal locations
+    for c in range(4):
+        for r in range(6):
+            if (grid[r][c] == piece and grid[r][c+1] == piece and 
+                grid[r][c+2] == piece and grid[r][c+3] == piece):
+                return True
+
+    # Check vertical locations
+    for c in range(7):
+        for r in range(3):
+            if (grid[r][c] == piece and grid[r+1][c] == piece and 
+                grid[r+2][c] == piece and grid[r+3][c] == piece):
+                return True
+
+    # Check positively sloped diagonals
+    for c in range(4):
+        for r in range(3):
+            if (grid[r][c] == piece and grid[r+1][c+1] == piece and 
+                grid[r+2][c+2] == piece and grid[r+3][c+3] == piece):
+                return True
+
+    # Check negatively sloped diagonals
+    for c in range(4):
+        for r in range(3, 6):
+            if (grid[r][c] == piece and grid[r-1][c+1] == piece and 
+                grid[r-2][c+2] == piece and grid[r-3][c+3] == piece):
+                return True
+    
+    return False
+
+def evaluate_window(window: List[int], piece: int) -> int:
+    """Evaluate a window of 4 cells for scoring."""
+    score = 0
+    opp_piece = -1 if piece == 1 else 1
+    
+    if window.count(piece) == 4:
+        score += 100
+    elif window.count(piece) == 3 and window.count(0) == 1:
+        score += 5
+    elif window.count(piece) == 2 and window.count(0) == 2:
+        score += 2
+    
+    if window.count(opp_piece) == 3 and window.count(0) == 1:
+        score -= 4
+    
+    return score
+
+def score_position(grid: np.ndarray, piece: int) -> int:
+    """Score the position for the given piece."""
+    score = 0
+    
+    # Score center column
+    center_array = list(grid[:, 3])
+    center_count = center_array.count(piece)
+    score += center_count * 3
+    
+    # Score horizontal
+    for r in range(6):
+        row_array = list(grid[r, :])
+        for c in range(4):
+            window = row_array[c:c+4]
+            score += evaluate_window(window, piece)
+    
+    # Score vertical
+    for c in range(7):
+        col_array = list(grid[:, c])
+        for r in range(3):
+            window = col_array[r:r+4]
+            score += evaluate_window(window, piece)
+    
+    # Score positive diagonal
+    for r in range(3):
+        for c in range(4):
+            window = [grid[r+i][c+i] for i in range(4)]
+            score += evaluate_window(window, piece)
+    
+    # Score negative diagonal
+    for r in range(3, 6):
+        for c in range(4):
+            window = [grid[r-i][c+i] for i in range(4)]
+            score += evaluate_window(window, piece)
+    
+    return score
+
+def is_terminal_node(grid: np.ndarray) -> bool:
+    """Check if the game is over or the board is full."""
+    return (winning_move(grid, 1) or 
+            winning_move(grid, -1) or 
+            len([c for c in range(7) if grid[0][c] == 0]) == 0)
+
+def minimax(grid: np.ndarray, depth: int, alpha: float, beta: float, maximizing_player: bool) -> float:
+    """Minimax algorithm with alpha-beta pruning."""
+    valid_moves = [col for col in range(7) if grid[0][col] == 0]
+    is_terminal = is_terminal_node(grid)
+    
+    if depth == 0 or is_terminal:
+        if is_terminal:
+            if winning_move(grid, 1):  # AI wins
+                return 1000000
+            elif winning_move(grid, -1):  # Opponent wins
+                return -1000000
+            else:  # Game is over, no more valid moves
+                return 0
+        else:  # Depth is zero
+            return score_position(grid, 1)
+    
+    if maximizing_player:
+        value = float('-inf')
+        for col in valid_moves:
+            row = get_next_open_row(grid, col)
+            if row == -1:
+                continue
+            b_copy = grid.copy()
+            drop_piece(b_copy, row, col, 1)
+            new_score = minimax(b_copy, depth - 1, alpha, beta, False)
+            value = max(value, new_score)
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = float('inf')
+        for col in valid_moves:
+            row = get_next_open_row(grid, col)
+            if row == -1:
+                continue
+            b_copy = grid.copy()
+            drop_piece(b_copy, row, col, -1)
+            new_score = minimax(b_copy, depth - 1, alpha, beta, True)
+            value = min(value, new_score)
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value

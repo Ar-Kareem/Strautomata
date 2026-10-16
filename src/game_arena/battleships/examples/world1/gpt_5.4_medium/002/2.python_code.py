@@ -1,0 +1,336 @@
+
+from typing import List, Tuple
+
+SHIP_LENGTHS = (5, 4, 3, 3, 2)
+N = 10
+
+HIT_BOOST = 14.0
+RUN_BONUS = 200000.0
+ISOLATED_BONUS = 4000.0
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Robust legal fallback first.
+    unknowns = []
+    try:
+        for r in range(N):
+            for c in range(N):
+                if board[r][c] == 0:
+                    unknowns.append((r, c))
+    except Exception:
+        return (0, 0)
+
+    if not unknowns:
+        return (0, 0)
+
+    active_h = [[False] * N for _ in range(N)]
+    active_v = [[False] * N for _ in range(N)]
+
+    # Determine which hits are still "active" and in which orientations.
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] != 1:
+                continue
+
+            has_h_neighbor = (c > 0 and board[r][c - 1] == 1) or (c + 1 < N and board[r][c + 1] == 1)
+            has_v_neighbor = (r > 0 and board[r - 1][c] == 1) or (r + 1 < N and board[r + 1][c] == 1)
+
+            hp = _possible_in_orientation(board, r, c, horizontal=True)
+            vp = _possible_in_orientation(board, r, c, horizontal=False)
+
+            if has_h_neighbor and not has_v_neighbor:
+                active_h[r][c] = hp
+            elif has_v_neighbor and not has_h_neighbor:
+                active_v[r][c] = vp
+            else:
+                # Isolated hit, or ambiguous touching pattern: allow both if feasible.
+                active_h[r][c] = hp
+                active_v[r][c] = vp
+
+    total_active = 0
+    for r in range(N):
+        for c in range(N):
+            if active_h[r][c] or active_v[r][c]:
+                total_active += 1
+
+    scores = [[0.0] * N for _ in range(N)]
+
+    if total_active > 0:
+        _score_target_mode(board, scores, active_h, active_v)
+        _add_run_bonuses(board, scores, active_h, active_v)
+    else:
+        _score_hunt_mode(board, scores)
+        _apply_parity_preference(board, scores, unknowns)
+
+    # Tiny deterministic tiebreak toward center.
+    best = unknowns[0]
+    best_score = -1.0
+    best_tiebreak = -10**9
+
+    for r, c in unknowns:
+        s = scores[r][c]
+        t = -((r - 4.5) * (r - 4.5) + (c - 4.5) * (c - 4.5))
+        if s > best_score + 1e-12 or (abs(s - best_score) <= 1e-12 and t > best_tiebreak):
+            best_score = s
+            best_tiebreak = t
+            best = (r, c)
+
+    # Final legal-move guarantee.
+    br, bc = best
+    if 0 <= br < N and 0 <= bc < N and board[br][bc] == 0:
+        return best
+
+    for r, c in unknowns:
+        return (r, c)
+
+    return (0, 0)
+
+
+def _possible_in_orientation(board: List[List[int]], r: int, c: int, horizontal: bool) -> bool:
+    """Can the contiguous hit-run containing (r,c) still belong to a ship in this orientation
+    with at least one unknown extension left?
+    """
+    if board[r][c] != 1:
+        return False
+
+    if horizontal:
+        c0 = c
+        while c0 - 1 >= 0 and board[r][c0 - 1] == 1:
+            c0 -= 1
+        c1 = c
+        while c1 + 1 < N and board[r][c1 + 1] == 1:
+            c1 += 1
+
+        run_len = c1 - c0 + 1
+        for L in SHIP_LENGTHS:
+            if L < run_len:
+                continue
+            start_min = max(0, c1 - L + 1)
+            start_max = min(c0, N - L)
+            for s in range(start_min, start_max + 1):
+                e = s + L - 1
+                has_unknown = False
+                valid = True
+                for cc in range(s, e + 1):
+                    v = board[r][cc]
+                    if v == -1:
+                        valid = False
+                        break
+                    if v == 0:
+                        has_unknown = True
+                if valid and has_unknown:
+                    return True
+        return False
+
+    else:
+        r0 = r
+        while r0 - 1 >= 0 and board[r0 - 1][c] == 1:
+            r0 -= 1
+        r1 = r
+        while r1 + 1 < N and board[r1 + 1][c] == 1:
+            r1 += 1
+
+        run_len = r1 - r0 + 1
+        for L in SHIP_LENGTHS:
+            if L < run_len:
+                continue
+            start_min = max(0, r1 - L + 1)
+            start_max = min(r0, N - L)
+            for s in range(start_min, start_max + 1):
+                e = s + L - 1
+                has_unknown = False
+                valid = True
+                for rr in range(s, e + 1):
+                    v = board[rr][c]
+                    if v == -1:
+                        valid = False
+                        break
+                    if v == 0:
+                        has_unknown = True
+                if valid and has_unknown:
+                    return True
+        return False
+
+
+def _score_target_mode(board, scores, active_h, active_v):
+    # Horizontal candidate segments.
+    for L in SHIP_LENGTHS:
+        for r in range(N):
+            for c0 in range(N - L + 1):
+                c1 = c0 + L - 1
+
+                # Must not cut through a known horizontal run.
+                if c0 > 0 and board[r][c0] == 1 and board[r][c0 - 1] == 1:
+                    continue
+                if c1 + 1 < N and board[r][c1] == 1 and board[r][c1 + 1] == 1:
+                    continue
+
+                unknown_cells = []
+                hit_count = 0
+                valid = True
+
+                for c in range(c0, c1 + 1):
+                    v = board[r][c]
+                    if v == -1:
+                        valid = False
+                        break
+                    if v == 0:
+                        unknown_cells.append((r, c))
+                    elif v == 1:
+                        if not active_h[r][c]:
+                            valid = False
+                            break
+                        hit_count += 1
+
+                if valid and hit_count > 0 and unknown_cells:
+                    w = (HIT_BOOST ** hit_count) / (len(unknown_cells) ** 0.75)
+                    for rr, cc in unknown_cells:
+                        scores[rr][cc] += w
+
+    # Vertical candidate segments.
+    for L in SHIP_LENGTHS:
+        for c in range(N):
+            for r0 in range(N - L + 1):
+                r1 = r0 + L - 1
+
+                # Must not cut through a known vertical run.
+                if r0 > 0 and board[r0][c] == 1 and board[r0 - 1][c] == 1:
+                    continue
+                if r1 + 1 < N and board[r1][c] == 1 and board[r1 + 1][c] == 1:
+                    continue
+
+                unknown_cells = []
+                hit_count = 0
+                valid = True
+
+                for r in range(r0, r1 + 1):
+                    v = board[r][c]
+                    if v == -1:
+                        valid = False
+                        break
+                    if v == 0:
+                        unknown_cells.append((r, c))
+                    elif v == 1:
+                        if not active_v[r][c]:
+                            valid = False
+                            break
+                        hit_count += 1
+
+                if valid and hit_count > 0 and unknown_cells:
+                    w = (HIT_BOOST ** hit_count) / (len(unknown_cells) ** 0.75)
+                    for rr, cc in unknown_cells:
+                        scores[rr][cc] += w
+
+
+def _add_run_bonuses(board, scores, active_h, active_v):
+    # Horizontal active runs.
+    for r in range(N):
+        c = 0
+        while c < N:
+            if board[r][c] == 1 and active_h[r][c]:
+                start = c
+                while c + 1 < N and board[r][c + 1] == 1 and active_h[r][c + 1]:
+                    c += 1
+                end = c
+                run_len = end - start + 1
+
+                if run_len >= 2:
+                    if start - 1 >= 0 and board[r][start - 1] == 0:
+                        scores[r][start - 1] += RUN_BONUS * run_len
+                    if end + 1 < N and board[r][end + 1] == 0:
+                        scores[r][end + 1] += RUN_BONUS * run_len
+                else:
+                    if start - 1 >= 0 and board[r][start - 1] == 0:
+                        scores[r][start - 1] += ISOLATED_BONUS
+                    if start + 1 < N and board[r][start + 1] == 0:
+                        scores[r][start + 1] += ISOLATED_BONUS
+                c += 1
+            else:
+                c += 1
+
+    # Vertical active runs.
+    for c in range(N):
+        r = 0
+        while r < N:
+            if board[r][c] == 1 and active_v[r][c]:
+                start = r
+                while r + 1 < N and board[r + 1][c] == 1 and active_v[r + 1][c]:
+                    r += 1
+                end = r
+                run_len = end - start + 1
+
+                if run_len >= 2:
+                    if start - 1 >= 0 and board[start - 1][c] == 0:
+                        scores[start - 1][c] += RUN_BONUS * run_len
+                    if end + 1 < N and board[end + 1][c] == 0:
+                        scores[end + 1][c] += RUN_BONUS * run_len
+                else:
+                    if start - 1 >= 0 and board[start - 1][c] == 0:
+                        scores[start - 1][c] += ISOLATED_BONUS
+                    if start + 1 < N and board[start + 1][c] == 0:
+                        scores[start + 1][c] += ISOLATED_BONUS
+                r += 1
+            else:
+                r += 1
+
+
+def _score_hunt_mode(board, scores):
+    # In hunt mode, assume unresolved hits do not need extension.
+    # Remaining ships must fit entirely in unknown cells.
+    for L in SHIP_LENGTHS:
+        # Horizontal placements.
+        for r in range(N):
+            for c0 in range(N - L + 1):
+                valid = True
+                for c in range(c0, c0 + L):
+                    if board[r][c] != 0:
+                        valid = False
+                        break
+                if valid:
+                    for c in range(c0, c0 + L):
+                        scores[r][c] += 1.0
+
+        # Vertical placements.
+        for c in range(N):
+            for r0 in range(N - L + 1):
+                valid = True
+                for r in range(r0, r0 + L):
+                    if board[r][c] != 0:
+                        valid = False
+                        break
+                if valid:
+                    for r in range(r0, r0 + L):
+                        scores[r][c] += 1.0
+
+
+def _apply_parity_preference(board, scores, unknowns):
+    # Checkerboard is strong while many cells remain because the smallest ship length is 2.
+    if len(unknowns) <= 20:
+        return
+
+    even_sum = 0.0
+    odd_sum = 0.0
+    even_count = 0
+    odd_count = 0
+
+    for r, c in unknowns:
+        if (r + c) & 1:
+            odd_sum += scores[r][c]
+            odd_count += 1
+        else:
+            even_sum += scores[r][c]
+            even_count += 1
+
+    preferred = 0 if even_sum >= odd_sum else 1
+    preferred_exists = False
+    for r, c in unknowns:
+        if ((r + c) & 1) == preferred:
+            preferred_exists = True
+            break
+
+    if not preferred_exists:
+        return
+
+    for r, c in unknowns:
+        if ((r + c) & 1) != preferred:
+            scores[r][c] *= 0.15

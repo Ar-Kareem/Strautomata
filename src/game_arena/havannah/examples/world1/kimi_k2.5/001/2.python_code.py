@@ -1,0 +1,171 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me, opp, valid_mask):
+    my_set = set(me)
+    opp_set = set(opp)
+    
+    # Initialize cached board properties (computed once)
+    if not hasattr(policy, 'initialized'):
+        policy.valid_set = set()
+        min_r, max_r = 15, -1
+        min_c, max_c = 15, -1
+        min_s, max_s = 30, -1  # s = r + c
+        
+        for r in range(15):
+            for c in range(15):
+                if valid_mask[r][c]:
+                    policy.valid_set.add((r, c))
+                    min_r = min(min_r, r)
+                    max_r = max(max_r, r)
+                    min_c = min(min_c, c)
+                    max_c = max(max_c, c)
+                    s = r + c
+                    min_s = min(min_s, s)
+                    max_s = max(max_s, s)
+        
+        policy.min_r, policy.max_r = min_r, max_r
+        policy.min_c, policy.max_c = min_c, max_c
+        policy.min_s, policy.max_s = min_s, max_s
+        
+        policy.neighbors = {}
+        policy.edge_id = {}
+        
+        # Hex neighbor offsets: same column, left column, right column
+        offsets = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1)]
+        
+        for r in range(15):
+            for c in range(15):
+                if (r, c) not in policy.valid_set:
+                    continue
+                nbs = []
+                for dr, dc in offsets:
+                    nr, nc = r + dr, c + dc
+                    if (nr, nc) in policy.valid_set:
+                        nbs.append((nr, nc))
+                policy.neighbors[(r, c)] = nbs
+                
+                # Assign edge IDs: 0=min_r, 1=max_r, 2=min_c, 3=max_c, 4=min_s, 5=max_s
+                edges = set()
+                s = r + c
+                if r == min_r: edges.add(0)
+                if r == max_r: edges.add(1)
+                if c == min_c: edges.add(2)
+                if c == max_c: edges.add(3)
+                if s == min_s: edges.add(4)
+                if s == max_s: edges.add(5)
+                if edges:
+                    policy.edge_id[(r, c)] = edges
+        
+        policy.initialized = True
+    
+    valid_set = policy.valid_set
+    empty = valid_set - my_set - opp_set
+    
+    if not empty:
+        return (0, 0)
+    
+    def get_edges(cell):
+        return policy.edge_id.get(cell, set())
+    
+    def is_corner(cell):
+        return len(get_edges(cell)) >= 2
+    
+    def check_win(move, player_set):
+        """Check if move creates a win for player"""
+        stones = player_set | {move}
+        
+        # BFS to find connected component
+        queue = deque([move])
+        visited = {move}
+        corners = set()
+        edges_reached = set()
+        
+        if is_corner(move):
+            corners.add(move)
+        edges_reached.update(get_edges(move))
+        
+        while queue:
+            cell = queue.popleft()
+            for nb in policy.neighbors[cell]:
+                if nb in stones and nb not in visited:
+                    visited.add(nb)
+                    queue.append(nb)
+                    if is_corner(nb):
+                        corners.add(nb)
+                    edges_reached.update(get_edges(nb))
+        
+        # Bridge: 2+ corners
+        if len(corners) >= 2:
+            return True
+        
+        # Fork: 3+ distinct edges
+        if len(edges_reached) >= 3:
+            return True
+        
+        # Ring: Check if any empty cell is enclosed (unreachable from boundary)
+        remaining = valid_set - stones
+        if not remaining:
+            return False
+            
+        # Find boundary empty cells (on the edge of the valid region)
+        boundary = [cell for cell in remaining if cell in policy.edge_id]
+        if not boundary:
+            return True  # All empty cells are interior (enclosed)
+        
+        # Flood fill from boundary
+        reachable = set(boundary)
+        queue = deque(boundary)
+        while queue:
+            cell = queue.popleft()
+            for nb in policy.neighbors[cell]:
+                if nb in remaining and nb not in reachable:
+                    reachable.add(nb)
+                    queue.append(nb)
+        
+        # If not all empty cells reachable, some are enclosed -> ring win
+        return len(reachable) < len(remaining)
+    
+    # Priority 1: Find my winning move
+    for move in empty:
+        if check_win(move, my_set):
+            return move
+    
+    # Priority 2: Block opponent winning moves
+    for move in empty:
+        if check_win(move, opp_set):
+            return move
+    
+    # Priority 3: Heuristic evaluation
+    best_move = None
+    best_score = -float('inf')
+    
+    center_r = (policy.min_r + policy.max_r) / 2
+    center_c = (policy.min_c + policy.max_c) / 2
+    
+    for move in empty:
+        r, c = move
+        score = 0
+        
+        # Connectivity: prefer connecting to my stones and blocking opponent
+        my_nbrs = sum(1 for nb in policy.neighbors[move] if nb in my_set)
+        opp_nbrs = sum(1 for nb in policy.neighbors[move] if nb in opp_set)
+        score += my_nbrs * 10
+        score += opp_nbrs * 6
+        
+        # Central control (distance to center)
+        dist = abs(r - center_r) + abs(c - center_c)
+        score -= dist * 0.4
+        
+        # Edge/corner potential for forks and bridges
+        if move in policy.edge_id:
+            score += 3
+            if is_corner(move):
+                score += 4
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move if best_move else list(empty)[0]

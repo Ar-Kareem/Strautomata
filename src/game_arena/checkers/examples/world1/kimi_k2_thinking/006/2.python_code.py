@@ -1,0 +1,227 @@
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Checkers policy with aggressive capture priority and smart positional play.
+    """
+    # Setup fast lookup structures
+    my_men_set = set(my_men)
+    my_kings_set = set(my_kings)
+    my_pieces = my_men_set | my_kings_set
+    
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+    opp_pieces = opp_men_set | opp_kings_set
+    
+    occupied = my_pieces | opp_pieces
+    
+    # Phase 1: Find all capture sequences
+    capture_options = []
+    
+    # Check all men for captures
+    for pos in my_men_set:
+        captures = _find_captures(pos, 'man', color, my_pieces, opp_pieces, set())
+        capture_options.extend([(pos, end, path) for end, path in captures])
+    
+    # Check all kings for captures
+    for pos in my_kings_set:
+        captures = _find_captures(pos, 'king', color, my_pieces, opp_pieces, set())
+        capture_options.extend([(pos, end, path) for end, path in captures])
+    
+    # Select best capture if available
+    if capture_options:
+        return _select_best_capture(capture_options, opp_kings_set)
+    
+    # Phase 2: No captures - evaluate simple moves
+    simple_moves = []
+    
+    # Collect all simple moves for men
+    for pos in my_men_set:
+        moves = _get_simple_moves(pos, 'man', color, occupied)
+        simple_moves.extend([(pos, end) for end in moves])
+    
+    # Collect all simple moves for kings
+    for pos in my_kings_set:
+        moves = _get_simple_moves(pos, 'king', color, occupied)
+        simple_moves.extend([(pos, end) for end in moves])
+    
+    if not simple_moves:
+        # Emergency fallback (should never happen)
+        return ((0, 0), (0, 0))
+    
+    # Evaluate and select best simple move
+    return _evaluate_simple_moves(simple_moves, my_pieces, opp_pieces, opp_kings_set, 
+                                 my_men_set, my_kings_set, color)
+
+
+def _find_captures(pos, piece_type, color, my_pieces, opp_pieces, jumped):
+    """
+    Recursively find all capture sequences from a position.
+    Returns list of (end_position, [captured_positions]).
+    """
+    r, c = pos
+    captures = []
+    
+    # Determine movement directions
+    if piece_type == 'king':
+        dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    else:
+        dirs = [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]
+    
+    found_any = False
+    for dr, dc in dirs:
+        adj = (r + dr, c + dc)
+        land = (r + 2*dr, c + 2*dc)
+        
+        # Valid jump?
+        if (adj in opp_pieces and adj not in jumped and 
+            0 <= land[0] < 8 and 0 <= land[1] < 8 and 
+            land not in my_pieces and land not in opp_pieces):
+            
+            found_any = True
+            new_jumped = jumped | {adj}
+            
+            # Continue searching from landing square
+            further_captures = _find_captures(land, piece_type, color, my_pieces, opp_pieces, new_jumped)
+            
+            if further_captures:
+                for end_pos, path in further_captures:
+                    captures.append((end_pos, [adj] + path))
+            else:
+                captures.append((land, [adj]))
+    
+    return captures
+
+
+def _get_simple_moves(pos, piece_type, color, occupied):
+    """
+    Get all simple (non-capture) moves from a position.
+    """
+    r, c = pos
+    moves = []
+    
+    if piece_type == 'king':
+        dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    else:
+        dirs = [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]
+    
+    for dr, dc in dirs:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in occupied:
+            moves.append((nr, nc))
+    
+    return moves
+
+
+def _select_best_capture(capture_options, opp_kings_set):
+    """
+    Select capture sequence with most pieces, preferring kings.
+    """
+    best_move = None
+    best_score = -1
+    
+    for start, end, path in capture_options:
+        # Score: kings worth 3, men worth 1
+        score = sum(3 if pos in opp_kings_set else 1 for pos in path)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (start, end)
+        elif score == best_score:
+            # Tie-break: prefer non-edge destinations
+            if best_move and _edge_distance(end) > _edge_distance(best_move[1]):
+                best_move = (start, end)
+    
+    return best_move
+
+
+def _evaluate_simple_moves(moves, my_pieces, opp_pieces, opp_kings_set, 
+                          my_men_set, my_kings_set, color):
+    """
+    Evaluate all simple moves and return the best one.
+    """
+    best_move = None
+    best_score = -float('inf')
+    
+    for start, end in moves:
+        score = 0
+        
+        # 1. Advancement bonus for men
+        if start in my_men_set:
+            if color == 'b':
+                # Black moves down: lower row is better
+                score += max(0, (start[0] - end[0]) * 0.5)
+            else:
+                # White moves up: higher row is better
+                score += max(0, (end[0] - start[0]) * 0.5)
+        
+        # 2. Centralization bonus
+        score += _center_bonus(end)
+        
+        # 3. King back-rank bonus (keep kings safe)
+        if start in my_kings_set and start[0] in (0, 7):
+            score += 0.3
+        
+        # 4. Safety penalty: avoid moves into capture
+        temp_my = my_pieces.copy()
+        temp_my.remove(start)
+        temp_my.add(end)
+        
+        if _can_be_captured(end, temp_my, opp_pieces, opp_kings_set, color):
+            score -= 5.0
+        
+        if score > best_score:
+            best_score = score
+            best_move = (start, end)
+    
+    return best_move if best_move else moves[0]
+
+
+def _center_bonus(pos):
+    """Calculate centralization bonus for a position."""
+    r, c = pos
+    # Manhattan distance from center (3.5, 3.5)
+    dist = abs(r - 3.5) + abs(c - 3.5)
+    return max(0, (7 - dist) * 0.1)
+
+
+def _edge_distance(pos):
+    """Calculate distance from edge (for tie-breaking)."""
+    r, c = pos
+    return min(r, 7-r, c, 7-c)
+
+
+def _can_be_captured(pos, my_pieces, opp_pieces, opp_kings_set, color):
+    """
+    Check if a piece at pos can be captured by opponent next turn.
+    """
+    r, c = pos
+    opp_color = 'w' if color == 'b' else 'b'
+    
+    # Check opponent men (forward only)
+    if opp_color == 'b':
+        dirs = [(-1, -1), (-1, 1)]
+    else:
+        dirs = [(1, -1), (1, 1)]
+    
+    for dr, dc in dirs:
+        attacker = (r + dr, c + dc)
+        if attacker in opp_pieces and attacker not in opp_kings_set:
+            landing = (r - dr, c - dc)
+            if _is_valid_square(landing) and landing not in my_pieces and landing not in opp_pieces:
+                return True
+    
+    # Check opponent kings (all directions)
+    for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+        attacker = (r + dr, c + dc)
+        if attacker in opp_kings_set:
+            landing = (r - dr, c - dc)
+            if _is_valid_square(landing) and landing not in my_pieces and landing not in opp_pieces:
+                return True
+    
+    return False
+
+
+def _is_valid_square(pos):
+    """Check if a square is within the board."""
+    r, c = pos
+    return 0 <= r < 8 and 0 <= c < 8

@@ -1,0 +1,96 @@
+<thinking>
+To create an effective targeting policy for Battleship, we need a strategy that efficiently searches for and sinks all enemy ships. Here's the approach I'll take:
+
+1. **Initial Random Search**: At the start when the board is mostly unknown, we'll randomly select cells to fire at. This helps cover the board quickly.
+
+2. **Targeted Search After Hit**: When we hit a ship (cell value = 1), we need to determine the ship's orientation (horizontal or vertical) and sink it completely:
+   - Check adjacent cells to find the direction of the ship
+   - Continue firing in that direction until we sink the ship
+
+3. **Probability Density**: For more efficient searching when no hits are present, we can calculate probabilities for ship placement:
+   - Ships can't overlap, so we'll favor cells that could contain longer remaining ships
+   - We'll use a heatmap approach where each cell gets a score based on possible ship placements
+
+4. **Edge Cases Handling**:
+   - Ensure we don't fire at the same cell twice
+   - Handle cases where multiple hits might indicate separate ships
+   - Efficiently switch between random and targeted search
+
+The implementation will:
+- First check for any existing hits that need follow-up shots
+- If no hits, use probability-based targeting
+- Maintain efficiency within the time constraints
+
+This strategy balances between random exploration and targeted exploitation, adapting as we gain more information about enemy ship positions.
+</thinking>
+
+<code>
+import numpy as np
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert board to numpy array for easier manipulation
+    board = np.array(board)
+    rows, cols = board.shape
+    
+    # First, check for any existing hits that need follow-up
+    hit_positions = np.argwhere(board == 1)
+    
+    if len(hit_positions) > 0:
+        # Try to find adjacent hits to determine ship orientation
+        for (r, c) in hit_positions:
+            # Check horizontal possibilities
+            if c > 0 and board[r, c-1] == 1:
+                # Try to extend right
+                if c < cols - 1 and board[r, c+1] == 0:
+                    return (r, c+1)
+                # Try to extend left
+                if c > 1 and board[r, c-2] == 0:
+                    return (r, c-2)
+            # Check vertical possibilities
+            if r > 0 and board[r-1, c] == 1:
+                # Try to extend down
+                if r < rows - 1 and board[r+1, c] == 0:
+                    return (r+1, c)
+                # Try to extend up
+                if r > 1 and board[r-2, c] == 0:
+                    return (r-2, c)
+            
+            # If single hit, check all adjacent cells
+            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < rows and 0 <= nc < cols and board[nr, nc] == 0:
+                    return (nr, nc)
+    
+    # If no hits to follow up, create probability density
+    heatmap = np.zeros((rows, cols))
+    ship_sizes = [5, 4, 3, 3, 2]  # Remaining ship sizes (simplified)
+    
+    for size in ship_sizes:
+        # Check horizontal placements
+        for r in range(rows):
+            for c in range(cols - size + 1):
+                if np.all(board[r, c:c+size] <= 0):  # No hits or misses in this segment
+                    heatmap[r, c:c+size] += 1
+        
+        # Check vertical placements
+        for c in range(cols):
+            for r in range(rows - size + 1):
+                if np.all(board[r:r+size, c] <= 0):  # No hits or misses in this segment
+                    heatmap[r:r+size, c] += 1
+    
+    # Zero out already fired cells
+    heatmap[board != 0] = 0
+    
+    if np.max(heatmap) > 0:
+        # Find all cells with max probability
+        max_val = np.max(heatmap)
+        candidates = np.argwhere(heatmap == max_val)
+        # Randomly select among best candidates
+        r, c = random.choice(candidates)
+        return (r, c)
+    else:
+        # Fallback to random selection if no good probability found
+        unknown = np.argwhere(board == 0)
+        return tuple(random.choice(unknown))
+</code>

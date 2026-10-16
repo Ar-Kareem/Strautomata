@@ -1,0 +1,158 @@
+### Strategy for this Kalah Policy
+
+The strategy I'll implement is a **hybrid approach** combining elements of:
+1. **Simple heuristics** (like avoiding moves that leave the opponent with a winning position)
+2. **Balanced play** (distributing seeds evenly to prevent opponent advantages)
+3. **Aggressive captures** (maximizing seed collection when possible)
+4. **Defensive moves** (blocking opponent captures or forcing them into weak positions)
+5. **Endgame optimization** (prioritizing moves that maximize the store difference when the game is near its end)
+
+#### Key Rules:
+1. **Never leave opponent with a single house full of seeds** (unless it's unavoidable) to prevent them from capturing all seeds in their next move.
+2. **Prioritize capturing moves** (if the last seed lands in an empty house and the opponent has seeds in the opposite house, capture).
+3. **Balance the board** by avoiding moves that create large disparities in seed counts between your houses.
+4. **Avoid moves that give the opponent an extra turn** (e.g., moves where the last seed lands in their store).
+5. **Endgame focus**: When you have few seeds left, prioritize moves that maximize your store advantage.
+6. **Randomness for unpredictability**: Add a small random factor to avoid being exploitable by opponent policies.
+
+#### Implementation Details:
+- The policy will first check for **capturing opportunities** (high-priority moves).
+- If no captures are possible, it will evaluate **non-capturing moves** based on:
+  - **Board balance** (avoiding moves that make your houses too uneven).
+  - **Opponent's potential captures** (avoiding moves that leave them with an easy capture).
+  - **Store advantage** (prioritizing moves that increase your store relative to theirs).
+- If the game is in the **endgame** (few seeds left), it will prioritize moves that maximize the store difference.
+- A small **randomness factor** (e.g., 10% chance) will be added to avoid predictability.
+
+---
+
+### Python Source Code for the Policy
+```python
+import random
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Check if the game is in the endgame (few seeds left)
+    endgame = sum(you[0:6]) <= 6 or sum(opponent[0:6]) <= 6
+
+    # Get all legal moves (houses with seeds)
+    legal_moves = [i for i in range(6) if you[i] > 0]
+
+    # If no legal moves, return any (though problem states policy is never called in this case)
+    if not legal_moves:
+        return random.choice(range(6))
+
+    # Evaluate all possible moves
+    scores = []
+    for move in legal_moves:
+        # Simulate the move to compute the score
+        score = evaluate_move(you, opponent, move, endgame)
+        scores.append(score)
+
+    # Choose the move with the highest score, with randomness to avoid predictability
+    best_move = random.choices(legal_moves, weights=[max(0.1, s) for s in scores], k=1)[0]
+
+    return best_move
+
+def evaluate_move(you: list[int], opponent: list[int], move: int, endgame: bool) -> float:
+    # Make a copy of the board to simulate the move
+    you_copy = you.copy()
+    opponent_copy = opponent.copy()
+
+    # Remove all seeds from the chosen house
+    seeds = you_copy[move]
+    you_copy[move] = 0
+
+    # Sow seeds one by one
+    i = move
+    while seeds > 0:
+        i = (i + 1) % 14  # 6 houses + store + 6 houses = 13, but modulo 14 to handle store correctly
+        if i == 6:  # Your store
+            you_copy[i] += 1
+        elif i == 13:  # Wrap around to your houses
+            i = 0
+            you_copy[i] += 1
+        elif i < 6:  # Your houses (after move)
+            you_copy[i] += 1
+        else:  # Opponent's houses (i ranges 7..12)
+            opponent_copy[i - 7] += 1
+
+        seeds -= 1
+
+    # Check if the last seed landed in your store (extra move)
+    if i == 6:
+        return float('inf')  # Extra move is very valuable
+
+    # Check for captures (if last seed landed in empty house and opponent has seeds in opposite house)
+    if seeds == 0 and you_copy[i] == 1 and opponent_copy[5 - (i % 6)] > 0:
+        # Capture all seeds from opponent's opposite house and the current house
+        captured = you_copy[i] + opponent_copy[5 - (i % 6)]
+        you_copy[i] = 0
+        opponent_copy[5 - (i % 6)] = 0
+        you_copy[6] += captured
+        return float('inf')  # Capture is very valuable
+
+    # Compute the score for this move
+    score = 0.0
+
+    # Board balance: avoid making your houses too uneven
+    your_house_variance = sum((you_copy[i] - you_copy[6] / 6) ** 2 for i in range(6))
+    score += -your_house_variance  # Lower variance is better
+
+    # Opponent's potential captures: avoid moves that leave them with an easy capture
+    for opp_move in range(6):
+        if opponent_copy[opp_move] > 0:
+            # Simulate opponent's move (for simplicity, assume they capture if possible)
+            seeds = opponent_copy[opp_move]
+            opponent_copy[opp_move] = 0
+            j = opp_move
+            while seeds > 0:
+                j = (j + 1) % 14
+                if j == 6:  # Opponent's store
+                    opponent_copy[j] += 1
+                elif j == 13:  # Wrap around to opponent's houses
+                    j = 7
+                    opponent_copy[j - 7] += 1
+                elif j < 6:  # Your houses (if opponent sows into them)
+                    you_copy[j] += 1
+                else:  # Opponent's houses
+                    opponent_copy[j - 7] += 1
+                seeds -= 1
+
+            # Check if opponent can capture in their move
+            if seeds == 0 and opponent_copy[j] == 1 and you_copy[5 - ((j % 6) if j < 6 else (j - 7) % 6)] > 0:
+                # Opponent can capture, so penalize this move
+                score -= 10.0
+            opponent_copy[opp_move] = opponent_copy[opp_move] + seeds  # Revert
+
+    # Store advantage: prioritize moves that increase your store relative to theirs
+    store_diff = you_copy[6] - opponent_copy[6]
+    score += store_diff * 0.1  # Small weight to avoid overfitting
+
+    # Endgame: prioritize moves that maximize your store advantage
+    if endgame:
+        score += sum(you_copy[0:6]) * 0.5  # More seeds left = better chance to win
+
+    return score
+```
+
+---
+
+### Explanation of the Code:
+1. **`policy` function**:
+   - Determines if the game is in the endgame (few seeds left).
+   - Collects all legal moves (houses with seeds).
+   - Evaluates each move using `evaluate_move` and selects the best one with a small randomness factor to avoid predictability.
+
+2. **`evaluate_move` function**:
+   - Simulates the move by sowing seeds from the chosen house.
+   - Checks for **extra moves** (if the last seed lands in your store) or **captures** (if the last seed lands in an empty house and the opponent has seeds in the opposite house). Both are scored as `float('inf')` (very high priority).
+   - Computes a **score** based on:
+     - **Board balance** (lower variance in your house counts is better).
+     - **Opponent's potential captures** (penalizes moves that leave the opponent with an easy capture).
+     - **Store advantage** (prioritizes moves that increase your store relative to theirs).
+     - **Endgame focus** (if few seeds are left, prioritizes moves that maximize your remaining seeds).
+
+3. **Randomness**:
+   - Uses `random.choices` with weights to add a small random factor (10%) to avoid being exploitable by opponent policies.
+
+This strategy should perform well against other policies by balancing aggression (captures) and defense (avoiding opponent captures) while adapting to the endgame.

@@ -1,0 +1,148 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    import random
+    
+    BOARD_SIZE = 19
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+    
+    def is_valid(r, c):
+        return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+    
+    def get_neighbors(r, c):
+        neighbors = []
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if is_valid(nr, nc):
+                neighbors.append((nr, nc))
+        return neighbors
+    
+    def get_group_and_liberties(r, c, stone_set):
+        """Get all stones in group and liberties"""
+        group = set()
+        liberties = set()
+        stack = [(r, c)]
+        
+        while stack:
+            curr = stack.pop()
+            if curr in group:
+                continue
+            group.add(curr)
+            
+            for neighbor in get_neighbors(curr[0], curr[1]):
+                if neighbor in stone_set and neighbor not in group:
+                    stack.append(neighbor)
+                elif neighbor not in occupied:
+                    liberties.add(neighbor)
+        
+        return group, liberties
+    
+    def is_legal_move(r, c):
+        """Check if move is legal (basic check)"""
+        if not is_valid(r, c) or (r, c) in occupied:
+            return False
+        
+        # Check if move has liberties or captures something
+        temp_occupied = occupied | {(r, c)}
+        has_liberty = False
+        
+        for neighbor in get_neighbors(r, c):
+            if neighbor not in temp_occupied:
+                has_liberty = True
+                break
+            elif neighbor in opp_set:
+                # Check if this captures opponent
+                _, opp_libs = get_group_and_liberties(neighbor[0], neighbor[1], opp_set)
+                if len(opp_libs) == 1 and (r, c) in opp_libs:
+                    return True
+        
+        if has_liberty:
+            return True
+        
+        # Check if we'd be part of a group with liberties
+        for neighbor in get_neighbors(r, c):
+            if neighbor in me_set:
+                _, libs = get_group_and_liberties(neighbor[0], neighbor[1], me_set | {(r, c)})
+                if len(libs) > 0:
+                    return True
+        
+        return False
+    
+    def score_move(r, c):
+        """Score a potential move"""
+        score = 0.0
+        
+        # Check for saving our groups in atari
+        for neighbor in get_neighbors(r, c):
+            if neighbor in me_set:
+                group, libs = get_group_and_liberties(neighbor[0], neighbor[1], me_set)
+                if len(libs) == 1:  # In atari
+                    score += 10000 * len(group)
+        
+        # Check for capturing opponent stones
+        captured = 0
+        for neighbor in get_neighbors(r, c):
+            if neighbor in opp_set:
+                group, libs = get_group_and_liberties(neighbor[0], neighbor[1], opp_set)
+                if len(libs) == 1:  # Would capture
+                    captured += len(group)
+                    score += 5000 * len(group)
+                elif len(libs) == 2:  # Put in atari
+                    score += 1000 * len(group)
+        
+        # Positional value (corners and star points)
+        star_points = [(4, 4), (4, 10), (4, 16), (10, 4), (10, 10), (10, 16), (16, 4), (16, 10), (16, 16)]
+        if (r, c) in star_points and len(me) < 10:
+            score += 500
+        
+        # Corner and edge preference early game
+        if len(me) < 30:
+            dist_from_edge = min(r - 1, BOARD_SIZE - r, c - 1, BOARD_SIZE - c)
+            if dist_from_edge <= 3:
+                score += 100 - dist_from_edge * 10
+        
+        # Influence: nearby friendly stones
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = r + dr, c + dc
+                if is_valid(nr, nc):
+                    dist = abs(dr) + abs(dc)
+                    if dist > 0:
+                        if (nr, nc) in me_set:
+                            score += 20 / dist
+                        elif (nr, nc) in opp_set:
+                            score += 15 / dist  # Also value being near opponent
+        
+        # Liberties after move
+        temp_me = me_set | {(r, c)}
+        group, libs = get_group_and_liberties(r, c, temp_me)
+        score += len(libs) * 10
+        
+        # Small random factor for variety
+        score += random.random() * 5
+        
+        return score
+    
+    # Get all legal moves
+    legal_moves = []
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if is_legal_move(r, c):
+                legal_moves.append((r, c))
+    
+    if not legal_moves:
+        return (0, 0)  # Pass if no legal moves
+    
+    # For first few moves, prefer star points
+    if len(me) == 0:
+        return (4, 4)
+    elif len(me) == 1 and len(opponent) <= 1:
+        candidates = [(16, 16), (4, 16), (16, 4)]
+        for pos in candidates:
+            if pos in legal_moves:
+                return pos
+    
+    # Score all legal moves
+    best_move = max(legal_moves, key=lambda pos: score_move(pos[0], pos[1]))
+    return best_move

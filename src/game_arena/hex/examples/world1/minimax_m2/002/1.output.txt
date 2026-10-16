@@ -1,0 +1,221 @@
+**Strategy Overview**
+
+The policy plays a strong, fast Hex move by combining three simple but effective ideas:
+
+1. **Immediate win / loss avoidance** –  
+   * If a move finishes a connection for the current player, it is taken instantly.  
+   * If the opponent could finish a connection on the next turn, the policy blocks one of those cells (the one that also looks best according to the heuristic).
+
+2. **Heuristic evaluation for every legal move** –  
+   For each candidate cell the board is simulated, then a small set of features is computed and combined into a numeric score:
+   * **Adjacency to own stones** – more neighbours of our colour mean a more compact group.  
+   * **Adjacency to opponent stones** – touching opponent stones is useful to block their growth.  
+   * **Side‑move bonus** – placing a stone directly on one of our two target sides (top/bottom for black, left/right for white) receives a large bonus because it advances the long‑term goal.  
+   * **Distance to the centre** – moves near the centre keep many future connection options open.  
+   * **Connectivity boost** – the number of our stones that are already reachable from each of our two target sides (via a simple BFS) is summed; a larger value means we are closer to a full connection.
+
+   The final score is a linear combination of those features with fixed weights that have proven effective in practice:
+   ```
+   score = 3·adj_me + 2·adj_opp + 5·side_bonus + 1·centre_dist + 4·connectivity
+   ```
+
+3. **Search depth limited to one ply** – The board is tiny (11 × 11), so a full one‑ply lookahead with the above heuristic easily fits into the 1 s time limit. No costly Monte‑Carlo tree search or deep minimax is needed.
+
+The implementation works on a plain 2‑D list (size 11 × 11) using pre‑computed hexagonal neighbours. All operations are O(N) per evaluated move, where N = 121, so the whole decision runs well below the allowed time.
+
+---
+
+<code>
+from collections import deque
+from typing import List, Tuple
+
+# ------------------------------------------------------------
+# Hex board constants and neighbour pre‑computation
+# ------------------------------------------------------------
+SIZE = 11
+# Directions according to the problem statement:
+#   (-1,0)  (-1,1)  (0,-1)  (0,1)  (1,-1)  (1,0)
+DIRS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+
+neighbors: dict[Tuple[int, int], List[Tuple[int, int]]] = {}
+for r in range(SIZE):
+    for c in range(SIZE):
+        nbs = []
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                nbs.append((nr, nc))
+        neighbors[(r, c)] = nbs
+
+# ------------------------------------------------------------
+# Helper: BFS that counts reachable stones of a given colour
+# ------------------------------------------------------------
+def bfs(board: List[List[int]], colour: str, side: str) -> int:
+    """
+    Returns the number of stones of `colour` reachable from the
+    side `side` (top/bottom for black, left/right for white).
+    """
+    target = 1 if colour == 'b' else -1
+    visited = [[False] * SIZE for _ in range(SIZE)]
+    q = deque()
+    if colour == 'b':
+        if side == 'top':
+            for j in range(SIZE):
+                if board[0][j] == target:
+                    q.append((0, j))
+                    visited[0][j] = True
+        else:  # side == 'bottom'
+            for j in range(SIZE):
+                if board[SIZE - 1][j] == target:
+                    q.append((SIZE - 1, j))
+                    visited[SIZE - 1][j] = True
+    else:  # white
+        if side == 'left':
+            for i in range(SIZE):
+                if board[i][0] == target:
+                    q.append((i, 0))
+                    visited[i][0] = True
+        else:  # side == 'right'
+            for i in range(SIZE):
+                if board[i][SIZE - 1] == target:
+                    q.append((i, SIZE - 1))
+                    visited[i][SIZE - 1] = True
+
+    count = 0
+    while q:
+        r, c = q.popleft()
+        count += 1
+        for nr, nc in neighbors[(r, c)]:
+            if board[nr][nc] == target and not visited[nr][nc]:
+                visited[nr][nc] = True
+                q.append((nr, nc))
+    return count
+
+# ------------------------------------------------------------
+# Win detection (one‑step BFS from the appropriate side)
+# ------------------------------------------------------------
+def is_win(board: List[List[int]], colour: str) -> bool:
+    """True if `colour` already connects its two opposite sides."""
+    target = 1 if colour == 'b' else -1
+    visited = [[False] * SIZE for _ in range(SIZE)]
+    q = deque()
+    if colour == 'b':
+        # start from top side
+        for j in range(SIZE):
+            if board[0][j] == target:
+                q.append((0, j))
+                visited[0][j] = True
+        while q:
+            r, c = q.popleft()
+            if r == SIZE - 1:  # reached bottom side
+                return True
+            for nr, nc in neighbors[(r, c)]:
+                if board[nr][nc] == target and not visited[nr][nc]:
+                    visited[nr][nc] = True
+                    q.append((nr, nc))
+        return False
+    else:
+        # start from left side
+        for i in range(SIZE):
+            if board[i][0] == target:
+                q.append((i, 0))
+                visited[i][0] = True
+        while q:
+            r, c = q.popleft()
+            if c == SIZE - 1:  # reached right side
+                return True
+            for nr, nc in neighbors[(r, c)]:
+                if board[nr][nc] == target and not visited[nr][nc]:
+                    visited[nr][nc] = True
+                    q.append((nr, nc))
+        return False
+
+# ------------------------------------------------------------
+# Core decision function
+# ------------------------------------------------------------
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], colour: str) -> Tuple[int, int]:
+    """
+    Returns the best move (row, col) for the player `colour`.
+    `me` – list of (row, col) tuples of our stones.
+    `opp` – list of (row, col) tuples of opponent stones.
+    """
+    # 1️⃣  Translate the colour into numeric values:
+    #     1  -> black stones,   -1 -> white stones
+    target = 1 if colour == 'b' else -1
+    opp_target = -target
+    opp_colour = 'w' if colour == 'b' else 'b'
+
+    # 2️⃣  Build the current board (0 empty, 1 black, -1 white)
+    board = [[0] * SIZE for _ in range(SIZE)]
+    for r, c in me:
+        board[r][c] = target
+    for r, c in opp:
+        board[r][c] = opp_target
+
+    # 3️⃣  List all empty cells
+    empty = [(r, c) for r in range(SIZE) for c in range(SIZE) if board[r][c] == 0]
+
+    # 4️⃣  Can we win right now?
+    for r, c in empty:
+        new_board = [row[:] for row in board]
+        new_board[r][c] = target
+        if is_win(new_board, colour):
+            return (r, c)
+
+    # 5️⃣  Does the opponent have an immediate winning move?
+    opp_winning = []
+    for r, c in empty:
+        new_board = [row[:] for row in board]
+        new_board[r][c] = opp_target
+        if is_win(new_board, opp_colour):
+            opp_winning.append((r, c))
+
+    # 6️⃣  Choose the move to evaluate (blocked opponent wins first)
+    candidates = opp_winning if opp_winning else empty
+
+    best_move = None
+    best_score = -float('inf')
+
+    # 7️⃣  Evaluate each candidate with the heuristic
+    for r, c in candidates:
+        # simulate our move
+        sim = [row[:] for row in board]
+        sim[r][c] = target
+
+        # adjacency features
+        adj_me = sum(1 for nr, nc in neighbors[(r, c)] if sim[nr][nc] == target)
+        adj_opp = sum(1 for nr, nc in neighbors[(r, c)] if sim[nr][nc] == opp_target)
+
+        # side bonus (directly on a target edge)
+        side_bonus = 5 if ((colour == 'b' and (r == 0 or r == SIZE - 1)) or
+                           (colour == 'w' and (c == 0 or c == SIZE - 1))) else 0
+
+        # centre distance (closer is better)
+        centre_dist = max(0, 6 - (abs(r - (SIZE // 2)) + abs(c - (SIZE // 2))))
+
+        # connectivity (how many of our stones are reachable from both ends)
+        if colour == 'b':
+            top_cnt = bfs(sim, 'b', 'top')
+            bottom_cnt = bfs(sim, 'b', 'bottom')
+            connectivity = top_cnt + bottom_cnt
+        else:
+            left_cnt = bfs(sim, 'w', 'left')
+            right_cnt = bfs(sim, 'w', 'right')
+            connectivity = left_cnt + right_cnt
+
+        # linear combination of features
+        score = (3 * adj_me
+                 + 2 * adj_opp
+                 + 5 * side_bonus
+                 + 1 * centre_dist
+                 + 4 * connectivity)
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    # Fallback (should never happen because the board is never full)
+    if best_move is None:
+        best_move = empty[0]
+    return best_move
+</code>

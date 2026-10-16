@@ -1,0 +1,207 @@
+
+import numpy as np
+
+def policy(pieces, to_play, memory):
+    # Initialize memory if first move
+    if not memory:
+        memory = {
+            'move_count': 0,
+            'last_move': None,
+            'phase': 'opening',  # opening, middlegame, endgame
+            'threats': {}
+        }
+    
+    # Determine color
+    color = 'w' if to_play == 'white' else 'b'
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(pieces, color, memory)
+    
+    # If only one move, return it immediately
+    if len(legal_moves) == 1:
+        return (legal_moves[0], memory)
+    
+    # Game phase detection
+    memory = update_game_phase(pieces, memory)
+    
+    # Check for immediate mates/captures
+    best_move, found = check_winning_moves(pieces, color, legal_moves)
+    if found:
+        memory['last_move'] = best_move
+        memory['move_count'] += 1
+        return (best_move, memory)
+    
+    # Evaluate all moves
+    scored_moves = []
+    for move in legal_moves:
+        score = evaluate_move(pieces, color, move, memory)
+        scored_moves.append((score, move))
+    
+    # Sort moves by score (highest first)
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+    
+    # Update memory
+    best_move = scored_moves[0][1]
+    memory['last_move'] = best_move
+    memory['move_count'] += 1
+    
+    return (best_move, memory)
+
+def generate_legal_moves(pieces, color, memory):
+    # This would be replaced with actual legal move generation
+    # For simplicity, we'll assume it's provided correctly
+    legal_moves = []
+    
+    # Iterate through all pieces of our color
+    for square, piece in pieces.items():
+        if piece[0] == color:
+            # Simplified move generation for illustration
+            piece_type = piece[1]
+            file, rank = square[0], int(square[1])
+            
+            # Generate pseudo-legal moves (would need validation)
+            if piece_type == 'P':  # Pawn
+                direction = 1 if color == 'w' else -1
+                # Forward moves
+                new_rank = rank + direction
+                if 1 <= new_rank <= 8:
+                    new_square = f'{file}{new_rank}'
+                    if new_square not in pieces:
+                        legal_moves.append(f"{square}{new_square}")
+                        # Double move from starting position
+                        if (rank == 2 and color == 'w') or (rank == 7 and color == 'b'):
+                            new_rank = rank + 2*direction
+                            new_square = f'{file}{new_rank}'
+                            if new_square not in pieces:
+                                legal_moves.append(f"{square}{new_square}")
+                    # Captures
+                    for capture_file in [chr(ord(file)-1), chr(ord(file)+1)]:
+                        if 'a' <= capture_file <= 'h':
+                            new_square = f'{capture_file}{new_rank}'
+                            if new_square in pieces and pieces[new_square][0] != color:
+                                legal_moves.append(f"{square}{new_square}")
+            
+            elif piece_type == 'N':  # Knight
+                for dx, dy in [(1,2),(2,1),(-1,2),(-2,1),(1,-2),(2,-1),(-1,-2),(-2,-1)]:
+                    new_file = chr(ord(file) + dx)
+                    new_rank = rank + dy
+                    if 'a' <= new_file <= 'h' and 1 <= new_rank <= 8:
+                        new_square = f'{new_file}{new_rank}'
+                        if new_square not in pieces or pieces[new_square][0] != color:
+                            legal_moves.append(f"{square}{new_square}")
+            
+            # Similar code would be added for other pieces
+    
+    return legal_moves
+
+def update_game_phase(pieces, memory):
+    # Count remaining pieces to determine game phase
+    piece_count = len(pieces)
+    queens = sum(1 for p in pieces.values() if p[1] == 'Q')
+    
+    if piece_count <= 10 or queens == 0:
+        memory['phase'] = 'endgame'
+    elif memory['move_count'] < 10 and queens == 2:
+        memory['phase'] = 'opening'
+    else:
+        memory['phase'] = 'middlegame'
+    return memory
+
+def check_winning_moves(pieces, color, legal_moves):
+    # First check for checkmates
+    for move in legal_moves:
+        test_board = simulate_move(pieces, move)
+        if is_checkmate(test_board, get_opponent(color)):
+            return (move, True)
+    
+    # Then check for winning captures
+    for move in legal_moves:
+        if is_capture(pieces, move):
+            captured_value = get_piece_value(pieces[move[2:4]][1])
+            mover_value = get_piece_value(pieces[move[0:2]][1])
+            if captured_value > mover_value * 0.8:  # Winning capture
+                return (move, True)
+    
+    return (None, False)
+
+def evaluate_move(pieces, color, move, memory):
+    score = 0
+    
+    # Material gain
+    if is_capture(pieces, move):
+        captured_piece = pieces[move[2:4]][1]
+        score += get_piece_value(captured_piece)
+    
+    # Piece development in opening
+    if memory['phase'] == 'opening':
+        moving_piece = pieces[move[0:2]][1]
+        if moving_piece != 'K' and moving_piece != 'P':
+            # Encourage moving pieces from starting squares
+            start_squares = ['a1','b1','c1','d1','e1','f1','g1','h1'] if color == 'w' else ['a8','b8','c8','d8','e8','f8','g8','h8']
+            if move[0:2] in start_squares:
+                score += 0.1
+    
+    # King safety
+    if pieces[move[0:2]] == color + 'K':
+        # Moving king in opening is bad
+        if memory['phase'] == 'opening':
+            score -= 0.5
+        # Moving towards center is bad
+        center_dist = distance_to_center(move[2:4])
+        score -= center_dist * 0.01
+    
+    # Center control
+    center_squares = ['d4','d5','e4','e5']
+    if move[2:4] in center_squares:
+        score += 0.1
+    
+    # Pawn structure
+    if pieces[move[0:2]][1] == 'P':
+        # Avoid isolated pawns
+        if not has_pawn_support(pieces, color, move[2:4]):
+            score -= 0.1
+    
+    return score
+
+def simulate_move(pieces, move):
+    new_pieces = pieces.copy()
+    moving_piece = new_pieces.pop(move[0:2])
+    # Handle captures
+    if move[2:4] in new_pieces:
+        new_pieces.pop(move[2:4])
+    # Handle promotion (simplified)
+    if len(move) > 4:
+        promoted_piece = moving_piece[0] + move[-1].upper()
+        new_pieces[move[2:4]] = promoted_piece
+    else:
+        new_pieces[move[2:4]] = moving_piece
+    return new_pieces
+
+def is_checkmate(board, color):
+    # Simplified - would need to implement complete checkmate detection
+    return False
+
+def is_capture(pieces, move):
+    return move[2:4] in pieces
+
+def get_piece_value(piece_type):
+    values = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1, 'K': 0}
+    return values.get(piece_type, 0)
+
+def get_opponent(color):
+    return 'b' if color == 'w' else 'w'
+
+def distance_to_center(square):
+    file, rank = ord(square[0]) - ord('a'), int(square[1])
+    center_file, center_rank = 3.5, 4.5
+    return np.sqrt((file - center_file)**2 + (rank - center_rank)**2)
+
+def has_pawn_support(pieces, color, square):
+    file, rank = square[0], int(square[1])
+    support_files = [chr(ord(file)-1), chr(ord(file)+1)]
+    for f in support_files:
+        if 'a' <= f <= 'h':
+            support_square = f + str(rank - 1 if color == 'w' else rank + 1)
+            if support_square in pieces and pieces[support_square] == color + 'P':
+                return True
+    return False

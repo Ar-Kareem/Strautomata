@@ -1,0 +1,131 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    # Convert lists to sets for faster lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Define the board size
+    BOARD_SIZE = 8
+    
+    # Evaluation function
+    def evaluate(board_me, board_opp, color):
+        score = 0
+        
+        # Add score for each piece based on its row
+        for row, col in board_me:
+            if color == 'w':
+                score += row  # White wants to move up (to higher row numbers)
+            else:
+                score += (BOARD_SIZE - 1 - row)  # Black wants to move down (to lower row numbers)
+        
+        # Add score for each opponent piece captured
+        score += len(opp) - len(board_opp)
+        
+        # Check for winning condition
+        if color == 'w':
+            if any(row == BOARD_SIZE - 1 for row, col in board_me):
+                return float('inf')
+        else:
+            if any(row == 0 for row, col in board_me):
+                return float('inf')
+                
+        if not board_opp:
+            return float('inf')
+            
+        return score
+    
+    # Move generation function
+    def get_moves(board_me, board_opp, color):
+        moves = []
+        me_set = set(board_me)
+        opp_set = set(board_opp)
+        
+        for row, col in board_me:
+            # Forward move
+            if color == 'w':
+                new_row = row + 1
+            else:
+                new_row = row - 1
+                
+            if 0 <= new_row < BOARD_SIZE and (new_row, col) not in me_set and (new_row, col) not in opp_set:
+                moves.append(((row, col), (new_row, col)))
+            
+            # Diagonal captures
+            for dcol in [-1, 1]:
+                new_col = col + dcol
+                if 0 <= new_col < BOARD_SIZE and (new_row, new_col) in opp_set:
+                    moves.append(((row, col), (new_row, new_col)))
+        
+        return moves
+    
+    # Minimax with alpha-beta pruning
+    def minimax(board_me, board_opp, depth, alpha, beta, maximizing_player):
+        if depth == 0 or not board_me or not board_opp or any(row == (0 if color == 'b' else BOARD_SIZE - 1) for row, col in board_me):
+            return evaluate(board_me, board_opp, color) if maximizing_player else -evaluate(board_opp, board_me, 'w' if color == 'b' else 'b')
+        
+        if maximizing_player:
+            max_eval = float('-inf')
+            moves = get_moves(board_me, board_opp, color)
+            
+            # Order moves: captures first, then forward moves
+            moves.sort(key=lambda x: 1 if x[1] in set(board_opp) else 0, reverse=True)
+            
+            for move in moves:
+                from_pos, to_pos = move
+                new_board_me = [to_pos if pos == from_pos else pos for pos in board_me]
+                new_board_opp = [pos for pos in board_opp if pos != to_pos]
+                
+                eval = minimax(new_board_me, new_board_opp, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            opp_color = 'w' if color == 'b' else 'b'
+            moves = get_moves(board_opp, board_me, opp_color)
+            
+            # Order moves: captures first, then forward moves
+            moves.sort(key=lambda x: 1 if x[1] in set(board_me) else 0, reverse=True)
+            
+            for move in moves:
+                from_pos, to_pos = move
+                new_board_opp = [to_pos if pos == from_pos else pos for pos in board_opp]
+                new_board_me = [pos for pos in board_me if pos != to_pos]
+                
+                eval = minimax(new_board_me, new_board_opp, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Determine search depth based on available time and board complexity
+    depth = 4 if len(me) + len(opp) > 12 else 5
+    
+    # Get all possible moves
+    moves = get_moves(me, opp, color)
+    
+    # Order moves: captures first, then forward moves
+    moves.sort(key=lambda x: 1 if x[1] in set(opp) else 0, reverse=True)
+    
+    # Find the best move
+    best_move = None
+    best_value = float('-inf')
+    
+    for move in moves:
+        from_pos, to_pos = move
+        new_me = [to_pos if pos == from_pos else pos for pos in me]
+        new_opp = [pos for pos in opp if pos != to_pos]
+        
+        move_value = minimax(new_me, new_opp, depth - 1, float('-inf'), float('inf'), False)
+        
+        if move_value > best_value:
+            best_value = move_value
+            best_move = move
+    
+    return best_move

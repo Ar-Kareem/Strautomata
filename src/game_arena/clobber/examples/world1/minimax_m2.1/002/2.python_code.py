@@ -1,0 +1,227 @@
+
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(you: List[int], opponent: List[int]) -> str:
+    """
+    Clobber game AI policy using minimax search with alpha-beta pruning.
+    
+    Args:
+        you: 5x6 array where you[row, col] == 1 means you have a piece
+        opponent: 5x6 array where opponent[row, col] == 1 means opponent has a piece
+    
+    Returns:
+        String move in format 'row,col,dir' where dir is 'U', 'R', 'D', or 'L'
+    """
+    you_board = np.array(you)
+    opponent_board = np.array(opponent)
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(you_board, opponent_board)
+    
+    if not legal_moves:
+        # No legal moves - we lose
+        return ""
+    
+    # Use minimax with iterative deepening for better move ordering
+    best_move = None
+    best_value = -float('inf')
+    
+    # Order moves to improve alpha-beta pruning efficiency
+    ordered_moves = order_moves(you_board, opponent_board, legal_moves)
+    
+    for move in ordered_moves:
+        # Simulate the move
+        new_you, new_opponent = simulate_move(you_board, opponent_board, move)
+        
+        # Evaluate using minimax (opponent will try to minimize our score)
+        value = minimax(new_you, new_opponent, depth=3, alpha=-float('inf'), 
+                       beta=float('inf'), maximizing_player=False)
+        
+        if value > best_value:
+            best_value = value
+            best_move = move
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+
+
+def generate_legal_moves(you_board: np.ndarray, opponent_board: np.ndarray) -> List[Tuple[int, int, str]]:
+    """
+    Generate all legal moves for the current player.
+    
+    Returns:
+        List of tuples (row, col, direction) representing legal moves
+    """
+    legal_moves = []
+    rows, cols = you_board.shape
+    
+    directions = {
+        'U': (-1, 0),
+        'R': (0, 1),
+        'D': (1, 0),
+        'L': (0, -1)
+    }
+    
+    # Find all your pieces
+    for row in range(rows):
+        for col in range(cols):
+            if you_board[row, col] == 1:
+                # Check all four directions
+                for direction, (dr, dc) in directions.items():
+                    new_row, new_col = row + dr, col + dc
+                    
+                    # Check if move is within bounds and captures opponent piece
+                    if (0 <= new_row < rows and 0 <= new_col < cols and 
+                        opponent_board[new_row, new_col] == 1):
+                        legal_moves.append((row, col, direction))
+    
+    return legal_moves
+
+
+def simulate_move(you_board: np.ndarray, opponent_board: np.ndarray, 
+                 move: Tuple[int, int, str]) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Simulate a move and return the new board state.
+    
+    Args:
+        you_board: Current board state for current player
+        opponent_board: Current board state for opponent
+        move: Tuple (row, col, direction)
+    
+    Returns:
+        Tuple of new (you_board, opponent_board) after the move
+    """
+    row, col, direction = move
+    dr, dc = {'U': (-1, 0), 'R': (0, 1), 'D': (1, 0), 'L': (0, -1)}[direction]
+    
+    new_row, new_col = row + dr, col + dc
+    
+    # Create copies to avoid modifying original boards
+    new_you = you_board.copy()
+    new_opponent = opponent_board.copy()
+    
+    # Move piece: remove from start, add to destination
+    new_you[row, col] = 0
+    new_you[new_row, new_col] = 1
+    
+    # Remove captured opponent piece
+    new_opponent[new_row, new_col] = 0
+    
+    return new_you, new_opponent
+
+
+def minimax(you_board: np.ndarray, opponent_board: np.ndarray, depth: int,
+           alpha: float, beta: float, maximizing_player: bool) -> float:
+    """
+    Minimax algorithm with alpha-beta pruning for Clobber game.
+    
+    Args:
+        you_board: Board state for current player (whose turn it is in this context)
+        opponent_board: Board state for the other player
+        depth: Remaining search depth
+        alpha: Alpha value for pruning
+        beta: Beta value for pruning
+        maximizing_player: True if current player is maximizing
+    
+    Returns:
+        Evaluation score of the position
+    """
+    # Check terminal conditions
+    legal_moves = generate_legal_moves(you_board, opponent_board)
+    
+    if depth == 0 or not legal_moves:
+        # Leaf node or no moves available - evaluate position
+        return evaluate_position(you_board, opponent_board, maximizing_player)
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in legal_moves:
+            new_you, new_opponent = simulate_move(you_board, opponent_board, move)
+            eval_score = minimax(new_you, new_opponent, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # Beta cut-off
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            new_you, new_opponent = simulate_move(you_board, opponent_board, move)
+            eval_score = minimax(new_you, new_opponent, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # Alpha cut-off
+        return min_eval
+
+
+def evaluate_position(you_board: np.ndarray, opponent_board: np.ndarray, 
+                     is_maximizing: bool) -> float:
+    """
+    Comprehensive evaluation function for Clobber positions.
+    
+    Args:
+        you_board: Board state for the player to move
+        opponent_board: Board state for the opponent
+        is_maximizing: Whether we're evaluating from maximizing player's perspective
+    
+    Returns:
+        Evaluation score (positive favors current player)
+    """
+    # Material: count pieces
+    you_count = np.sum(you_board)
+    opponent_count = np.sum(opponent_board)
+    material_diff = you_count - opponent_count
+    
+    # Mobility: count legal moves
+    you_moves = len(generate_legal_moves(you_board, opponent_board))
+    opponent_moves = len(generate_legal_moves(opponent_board, you_board))
+    mobility_diff = you_moves - opponent_moves
+    
+    # Central control: count pieces in central 3x4 area
+    rows, cols = you_board.shape
+    center_rows = slice(1, 4)  # rows 1, 2, 3
+    center_cols = slice(1, 5)  # cols 1, 2, 3, 4
+    
+    you_center = np.sum(you_board[center_rows, center_cols])
+    opponent_center = np.sum(opponent_board[center_rows, center_cols])
+    center_control = you_center - opponent_center
+    
+    # Combine factors with appropriate weights
+    score = (100 * material_diff + 
+             20 * mobility_diff + 
+             30 * center_control)
+    
+    # If not evaluating from maximizing perspective, negate the score
+    return -score if not is_maximizing else score
+
+
+def order_moves(you_board: np.ndarray, opponent_board: np.ndarray,
+               moves: List[Tuple[int, int, str]]) -> List[Tuple[int, int, str]]:
+    """
+    Order moves to improve alpha-beta pruning efficiency.
+    Prioritize moves that capture more pieces or lead to better positions.
+    """
+    def move_priority(move: Tuple[int, int, str]) -> float:
+        row, col, direction = move
+        
+        # Prioritize captures that leave the piece in a better position
+        dr, dc = {'U': (-1, 0), 'R': (0, 1), 'D': (1, 0), 'L': (0, -1)}[direction]
+        new_row, new_col = row + dr, col + dc
+        
+        # Prefer moves toward center
+        center_row, center_col = 2, 2.5
+        center_dist_before = abs(row - center_row) + abs(col - center_col)
+        center_dist_after = abs(new_row - center_row) + abs(new_col - center_col)
+        center_bonus = center_dist_before - center_dist_after
+        
+        # Bonus for having more moves after the capture
+        new_you = you_board.copy()
+        new_you[row, col] = 0
+        new_you[new_row, new_col] = 1
+        future_moves = len(generate_legal_moves(new_you, opponent_board))
+        
+        return center_bonus * 10 + future_moves
+    
+    # Sort moves by priority (descending)
+    return sorted(moves, key=move_priority, reverse=True)

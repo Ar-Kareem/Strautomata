@@ -1,0 +1,102 @@
+The strategy for this policy is:
+1. Generate all legal moves from the current position using the `chess` library, with heuristic castling rights based on piece placement.
+2. Prioritize checkmate moves if available.
+3. For other moves, evaluate the resulting position using:
+   - Material advantage (pawn=1, knight/bishop=3, rook=5, queen=9)
+   - Mobility bonus for the opponent (number of legal moves)
+   - Check bonus (+100 if opponent is in check)
+4. Select the move with the highest evaluation for white, or lowest for black.
+
+This approach balances material, king safety, and tactical opportunities while maintaining efficiency for the 1-second time constraint.
+<code>
+import chess
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # Create an empty board and set pieces
+    board = chess.Board.empty()
+    for square, piece_str in pieces.items():
+        board.set_piece_at(chess.parse_square(square), chess.Piece.from_symbol(piece_str))
+    
+    # Set castling rights heuristically
+    if board.king(chess.WHITE) == chess.E1:
+        if (board.piece_at(chess.H1) is not None and 
+            board.piece_at(chess.H1).color == chess.WHITE and 
+            board.piece_at(chess.H1).piece_type == chess.ROOK):
+            board.castling_rights |= chess.CASTLING_RIGHT_WK
+        if (board.piece_at(chess.A1) is not None and 
+            board.piece_at(chess.A1).color == chess.WHITE and 
+            board.piece_at(chess.A1).piece_type == chess.ROOK):
+            board.castling_rights |= chess.CASTLING_RIGHT_WQ
+    if board.king(chess.BLACK) == chess.E8:
+        if (board.piece_at(chess.H8) is not None and 
+            board.piece_at(chess.H8).color == chess.BLACK and 
+            board.piece_at(chess.H8).piece_type == chess.ROOK):
+            board.castling_rights |= chess.CASTLING_RIGHT_BK
+        if (board.piece_at(chess.A8) is not None and 
+            board.piece_at(chess.A8).color == chess.BLACK and 
+            board.piece_at(chess.A8).piece_type == chess.ROOK):
+            board.castling_rights |= chess.CASTLING_RIGHT_BQ
+    
+    # Set turn
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+    
+    # Get legal moves
+    legal_moves = list(board.legal_moves)
+    if not legal_moves:
+        return ''
+    
+    # Piece values
+    piece_values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 0
+    }
+    
+    best_move = None
+    if to_play == 'white':
+        best_score = -float('inf')
+    else:
+        best_score = float('inf')
+    
+    for move in legal_moves:
+        board_copy = board.copy()
+        board_copy.push(move)
+        
+        # Checkmate check
+        if board_copy.is_checkmate():
+            return move.uci()
+        
+        # Material calculation
+        material_white = 0
+        material_black = 0
+        for square in chess.SQUARES:
+            piece = board_copy.piece_at(square)
+            if piece:
+                value = piece_values.get(piece.piece_type, 0)
+                if piece.color == chess.WHITE:
+                    material_white += value
+                else:
+                    material_black += value
+        
+        # Mobility and check bonus
+        mobility = len(board_copy.legal_moves)
+        mobility_bonus = mobility if board_copy.turn == chess.WHITE else -mobility
+        check_bonus = 100 if board_copy.is_check() else 0
+        
+        total_value = (material_white - material_black) + mobility_bonus + check_bonus
+        
+        # Select move
+        if to_play == 'white':
+            if total_value > best_score:
+                best_score = total_value
+                best_move = move
+        else:
+            if total_value < best_score:
+                best_score = total_value
+                best_move = move
+    
+    return best_move.uci() if best_move else legal_moves[0].uci()
+</code>

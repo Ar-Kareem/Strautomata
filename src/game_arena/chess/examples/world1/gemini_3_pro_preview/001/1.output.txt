@@ -1,0 +1,363 @@
+The strategy for this policy is a **1-ply lookahead (greedy) search with static evaluation**.
+
+1.  **State Parsing**: The policy parses the input `legal_moves` (Standard Algebraic Notation) and `pieces` dictionary to understand the board geometry. Since no external chess library is available, a custom move parser identifies the source and target squares for each move.
+2.  **Move Simulation**: For every legal move, the policy simulates the resulting board state. This involves moving pieces, handling captures (including en passant), and managing promotions and castling.
+3.  **Static Evaluation**: The resulting board state is evaluated based on:
+    *   **Material Balance**: Sum of standard piece values (Q=9, R=5, B=3.2, N=3, P=1).
+    *   **Piece Safety**: It generates a map of all squares attacked by the opponent in the new position. If a player's piece is on an attacked square (hanging), its value is subtracted from the score (penalizing blunders).
+    *   **Center Control**: Small bonuses are given for occupying or attacking central squares.
+    *   **Check/Mate**: Immediate checkmates prefer infinite scores; checks get a small bonus.
+4.  **Decision**: The move with the highest evaluation score is selected. If parsing heuristics fail for a move, it falls back to a safe baseline score. This approach effectively plays "safe greedy" chess, capturing material when free and avoiding simple blunders.
+
+```python
+import math
+import random
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # -------------------------------------------------------------------------
+    # 1. Constants and Helpers
+    # -------------------------------------------------------------------------
+    files = 'abcdefgh'
+    ranks = '12345678'
+    
+    # Piece Values
+    values = {'P': 1, 'N': 3, 'B': 3.2, 'R': 5, 'Q': 9, 'K': 200}
+    
+    my_color = 'w' if to_play == 'white' else 'b'
+    op_color = 'b' if to_play == 'white' else 'w'
+    
+    def parse_sq(sq_str):
+        return files.index(sq_str[0]), ranks.index(sq_str[1])
+
+    def to_sq(f, r):
+        if 0 <= f < 8 and 0 <= r < 8:
+            return files[f] + ranks[r]
+        return None
+
+    def get_piece_at(board, f, r):
+        sq = to_sq(f, r)
+        return board.get(sq) # returns code string or None
+
+    # Directions for movement generators
+    knight_deltas = [(1,2), (1,-2), (-1,2), (-1,-2), (2,1), (2,-1), (-2,1), (-2,-1)]
+    king_deltas = [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]
+    diag_dirs = [(1,1), (1,-1), (-1,1), (-1,-1)]
+    orth_dirs = [(1,0), (-1,0), (0,1), (0,-1)]
+
+    # -------------------------------------------------------------------------
+    # 2. Logic: Attack Map Generation
+    # -------------------------------------------------------------------------
+    def get_attacked_squares(board, by_color):
+        """Returns a set of (f, r) tuples attacked by the specified color."""
+        attacks = set()
+        
+        # Collect pieces
+        piece_locs = []
+        for sq, code in board.items():
+            if code[0] == by_color:
+                piece_locs.append((parse_sq(sq), code[1]))
+        
+        for (f, r), ptype in piece_locs:
+            if ptype == 'P':
+                # Pawn captures are diagonal
+                dr = 1 if by_color == 'w' else -1
+                for df in [-1, 1]:
+                    # We store the square being attacked, regardless of whether it's on board
+                    # but logic requires bounds check
+                    if 0 <= f+df < 8 and 0 <= r+dr < 8:
+                        attacks.add((f+df, r+dr))
+            
+            elif ptype == 'N':
+                for df, dr in knight_deltas:
+                    if 0 <= f+df < 8 and 0 <= r+dr < 8:
+                        attacks.add((f+df, r+dr))
+                        
+            elif ptype == 'K':
+                for df, dr in king_deltas:
+                    if 0 <= f+df < 8 and 0 <= r+dr < 8:
+                        attacks.add((f+df, r+dr))
+            
+            elif ptype in ['B', 'R', 'Q']:
+                dirs = []
+                if ptype in ['B', 'Q']: dirs.extend(diag_dirs)
+                if ptype in ['R', 'Q']: dirs.extend(orth_dirs)
+                
+                for df, dr in dirs:
+                    cf, cr = f + df, r + dr
+                    while 0 <= cf < 8 and 0 <= cr < 8:
+                        attacks.add((cf, cr))
+                        if get_piece_at(board, cf, cr) is not None:
+                            break # Blocked
+                        cf += df
+                        cr += dr
+        return attacks
+
+    # -------------------------------------------------------------------------
+    # 3. Logic: Move Parsing and Resolution
+    # -------------------------------------------------------------------------
+    def get_source_of_move(move_str, piece_type, target_f, target_r, current_board):
+        """Identify which piece is moving based on SAN string and geometry."""
+        candidates = []
+        
+        # Extract disambiguation cues from move string (e.g. 'Nbd7' -> file 'b')
+        # Standard format: [Type][Disam][x][Target]...
+        # We strip Type, Target, x, +, # to find Disam
+        
+        # Clean suffix
+        clean = move_str.replace('+', '').replace('#', '').replace('x', '')
+        if '=' in clean: clean = clean.split('=')[0]
+        
+        # Target square is last 2 chars
+        # Disambiguation is what's left after removing Type (first char) and Target (last 2)
+        # Type is implicit for Pawns (no uppercase start) but caller handles type
+        
+        raw_disam = ""
+        san_header_len = 0
+        if piece_type != 'P':
+            san_header_len = 1
+        
+        # everything between header and target in clean string is disambiguation
+        target_san = to_sq(target_f, target_r)
+        
+        # Edge case: Castling handled separately, shouldn't be here
+        # Find index of target_san in clean
+        idx = clean.find(target_san)
+        if idx != -1:
+            raw_disam = clean[san_header_len:idx]
+        
+        # Find all pieces of my_color + piece_type on board
+        for sq, code in current_board.items():
+            if code == my_color + piece_type:
+                sf, sr = parse_sq(sq)
+                
+                # Filter by disambiguation
+                if raw_disam:
+                    # Can be file (char) or rank (digit) or both
+                    match_file = raw_disam[0] in files and raw_disam[0] == files[sf]
+                    match_rank = raw_disam[0] in ranks and raw_disam[0] == ranks[sr]
+                    if len(raw_disam) > 1:
+                        # rare double disambiguation
+                        second_char = raw_disam[1]
+                        match_rank = match_rank or (second_char in ranks and second_char == ranks[sr])
+                    
+                    # If disambiguation provided, must match at least one part
+                    if not (match_file or match_rank):
+                        # If a letter is present, it must match file. If digit, rank.
+                        # Actually simpler: string containment check
+                        # If 'b' is in disam, file must be b.
+                        valid_disam = True
+                        for char in raw_disam:
+                            if char in files and files[sf] != char: valid_disam = False
+                            if char in ranks and ranks[sr] != char: valid_disam = False
+                        if not valid_disam:
+                            continue
+
+                # Check geometric validity (Pseudo-legal check)
+                can_reach = False
+                df, dr = target_f - sf, target_r - sr
+                
+                if piece_type == 'N':
+                    if (abs(df), abs(dr)) in [(1,2), (2,1)]: can_reach = True
+                
+                elif piece_type == 'P':
+                    # Direction depends on color
+                    direction = 1 if my_color == 'w' else -1
+                    # Move: df=0, dr=1 (or 2 if rank 1/6). Capture: abs(df)=1, dr=1.
+                    if df == 0: # Push
+                        if dr == direction: can_reach = True
+                        if dr == 2*direction and (sr == 1 or sr == 6): can_reach = True
+                    elif abs(df) == 1 and dr == direction: # Capture
+                        can_reach = True
+                
+                elif piece_type == 'B':
+                    if abs(df) == abs(dr): can_reach = True # Diag
+                
+                elif piece_type == 'R':
+                    if df == 0 or dr == 0: can_reach = True
+                
+                elif piece_type == 'Q':
+                    if abs(df) == abs(dr) or df == 0 or dr == 0: can_reach = True
+                    
+                elif piece_type == 'K':
+                    if abs(df) <= 1 and abs(dr) <= 1: can_reach = True
+                
+                # Check path clear for sliders
+                if can_reach and piece_type in ['B', 'R', 'Q']:
+                    step_f = (df > 0) - (df < 0)
+                    step_r = (dr > 0) - (dr < 0)
+                    cf, cr = sf + step_f, sr + step_r
+                    while (cf, cr) != (target_f, target_r):
+                        if get_piece_at(current_board, cf, cr):
+                            can_reach = False; break
+                        cf += step_f
+                        cr += step_r
+
+                if can_reach:
+                    candidates.append((sf, sr))
+        
+        if not candidates: return None
+        return candidates[0] # Return first match
+
+    # -------------------------------------------------------------------------
+    # 4. Main Evaluation Loop
+    # -------------------------------------------------------------------------
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    # Randomize order to break equality ties randomly
+    shuffled_moves = legal_moves[:]
+    random.shuffle(shuffled_moves)
+    
+    for move in shuffled_moves:
+        # Check immediate mate
+        if '#' in move:
+            return move
+        
+        score = 0
+        
+        # --- Attempt to simulate board state ---
+        next_board = pieces.copy()
+        
+        # Parsing
+        target_f, target_r = None, None
+        source_f, source_r = None, None
+        ptype = 'P'
+        
+        is_castling = move.startswith('O-O')
+        
+        try:
+            if is_castling:
+                ptype = 'K'
+                # Determine rank/file
+                rank_idx = 0 if my_color == 'w' else 7
+                source_f, source_r = 4, rank_idx # e1/e8
+                
+                if move.startswith('O-O-O'): # Queenside
+                     # K: e->c, R: a->d
+                     target_f, target_r = 2, rank_idx # c
+                     rook_src = (0, rank_idx)
+                     rook_dst = (3, rank_idx)
+                else: # Kingside
+                     # K: e->g, R: h->f
+                     target_f, target_r = 6, rank_idx # g
+                     rook_src = (7, rank_idx)
+                     rook_dst = (5, rank_idx)
+                
+                # Apply K move
+                del next_board[to_sq(source_f, source_r)]
+                next_board[to_sq(target_f, target_r)] = my_color + 'K'
+                # Apply R move
+                r_sq = to_sq(*rook_src)
+                if r_sq in next_board:
+                    del next_board[r_sq]
+                    next_board[to_sq(*rook_dst)] = my_color + 'R'
+                
+                score += 0.5 # Bonus for castling
+            else:
+                # Normal move
+                clean = move.replace('+', '').replace('#', '')
+                is_promo = '=' in clean
+                promo_type = 'Q'
+                
+                if is_promo:
+                    parts = clean.split('=')
+                    clean = parts[0]
+                    promo_type = parts[1][0] # Q, R, B, N
+                
+                # Parse piece type
+                first = clean[0]
+                if first in 'NBRQK':
+                    ptype = first
+                else:
+                    ptype = 'P'
+                
+                # Parse target
+                # remove 'x'
+                geo_part = clean.replace('x', '')
+                target_san = geo_part[-2:]
+                target_f, target_r = parse_sq(target_san)
+                
+                # Find source
+                src = get_source_of_move(move, ptype, target_f, target_r, pieces)
+                if src:
+                    source_f, source_r = src
+                    
+                    # Apply Move
+                    src_sq_str = to_sq(*src)
+                    
+                    # Handle En Passant Capture
+                    if 'x' in move and ptype == 'P':
+                         if to_sq(target_f, target_r) not in pieces:
+                             # En passant! The captured pawn is behind the target
+                             ep_capture_r = source_r # Same rank as source for the victim pawn
+                             ep_sq = to_sq(target_f, ep_capture_r)
+                             if ep_sq in next_board: del next_board[ep_sq]
+
+                    # Standard logic
+                    if src_sq_str in next_board:
+                        del next_board[src_sq_str]
+                    
+                    # Place piece at target
+                    place_code = my_color + (promo_type if is_promo else ptype)
+                    next_board[to_sq(target_f, target_r)] = place_code
+                else:
+                    # Logic fallback if parsing fails (shouldn't happen often)
+                    # We assume minimal score change
+                    pass
+
+            # --- Evaluation ---
+            
+            # 1. Material Count
+            mat_score = 0
+            my_pieces_sq = []
+            
+            for sq, code in next_board.items():
+                val = values.get(code[1], 0)
+                if code[0] == my_color:
+                    mat_score += val
+                    my_pieces_sq.append((sq, val))
+                else:
+                    mat_score -= val
+            
+            # 2. Safety (Hanging pieces penalty)
+            op_attacks = get_attacked_squares(next_board, op_color)
+            safety_penalty = 0
+            
+            for sq_str, val in my_pieces_sq:
+                f, r = parse_sq(sq_str)
+                if (f, r) in op_attacks:
+                    # We are on an attacked square
+                    # Simple hanging penalty: subtract value of piece
+                    # (Refinement: If piece is protected, we might trade, but safe bot assumes worst)
+                    safety_penalty += val
+            
+            # 3. Positional Bonuses
+            pos_bonus = 0
+            if target_f is not None and target_r is not None:
+                # Center control
+                if 2 <= target_f <= 5 and 2 <= target_r <= 5:
+                    pos_bonus += 0.1
+                if 3 <= target_f <= 4 and 3 <= target_r <= 4:
+                    pos_bonus += 0.1
+                
+                # Development: Knights/Bishops off back rank
+                if ptype in ['N', 'B']:
+                    if my_color == 'w' and target_r > 0: pos_bonus += 0.1
+                    if my_color == 'b' and target_r < 7: pos_bonus += 0.1
+
+            total_score = (mat_score * 10) - (safety_penalty * 8) + pos_bonus
+            
+            # Check bonus
+            if '+' in move:
+                total_score += 0.5
+                
+            if total_score > best_score:
+                best_score = total_score
+                best_move = move
+                
+        except Exception:
+            # Fallback if logic errors on edge cases
+            continue
+
+    return best_move
+```

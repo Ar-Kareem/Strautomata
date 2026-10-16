@@ -1,0 +1,104 @@
+
+import random
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    moves = []
+    my_pieces = my_men + my_kings
+    
+    # Generate all possible moves
+    for piece in my_pieces:
+        r, c = piece
+        if piece in my_men:  # Regular piece
+            if color == 'b':
+                directions = [(-1, -1), (-1, 1)]  # Downward direction for black
+            else:
+                directions = [(1, -1), (1, 1)]  # Upward direction for white
+            # Regular moves
+            for dr, dc in directions:
+                new_r = r + dr
+                new_c = c + dc
+                if 0 <= new_r < 8 and 0 <= new_c < 8 and (new_r + new_c) % 2 == 0:
+                    if (new_r, new_c) not in my_men + my_kings + opp_men + opp_kings:
+                        moves.append(((r, c), (new_r, new_c)))
+            # Capture moves (jump)
+            for dr, dc in directions:
+                mid_r, mid_c = r + dr, c + dc
+                if 0 <= mid_r < 8 and 0 <= mid_c < 8:
+                    if (mid_r, mid_c) in opp_men or (mid_r, mid_c) in opp_kings:
+                        landing_r, landing_c = mid_r + dr, mid_c + dc
+                        if 0 <= landing_r < 8 and 0 <= landing_c < 8 and (landing_r + landing_c) % 2 == 0:
+                            if (landing_r, landing_c) not in my_men + my_kings + opp_men + opp_kings:
+                                moves.append(((r, c), (landing_r, landing_c)))
+        else:  # King
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+            # Regular moves
+            for dr, dc in directions:
+                new_r, new_c = r + dr, c + dc
+                if 0 <= new_r < 8 and 0 <= new_c < 8 and (new_r + new_c) % 2 == 0:
+                    if (new_r, new_c) not in my_men + my_kings + opp_men + opp_kings:
+                        moves.append(((r, c), (new_r, new_c)))
+            # Capture moves
+            for dr, dc in directions:
+                mid_r, mid_c = r + dr, c + dc
+                if 0 <= mid_r < 8 and 0 <= mid_c < 8:
+                    if (mid_r, mid_c) in opp_men or (mid_r, mid_c) in opp_kings:
+                        landing_r, landing_c = mid_r + dr, mid_c + dc
+                        if 0 <= landing_r < 8 and 0 <= landing_c < 8 and (landing_r + landing_c) % 2 == 0:
+                            if (landing_r, landing_c) not in my_men + my_kings + opp_men + opp_kings:
+                                moves.append(((r, c), (landing_r, landing_c)))
+    
+    # Split moves into capture and regular
+    capture_moves = []
+    regular_moves = []
+    for move in moves:
+        from_pos, to_pos = move
+        dr = to_pos[0] - from_pos[0]
+        dc = to_pos[1] - from_pos[1]
+        if abs(dr) == 2 and abs(dc) == 2:
+            capture_moves.append(move)
+        else:
+            regular_moves.append(move)
+    
+    if capture_moves:
+        # Prioritize capturing kings, then promotion moves
+        king_captures = []
+        man_captures = []
+        for move in capture_moves:
+            fr, fc = move[0]
+            tr, tc = move[1]
+            mid_r, mid_c = (fr + tr) // 2, (fc + tc) // 2
+            if (mid_r, mid_c) in opp_kings:
+                king_captures.append(move)
+            else:
+                man_captures.append(move)
+        # Select move that captures a king and promotes if possible
+        if king_captures:
+            for move in king_captures:
+                to_r = move[1][0]
+                promotion = (color == 'w' and to_r == 7) or (color == 'b' and to_r == 0)
+                if promotion:
+                    return move
+            return king_captures[0]
+        else:
+            # Select moved which promotions
+            promo_candidates = []
+            for move in man_captures:
+                to_r = move[1][0]
+                if (color == 'w' and to_r == 7) or (color == 'b' and to_r == 0):
+                    promo_candidates.append(move)
+            if promo_candidates:
+                return promo_candidates[0]
+            else:
+                return man_captures[0]
+    else:
+        # No captures, select moves that promote
+        promo_row = 7 if color == 'w' else 0
+        promo_moves = []
+        for move in regular_moves:
+            to_r = move[1][0]
+            if to_r == promo_row:
+                promo_moves.append(move)
+        if promo_moves:
+            return promo_moves[0]
+        else:
+            return regular_moves[0] if regular_moves else ((my_men[0][0], my_men[0][1]), (my_men[0][0], my_men[0][1]))  # Fail-safe

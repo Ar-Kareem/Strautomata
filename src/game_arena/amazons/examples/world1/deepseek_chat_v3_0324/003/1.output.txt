@@ -1,0 +1,133 @@
+Here's a strategy for the Amazons game policy:
+
+1. **Basic Approach**: 
+   - First, find all possible legal moves for the current player.
+   - Evaluate each move based on simple heuristics:
+     * Maximize mobility (number of available squares after the move)
+     * Minimize opponent mobility (restrict opponent's possible moves)
+     * Prefer central positions (better control of the board)
+   - Select the move with the highest heuristic score.
+
+2. **Implementation Details**:
+   - Use BFS to find all reachable squares for movement and arrow shots.
+   - Calculate mobility by counting empty squares reachable from each position.
+   - Prioritize moves that both improve our mobility and reduce opponent mobility.
+
+3. **Fallback**:
+   - If no "good" moves are found by the heuristic, simply pick the first legal move found to ensure we always return a valid move.
+
+Here's the implementation:
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(board):
+    # Find all our amazons (1s)
+    amazons = np.argwhere(board == 1)
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for amazon in amazons:
+        from_row, from_col = amazon
+        # Get all possible moves for this amazon
+        moves = get_reachable(board, from_row, from_col)
+        
+        for move in moves:
+            to_row, to_col = move
+            # Temporarily move the amazon
+            board[from_row, from_col] = 0
+            board[to_row, to_col] = 1
+            
+            # Get all possible arrow shots from new position
+            arrows = get_reachable(board, to_row, to_col)
+            
+            for arrow in arrows:
+                arrow_row, arrow_col = arrow
+                # Calculate score for this move
+                score = evaluate_move(board, from_row, from_col, to_row, to_col, arrow_row, arrow_col)
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"
+            
+            # Undo temporary move
+            board[to_row, to_col] = 0
+            board[from_row, from_col] = 1
+    
+    # If no move found (shouldn't happen as per problem statement), return first legal move
+    if best_move is None:
+        # Fallback: find any legal move
+        for amazon in amazons:
+            from_row, from_col = amazon
+            moves = get_reachable(board, from_row, from_col)
+            if moves:
+                to_row, to_col = moves[0]
+                board[from_row, from_col] = 0
+                board[to_row, to_col] = 1
+                arrows = get_reachable(board, to_row, to_col)
+                if arrows:
+                    arrow_row, arrow_col = arrows[0]
+                    best_move = f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"
+                    board[to_row, to_col] = 0
+                    board[from_row, from_col] = 1
+                    break
+    
+    return best_move
+
+def get_reachable(board, row, col):
+    """Get all reachable positions from (row,col) using queen moves"""
+    directions = [(-1,-1), (-1,0), (-1,1),
+                  (0,-1),          (0,1),
+                  (1,-1),  (1,0), (1,1)]
+    reachable = []
+    
+    for dr, dc in directions:
+        r, c = row + dr, col + dc
+        while 0 <= r < 6 and 0 <= c < 6:
+            if board[r, c] != 0:
+                break
+            reachable.append((r, c))
+            r += dr
+            c += dc
+    
+    return reachable
+
+def evaluate_move(board, from_row, from_col, to_row, to_col, arrow_row, arrow_col):
+    """Evaluate the quality of a potential move"""
+    # Simulate the move
+    board[from_row, from_col] = 0
+    board[to_row, to_col] = 1
+    board[arrow_row, arrow_col] = -1
+    
+    # Calculate our mobility
+    our_mobility = 0
+    our_amazons = np.argwhere(board == 1)
+    for amazon in our_amazons:
+        our_mobility += len(get_reachable(board, amazon[0], amazon[1]))
+    
+    # Calculate opponent mobility
+    opponent_mobility = 0
+    opponent_amazons = np.argwhere(board == 2)
+    for amazon in opponent_amazons:
+        opponent_mobility += len(get_reachable(board, amazon[0], amazon[1]))
+    
+    # Center control bonus
+    center_bonus = 0
+    center = [(2,2), (2,3), (3,2), (3,3)]
+    for pos in center:
+        if board[pos] == 1:
+            center_bonus += 1
+        elif board[pos] == 2:
+            center_bonus -= 1
+    
+    # Undo the move
+    board[arrow_row, arrow_col] = 0
+    board[to_row, to_col] = 0
+    board[from_row, from_col] = 1
+    
+    # Combine factors with weights
+    score = our_mobility - opponent_mobility + center_bonus * 0.5
+    return score
+</code>

@@ -1,0 +1,442 @@
+The strategy for this policy is to combine several heuristics inspired by strong human play and classical game AI techniques for Havannah. The policy prioritizes moves based on a scoring system that evaluates both offensive and defensive opportunities across the three winning conditions: **ring**, **bridge**, and **fork**.
+
+The board is hexagonal in connectivity but laid out in a rhombus-shaped 15x15 grid. Each cell (r, c) has up to 6 neighbors, determined by axial coordinates converted to offset (row, col). We precompute neighbor mappings to efficiently navigate the hex grid.
+
+Key components of the strategy:
+1. **Threat Detection**: Evaluate if any move completes or blocks a win (ring, bridge, or fork) for either player.
+2. **Pattern-Based Evaluation**: Score each valid move based on:
+   - Proximity to edges (for bridge and fork potential)
+   - Connectivity to own stones
+   - Potential to form enclosures (ring candidates)
+3. **Control of Corners and Edges**: Prioritize corners for bridge threats and mid-edge locations for fork threats.
+4. **Defensive Safety**: Penalize moves that strongly help the opponent’s connectivity.
+5. **Monte Carlo Light Rollout Simulation**: For top candidate moves, perform shallow simulations to estimate success likelihood.
+
+However, due to the 1-second constraint and the complexity of full Havannah AI, we implement a **fast greedy policy with threat detection and prioritization**, focusing on:
+- Immediate win
+- Block opponent’s win
+- Extend own groups
+- Target strategic positions (edges/corners)
+
+We use `numpy` for efficient mask and coordinate operations.
+
+The policy proceeds as:
+1. Find all legal moves via `valid_mask`.
+2. Check if any move completes a ring/bridge/fork for `me` → play and win.
+3. Check if any opponent move would complete their win in the next turn → block.
+4. Score remaining moves based on:
+   - Distance to forming bridges, forks, rings
+   - Group cohesion and liberty
+   - Board control (center vs edges)
+5. Return the highest-scoring legal move.
+
+We rely on efficient hexagonal neighbor logic and precomputed edge/corner definitions.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Set, Dict
+
+# Precompute directions for hexagonal grid in offset (row, col) layout
+# For a cell (r, c), the 6 neighbors depend on whether the row is odd or even
+# In a rhombus 15x15 layout, even rows shift right, odd rows shift left? Actually, in flat-topped hex layout:
+# We use "odd-r" offset: odd rows are shifted right
+# Directions in (dr, dc) for odd and even rows
+HEX_DIRS = {
+    'even': [(-1, 0), (-1, 1), (0, 1), (1, 0), (1, -1), (0, -1)],
+    'odd':  [(-1, -1), (-1, 0), (0, 1), (1, 1), (1, 0), (0, -1)]
+}
+
+# Board size
+N = 15
+
+# Precompute board edges and corners
+CORNER_COORDS = [(0,0), (0,7), (0,14), (7,0), (7,14), (14,0), (14,7), (14,14)]
+CORNERS = [(0,0), (0,14), (7,0), (7,14), (14,0), (14,14)]  # Exactly six corners
+EDGES = {
+    'top': [(0, c) for c in range(1, 14)],
+    'bottom': [(14, c) for c in range(1, 14)],
+    'left': [(r, 0) for r in range(1, 14)],
+    'right': [(r, 14) for r in range(1, 14)],
+    'topleft_edge': [(r, c) for r in range(1, 7) for c in range(1, 7) if r + c == 7],
+    'bottomright_edge': [(r, c) for r in range(8, 14) for c in range(8, 14) if r + c == 21],
+    # Note: Havannah has 6 edges: top-right, top-bottom, bottom-left, and three others defined by board shape
+    # Actually, the board is hexagonal => 6 edges. Let's define them properly.
+}
+# Actually, Havannah edges are:
+# - Top edge: (0,0) to (0,14) excluding corners
+# - Bottom edge: (14,0) to (14,14) excluding corners
+# - Left edge: (0,0) to (14,0) excluding corners
+# - Right edge: (0,14) to (14,14) excluding corners
+# - Top-left diagonal: not exactly; in 15x15 rhombus, the real hex edges are:
+# Better to define edges by geometric direction.
+
+# In a rhombus-shaped hex board, the six edges are:
+# 1. North (top row): (0, c) for c in [0,14] → exclude corners: interior (0,1..13)
+# 2. South (bottom row): (14, c) for c in [0,14] → interior (14,1..13)
+# 3. Northwest (main left diagonal?): Actually, left edge is (r,0)
+# We'll define six edges by their non-corner boundary cells:
+EDGE_CELLS = (
+    [(0, c) for c in range(1, 14)] +   # top edge
+    [(14, c) for c in range(1, 14)] +  # bottom edge
+    [(r, 0) for r in range(1, 14)] +   # left edge
+    [(r, 14) for r in range(1, 14)] +  # right edge
+    [(r, c) for r in range(1,7) for c in range(1,7) if r == c] +  # top-left diagonal? Actually not standard.
+)
+# Wait, in Havannah, the board is a hexagon with 6 sides. The 15x15 grid represents a rhombus.
+# The correct six edges are:
+# 1. Top: row 0, all cols
+# 2. Bottom: row 14, all cols
+# 3. Left: col 0, all rows
+# 4. Right: col 14, all rows
+# 5. Top-left to bottom-right diagonal? Actually no.
+
+# Clarification: In Havannah on a rhombus board, the six edges are the six sides of the hexagon:
+# Visualize the 15x15 rhombus:
+# - From (0,0) to (0,14): top edge
+# - From (0,14) to (14,14): right edge
+# - From (14,14) to (14,0): bottom edge
+# - From (14,0) to (0,0): left edge
+# But that's only 4? Incorrect.
+
+# Actually, the board is triangular-based. Correct definition:
+# The board is a hexagon inscribed in a rhombus grid. The six edges are:
+# 1. (0,0) to (0,14) [top]
+# 2. (0,14) to (7,14) → this doesn't make sense.
+
+# After research: In Havannah, the board has 6 sides. For a regular hex grid in rhombus layout of size 15,
+# the six edges are defined by:
+# - Top: (0,0) to (0,14)
+# - Top-right: (0,14) to (14,14) ??? Not exactly.
+
+# Let's use the correct geometry:
+# The board has axial coordinates. The six edges in offset (r,c) are:
+# We'll define edge membership heuristically.
+
+# Given the confusion, we instead use the fact that "edges" are the border cells that are not corners.
+# And there are six edges: top, bottom, left, right, and the two diagonals?
+# Actually, in the rhombus of 15x15, the "edges" for fork are:
+# - Top row: (0, *)
+# - Bottom row: (14, *)
+# - Left diagonal (r+c=0 to r+c=14)? Confusing.
+
+# Instead, we use the standard community approach: the edges are:
+EDGES_LIST = [
+    [(0, c) for c in range(0, 15)],  # top
+    [(14, c) for c in range(0, 15)], # bottom
+    [(r, 0) for r in range(0, 15)],  # left
+    [(r, 14) for r in range(0, 15)], # right
+    [(r, c) for r in range(1,14) for c in range(1,14) if r == c], # main diagonal?
+    [(r, c) for r in range(1,14) for c in range(1,14) if r + c == 14], # anti-diagonal?
+]
+# This is incorrect.
+
+# After double-checking: In Havannah, the board is a hexagon. On a 15x15 rhombus grid representing a hex board, the six edges are:
+# 1. Row 0 (Top)
+# 2. Column 14 (Right)
+# 3. Row-column diagonal where r - c = 14 (Bottom-Right?)
+# Let me use a reliable source: the board has six sides. Each side is a line of 15 cells.
+# The six edges are:
+# - (0,0) to (0,14) → top: (0, c)
+# - (0,14) to (14,14) → southeast: (r,14) for r in 0..14
+# - (14,14) to (14,0) → bottom: (14, c) for c from 14 down to 0
+# - (14,0) to (0,0) → northwest: (r,0) for r from 14 down to 0
+# But that's only four.
+
+# Correct definition in terms of the hex grid: a regular hexagon of side length 15 has six sides of 15 cells each.
+# In the rhombus coordinate system (row, col) with 15x15, the six sides are:
+# 1. North: (0, c) for c in 0..14
+# 2. Northeast: (r, 14) for r in 0..14
+# 3. Southeast: (14, c) for c in 14..0 step -1 → (14,14) to (14,0)
+# 4. South: (14,0) to (0,0) → (r,0) for r in 14..0
+# 5. Southwest: ??
+# This doesn't work.
+
+# Given the complexity, and since corner cells are (0,0), (0,14), (7,?), we note that the board used in the challenge might be a standard one.
+
+# Actually, let's re-read: "connect any two of the six corner cells" and "connect any three edges".
+# The board has 6 corner cells and 6 edges.
+
+# For 15x15 rhombus, the six corners are:
+# (0,0), (0,14), (7,14), (14,14), (14,0), (7,0)
+# Yes — this forms a hexagon.
+
+# Therefore, the six edges are:
+# 1. Top: (0,0) to (0,14) — cells (0,c) for c in 0..14
+# 2. Right-top: (0,14) to (7,14) — cells (r,14) for r in 0..7
+# 3. Right-bottom: (7,14) to (14,14) — cells (r,14) for r in 7..14
+# 4. Bottom: (14,14) to (14,0) — cells (14,c) for c in 14..0
+# 5. Left-bottom: (14,0) to (7,0) — cells (r,0) for r in 14..7
+# 6. Left-top: (7,0) to (0,0) — cells (r,0) for r in 7..0
+# But that defines "edges" as only parts of rows/cols.
+
+# Alternatively, the problem states: "corner points are not considered parts of an edge". So edges are the sides excluding corners.
+
+# So the six edges are:
+EDGE_SIDES = {
+    'top': [(0, c) for c in range(1, 14)],  # between (0,0) and (0,14)
+    'right_upper': [(r, 14) for r in range(1, 7)],   # between (0,14) and (7,14)
+    'right_lower': [(r, 14) for r in range(8,14)],   # between (7,14) and (14,14)
+    'bottom': [(14, c) for c in range(1,14)], # between (14,14) and (14,0)
+    'left_lower': [(r, 0) for r in range(8,14)], # between (14,0) and (7,0)
+    'left_upper': [(r, 0) for r in range(1,7)],    # between (7,0) and (0,0)
+}
+# But (7,14) and (7,0) are corners? The problem says there are six corners: likely (0,0), (0,14), (7,15?) -> no.
+
+# After re-thinking: the board is 15x15 rhombus, so the six corners are:
+CORNERS = [(0,0), (0,14), (7,14), (14,14), (14,0), (7,0)]
+
+# And the six edges are the lines between them, excluding the corners:
+EDGES = [
+    {'name': 'top', 'cells': [(0, c) for c in range(1, 14)]},
+    {'name': 'right_upper', 'cells': [(r, 14) for r in range(1, 7)]},
+    {'name': 'right_lower', 'cells': [(r, 14) for r in range(8, 14)]},
+    {'name': 'bottom', 'cells': [(14, c) for c in range(1, 14)]},
+    {'name': 'left_lower', 'cells': [(r, 0) for r in range(8, 14)]},
+    {'name': 'left_upper', 'cells': [(r, 0) for r in range(1, 7)]},
+]
+
+# Flatten all edge cells
+ALL_EDGE_CELLS = set()
+for edge in EDGES:
+    for cell in edge['cells']:
+        ALL_EDGE_CELLS.add(cell)
+
+ALL_CORNERS = set(CORNERS)
+
+def get_neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+    """Get valid neighboring cells in hex grid using offset coordinates (odd-r)."""
+    if r % 2 == 0:
+        dirs = HEX_DIRS['even']
+    else:
+        dirs = HEX_DIRS['odd']
+    neighbors = []
+    for dr, dc in dirs:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < N and 0 <= nc < N:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def in_board(r: int, c: int) -> bool:
+    return 0 <= r < N and 0 <= c < N
+
+def flood_fill(start: Tuple[int, int], stones: Set[Tuple[int, int]], visited: Set[Tuple[int, int]]):
+    """DFS to get connected group."""
+    if start in visited or start not in stones:
+        return
+    visited.add(start)
+    for nb in get_neighbors(start[0], start[1]):
+        if nb in stones and nb not in visited:
+            flood_fill(nb, stones, visited)
+
+def get_groups(stones: List[Tuple[int, int]]) -> List[Set[Tuple[int, int]]]:
+    """Get connected groups (sets of stones)."""
+    stone_set = set(stones)
+    visited = set()
+    groups = []
+    for stone in stones:
+        if stone not in visited:
+            group = set()
+            flood_fill(stone, stone_set, group)
+            visited |= group
+            groups.append(group)
+    return groups
+
+def is_connected(group: Set[Tuple[int, int]], target_cells: List[Tuple[int, int]]) -> bool:
+    """Check if any cell in group touches any cell in target_cells."""
+    for r, c in group:
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in target_cells:
+                return True
+    return False
+
+def completes_ring(me_stones: List[Tuple[int, int]], move: Tuple[int, int]) -> bool:
+    """Heuristic: check if adding `move` completes a ring around any cell."""
+    # A ring is a loop around at least one cell. We check if the move closes a loop.
+    # We can try: after placing move, is there a group that encircles a cell?
+    # But this is complex. Approximate: check if the move increases group's ability to surround.
+    # Instead, we use a simple local check: is the move part of a ring of 6 stones around a central cell?
+    # More accurately: for each empty cell enclosed by same color?
+    # Due to time, we use a limited check: for each cell adjacent to the move, check if it is surrounded.
+    me_set = set(me_stones) | {move}
+    # Check cells that are fully enclosed by a connected group
+    for r in range(N):
+        for c in range(N):
+            if (r, c) in me_set:
+                continue
+            # Check if (r,c) is surrounded by a single connected group of me
+            surrounding = 0
+            group_id = None
+            valid_ring = True
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in me_set:
+                    surrounding += 1
+                    nb_group = None
+                    for g in get_groups(me_stones):
+                        if (nr, nc) in g:
+                            nb_group = g
+                            break
+                    # All surrounding stones must be in one connected group
+                    if group_id is None:
+                        group_id = nb_group
+                    elif group_id != nb_group:
+                        valid_ring = False
+                        break
+                else:
+                    valid_ring = False
+            if valid_ring and surrounding == 6:
+                return True
+    return False
+
+def completes_bridge(me_stones: List[Tuple[int, int]], move: Tuple[int, int]) -> bool:
+    """Check if move completes a bridge between any two corners."""
+    stones_with_move = me_stones + [move]
+    groups = get_groups(stones_with_move)
+    corner_set = set(CORNERS)
+    corners_occupied = [c for c in CORNERS if c in set(stones_with_move)]
+    if len(corners_occupied) < 2:
+        return False
+    # Check if any group connects at least two corners
+    for group in groups:
+        occupied_in_group = [c for c in corners_occupied if c in group]
+        if len(occupied_in_group) >= 2:
+            return True
+    return False
+
+def completes_fork(me_stones: List[Tuple[int, int]], move: Tuple[int, int]) -> bool:
+    """Check if move completes a fork connecting three edges."""
+    stones_with_move = me_stones + [move]
+    groups = get_groups(stones_with_move)
+    for group in groups:
+        edges_touched = set()
+        for edge_def in EDGES:
+            if is_connected(group, edge_def['cells']):
+                edges_touched.add(edge_def['name'])
+        if len(edges_touched) >= 3:
+            return True
+    return False
+
+def will_win(me_stones: List[Tuple[int, int]], move: Tuple[int, int]) -> bool:
+    """Check if playing `move` completes any winning structure."""
+    return (completes_ring(me_stones, move) or
+            completes_bridge(me_stones, move) or
+            completes_fork(me_stones, move))
+
+def threatens_win(opp_stones: List[Tuple[int, int]], move: Tuple[int, int], me_stones: List[Tuple[int, int]]) -> bool:
+    """Check if opponent, after we play `move`, would win immediately on their turn by playing at `threat_move`.
+    But here we check: if `move` is played by us, then is there an `opp_move` that lets opp win?
+    We want to know if a move enables an immediate win for opponent.
+    This is expensive. Instead, we do:
+    Simulate me play `move`, then for each opponent move, check if it wins.
+    But that's O(N^2) -> 225 checks, each with group evaluation.
+    Too slow.
+
+    Instead, we check only if the opponent already has a winning move regardless of our move.
+    And then we check if our move creates a new threat for opponent.
+    We skip for now, and only check if the opponent can win immediately on the next turn if we play a move that doesn't defend.
+
+    Actually, we do this separately.
+    """
+    # For now, we skip and instead check: if not playing at `move` allows the opponent to win immediately elsewhere.
+    # But this is not in this function.
+    # This function returns whether `move` enables an opponent immediate win, which we assume is rare.
+    return False
+
+def evaluate_move(move: Tuple[int, int], me_stones: List[Tuple[int, int]], opp_stones: List[Tuple[int, int]]) -> float:
+    """Evaluate move based on heuristics."""
+    score = 0.0
+    me_set = set(me_stones)
+    opp_set = set(opp_stones)
+
+    r, c = move
+
+    # Proximity to own stones
+    near_own = 0
+    near_opp = 0
+    for nr, nc in get_neighbors(r, c):
+        if (nr, nc) in me_set:
+            near_own += 1
+        elif (nr, nc) in opp_set:
+            near_opp += 1
+    score += near_own * 10
+    score -= near_opp * 5  # pressure
+
+    # Edge/corner bonus
+    if (r, c) in ALL_CORNERS:
+        score += 8
+    elif (r, c) in ALL_EDGE_CELLS:
+        score += 5
+
+    # Center control
+    dr, dc = r - 7, c - 7
+    dist_to_center = abs(dr) + abs(dc)  # rough
+    score += max(0, 7 - dist_to_center)  # bonus for central, up to 7
+
+    # Potential for fork or bridge
+    if (r, c) in ALL_CORNERS:
+        score += 15  # corner is critical for bridge
+    # For fork: being near multiple edges
+    edge_count = 0
+    for edge in EDGES:
+        # distance to this edge
+        min_dist = min([abs(r - er) + abs(c - ec) for (er, ec) in edge['cells']], default=100)
+        if min_dist == 0:
+            edge_count += 1
+        elif min_dist == 1:
+            score += 3
+    if edge_count >= 2:
+        score += 10  # near two edges, potential for fork
+
+    return score
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    # Convert valid_mask to list of legal moves
+    legal_moves = []
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c]:
+                legal_moves.append((r, c))
+
+    if not legal_moves:
+        # Fallback: should not happen
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c]:
+                    return (r, c)
+
+    # 1. Check if any move wins immediately
+    for move in legal_moves:
+        if will_win(me, move):
+            return move
+
+    # 2. Check if opponent can win next turn, and block
+    opp_threats = []
+    for move in legal_moves:
+        # If we don't play here, can opponent play somewhere and win?
+        # Actually: after we play any move, opponent will get a turn.
+        # We need to check for each opponent's legal move, if it would win, and can we block it?
+        # But blocking means playing at the winning move cell.
+        # So: find all opponent winning moves in the current state.
+        pass
+
+    # Get opponent's winning moves: moves that make opp win immediately
+    opp_win_moves = []
+    for move in legal_moves:
+        if will_win(opp, move):
+            opp_win_moves.append(move)
+
+    if opp_win_moves:
+        # Block the first one (all are critical)
+        return opp_win_moves[0]
+
+    # 3. Evaluate all legal moves with heuristics
+    move_scores = []
+    for move in legal_moves:
+        score = evaluate_move(move, me, opp)
+        move_scores.append((score, move))
+
+    # Sort by score descending
+    move_scores.sort(key=lambda x: x[0], reverse=True)
+
+    # Return best move
+    return move_scores[0][1]
+</code>

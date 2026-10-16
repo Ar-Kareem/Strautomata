@@ -1,0 +1,77 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # Evaluate all possible moves with a simple heuristic
+    # Score based on potential wins, blocks, and center control
+    
+    def evaluate_position(row, col):
+        if board[row][col] != 0:  # Position is occupied
+            return -1000
+        
+        score = 0
+        
+        # Check if this position can form a winning line (3 in a row)
+        # Check horizontal
+        row_vals = board_np[row, :]
+        if np.sum(row_vals == 1) == 2 and np.sum(row_vals == -1) == 0:
+            score += 100
+        elif np.sum(row_vals == -1) == 2 and np.sum(row_vals == 1) == 0:
+            score += 50  # Block opponent
+        
+        # Check vertical
+        col_vals = board_np[:, col]
+        if np.sum(col_vals == 1) == 2 and np.sum(col_vals == -1) == 0:
+            score += 100
+        elif np.sum(col_vals == -1) == 2 and np.sum(col_vals == 1) == 0:
+            score += 50  # Block opponent
+        
+        # Check diagonals
+        if row == col:  # Main diagonal
+            diag_vals = np.diag(board_np)
+            if np.sum(diag_vals == 1) == 2 and np.sum(diag_vals == -1) == 0:
+                score += 100
+            elif np.sum(diag_vals == -1) == 2 and np.sum(diag_vals == 1) == 0:
+                score += 50
+        
+        if row + col == 3:  # Anti-diagonal
+            anti_diag_vals = np.diag(np.fliplr(board_np))
+            if np.sum(anti_diag_vals == 1) == 2 and np.sum(anti_diag_vals == -1) == 0:
+                score += 100
+            elif np.sum(anti_diag_vals == -1) == 2 and np.sum(anti_diag_vals == 1) == 0:
+                score += 50
+                
+        # Prefer center positions
+        if (row, col) in [(1,1), (1,2), (2,1), (2,2)]:
+            score += 10
+            
+        # Prefer corners
+        if (row, col) in [(0,0), (0,3), (3,0), (3,3)]:
+            score += 5
+            
+        return score
+    
+    # Evaluate all possible moves
+    best_score = -1000
+    best_move = None
+    
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:  # Empty position
+                score = evaluate_position(i, j)
+                if score > best_score:
+                    best_score = score
+                    best_move = (i, j)
+    
+    # If no good move found (shouldn't happen in normal case), pick center
+    if best_move is None:
+        for i in range(4):
+            for j in range(4):
+                if board[i][j] == 0:
+                    return (i, j)
+    
+    return best_move

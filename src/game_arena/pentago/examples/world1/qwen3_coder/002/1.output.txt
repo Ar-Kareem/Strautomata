@@ -1,0 +1,207 @@
+I'll create a Pentago policy that makes strategic moves by evaluating potential board positions.
+
+My approach will be:
+1. Generate all legal moves
+2. For each move, simulate the placement and rotation
+3. Evaluate the resulting board position using a scoring function
+4. Select the move with the highest score
+
+The evaluation will consider:
+- Getting closer to 5 in a row
+- Blocking opponent's potential 5 in a row
+- Controlling the center
+- Setting up future opportunities
+
+<code>
+import numpy as np
+from itertools import product
+
+def policy(you, opponent) -> str:
+    # Convert to numpy arrays for easier manipulation
+    you_board = np.array(you)
+    opp_board = np.array(opponent)
+    
+    # Find all empty positions
+    empty_positions = []
+    for r in range(6):
+        for c in range(6):
+            if you_board[r][c] == 0 and opp_board[r][c] == 0:
+                empty_positions.append((r, c))
+    
+    best_move = None
+    best_score = float('-inf')
+    
+    # Try all combinations of placement and rotation
+    for r, c in empty_positions:
+        # Convert to 1-indexed for move string
+        row_1indexed = r + 1
+        col_1indexed = c + 1
+        
+        # Try all quadrants and directions
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                move_str = f"{row_1indexed},{col_1indexed},{quad},{direction}"
+                
+                # Simulate the move
+                new_you, new_opp = simulate_move(you_board, opp_board, r, c, quad, direction)
+                
+                # Evaluate the position
+                score = evaluate_position(new_you, new_opp, you_board, opp_board)
+                
+                # Keep track of the best move
+                if score > best_score:
+                    best_score = score
+                    best_move = move_str
+    
+    return best_move
+
+def simulate_move(you_board, opp_board, row, col, quad, direction):
+    # Place the marble
+    new_you = you_board.copy()
+    new_you[row][col] = 1
+    
+    # Apply rotation to both boards
+    new_you = rotate_quadrant(new_you, quad, direction)
+    new_opp = rotate_quadrant(opp_board.copy(), quad, direction)
+    
+    return new_you, new_opp
+
+def rotate_quadrant(board, quad, direction):
+    # Determine the bounds of the quadrant
+    if quad == 0:  # top-left
+        r_start, r_end = 0, 3
+        c_start, c_end = 0, 3
+    elif quad == 1:  # top-right
+        r_start, r_end = 0, 3
+        c_start, c_end = 3, 6
+    elif quad == 2:  # bottom-left
+        r_start, r_end = 3, 6
+        c_start, c_end = 0, 3
+    else:  # quad == 3, bottom-right
+        r_start, r_end = 3, 6
+        c_start, c_end = 3, 6
+    
+    # Extract the quadrant
+    quadrant = board[r_start:r_end, c_start:c_end].copy()
+    
+    # Rotate the quadrant
+    if direction == 'R':  # Clockwise
+        rotated = np.rot90(quadrant, k=-1)
+    else:  # Left/Anticlockwise
+        rotated = np.rot90(quadrant, k=1)
+    
+    # Put the rotated quadrant back
+    board[r_start:r_end, c_start:c_end] = rotated
+    
+    return board
+
+def evaluate_position(you_board, opp_board, old_you, old_opp):
+    score = 0
+    
+    # Check for immediate win
+    if check_win(you_board):
+        score += 10000
+    
+    # Check for opponent immediate win that we just prevented
+    if check_win(old_opp) and not check_win(opp_board):
+        score += 5000
+    
+    # Count potential lines for self
+    score += count_potential_lines(you_board) * 10
+    
+    # Count potential lines for opponent (blocking)
+    score -= count_potential_lines(opp_board) * 15
+    
+    # Control the center (positions 2,3,4 in 0-indexed 6x6)
+    center_positions = [(2,2), (2,3), (3,2), (3,3)]
+    for r, c in center_positions:
+        if you_board[r][c] == 1:
+            score += 3
+        if opp_board[r][c] == 1:
+            score -= 3
+    
+    # Prefer moves that create multiple threats
+    score += count_multiple_potential(you_board) * 20
+    
+    return score
+
+def check_win(board):
+    # Check rows
+    for r in range(6):
+        for c in range(2):  # Only need to check starting positions that can have 5 in a row
+            if all(board[r][c+i] == 1 for i in range(5)):
+                return True
+    
+    # Check columns
+    for c in range(6):
+        for r in range(2):
+            if all(board[r+i][c] == 1 for i in range(5)):
+                return True
+    
+    # Check diagonals (top-left to bottom-right)
+    for r in range(2):
+        for c in range(2):
+            if all(board[r+i][c+i] == 1 for i in range(5)):
+                return True
+    
+    # Check diagonals (top-right to bottom-left)
+    for r in range(2):
+        for c in range(4, 6):
+            if all(board[r+i][c-i] == 1 for i in range(5)):
+                return True
+    
+    return False
+
+def count_potential_lines(board):
+    count = 0
+    
+    # Check rows for potential 5-in-a-row
+    for r in range(6):
+        for c in range(2):
+            line = [board[r][c+i] for i in range(5)]
+            if 0 not in line and sum(line) >= 4:  # At least 4 of our pieces and no opponent pieces
+                count += sum(line)
+    
+    # Check columns
+    for c in range(6):
+        for r in range(2):
+            line = [board[r+i][c] for i in range(5)]
+            if 0 not in line and sum(line) >= 4:
+                count += sum(line)
+    
+    # Check diagonals (top-left to bottom-right)
+    for r in range(2):
+        for c in range(2):
+            line = [board[r+i][c+i] for i in range(5)]
+            if 0 not in line and sum(line) >= 4:
+                count += sum(line)
+    
+    # Check diagonals (top-right to bottom-left)
+    for r in range(2):
+        for c in range(4, 6):
+            line = [board[r+i][c-i] for i in range(5)]
+            if 0 not in line and sum(line) >= 4:
+                count += sum(line)
+    
+    return count
+
+def count_multiple_potential(board):
+    # Count how many potential 4-in-a-row we have that could become 5-in-a-row
+    count = 0
+    
+    # Check rows
+    for r in range(6):
+        for c in range(3):
+            line = [board[r][c+i] for i in range(4)]
+            if line.count(1) == 4 and 0 in line:
+                count += 1
+    
+    # Check columns
+    for c in range(6):
+        for r in range(3):
+            line = [board[r+i][c] for i in range(4)]
+            if line.count(1) == 4 and 0 in line:
+                count += 1
+    
+    return count
+</code>

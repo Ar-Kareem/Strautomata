@@ -1,0 +1,158 @@
+
+def policy(board: list[list[int]]) -> int:
+    rows = 6
+    cols = 7
+    
+    def is_valid_move(board, col):
+        return board[0][col] == 0
+    
+    def get_next_row(board, col):
+        for row in range(rows - 1, -1, -1):
+            if board[row][col] == 0:
+                return row
+        return -1
+    
+    def make_move(board, col, player):
+        new_board = [row[:] for row in board]
+        row = get_next_row(board, col)
+        if row != -1:
+            new_board[row][col] = player
+        return new_board
+    
+    def check_winner(board, player):
+        # Check horizontal
+        for row in range(rows):
+            for col in range(cols - 3):
+                if all(board[row][col + i] == player for i in range(4)):
+                    return True
+        
+        # Check vertical
+        for row in range(rows - 3):
+            for col in range(cols):
+                if all(board[row + i][col] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (positive slope)
+        for row in range(rows - 3):
+            for col in range(cols - 3):
+                if all(board[row + i][col + i] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (negative slope)
+        for row in range(3, rows):
+            for col in range(cols - 3):
+                if all(board[row - i][col + i] == player for i in range(4)):
+                    return True
+        
+        return False
+    
+    def count_threats(board, player):
+        threats = 0
+        
+        # Check horizontal threats
+        for row in range(rows):
+            for col in range(cols - 3):
+                window = [board[row][col + i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    threats += 1
+        
+        # Check vertical threats
+        for row in range(rows - 3):
+            for col in range(cols):
+                window = [board[row + i][col] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    threats += 1
+        
+        # Check diagonal threats (positive slope)
+        for row in range(rows - 3):
+            for col in range(cols - 3):
+                window = [board[row + i][col + i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    threats += 1
+        
+        # Check diagonal threats (negative slope)
+        for row in range(3, rows):
+            for col in range(cols - 3):
+                window = [board[row - i][col + i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    threats += 1
+        
+        return threats
+    
+    def evaluate_position(board):
+        # Win/loss conditions
+        if check_winner(board, 1):
+            return 1000
+        if check_winner(board, -1):
+            return -1000
+        
+        # Count potential winning positions
+        score = 0
+        
+        # Center column preference
+        center_col = cols // 2
+        center_count = sum(1 for row in range(rows) if board[row][center_col] == 1)
+        score += center_count * 3
+        
+        # Count threats for both players
+        my_threats = count_threats(board, 1)
+        opp_threats = count_threats(board, -1)
+        score += my_threats * 50 - opp_threats * 50
+        
+        return score
+    
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        if depth == 0 or check_winner(board, 1) or check_winner(board, -1):
+            return evaluate_position(board)
+        
+        valid_moves = [col for col in range(cols) if is_valid_move(board, col)]
+        
+        if maximizing_player:
+            max_eval = float('-inf')
+            for col in valid_moves:
+                new_board = make_move(board, col, 1)
+                eval_score = minimax(new_board, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in valid_moves:
+                new_board = make_move(board, col, -1)
+                eval_score = minimax(new_board, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Check for immediate win
+    for col in range(cols):
+        if is_valid_move(board, col):
+            new_board = make_move(board, col, 1)
+            if check_winner(new_board, 1):
+                return col
+    
+    # Check for immediate threat (must block)
+    for col in range(cols):
+        if is_valid_move(board, col):
+            new_board = make_move(board, col, -1)
+            if check_winner(new_board, -1):
+                return col
+    
+    # Use minimax for best move
+    best_col = 3  # Default to center
+    best_score = float('-inf')
+    
+    valid_moves = [col for col in range(cols) if is_valid_move(board, col)]
+    
+    for col in valid_moves:
+        new_board = make_move(board, col, 1)
+        score = minimax(new_board, 5, float('-inf'), float('inf'), False)
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    return best_col

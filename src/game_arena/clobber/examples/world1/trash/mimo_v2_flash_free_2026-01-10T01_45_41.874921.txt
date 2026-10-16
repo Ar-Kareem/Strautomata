@@ -1,0 +1,350 @@
+The game is Clobber on a $5 \times 6$ board.
+Goal: Implement a move-selection policy that plays optimally (or strongly).
+Given the constraints (state size small, 1 second per move), we can use **Minimax with Alpha-Beta pruning** and **Zobrist Hashing with a Transposition Table**.
+Since I don't have access to a pre-computed endgame database, I will implement a search engine that solves the game from the current state.
+The game is finite and deterministic, so perfect play is possible within the time limit for many states. I will use iterative deepening to maximize the depth searched within 0.9 seconds.
+
+**Strategy:**
+1.  **Representation**: Flatten the $5 \times 6$ board into bitboards (90 bits total). Since 128-bit integers are native in Python, we can represent `my_pieces` and `opp_pieces` as integers.
+2.  **Move Generation**: Precompute direction offsets for all 90 cells. Generate moves by iterating over set bits of `my_pieces`, checking neighbors in `opp_pieces`.
+3.  **Search**:
+    -   **Iterative Deepening**: Start depth 1, increase until time runs out.
+    -   **Alpha-Beta Pruning**: Minimize worst-case outcome.
+    -   **Transposition Table**: Cache board states (Zobrist hash) to avoid re-evaluating branches.
+    -   **Ordering**: Heuristic to check captures that remove opponent pieces capable of capturing us (reciprocal threats) first.
+4.  **Evaluation**: 
+    -   If a terminal state (no moves), return -infinity (losing) or +infinity (winning).
+    -   If depth is 0, use a static heuristic: material difference + mobility + connectivity.
+
+```python
+import time
+import random
+
+def policy(you: list[list[int]], opponent: list[list[int]]) -> str:
+    """
+    Clobber AI using Iterative Deepening Alpha-Beta with Transposition Table.
+    """
+    
+    # --- Constants & Bitboard Conversion ---
+    ROWS, COLS = 5, 6
+    SIZE = ROWS * COLS
+    
+    # Directions mapping
+    DIRS = ['U', 'R', 'D', 'L']
+    # Deltas: U, R, D, L
+    Deltas = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+    
+    # Precompute Neighbors for each cell index 0..89
+    # Index = r * 6 + c
+    Neighbors = [[] for _ in range(SIZE)]
+    Dir_Idx = [[] for _ in range(SIZE)] # Stores the direction index (0-3) to reach neighbor
+    
+    for r in range(ROWS):
+        for c in range(COLS):
+            idx = r * COLS + c
+            for d, (dr, dc) in enumerate(Deltas):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < ROWS and 0 <= nc < COLS:
+                    n_idx = nr * COLS + nc
+                    Neighbors[idx].append(n_idx)
+                    Dir_Idx[idx].append(d)
+
+    def to_bitboard(board):
+        val = 0
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board[r][c] == 1:
+                    val |= (1 << (r * COLS + c))
+        return val
+
+    def from_bitboard(bb):
+        board = [[0]*COLS for _ in range(ROWS)]
+        for r in range(ROWS):
+            for c in range(COLS):
+                if bb & (1 << (r*COLS + c)):
+                    board[r][c] = 1
+        return board
+
+    def get_moves(my_bb, opp_bb):
+        moves = []
+        # Iterate through all bits of my_bb
+        temp = my_bb
+        while temp:
+            src = (temp & -temp).bit_length() - 1 # Get index of least significant bit
+            temp &= temp - 1
+            
+            # Check neighbors
+            # We need indices of neighbors
+            for i, dest in enumerate(Neighbors[src]):
+                # Check if dest is occupied by opponent
+                if (opp_bb >> dest) & 1:
+                    # Legal move
+                    d_idx = Dir_Idx[src][i]
+                    moves.append((src, dest, d_idx))
+        return moves
+
+    # --- Transposition Table ---
+    # Stores hash -> (depth, score, flag, best_move)
+    # Flag: 0=Exact, 1=Lowerbound (Alpha), 2=Upperbound (Beta)
+    TT = {}
+    
+    # Zobrist Tables: Random bitstrings for each piece and player
+    # We need randoms for MyPiece at pos, and OppPiece at pos
+    # Since the board is symmetric (turn determines who is 'me'), 
+    # we only need to randomize the position of pieces.
+    # We will hash: Z_my_piece ^ Z_opp_piece. 
+    # To distinguish turns, we can add a turn random (but standard negamax handles this via score negation).
+    # Actually, simpler: Hash the board state (my_bb, opp_bb).
+    Z_table = [random.getrandbits(64) for _ in range(SIZE * 2)]
+    
+    def get_hash(my_bb, opp_bb):
+        h = 0
+        temp = my_bb
+        while temp:
+            p = (temp & -temp).bit_length() - 1
+            h ^= Z_table[p]
+            temp &= temp - 1
+        temp = opp_bb
+        while temp:
+            p = (temp & -temp).bit_length() - 1
+            h ^= Z_table[SIZE + p]
+            temp &= temp - 1
+        return h
+
+    # --- Heuristic Evaluation ---
+    # Positive is good for the current player (us)
+    def evaluate(my_bb, opp_bb, is_terminal=False):
+        if is_terminal:
+            # If no moves for current player, it's a loss (-INF)
+            # But we handle this in search.
+            # If this is called at depth 0, we are in a non-terminal state.
+            return -100000 # Should not happen if checked in search
+        
+        # Material
+        cnt_me = bin(my_bb).count('1')
+        cnt_opp = bin(opp_bb).count('1')
+        
+        # Mobility (number of moves)
+        # Only count captures, not empty moves. In Clobber, only captures are legal.
+        # So mobility = number of legal captures.
+        my_mobility = 0
+        temp = my_bb
+        while temp:
+            src = (temp & -temp).bit_length() - 1
+            temp &= temp - 1
+            for dest in Neighbors[src]:
+                if (opp_bb >> dest) & 1:
+                    my_mobility += 1
+        
+        # Connectivity (how many pieces have a friendly neighbor - not needed in Clobber as captures only)
+        # In Clobber, you can only move to opponent. So connectivity matters less.
+        # However, protecting pieces matters.
+        # Protection score: if I move to X, can opponent capture me?
+        # Reciprocal threats.
+        
+        # Simple Eval: Material + Mobility
+        score = (cnt_me - cnt_opp) * 1000 + my_mobility
+        return score
+
+    # --- Alpha-Beta Search ---
+    # Iterative Deepening Loop
+    start_time = time.time()
+    time_limit = 0.9  # Seconds
+    
+    best_move = None
+    
+    # Initial moves
+    initial_moves = get_moves(my_bitboard, opp_bitboard)
+    
+    # If only one move, just return it to save time (optional optimization)
+    if len(initial_moves) == 1:
+        r, c = divmod(initial_moves[0][0], COLS)
+        dir_str = DIRS[initial_moves[0][2]]
+        return f"{r},{c},{dir_str}"
+    
+    # Order initial moves heuristically
+    # Prioritize captures that remove an opponent piece that can capture us
+    def move_heuristic(move):
+        src, dest, _ = move
+        score = 0
+        # Is the opponent piece we are capturing a threat?
+        # Check if that opponent piece could capture us (from dest)
+        # We need to check neighbors of dest. If any neighbor is my piece (other than src), then it was a threat.
+        # Actually, better: check if the opponent piece at dest could move to any of my pieces.
+        # Since we are moving there, it will be gone.
+        # Let's prioritize capturing pieces that have moves.
+        
+        # Threat assessment: does the piece at dest have any captures?
+        # It captures if neighbor is my piece.
+        # We know my_bb (before move). 
+        # We can check neighbors of dest. If any neighbor (except src, since we are moving from src) is in my_bb, then it was a threat.
+        # But src is moving away, so if dest neighbor was src, it wasn't threatening src.
+        # Let's just prioritize capturing pieces that are themselves mobile.
+        
+        opp_piece_moves = 0
+        for n in Neighbors[dest]:
+            if (my_bitboard >> n) & 1:
+                opp_piece_moves += 1
+        
+        # If we capture a piece that could capture us (or others), high priority
+        return opp_piece_moves
+
+    # --- The Search Function (Negamax with TT) ---
+    # Returns (score, move)
+    # sign = 1 if maximizing (my turn), -1 if minimizing (opponent turn)
+    def search(my_bb, opp_bb, depth, alpha, beta, start_flag=False):
+        nonlocal start_time
+        
+        # Time Check (only check periodically or at root)
+        if start_flag and (time.time() - start_time > 0.85):
+            raise TimeoutError
+        
+        # TT Lookup
+        h = get_hash(my_bb, opp_bb)
+        if h in TT:
+            entry = TT[h]
+            if entry[0] >= depth:
+                flag = entry[2]
+                stored_score = entry[1]
+                stored_move = entry[3]
+                if flag == 0: # Exact
+                    return stored_score, stored_move
+                if flag == 1: # Lowerbound (Alpha)
+                    if stored_score > alpha:
+                        alpha = stored_score
+                elif flag == 2: # Upperbound (Beta)
+                    if stored_score < beta:
+                        beta = stored_score
+                
+                if alpha >= beta:
+                    return stored_score, stored_move
+        
+        # Generate moves
+        moves = get_moves(my_bb, opp_bb)
+        
+        # Terminal Check
+        if not moves:
+            # Current player has no moves -> Loss
+            return -1000000, None 
+        
+        # Leaf Node (Depth 0)
+        if depth == 0:
+            score = evaluate(my_bb, opp_bb)
+            # In Negamax, we return score relative to current player.
+            # Since evaluate returns (me - opp) * 1000 + my_mobility,
+            # and here 'me' is the current player, it fits.
+            return score, None
+
+        # Move Ordering
+        # If we are at root, use the pre-sorted heuristic list.
+        # If not root, just sort by heuristic roughly.
+        if start_flag:
+            # Sort initial_moves
+            moves.sort(key=move_heuristic, reverse=True)
+        else:
+            # Basic ordering: captures that hit pieces with mobility
+            moves.sort(key=lambda m: (1 if ((my_bb >> m[1]) & 0) else 0), reverse=True) 
+            # Actually, let's use the same heuristic but we need my_bb context.
+            # The heuristic function needs access to my_bb. We can pass it.
+            # Let's make a simple lambda that approximates threat
+            moves.sort(key=lambda m: (1 if ((my_bitboard >> m[1]) & 0) else 0), reverse=True) 
+            # Just keep original order for non-root to save time in deep recursion?
+            # No, ordering is crucial.
+            # Let's reuse move_heuristic but it needs my_bb. 
+            # We can pass my_bb to move_heuristic via closure if defined inside.
+            # Actually, let's just do nothing for deep nodes to save time, or simple ordering.
+
+        best_score = -float('inf')
+        best_move_local = moves[0] if moves else None
+        
+        for move in moves:
+            src, dest, _ = move
+            
+            # Make Move
+            # My piece moves from src to dest.
+            # Opponent piece at dest is removed.
+            n_my = (my_bb ^ (1 << src)) | (1 << dest)
+            n_opp = opp_bb ^ (1 << dest)
+            
+            # Recurse
+            # Pass n_my, n_opp. The search function assumes the first arg is the mover.
+            score, _ = search(n_opp, n_my, depth - 1, -beta, -alpha, start_flag=False) # Swap roles
+            
+            score = -score # Negamax flip
+            
+            if score > best_score:
+                best_score = score
+                best_move_local = move
+            
+            if score > alpha:
+                alpha = score
+            
+            if alpha >= beta:
+                break # Beta cutoff
+
+        # Store in TT
+        # Flag determination
+        flag = 0
+        if best_score <= alpha_orig:
+            flag = 2 # Upperbound
+        elif best_score >= beta:
+            flag = 1 # Lowerbound
+        # Note: alpha_orig needs to be saved before loop if we want precise flags. 
+        # But for caching, just store exact if we searched fully, else bounds.
+        # Simple approach: if we broke on beta, flag=1 (Lowerbound? No, failed high implies >= beta).
+        # Alpha-Beta: If best_score >= beta, we cutoff. So we know score is at least beta (Lowerbound for maximizing).
+        # If best_score < beta, we found exact value (if fully searched) or just a value < beta.
+        # Let's use:
+        if best_score >= beta:
+            TT[h] = (depth, best_score, 1, best_move_local) # Lowerbound
+        elif best_score <= alpha_orig: # If we never raised alpha
+            TT[h] = (depth, best_score, 2, best_move_local) # Upperbound
+        else:
+            TT[h] = (depth, best_score, 0, best_move_local) # Exact
+
+        return best_score, best_move_local
+
+    # --- Main Loop ---
+    my_bitboard = to_bitboard(you)
+    opp_bitboard = to_bitboard(opponent)
+    
+    # Iterative Deepening
+    final_move = initial_moves[0] # Default
+    max_depth = 1
+    
+    # We need a variable to control the root alpha-beta bounds
+    # As we increase depth, we can use previous best score as window
+    
+    try:
+        # Start with a very small window around the previous best to get a quick fail-hard/fail-soft
+        # But for simplicity, we just do standard ID with full window [-inf, inf]
+        while max_depth <= 20: # Theoretical max for Clobber is high, but practical limits apply
+            alpha = -float('inf')
+            beta = float('inf')
+            
+            # For ID, we might want to sort moves based on previous iteration's best
+            # But our search function sorts internally. 
+            
+            score, best_mv = search(my_bitboard, opp_bitboard, max_depth, alpha, beta, start_flag=True)
+            
+            # If we didn't timeout, update final_move
+            if best_mv is not None:
+                final_move = best_mv
+            
+            # If score is +/- infinity, we found a win/loss, can stop
+            if score > 900000 or score < -900000:
+                break
+                
+            max_depth += 1
+            
+    except TimeoutError:
+        # Stop loop, use best found so far
+        pass
+
+    # Format Output
+    src_idx, dest_idx, dir_idx = final_move
+    r, c = divmod(src_idx, COLS)
+    dir_str = DIRS[dir_idx]
+    
+    return f"{r},{c},{dir_str}"
+```

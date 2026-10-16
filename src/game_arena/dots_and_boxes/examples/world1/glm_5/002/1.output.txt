@@ -1,0 +1,208 @@
+The strategy for this policy is based on a depth-limited Minimax search with Alpha-Beta pruning. The core logic involves:
+
+1.  **Immediate Captures**: If a move completes a box, it is prioritized. Since the player gets an extra turn after a capture, the search algorithm handles this by keeping the turn with the same player.
+2.  **Move Ordering**: Moves are ordered by "captures first" to improve Alpha-Beta pruning efficiency. Captures are likely better moves, so exploring them early creates tighter bounds.
+3.  **Heuristic Evaluation**: A weighted evaluation function is used at the depth limit or terminal states. It calculates `Score_Difference * 10 + Safe_Moves_Count * 0.1`. The primary goal is maximizing the score, but the secondary term encourages maintaining board control (keeping safe moves available) to avoid being forced to open chains for the opponent.
+4.  **Iterative Deepening**: The search runs within a strict time limit (0.9s), progressively deepening the search depth to ensure the best move found so far is returned even if time runs out.
+
+<code>
+import numpy as np
+import time
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    start_time = time.time()
+    TIME_LIMIT = 0.9
+    
+    PLAYER = 1
+    OPPONENT = -1
+    
+    # Helper to count sides of a box (r, c) where r, c in 0..3
+    def count_sides(h, v, r, c):
+        # Top, Bottom, Left, Right
+        return (h[r, c] != 0) + (h[r+1, c] != 0) + (v[r, c] != 0) + (v[r, c+1] != 0)
+
+    # Evaluation function for the state
+    def evaluate(h, v, cap):
+        score = np.sum(cap == PLAYER) - np.sum(cap == OPPONENT)
+        
+        # Heuristic: Count safe moves (moves that don't create a 3-sided box)
+        # This encourages maintaining control over the board
+        safe_moves = 0
+        # Check horizontal edges
+        for r in range(5):
+            for c in range(4):
+                if h[r, c] == 0:
+                    is_dangerous = False
+                    # Box above (r-1, c)
+                    if r > 0:
+                        if count_sides(h, v, r-1, c) == 2: is_dangerous = True
+                    # Box below (r, c)
+                    if r < 4:
+                        if count_sides(h, v, r, c) == 2: is_dangerous = True
+                    if not is_dangerous:
+                        safe_moves += 1
+                        
+        # Check vertical edges
+        for r in range(4):
+            for c in range(5):
+                if v[r, c] == 0:
+                    is_dangerous = False
+                    # Box left (r, c-1)
+                    if c > 0:
+                        if count_sides(h, v, r, c-1) == 2: is_dangerous = True
+                    # Box right (r, c)
+                    if c < 4:
+                        if count_sides(h, v, r, c) == 2: is_dangerous = True
+                    if not is_dangerous:
+                        safe_moves += 0.1 # Reduced weight for vertical count if symmetry exists, but logic holds
+                        
+        return score * 10 + safe_moves * 0.1
+
+    # Apply move to state arrays (returns copies)
+    def apply_move(h, v, cap, move, player):
+        r, c, d = move
+        nh = h.copy()
+        nv = v.copy()
+        ncap = cap.copy()
+        captured = 0
+        
+        if d == 'H':
+            nh[r, c] = player
+            # Check box above
+            if r > 0:
+                if count_sides(nh, nv, r-1, c) == 4:
+                    ncap[r-1, c] = player
+                    captured += 1
+            # Check box below
+            if r < 4:
+                if count_sides(nh, nv, r, c) == 4:
+                    ncap[r, c] = player
+                    captured += 1
+        else: # 'V'
+            nv[r, c] = player
+            # Check box left
+            if c > 0:
+                if count_sides(nh, nv, r, c-1) == 4:
+                    ncap[r, c-1] = player
+                    captured += 1
+            # Check box right
+            if c < 4:
+                if count_sides(nh, nv, r, c) == 4:
+                    ncap[r, c] = player
+                    captured += 1
+        
+        return nh, nv, ncap, captured
+
+    # Order moves to check captures first (better pruning)
+    def order_moves(h, v, moves):
+        caps = []
+        others = []
+        for move in moves:
+            r, c, d = move
+            is_capture = False
+            if d == 'H':
+                if r > 0 and count_sides(h, v, r-1, c) == 3: is_capture = True
+                if r < 4 and count_sides(h, v, r, c) == 3: is_capture = True
+            else:
+                if c > 0 and count_sides(h, v, r, c-1) == 3: is_capture = True
+                if c < 4 and count_sides(h, v, r, c) == 3: is_capture = True
+            
+            if is_capture:
+                caps.append(move)
+            else:
+                others.append(move)
+        return caps + others
+
+    def minimax(h, v, cap, depth, alpha, beta, is_maximizing):
+        # Terminal check: no moves left (handled by game end) or depth limit
+        if depth == 0:
+            return evaluate(h, v, cap), None
+        
+        # Generate legal moves
+        legal_moves = []
+        # Horizontal
+        for r in range(5):
+            for c in range(4):
+                if h[r, c] == 0:
+                    legal_moves.append((r, c, 'H'))
+        # Vertical
+        for r in range(4):
+            for c in range(5):
+                if v[r, c] == 0:
+                    legal_moves.append((r, c, 'V'))
+        
+        if not legal_moves:
+            return evaluate(h, v, cap), None
+
+        # Optimization: Order moves
+        legal_moves = order_moves(h, v, legal_moves)
+        
+        best_move = legal_moves[0] # Default
+        
+        if is_maximizing:
+            max_eval = -float('inf')
+            for move in legal_moves:
+                nh, nv, ncap, captured = apply_move(h, v, cap, move, PLAYER)
+                # If captured, player keeps turn (is_maximizing remains True)
+                # Decrease depth only if not capturing to prevent infinite loops on long chains?
+                # Actually depth decrement is standard, captures reduce board complexity.
+                next_turn = True if captured > 0 else False
+                eval_score, _ = minimax(nh, nv, ncap, depth - 1, alpha, beta, next_turn)
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in legal_moves:
+                nh, nv, ncap, captured = apply_move(h, v, cap, move, OPPONENT)
+                next_turn = False if captured > 0 else True
+                eval_score, _ = minimax(nh, nv, ncap, depth - 1, alpha, beta, next_turn)
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    # Iterative Deepening
+    best_move_found = None
+    root_moves = []
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0: root_moves.append((r, c, 'H'))
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0: root_moves.append((r, c, 'V'))
+    
+    if not root_moves:
+        return "0,0,H" # Should not happen
+
+    # Initial check for immediate captures to save time/depth
+    ordered_moves = order_moves(horizontal, vertical, root_moves)
+    # If the best looking move is a capture, we might prioritize it, but minimax handles this.
+    
+    # Run Minimax
+    # Depth 4 is a safe baseline, iterative deepening extends it
+    for d in range(1, 8):
+        if time.time() - start_time > TIME_LIMIT:
+            break
+        score, move = minimax(horizontal, vertical, capture, d, -float('inf'), float('inf'), True)
+        if move:
+            best_move_found = move
+        # If we found a winning line, no need to search deeper
+        if score > 50: # Arbitrary high threshold indicating winning
+            break
+
+    if best_move_found is None:
+        # Fallback to first legal move
+        best_move_found = root_moves[0]
+        
+    return f"{best_move_found[0]},{best_move_found[1]},{best_move_found[2]}"
+</code>

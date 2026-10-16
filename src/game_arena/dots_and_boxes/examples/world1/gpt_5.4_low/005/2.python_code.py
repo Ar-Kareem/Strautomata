@@ -1,0 +1,332 @@
+
+import numpy as np
+from functools import lru_cache
+
+# Valid edge coordinates on a 4x4 box board:
+# Horizontal: rows 0..4, cols 0..3
+# Vertical:   rows 0..3, cols 0..4
+
+H_MOVES = [(r, c, 'H') for r in range(5) for c in range(4)]
+V_MOVES = [(r, c, 'V') for r in range(4) for c in range(5)]
+ALL_MOVES = H_MOVES + V_MOVES
+
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    h = np.array(horizontal, dtype=np.int8, copy=True)
+    v = np.array(vertical, dtype=np.int8, copy=True)
+    c = np.array(capture, dtype=np.int8, copy=True)
+
+    legal = legal_moves(h, v)
+    if not legal:
+        # Should not happen in a valid arena state, but return a syntactically valid fallback.
+        return "0,0,H"
+
+    remaining = len(legal)
+
+    # Late game: exact search.
+    if remaining <= 10:
+        move = best_move_search(h, v, c)
+        if move is not None:
+            return move_to_str(move)
+
+    # Heuristic play.
+    move = best_move_heuristic(h, v, c, legal)
+    return move_to_str(move)
+
+
+def move_to_str(move):
+    r, c, d = move
+    return f"{r},{c},{d}"
+
+
+def legal_moves(h, v):
+    moves = []
+    for r in range(5):
+        for c in range(4):
+            if h[r, c] == 0:
+                moves.append((r, c, 'H'))
+    for r in range(4):
+        for c in range(5):
+            if v[r, c] == 0:
+                moves.append((r, c, 'V'))
+    return moves
+
+
+def box_edge_count(h, v, br, bc):
+    cnt = 0
+    if h[br, bc] != 0:
+        cnt += 1
+    if h[br + 1, bc] != 0:
+        cnt += 1
+    if v[br, bc] != 0:
+        cnt += 1
+    if v[br, bc + 1] != 0:
+        cnt += 1
+    return cnt
+
+
+def adjacent_boxes(move):
+    r, c, d = move
+    out = []
+    if d == 'H':
+        # Box above
+        if r > 0 and c < 4:
+            out.append((r - 1, c))
+        # Box below
+        if r < 4 and c < 4:
+            out.append((r, c))
+    else:
+        # Box left
+        if c > 0 and r < 4:
+            out.append((r, c - 1))
+        # Box right
+        if c < 4 and r < 4:
+            out.append((r, c))
+    return out
+
+
+def move_capture_count(h, v, c, move):
+    cnt = 0
+    for br, bc in adjacent_boxes(move):
+        if 0 <= br < 4 and 0 <= bc < 4 and c[br, bc] == 0:
+            if box_edge_count(h, v, br, bc) == 3:
+                cnt += 1
+    return cnt
+
+
+def creates_third_side(h, v, c, move):
+    # True if after playing move, any adjacent unclaimed non-completed box has exactly 3 sides.
+    for br, bc in adjacent_boxes(move):
+        if 0 <= br < 4 and 0 <= bc < 4 and c[br, bc] == 0:
+            before = box_edge_count(h, v, br, bc)
+            after = before + 1
+            if after == 3:
+                return True
+    return False
+
+
+def apply_move(h, v, c, move, player):
+    nh = h.copy()
+    nv = v.copy()
+    nc = c.copy()
+    r, col, d = move
+
+    if d == 'H':
+        nh[r, col] = player
+    else:
+        nv[r, col] = player
+
+    captured = 0
+    for br, bc in adjacent_boxes(move):
+        if 0 <= br < 4 and 0 <= bc < 4 and nc[br, bc] == 0:
+            if box_edge_count(nh, nv, br, bc) == 4:
+                nc[br, bc] = player
+                captured += 1
+
+    next_player = player if captured > 0 else -player
+    return nh, nv, nc, next_player, captured
+
+
+def best_move_heuristic(h, v, c, legal):
+    # 1. Immediate captures.
+    capturing = []
+    for mv in legal:
+        cap = move_capture_count(h, v, c, mv)
+        if cap > 0:
+            capturing.append((cap, mv))
+    if capturing:
+        # Prefer more captures; tie-break by continuing safety.
+        capturing.sort(key=lambda x: (-x[0], heuristic_tiebreak_after_move(h, v, c, x[1])))
+        return capturing[0][1]
+
+    # 2. Safe moves.
+    safe = []
+    for mv in legal:
+        if not creates_third_side(h, v, c, mv):
+            safe.append(mv)
+    if safe:
+        safe.sort(key=lambda mv: heuristic_safe_score(h, v, c, mv), reverse=True)
+        return safe[0]
+
+    # 3. No safe moves: minimize opponent's forced gain.
+    best = None
+    best_key = None
+    for mv in legal:
+        give = forced_opponent_captures_after_open(h, v, c, mv)
+        key = (give, -heuristic_risk_score(h, v, c, mv))
+        if best is None or key < best_key:
+            best = mv
+            best_key = key
+    return best if best is not None else legal[0]
+
+
+def heuristic_tiebreak_after_move(h, v, c, move):
+    nh, nv, nc, next_player, _ = apply_move(h, v, c, move, 1)
+
+    # Smaller tuple is better for sorting.
+    legal = legal_moves(nh, nv)
+    next_caps = 0
+    next_safe = 0
+    for mv in legal:
+        cap = move_capture_count(nh, nv, nc, mv)
+        if cap > 0:
+            next_caps += cap
+        if not creates_third_side(nh, nv, nc, mv):
+            next_safe += 1
+
+    # Prefer states with more follow-up captures and more safe options.
+    return (-next_caps, -next_safe, heuristic_risk_score(nh, nv, nc, move))
+
+
+def heuristic_safe_score(h, v, c, move):
+    # Prefer moves adjacent to low-count boxes and central structure.
+    score = 0.0
+    r, col, d = move
+
+    for br, bc in adjacent_boxes(move):
+        if 0 <= br < 4 and 0 <= bc < 4 and c[br, bc] == 0:
+            cnt = box_edge_count(h, v, br, bc)
+            # Safer to touch boxes with fewer sides.
+            score += (2 - cnt) * 3
+
+    # Mild center preference.
+    if d == 'H':
+        score -= abs(r - 2) * 0.2 + abs(col - 1.5) * 0.2
+    else:
+        score -= abs(r - 1.5) * 0.2 + abs(col - 2) * 0.2
+
+    # Prefer leaving many safe moves available.
+    nh, nv, nc, _, _ = apply_move(h, v, c, move, 1)
+    safe_count = 0
+    for mv in legal_moves(nh, nv):
+        if not creates_third_side(nh, nv, nc, mv):
+            safe_count += 1
+    score += 0.15 * safe_count
+    return score
+
+
+def heuristic_risk_score(h, v, c, move):
+    # Larger means riskier.
+    risk = 0
+    for br, bc in adjacent_boxes(move):
+        if 0 <= br < 4 and 0 <= bc < 4 and c[br, bc] == 0:
+            cnt = box_edge_count(h, v, br, bc)
+            risk += cnt
+    return risk
+
+
+def forced_opponent_captures_after_open(h, v, c, my_move):
+    # Simulate: we make a non-capturing move that opens boxes; opponent then greedily
+    # captures as long as captures exist. Count opponent boxes won in that forced run.
+    nh, nv, nc, next_player, my_cap = apply_move(h, v, c, my_move, 1)
+    if my_cap > 0:
+        return 0
+    if next_player != -1:
+        return 0
+
+    total = 0
+    cur_h, cur_v, cur_c = nh, nv, nc
+    player = -1
+
+    # Greedy capture sequence for opponent.
+    while True:
+        legal = legal_moves(cur_h, cur_v)
+        best = None
+        best_cap = 0
+        for mv in legal:
+            cap = move_capture_count(cur_h, cur_v, cur_c, mv)
+            if cap > best_cap:
+                best_cap = cap
+                best = mv
+        if best is None or best_cap == 0:
+            break
+        cur_h, cur_v, cur_c, player2, cap = apply_move(cur_h, cur_v, cur_c, best, player)
+        total += cap
+        if player2 != player:
+            break
+    return total
+
+
+def best_move_search(h, v, c):
+    legal = legal_moves(h, v)
+    if not legal:
+        return None
+
+    ordered = order_moves(h, v, c, legal)
+    best_mv = ordered[0]
+    best_val = -10**9
+    alpha = -10**9
+    beta = 10**9
+
+    cache = {}
+
+    for mv in ordered:
+        nh, nv, nc, next_player, _ = apply_move(h, v, c, mv, 1)
+        val = minimax(nh, nv, nc, next_player, alpha, beta, cache)
+        if val > best_val:
+            best_val = val
+            best_mv = mv
+        if best_val > alpha:
+            alpha = best_val
+    return best_mv
+
+
+def order_moves(h, v, c, legal):
+    scored = []
+    for mv in legal:
+        cap = move_capture_count(h, v, c, mv)
+        safe = 0 if creates_third_side(h, v, c, mv) else 1
+        give = 0 if cap > 0 else forced_opponent_captures_after_open(h, v, c, mv)
+        score = (100 * cap) + (10 * safe) - give - 0.1 * heuristic_risk_score(h, v, c, mv)
+        scored.append((score, mv))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [mv for _, mv in scored]
+
+
+def encode_state(h, v, c, player):
+    return (
+        player,
+        h[:, :4].tobytes(),
+        v[:4, :].tobytes(),
+        c[:4, :4].tobytes(),
+    )
+
+
+def minimax(h, v, c, player, alpha, beta, cache):
+    key = encode_state(h, v, c, player)
+    if key in cache:
+        return cache[key]
+
+    legal = legal_moves(h, v)
+    if not legal:
+        val = int(np.sum(c))
+        cache[key] = val
+        return val
+
+    ordered = order_moves(h, v, c, legal)
+
+    if player == 1:
+        val = -10**9
+        for mv in ordered:
+            nh, nv, nc, next_player, _ = apply_move(h, v, c, mv, player)
+            child = minimax(nh, nv, nc, next_player, alpha, beta, cache)
+            if child > val:
+                val = child
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+    else:
+        val = 10**9
+        for mv in ordered:
+            nh, nv, nc, next_player, _ = apply_move(h, v, c, mv, player)
+            child = minimax(nh, nv, nc, next_player, alpha, beta, cache)
+            if child < val:
+                val = child
+            if val < beta:
+                beta = val
+            if alpha >= beta:
+                break
+
+    cache[key] = val
+    return val

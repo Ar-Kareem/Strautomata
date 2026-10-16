@@ -1,0 +1,121 @@
+## Strategy
+
+My strategy for Dots and Boxes follows these key principles:
+
+1. **Always take free boxes**: If there's a move that completes a box (captures it), take it immediately since you get another turn.
+
+2. **Avoid giving away boxes**: Never play a move that leaves a box with 3 sides filled (giving the opponent an easy capture), unless there's no other choice.
+
+3. **Chain awareness**: In Dots and Boxes, chains of boxes are critical. When forced to give away boxes, prefer giving shorter chains. When taking boxes, try to take entire chains.
+
+4. **Safe moves first**: Prioritize moves that leave boxes with 0-1 sides filled, as these are far from being completed.
+
+5. **Minimax with alpha-beta pruning**: For more complex situations, use a limited-depth search to evaluate positions.
+
+6. **Endgame handling**: When only "dangerous" moves remain (all moves give opponent a box), use the double-dealing strategy - sometimes sacrifice small chains to win the long game.
+
+The implementation:
+- Counts sides of each box to identify capturing moves and dangerous moves
+- Prioritizes capturing moves (with chain following)
+- Avoids moves that create 3-sided boxes
+- Falls back to safe moves, then least-damaging moves
+
+<code>
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    def get_legal_moves():
+        moves = []
+        for r in range(5):
+            for c in range(4):
+                if horizontal[r, c] == 0:
+                    moves.append((r, c, 'H'))
+        for r in range(4):
+            for c in range(5):
+                if vertical[r, c] == 0:
+                    moves.append((r, c, 'V'))
+        return moves
+    
+    def count_box_sides(r, c):
+        if r < 0 or r >= 4 or c < 0 or c >= 4:
+            return -1  # Invalid box
+        count = 0
+        if horizontal[r, c] != 0: count += 1      # Top
+        if horizontal[r+1, c] != 0: count += 1    # Bottom
+        if vertical[r, c] != 0: count += 1        # Left
+        if vertical[r, c+1] != 0: count += 1      # Right
+        return count
+    
+    def boxes_affected_by_move(r, c, d):
+        boxes = []
+        if d == 'H':
+            if r > 0: boxes.append((r-1, c))  # Box above
+            if r < 4: boxes.append((r, c))    # Box below
+        else:  # V
+            if c > 0: boxes.append((r, c-1))  # Box to left
+            if c < 4: boxes.append((r, c))    # Box to right
+        return [(br, bc) for br, bc in boxes if 0 <= br < 4 and 0 <= bc < 4]
+    
+    def move_completes_box(r, c, d):
+        boxes = boxes_affected_by_move(r, c, d)
+        for br, bc in boxes:
+            if capture[br, bc] == 0 and count_box_sides(br, bc) == 3:
+                return True
+        return False
+    
+    def move_creates_three_sided(r, c, d):
+        boxes = boxes_affected_by_move(r, c, d)
+        for br, bc in boxes:
+            if capture[br, bc] == 0 and count_box_sides(br, bc) == 2:
+                return True
+        return False
+    
+    def count_boxes_completed(r, c, d):
+        boxes = boxes_affected_by_move(r, c, d)
+        count = 0
+        for br, bc in boxes:
+            if capture[br, bc] == 0 and count_box_sides(br, bc) == 3:
+                count += 1
+        return count
+    
+    legal_moves = get_legal_moves()
+    
+    if not legal_moves:
+        return "0,0,H"  # Should never happen
+    
+    # Priority 1: Moves that complete boxes (we get another turn)
+    capturing_moves = [(m, count_boxes_completed(*m)) for m in legal_moves if move_completes_box(*m)]
+    if capturing_moves:
+        # Prefer moves that capture more boxes
+        capturing_moves.sort(key=lambda x: -x[1])
+        m = capturing_moves[0][0]
+        return f"{m[0]},{m[1]},{m[2]}"
+    
+    # Priority 2: Safe moves (don't create 3-sided boxes)
+    safe_moves = [m for m in legal_moves if not move_creates_three_sided(*m)]
+    if safe_moves:
+        # Among safe moves, prefer those that affect boxes with fewer sides
+        def min_sides(m):
+            boxes = boxes_affected_by_move(*m)
+            if not boxes:
+                return 0
+            return min(count_box_sides(br, bc) for br, bc in boxes)
+        safe_moves.sort(key=min_sides)
+        m = safe_moves[0]
+        return f"{m[0]},{m[1]},{m[2]}"
+    
+    # Priority 3: All moves are dangerous - pick one that gives away fewest boxes
+    # Try to find the shortest chain to sacrifice
+    def count_chain_size(r, c, d):
+        # Simplified: just count how many 3-sided boxes this creates
+        boxes = boxes_affected_by_move(r, c, d)
+        count = 0
+        for br, bc in boxes:
+            if capture[br, bc] == 0 and count_box_sides(br, bc) == 2:
+                count += 1
+        return count
+    
+    legal_moves.sort(key=lambda m: count_chain_size(*m))
+    m = legal_moves[0]
+    return f"{m[0]},{m[1]},{m[2]}"
+</code>

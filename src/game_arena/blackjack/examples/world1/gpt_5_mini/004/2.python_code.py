@@ -1,0 +1,112 @@
+
+# simplified_blackjack_policy.py
+
+from typing import List
+
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+VALUE_MAP = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10
+}
+
+def hand_value(cards: List[str], target: int) -> int:
+    """
+    Compute the best total for 'cards' given the target.
+    Aces can be 11 whenever doing so keeps total <= target, otherwise count as 1.
+    If it's impossible to be <= target, return the minimal possible total (all aces as 1).
+    """
+    total = 0
+    aces = 0
+    for c in cards:
+        if c == "A":
+            aces += 1
+            total += 11  # start by counting each Ace as 11
+        else:
+            total += VALUE_MAP.get(c, 0)
+    # If total is > target, try downgrading Aces from 11 to 1 (each downgrade reduces total by 10)
+    while total > target and aces > 0:
+        total -= 10
+        aces -= 1
+    return total
+
+def next_card_value_for_sum(rank: str, current_sum: int, target: int) -> int:
+    """
+    Return the numeric value that a card of 'rank' would contribute when drawn
+    given the current_sum and target. For Ace, choose 11 if current_sum+11 <= target else 1.
+    """
+    if rank == "A":
+        if current_sum + 11 <= target:
+            return 11
+        else:
+            return 1
+    return VALUE_MAP.get(rank, 0)
+
+def build_remaining_deck(hand: List[str]) -> List[str]:
+    """
+    Return list of remaining ranks in our deck after removing the cards in hand.
+    Each rank appears at most once in the initial deck.
+    """
+    remaining = RANKS.copy()
+    # remove one occurrence per card in hand (hand should be consistent with single-copy deck)
+    for card in hand:
+        if card in remaining:
+            remaining.remove(card)
+    return remaining
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decide whether to "HIT" or "STAY" given current hand and the game's target.
+    Heuristic: compute probability of busting on the next draw from our remaining deck.
+    Use an adaptive threshold based on how far we are from the target:
+      - far from target -> tolerate higher bust probability (more aggressive)
+      - close to target -> tolerate lower bust probability (more cautious)
+    """
+    # Safety: if hand empty or target out of expected range, be conservative
+    if not isinstance(hand, list) or not isinstance(target, int):
+        return "STAY"
+
+    current = hand_value(hand, target)
+
+    # Already at or above target: if exactly equal, STAY; if above (bust), STAY as well.
+    if current >= target:
+        return "STAY"
+
+    remaining = build_remaining_deck(hand)
+    if not remaining:
+        return "STAY"
+
+    # Compute probability that next draw immediately busts
+    bust_count = 0
+    for rank in remaining:
+        v = next_card_value_for_sum(rank, current, target)
+        if current + v > target:
+            bust_count += 1
+    bust_prob = bust_count / len(remaining)
+
+    # How far we are from target
+    delta = target - current
+
+    # Adaptive thresholds: more aggressive when delta is large.
+    if delta > 8:
+        threshold = 0.85
+    elif delta > 5:
+        threshold = 0.7
+    elif delta > 3:
+        threshold = 0.5
+    elif delta > 1:
+        threshold = 0.35
+    else:
+        threshold = 0.2
+
+    # Final decision
+    if bust_prob < threshold:
+        return "HIT"
+    else:
+        return "STAY"
+
+# If this file is executed directly, do a tiny self-check (not required by arena)
+if __name__ == "__main__":
+    # quick examples
+    print(policy(["10"], 21))  # typical: probably HIT if safe
+    print(policy(["10", "9"], 21))  # close to 21 -> likely STAY
+    print(policy(["A", "7"], 19))  # A as 11 => 18 -> might HIT depending on deck

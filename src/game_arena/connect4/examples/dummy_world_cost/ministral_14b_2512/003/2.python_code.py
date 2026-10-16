@@ -1,0 +1,267 @@
+
+import random
+import math
+from collections import defaultdict
+
+def policy(board):
+    # Check for immediate win or block
+    immediate_move = check_immediate_wins(board)
+    if immediate_move is not None:
+        return immediate_move
+
+    # Evaluate all possible moves using MCTS or static evaluation
+    best_move = None
+    best_score = -float('inf')
+
+    for col in range(7):
+        if is_valid_move(board, col):
+            # Simulate the move
+            new_board = [row[:] for row in board]
+            drop_piece(new_board, col, 1)
+            # Evaluate the new board
+            score = evaluate_board(new_board)
+            # Undo the move
+            drop_piece(new_board, col, 0)
+            if score > best_score:
+                best_score = score
+                best_move = col
+
+    # If no clear best move, use MCTS for deeper lookahead
+    if best_move is None or random.random() < 0.3:  # 30% chance to use MCTS
+        best_move = mcts_search(board, iterations=100)
+
+    return best_move
+
+def check_immediate_wins(board):
+    # Check for opponent's immediate win (block)
+    for col in range(7):
+        if is_valid_move(board, col):
+            new_board = [row[:] for row in board]
+            drop_piece(new_board, col, -1)
+            if is_winning_move(new_board, -1):
+                return col
+
+    # Check for our immediate win
+    for col in range(7):
+        if is_valid_move(board, col):
+            new_board = [row[:] for row in board]
+            drop_piece(new_board, col, 1)
+            if is_winning_move(new_board, 1):
+                return col
+
+    return None
+
+def is_valid_move(board, col):
+    return board[0][col] == 0
+
+def drop_piece(board, col, player):
+    for row in range(5, -1, -1):
+        if board[row][col] == 0:
+            board[row][col] = player
+            break
+
+def is_winning_move(board, player):
+    # Check horizontal
+    for row in range(6):
+        for col in range(4):
+            if (board[row][col] == player and
+                board[row][col+1] == player and
+                board[row][col+2] == player and
+                board[row][col+3] == player):
+                return True
+
+    # Check vertical
+    for row in range(3):
+        for col in range(7):
+            if (board[row][col] == player and
+                board[row+1][col] == player and
+                board[row+2][col] == player and
+                board[row+3][col] == player):
+                return True
+
+    # Check diagonal (top-left to bottom-right)
+    for row in range(3):
+        for col in range(4):
+            if (board[row][col] == player and
+                board[row+1][col+1] == player and
+                board[row+2][col+2] == player and
+                board[row+3][col+3] == player):
+                return True
+
+    # Check diagonal (bottom-left to top-right)
+    for row in range(3, 6):
+        for col in range(4):
+            if (board[row][col] == player and
+                board[row-1][col+1] == player and
+                board[row-2][col+2] == player and
+                board[row-3][col+3] == player):
+                return True
+
+    return False
+
+def evaluate_board(board):
+    score = 0
+    # Evaluate center control
+    center_col = 3
+    if is_valid_move(board, center_col):
+        score += 10
+
+    # Evaluate potential lines
+    for col in range(7):
+        if is_valid_move(board, col):
+            new_board = [row[:] for row in board]
+            drop_piece(new_board, col, 1)
+            score += evaluate_potential(new_board, 1)
+            drop_piece(new_board, col, 0)
+            new_board = [row[:] for row in board]
+            drop_piece(new_board, col, -1)
+            score -= evaluate_potential(new_board, -1)
+
+    return score
+
+def evaluate_potential(board, player):
+    score = 0
+    # Check horizontal
+    for row in range(6):
+        for col in range(7):
+            if board[row][col] == player:
+                # Check left
+                left = col
+                while left > 0 and board[row][left-1] == player:
+                    left -= 1
+                # Check right
+                right = col
+                while right < 6 and board[row][right+1] == player:
+                    right += 1
+                length = right - left + 1
+                if length >= 3:
+                    score += (length - 2) * 10
+                elif length == 2:
+                    score += 2
+
+    # Check vertical
+    for col in range(7):
+        for row in range(6):
+            if board[row][col] == player:
+                # Check up
+                up = row
+                while up > 0 and board[up-1][col] == player:
+                    up -= 1
+                # Check down
+                down = row
+                while down < 5 and board[down+1][col] == player:
+                    down += 1
+                length = down - up + 1
+                if length >= 3:
+                    score += (length - 2) * 10
+                elif length == 2:
+                    score += 2
+
+    # Check diagonal (top-left to bottom-right)
+    for row in range(6):
+        for col in range(7):
+            if board[row][col] == player:
+                # Check up-left
+                up_left_row, up_left_col = row, col
+                while up_left_row > 0 and up_left_col > 0 and board[up_left_row-1][up_left_col-1] == player:
+                    up_left_row -= 1
+                    up_left_col -= 1
+                # Check down-right
+                down_right_row, down_right_col = row, col
+                while down_right_row < 5 and down_right_col < 6 and board[down_right_row+1][down_right_col+1] == player:
+                    down_right_row += 1
+                    down_right_col += 1
+                length = (down_right_row - up_left_row) + (down_right_col - up_left_col)
+                if length >= 3:
+                    score += (length - 2) * 10
+                elif length == 2:
+                    score += 2
+
+    # Check diagonal (bottom-left to top-right)
+    for row in range(6):
+        for col in range(7):
+            if board[row][col] == player:
+                # Check up-right
+                up_right_row, up_right_col = row, col
+                while up_right_row > 0 and up_right_col < 6 and board[up_right_row-1][up_right_col+1] == player:
+                    up_right_row -= 1
+                    up_right_col += 1
+                # Check down-left
+                down_left_row, down_left_col = row, col
+                while down_left_row < 5 and down_left_col > 0 and board[down_left_row+1][down_left_col-1] == player:
+                    down_left_row += 1
+                    down_left_col -= 1
+                length = (down_left_row - up_right_row) + (down_left_col - up_right_col)
+                if length >= 3:
+                    score += (length - 2) * 10
+                elif length == 2:
+                    score += 2
+
+    return score
+
+def mcts_search(board, iterations=100):
+    root = MCTSNode(board, None, 1)
+    for _ in range(iterations):
+        node = root
+        # Selection
+        while node.unvisited_children == 0 and node.children:
+            node = max(node.children, key=lambda c: c.visit_count)
+        # Expansion
+        if node.unvisited_children > 0:
+            node = node.expand()
+        # Simulation
+        sim_board = [row[:] for row in node.board]
+        sim_player = 1 if node.player == -1 else -1
+        while not is_game_over(sim_board):
+            col = random.choice([c for c in range(7) if is_valid_move(sim_board, c)])
+            drop_piece(sim_board, col, sim_player)
+            sim_player *= -1
+        # Backpropagation
+        winner = -1 if sim_board[5][3] == 1 else 1  # Simplistic winner check
+        while node is not None:
+            node.visit_count += 1
+            node.wins += (1 if winner == node.player else 0)
+            node = node.parent
+    # Choose the best child
+    return max(root.children, key=lambda c: c.visit_count).col
+
+class MCTSNode:
+    def __init__(self, board, parent, player):
+        self.board = board
+        self.parent = parent
+        self.player = player
+        self.children = []
+        self.visit_count = 0
+        self.wins = 0
+        self.col = None
+        self.unvisited_children = 7  # All columns are initially unvisited
+
+    def expand(self):
+        # Find all valid moves
+        valid_moves = [c for c in range(7) if is_valid_move(self.board, c)]
+        if not valid_moves:
+            return None
+        # Choose a random valid move
+        col = random.choice(valid_moves)
+        new_board = [row[:] for row in self.board]
+        drop_piece(new_board, col, self.player)
+        child = MCTSNode(new_board, self, -self.player)
+        child.col = col
+        self.children.append(child)
+        self.unvisited_children -= 1
+        return child
+
+def is_game_over(board):
+    # Check if the board is full
+    for col in range(7):
+        if is_valid_move(board, col):
+            return False
+    # Check for any winning move
+    for player in [1, -1]:
+        for col in range(7):
+            if is_valid_move(board, col):
+                new_board = [row[:] for row in board]
+                drop_piece(new_board, col, player)
+                if is_winning_move(new_board, player):
+                    return True
+    return True

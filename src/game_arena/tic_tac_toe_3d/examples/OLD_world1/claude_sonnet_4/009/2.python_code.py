@@ -1,0 +1,123 @@
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    import random
+    
+    # Generate all possible winning lines in 3D tic-tac-toe
+    def get_all_lines():
+        lines = []
+        
+        # Lines within each layer
+        for z in range(3):
+            # Rows and columns
+            for i in range(3):
+                lines.append([(z, i, 0), (z, i, 1), (z, i, 2)])  # rows
+                lines.append([(z, 0, i), (z, 1, i), (z, 2, i)])  # columns
+            # Diagonals within layer
+            lines.append([(z, 0, 0), (z, 1, 1), (z, 2, 2)])
+            lines.append([(z, 0, 2), (z, 1, 1), (z, 2, 0)])
+        
+        # Vertical lines through layers
+        for x in range(3):
+            for y in range(3):
+                lines.append([(0, x, y), (1, x, y), (2, x, y)])
+        
+        # Diagonal lines through layers
+        # Face diagonals
+        for i in range(3):
+            lines.append([(0, i, 0), (1, i, 1), (2, i, 2)])  # front-back diagonal
+            lines.append([(0, i, 2), (1, i, 1), (2, i, 0)])  # front-back diagonal
+            lines.append([(0, 0, i), (1, 1, i), (2, 2, i)])  # left-right diagonal
+            lines.append([(0, 2, i), (1, 1, i), (2, 0, i)])  # left-right diagonal
+        
+        # Space diagonals (corner to corner)
+        lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+        lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+        lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+        lines.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+        
+        return lines
+    
+    def evaluate_line(line, board, player):
+        """Returns (player_count, opponent_count, empty_positions)"""
+        player_count = 0
+        opponent_count = 0
+        empty_positions = []
+        
+        for z, x, y in line:
+            cell = board[z][x][y]
+            if cell == player:
+                player_count += 1
+            elif cell == -player:
+                opponent_count += 1
+            else:
+                empty_positions.append((z, x, y))
+        
+        return player_count, opponent_count, empty_positions
+    
+    lines = get_all_lines()
+    
+    # Priority 1: Win immediately if possible
+    for line in lines:
+        my_count, opp_count, empty_pos = evaluate_line(line, board, 1)
+        if my_count == 2 and opp_count == 0 and len(empty_pos) == 1:
+            return empty_pos[0]
+    
+    # Priority 2: Block opponent from winning
+    for line in lines:
+        my_count, opp_count, empty_pos = evaluate_line(line, board, 1)
+        if opp_count == 2 and my_count == 0 and len(empty_pos) == 1:
+            return empty_pos[0]
+    
+    # Priority 3: Create multiple threats or take strategic positions
+    move_scores = {}
+    
+    # Get all empty positions
+    empty_positions = []
+    for z in range(3):
+        for x in range(3):
+            for y in range(3):
+                if board[z][x][y] == 0:
+                    empty_positions.append((z, x, y))
+    
+    for pos in empty_positions:
+        score = 0
+        z, x, y = pos
+        
+        # Center position is valuable
+        if (x, y) == (1, 1):
+            score += 10
+        
+        # Count how many lines this move would give us 2-in-a-row
+        # Count how many lines this move would block opponent's 2-in-a-row
+        for line in lines:
+            if pos in line:
+                my_count, opp_count, empty_pos = evaluate_line(line, board, 1)
+                
+                # This move would give us 2 in a line
+                if my_count == 1 and opp_count == 0:
+                    score += 5
+                
+                # This move would give us 1 in an empty line
+                if my_count == 0 and opp_count == 0:
+                    score += 1
+                
+                # Block opponent's potential line
+                if opp_count == 1 and my_count == 0:
+                    score += 3
+        
+        move_scores[pos] = score
+    
+    # Choose the move with highest score
+    if move_scores:
+        best_moves = [pos for pos, score in move_scores.items() 
+                     if score == max(move_scores.values())]
+        return random.choice(best_moves)
+    
+    # Fallback: return any empty position
+    for z in range(3):
+        for x in range(3):
+            for y in range(3):
+                if board[z][x][y] == 0:
+                    return (z, x, y)
+    
+    return (0, 0, 0)  # Should never reach here in a valid game

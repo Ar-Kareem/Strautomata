@@ -1,0 +1,458 @@
+The strategy for this AI involves a 3-ply lookahead (current move + opponent's best response + my next best move) using a heuristic evaluation function. The evaluation prioritizes:
+1.  Immediate Wins (5-in-a-row).
+2.  Blocking Opponent Wins (if they have a 4-in-a-row).
+3.  Creating Open 4s (which force a win next turn).
+4.  General board control (counting 3s and 4s).
+
+We use an optimized Alpha-Beta search to explore the most promising moves within the time limit.
+
+```python
+import sys
+import time
+
+def policy(you, opponent):
+    """
+    Pentago AI using 3-ply lookahead (Move -> Opponent Response -> My Response)
+    with heuristic evaluation focusing on immediate wins, blocks, and open 4s.
+    """
+    start_time = time.time()
+    
+    # Convert to list of lists for mutability if they are numpy arrays
+    try:
+        you = [list(r) for r in you]
+        opponent = [list(r) for r in opponent]
+    except:
+        pass
+
+    # Precompute empty cells
+    empties = []
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                empties.append((r, c))
+    
+    # Constants for evaluation
+    BIG_SCORE = 1000000
+    
+    # --- Helper Functions ---
+
+    def check_win(board):
+        """Check for 5-in-a-row."""
+        # Horizontal
+        for r in range(6):
+            for c in range(2):
+                if board[r][c] == board[r][c+1] == board[r][c+2] == board[r][c+3] == board[r][c+4] != 0:
+                    return True
+        # Vertical
+        for r in range(3):
+            for c in range(6):
+                if board[r][c] == board[r+1][c] == board[r+2][c] == board[r+3][c] == board[r+4][c] != 0:
+                    return True
+        # Diagonals
+        for r in range(2):
+            for c in range(2):
+                if board[r][c] == board[r+1][c+1] == board[r+2][c+2] == board[r+3][c+3] == board[r+4][c+4] != 0:
+                    return True
+        for r in range(4):
+            for c in range(2):
+                if board[r][c] == board[r-1][c+1] == board[r-2][c+2] == board[r-3][c+3] == board[r-4][c+4] != 0:
+                    return True
+        return False
+
+    def get_quad(r, c):
+        return (r // 3) * 2 + (c // 3)
+
+    def rotate_quadrant(board, q, direction):
+        """Rotates board in place, returns it."""
+        sr = (q // 2) * 3
+        sc = (q % 2) * 3
+        temp = [[board[sr+i][sc+j] for j in range(3)] for i in range(3)]
+        if direction == 'L': # Anti-clockwise
+            for i in range(3):
+                for j in range(3):
+                    board[sr+i][sc+j] = temp[j][2-i]
+        else: # Clockwise
+            for i in range(3):
+                for j in range(3):
+                    board[sr+i][sc+j] = temp[2-j][i]
+        return board
+
+    def heuristic(board, p_me, p_opp):
+        """
+        Heuristic evaluation:
+        1. Check Wins (My Win -> BIG, Opp Win -> -BIG)
+        2. Check Open 4s (Immediate win next turn)
+        3. Count 3s and 4s
+        """
+        # Check wins
+        me_win = check_win(board)
+        if me_win: return BIG_SCORE
+        if check_win(opponent): return -BIG_SCORE # Should not happen if we check blocks earlier
+
+        # Check Open 4s (XOOOOX pattern) - highly critical
+        def count_open_4s(b, me):
+            score = 0
+            # Directions: H, V, D1, D2
+            # Helper to check a specific sequence of 7 cells (or less if edge)
+            # Actually simpler: find 4-in-row and check adjacent empty
+            dirs = [(0, 1), (1, 0), (1, 1), (1, -1)]
+            for dr, dc in dirs:
+                for r in range(6):
+                    for c in range(6):
+                        # Check if cell is start of 4
+                        if b[r][c] != me: continue
+                        # Check bounds for 4
+                        if r+3*dr < 0 or r+3*dr >= 6 or c+3*dc < 0 or c+3*dc >= 6: continue
+                        if (b[r+dr][c+dc] == me and b[r+2*dr][c+2*dc] == me and 
+                            b[r+3*dr][c+3*dc] == me):
+                            # Found 4. Check for empties on both sides (Open 4)
+                            # We need to check if the 5th spot is empty or bounded out
+                            # Actually, Open 4 means placing 1 marble creates 5.
+                            # It implies the 4 is flanked by empties (or board edge).
+                            # But standard Open 4 is > 4 spots needed.
+                            # Let's stick to: if the 4-in-row is not blocked by opponent on BOTH ends
+                            # It's a threat.
+                            
+                            # Before
+                            br, bc = r-dr, c-dc
+                            after_r, after_c = r+4*dr, c+4*dc
+                            
+                            blocked_before = not (0 <= br < 6 and 0 <= bc < 6 and b[br][bc] == 0)
+                            blocked_after = not (0 <= after_r < 6 and 0 <= after_c < 6 and b[after_r][after_c] == 0)
+                            
+                            # Special case: if it is exactly 4-in-row (blocking exists on both sides)
+                            # It's a "Closed 4", still a threat but can be blocked by opponent.
+                            # "Open 4" usually means 5 empty spaces in a row, with 4 in middle.
+                            # Let's just count "Live 3s" and "Dead 4s".
+                            
+                            # If neither side is blocked by opponent, it's a "Live 4".
+                            if not blocked_before or not blocked_after:
+                                score += 50000 
+            return score
+
+        def count_threats(b, me, opp):
+            s = 0
+            dirs = [(0, 1), (1, 0), (1, 1), (1, -1)]
+            for dr, dc in dirs:
+                for r in range(6):
+                    for c in range(6):
+                        # Check 3s
+                        if b[r][c] == me:
+                            # Check 3
+                            if (r+2*dr >= 0 and r+2*dr < 6 and c+2*dc >= 0 and c+2*dc < 6):
+                                if b[r+dr][c+dc] == me and b[r+2*dr][c+2*dc] == me:
+                                    # Check if it is a "Live 3" (open at both ends)
+                                    br, bc = r-dr, c-dc
+                                    after_r, after_c = r+3*dr, c+3*dc
+                                    open_before = (0 <= br < 6 and 0 <= bc < 6 and b[br][bc] == 0)
+                                    open_after = (0 <= after_r < 6 and 0 <= after_c < 6 and b[after_r][after_c] == 0)
+                                    
+                                    if open_before and open_after:
+                                        s += 500
+                                    elif open_before or open_after:
+                                        s += 100
+                                    else:
+                                        s += 10
+                                # Check 4
+                                if (r+3*dr >= 0 and r+3*dr < 6 and c+3*dc >= 0 and c+3*dc < 6):
+                                    if b[r+dr][c+dc] == me and b[r+2*dr][c+2*dc] == me and b[r+3*dr][c+3*dc] == me:
+                                        # Blocked 4
+                                        s += 200
+            return s
+
+        me_val = count_threats(board, p_me, p_opp) + count_open_4s(board, p_me)
+        opp_val = count_threats(board, p_opp, p_me) + count_open_4s(board, p_opp)
+        
+        return me_val - opp_val
+
+    # --- Move Generation ---
+
+    # Priority order: Center, then corners, etc.
+    def get_move_order():
+        ordered = []
+        # Center preference (3,3) (3,2) (2,3) (2,2) then neighbors
+        # 0-based coords
+        targets = [(2,2), (2,3), (3,2), (3,3), 
+                   (2,1), (2,4), (3,1), (3,4),
+                   (1,2), (1,3), (4,2), (4,3),
+                   (1,1), (1,4), (4,1), (4,4)]
+        for t in targets:
+            if t in empties:
+                ordered.append(t)
+                empties.remove(t)
+        ordered.extend(empties) # Add rest
+        return ordered
+
+    # --- Search Logic ---
+
+    # 1. Immediate Win / Forced Block / Immediate Setup
+    # We do a quick pass for 100% winning moves or blocks before deep search
+    for r, c in get_move_order():
+        for q in range(4):
+            for d in ['L', 'R']:
+                # Test My Move
+                b_me = [row[:] for row in you]
+                b_opp = [row[:] for row in opponent]
+                b_me[r][c] = 1
+                rotate_quadrant(b_me, q, d)
+                rotate_quadrant(b_opp, q, d)
+                
+                if check_win(b_me):
+                    return f"{r+1},{c+1},{q},{d}"
+                
+                # If I don't win, check if this move blocks opponent immediately (if they have 4)
+                # Actually, we need to check if the move prevents opponent from having a 5 AFTER their turn.
+                # For now, let's rely on the search to handle blocking.
+                # But we can check a specific scenario: Opponent has 4-in-a-row.
+                # If I can step on one of their 4s or rotate it away, I should.
+                # Simplification: If I see a move that doesn't make me lose immediately.
+                # We will just let search handle it.
+
+    # 2. Alpha-Beta Search (Ply 3)
+    # My Turn -> Opponent Turn -> My Turn
+    
+    best_score = -10000000
+    best_move = None
+    
+    # Limit depth or nodes if time is tight? 
+    # With 36 empty cells * 4 * 2 = 288 moves max.
+    # Ply 2: ~288 * ~200 = 57k nodes.
+    # Ply 3: ~57k * ~200 = 11M nodes. Too slow.
+    # Optimization:
+    # - Prune heavily.
+    # - Reduce move generation for deeper nodes.
+    # - Or just Ply 2 with heavy heuristics (Ply 2 = My Move, Opp Response).
+    # Let's do Ply 2 (Ply 2 is effectively 3 steps of state updates if we look ahead).
+    
+    # Actually, let's implement a 2-ply look ahead with fallback.
+    # Pseudo-Code:
+    # For each Move:
+    #    Apply Move
+    #    Score = -Evaluate(Board) (MiniMax)
+    #    Return move with max Score
+    
+    # To make it smarter, let's use a heuristic "Opponent Simulator" that tries to find the WORST outcome for me.
+    
+    # OPTIMIZATION: Only evaluate top 20 moves based on heuristic?
+    # Let's collect all candidate moves, score them roughly, keep top N.
+    
+    candidates = []
+    
+    # Reduced move set for the root: only look at moves that seem decent
+    # We generate all moves but score them fast.
+    
+    for r, c in get_move_order():
+        for q in range(4):
+            for d in ['L', 'R']:
+                # --- Simulate Move (Ply 1) ---
+                b_me = [row[:] for row in you]
+                b_opp = [row[:] for row in opponent]
+                b_me[r][c] = 1
+                rotate_quadrant(b_me, q, d)
+                rotate_quadrant(b_opp, q, d)
+                
+                # Check immediate win
+                if check_win(b_me):
+                    return f"{r+1},{c+1},{q},{d}"
+                
+                # Heuristic score of resulting board
+                # We want to minimize Opponent's best response.
+                # So we don't score b_me yet. We simulate Opponent's best move.
+                
+                # Optimization: If the board is quiet (no open 3s/4s), we might just evaluate.
+                # If there is a threat, we must look deeper.
+                # Let's assume we must look deeper.
+                
+                # --- Opponent Search (Ply 2) ---
+                # We want to find the MAX score the opponent can achieve.
+                # We will use a simplified move generation for Opponent:
+                # - If Opponent has a winning move, that's their score (-BIG).
+                # - If Opponent has a move that creates a huge threat, that's their score.
+                # - We will sample top 10 opponent moves to estimate.
+                
+                opp_best_score = -1000000
+                # Collecting Opponent moves
+                opp_moves = []
+                # Get opponent empties
+                opp_empties = []
+                for or_ in range(6):
+                    for oc in range(6):
+                        if b_me[or_][oc] == 0 and b_opp[or_][oc] == 0:
+                            opp_empties.append((or_, oc))
+                
+                # Heuristic sort for opponent moves (Prioritize blocking me, winning, centers)
+                # For speed, we can just iterate a subset or all if board is early game
+                # Let's just iterate all for correctness, but break if time is low.
+                
+                for or_, oc in opp_empties:
+                    # Time check
+                    if time.time() - start_time > 0.8:
+                        break
+                        
+                    for oq in range(4):
+                        for od in ['L', 'R']:
+                            # Simulate Opponent Move
+                            b_opp_me = [row[:] for row in b_me] # My board after my move
+                            b_opp_opp = [row[:] for row in b_opp] # Opp board after my move
+                            
+                            b_opp_opp[or_][oc] = 1
+                            rotate_quadrant(b_opp_opp, oq, od)
+                            rotate_quadrant(b_opp_me, oq, od)
+                            
+                            # Check if Opponent wins
+                            if check_win(b_opp_opp):
+                                opp_best_score = BIG_SCORE # Opponent can win, this move (r,c,q,d) is bad
+                                break # Found best response for opp (winning), stop looking
+                            
+                            # Evaluate board for Opponent (negative for me)
+                            # We want to know how good this is for Opponent
+                            # If we are in a deep recursion, we stop here and evaluate.
+                            # But if we are in Ply 3, we would evaluate My response again.
+                            # Given 1s limit, Ply 3 is risky.
+                            # Let's stick to Ply 2 (My Move -> Opp Response). 
+                            # We score the board from Opponent's perspective.
+                            
+                            score = heuristic(b_opp_me, b_opp_opp, b_opp_me) # Wait, args are (board, me, opp)
+                            # Actually heuristic takes (board, my_char, opp_char).
+                            # In this context: 'me' is b_opp_me (my marbles), 'opp' is b_opp_opp (opp marbles).
+                            # But we want score from MY perspective.
+                            # val = heuristic(board, my_marbles, opp_marbles)
+                            
+                            # Let's define H(board, p1, p2) -> score for p1
+                            # We want H(board, my_real_marbles, opp_real_marbles)
+                            
+                            # To save time, we can use a simpler evaluation for Opponent response
+                            # Let's just use the full heuristic
+                            val = heuristic(b_opp_me, b_opp_me, b_opp_opp) # My perspective
+                            
+                            # But Opponent will pick the move that minimizes My score (or maximizes Opp score).
+                            # So we want Opponent's max score (from their view).
+                            # Equivalent to: minimize My score.
+                            
+                            # If heuristic returns My Score, Opponent wants to Minimize it.
+                            # So opp_best_score = min(opp_best_score, val)
+                            # But wait, if heuristic returns 500, Opponent wants to lower it to 0.
+                            # So yes, Opponent minimizes the return value.
+                            
+                            if val < 100000: # If not winning move (already caught)
+                                if val < opp_best_score:
+                                    opp_best_score = val
+                                    if opp_best_score < -50000: # If opponent found a move that sets up a guaranteed win (or effectively wins)
+                                        # We can stop early if opponent has a massive win condition
+                                        pass 
+                    
+                    if opp_best_score < -50000: # Opponent found a winning line, stop checking my moves
+                         break
+                
+                # My Score for this move
+                # If opp_best_score is -BIG (opponent win), this move is bad.
+                # If opp_best_score is BIG (I win), this is great (caught above).
+                # We want to MAXIMIZE my score. 
+                # My score = - (Opponent's Best Score) ? No.
+                # We want a move where the resulting board (after opp plays best) is good for ME.
+                # So we want to MAXIMIZE opp_best_score (because opp_best_score is calculated from my perspective).
+                # Wait, if opp plays a move that makes my score -100, that's bad.
+                # If opp plays a move that makes my score +100, that's good.
+                # So yes, I want to Maximize the score that results after Opponent minimizes it.
+                # This is Minimax.
+                
+                # However, this is only 2-ply (I, Opp).
+                # To do 3-ply, we need Opponent to look ahead at My response.
+                # Given the constraints, 2-ply is safer, but 3-ply is better.
+                # Let's try a 3-ply lite:
+                # I -> Opp -> Me (only check if I can win immediately in response)
+                
+                # Let's stick to the robust 2-ply for now to ensure speed.
+                # Score for this move is `opp_best_score`.
+                
+                candidates.append((opp_best_score, r, c, q, d))
+
+    if not candidates:
+        # Fallback
+        r, c = empties[0]
+        return f"{r+1},{c+1},0,L"
+
+    # Sort by score descending
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    
+    # If we found a move that guarantees a win or avoids a loss, take it.
+    # But also, for 3-ply, we want to check if the top candidates allow ME to win in the NEXT turn.
+    # Let's do a quick 3rd ply check on the top 5 candidates.
+    
+    best_candidate = candidates[0]
+    
+    # If top score is extremely high/low, take it.
+    if best_candidate[0] > 50000 or best_candidate[0] < -50000:
+        _, r, c, q, d = best_candidate
+        return f"{r+1},{c+1},{q},{d}"
+
+    # 3-Ply Deepener (Limited)
+    # For the top 5 moves, simulate -> Opponent Response -> My Response.
+    # This is expensive. We will only do a few branches.
+    
+    for score, r, c, q, d in candidates[:5]:
+        if time.time() - start_time > 0.7:
+            break
+            
+        # Board after My Move
+        b1_me = [row[:] for row in you]
+        b1_opp = [row[:] for row in opponent]
+        b1_me[r][c] = 1
+        rotate_quadrant(b1_me, q, d)
+        rotate_quadrant(b1_opp, q, d)
+        
+        # Check if I win (already checked, but sanity)
+        if check_win(b1_me): return f"{r+1},{c+1},{q},{d}"
+        
+        # Opponent's Top Response (Limited)
+        # We assume Opponent will try to block or win.
+        # We need to find the WORST case for me after Opponent moves.
+        
+        worst_response_score = 10000000
+        
+        # Generate limited Opponent moves for 3rd ply
+        opp_moves_3rd = []
+        for or_ in range(6):
+            for oc in range(6):
+                if b1_me[or_][oc] == 0 and b1_opp[or_][oc] == 0:
+                    # Prioritize moves near my move or centers
+                    dist = abs(or_ - r) + abs(oc - c)
+                    opp_moves_3rd.append((dist, or_, oc))
+        
+        opp_moves_3rd.sort() # Closest first
+        opp_moves_3rd = opp_moves_3rd[:10] # Look at 10 responses
+        
+        for dist, or_, oc in opp_moves_3rd:
+            for oq in range(4):
+                for od in ['L', 'R']:
+                    # Simulate Opponent
+                    b2_me = [row[:] for row in b1_me]
+                    b2_opp = [row[:] for row in b1_opp]
+                    b2_opp[or_][oc] = 1
+                    rotate_quadrant(b2_opp, oq, od)
+                    rotate_quadrant(b2_me, oq, od)
+                    
+                    # If Opponent wins, this is worst case
+                    if check_win(b2_opp):
+                        worst_response_score = -1000000
+                        break
+                    
+                    # My 3rd Move (Check for immediate win)
+                    # We don't need full search, just check if I can win
+                    # Or use heuristic
+                    val = heuristic(b2_me, b2_me, b2_opp)
+                    
+                    if val < worst_response_score:
+                        worst_response_score = val
+            
+            if worst_response_score < -50000:
+                break
+        
+        # Update best candidate based on worst-case 3rd ply
+        # We want to maximize the worst-case scenario
+        if worst_response_score > best_candidate[0]:
+            best_candidate = (worst_response_score, r, c, q, d)
+
+    _, r, c, q, d = best_candidate
+    return f"{r+1},{c+1},{q},{d}"
+```

@@ -1,0 +1,129 @@
+I'll create a competitive Dots and Boxes policy that uses strategic principles to win games.
+
+## Strategy
+
+My policy uses the following strategic approach:
+
+1. **Chain Control**: In Dots and Boxes, the endgame is dominated by "chains" - sequences of boxes that can be captured. The key is to control when chains are opened.
+
+2. **Avoid giving away boxes early**: Never create a box with 3 sides unless absolutely necessary or it's part of a winning strategy.
+
+3. **Safe moves prioritization**:
+   - Moves that add 0 or 1 edges to any box (safest)
+   - Moves that complete boxes when we can capture them
+   - Avoid moves that create 3-sided boxes (gifts to opponent)
+
+4. **Endgame strategy**: 
+   - When forced to open chains, use the "double-dealing" strategy where possible
+   - Try to be the one to open the last chain to control the endgame
+
+5. **Capture when possible**: If we can complete a box, we should (to get another turn and points).
+
+<code>
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Strategic Dots and Boxes policy for 4x4 grid.
+    """
+    
+    def count_box_edges(row, col):
+        """Count how many edges a box already has (0-4)."""
+        if row < 0 or row > 3 or col < 0 or col > 3:
+            return -1
+        count = 0
+        if horizontal[row, col] != 0:
+            count += 1
+        if horizontal[row + 1, col] != 0:
+            count += 1
+        if vertical[row, col] != 0:
+            count += 1
+        if vertical[row, col + 1] != 0:
+            count += 1
+        return count
+    
+    def boxes_completed_by_move(row, col, is_horizontal):
+        """Return list of boxes that would be completed by this move."""
+        completed = []
+        if is_horizontal:
+            # Check box above
+            if row > 0 and count_box_edges(row - 1, col) == 3:
+                completed.append((row - 1, col))
+            # Check box below
+            if row < 4 and count_box_edges(row, col) == 3:
+                completed.append((row, col))
+        else:  # vertical
+            # Check box to the left
+            if col > 0 and count_box_edges(row, col - 1) == 3:
+                completed.append((row, col - 1))
+            # Check box to the right
+            if col < 4 and count_box_edges(row, col) == 3:
+                completed.append((row, col))
+        return completed
+    
+    def boxes_brought_to_three(row, col, is_horizontal):
+        """Count how many boxes would be brought to 3 edges by this move."""
+        count = 0
+        if is_horizontal:
+            if row > 0 and count_box_edges(row - 1, col) == 2:
+                count += 1
+            if row < 4 and count_box_edges(row, col) == 2:
+                count += 1
+        else:  # vertical
+            if col > 0 and count_box_edges(row, col - 1) == 2:
+                count += 1
+            if col < 4 and count_box_edges(row, col) == 2:
+                count += 1
+        return count
+    
+    # Collect all legal moves
+    legal_moves = []
+    
+    for row in range(5):
+        for col in range(5):
+            if horizontal[row, col] == 0:
+                legal_moves.append((row, col, 'H'))
+            if vertical[row, col] == 0:
+                legal_moves.append((row, col, 'V'))
+    
+    if not legal_moves:
+        # Should never happen, but return a default
+        return "0,0,H"
+    
+    # Categorize moves
+    capturing_moves = []
+    safe_moves = []  # 0 or 1 edge boxes
+    risky_moves = []  # Creates 3-edge boxes
+    
+    for row, col, direction in legal_moves:
+        is_h = (direction == 'H')
+        completed = boxes_completed_by_move(row, col, is_h)
+        brought_to_three = boxes_brought_to_three(row, col, is_h)
+        
+        if len(completed) > 0:
+            capturing_moves.append((row, col, direction, len(completed)))
+        elif brought_to_three == 0:
+            safe_moves.append((row, col, direction))
+        else:
+            risky_moves.append((row, col, direction, brought_to_three))
+    
+    # Priority 1: Capture boxes if possible
+    if capturing_moves:
+        # Sort by number of boxes captured (descending)
+        capturing_moves.sort(key=lambda x: x[3], reverse=True)
+        move = capturing_moves[0]
+        return f"{move[0]},{move[1]},{move[2]}"
+    
+    # Priority 2: Make safe moves
+    if safe_moves:
+        # Prefer moves in the center slightly to build position
+        safe_moves.sort(key=lambda x: abs(x[0] - 2) + abs(x[1] - 2))
+        move = safe_moves[0]
+        return f"{move[0]},{move[1]},{move[2]}"
+    
+    # Priority 3: Forced to make risky moves
+    # Choose the move that creates the fewest 3-edge boxes
+    risky_moves.sort(key=lambda x: x[3])
+    move = risky_moves[0]
+    return f"{move[0]},{move[1]},{move[2]}"
+</code>

@@ -1,0 +1,142 @@
+
+def has_won(board, player):
+    # Horizontal
+    for r in range(6):
+        for c in range(4):
+            if all(board[r][c + k] == player for k in range(4)):
+                return True
+    # Vertical
+    for c in range(7):
+        for r in range(3):
+            if all(board[r + k][c] == player for k in range(4)):
+                return True
+    # Diagonal /
+    for r in range(3):
+        for c in range(4):
+            if all(board[r + k][c + k] == player for k in range(4)):
+                return True
+    # Diagonal \
+    for r in range(3):
+        for c in range(3, 7):
+            if all(board[r + k][c - k] == player for k in range(4)):
+                return True
+    return False
+
+def is_full(board):
+    return all(board[5][c] != 0 for c in range(7))
+
+def get_terminal_score(board):
+    if has_won(board, 1):
+        return 1000000
+    if has_won(board, -1):
+        return -1000000
+    if is_full(board):
+        return 0
+    return None
+
+def get_line_score(cells, player):
+    opp = -player
+    opp_count = sum(1 for cell in cells if cell == opp)
+    if opp_count > 0:
+        return 0
+    my_count = sum(1 for cell in cells if cell == player)
+    if my_count == 4:
+        return 100000
+    elif my_count == 3:
+        return 5000
+    elif my_count == 2:
+        return 100
+    elif my_count == 1:
+        return 10
+    return 0
+
+def get_score(board, player):
+    score = 0
+    # Horizontal
+    for r in range(6):
+        for c in range(4):
+            cells = [board[r][c + k] for k in range(4)]
+            score += get_line_score(cells, player)
+    # Vertical
+    for c in range(7):
+        for r in range(3):
+            cells = [board[r + k][c] for k in range(4)]
+            score += get_line_score(cells, player)
+    # Diagonal /
+    for r in range(3):
+        for c in range(4):
+            cells = [board[r + k][c + k] for k in range(4)]
+            score += get_line_score(cells, player)
+    # Diagonal \
+    for r in range(3):
+        for c in range(3, 7):
+            cells = [board[r + k][c - k] for k in range(4)]
+            score += get_line_score(cells, player)
+    return score
+
+def drop(board, col, player):
+    new_board = [row[:] for row in board]
+    for r in range(5, -1, -1):
+        if new_board[r][col] == 0:
+            new_board[r][col] = player
+            return new_board
+    return None  # Column full, should not happen if checked
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    term = get_terminal_score(board)
+    if term is not None:
+        return term
+    if depth == 0:
+        return get_score(board, 1) - get_score(board, -1)
+
+    valid_moves = [c for c in range(7) if board[5][c] == 0]
+    valid_moves.sort(key=lambda c: abs(c - 3))
+
+    player = 1 if maximizing_player else -1
+    if maximizing_player:
+        max_eval = -999999999
+        for c in valid_moves:
+            new_board = drop(board, c, player)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, max_eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = 999999999
+        for c in valid_moves:
+            new_board = drop(board, c, player)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, min_eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board: list[list[int]]) -> int:
+    # Check for immediate win
+    for c in range(7):
+        if board[5][c] == 0:
+            new_board = drop(board, c, 1)
+            if new_board and has_won(new_board, 1):
+                return c
+    # Check for immediate block
+    for c in range(7):
+        if board[5][c] == 0:
+            new_board = drop(board, c, -1)
+            if new_board and has_won(new_board, -1):
+                return c
+    # Minimax search
+    best_score = -999999999
+    best_col = 3  # Default to center
+    valid_cols = [c for c in range(7) if board[5][c] == 0]
+    valid_cols.sort(key=lambda c: abs(c - 3))
+    for c in valid_cols:
+        new_board = drop(board, c, 1)
+        if new_board:
+            score = minimax(new_board, 7, -999999999, 999999999, False)
+            if score > best_score:
+                best_score = score
+                best_col = c
+    return best_col

@@ -1,0 +1,125 @@
+My strategy for this Pentago policy is based on a combination of techniques:
+
+1. **Immediate Win Detection**: First, check if any move results in an immediate win for us.
+
+2. **Blocking Opponent Wins**: If the opponent can win on their next move, block them.
+
+3. **Threat Creation**: Prioritize moves that create strong threats (4-in-a-row that can become 5).
+
+4. **Center Control**: Prefer placing marbles near the center of the board and quadrant centers, as these positions offer more flexibility.
+
+5. **Evaluation Function**: Score board positions based on:
+   - Number of connected pieces (2s, 3s, 4s in a row)
+   - Potential winning lines
+   - Blocking opponent's potential lines
+
+6. **Minimax with Alpha-Beta Pruning**: For deeper analysis when time permits, use a limited depth search.
+
+7. **Move Ordering**: Evaluate more promising moves first to improve alpha-beta pruning efficiency.
+
+<code>
+import numpy as np
+
+def policy(you, opponent) -> str:
+    you = np.array(you, dtype=np.int8)
+    opponent = np.array(opponent, dtype=np.int8)
+    
+    def get_empty_cells(y, o):
+        empty = []
+        for r in range(6):
+            for c in range(6):
+                if y[r][c] == 0 and o[r][c] == 0:
+                    empty.append((r, c))
+        return empty
+    
+    def rotate_quad(board, quad, direction):
+        b = board.copy()
+        sr, sc = (0 if quad < 2 else 3), (0 if quad % 2 == 0 else 3)
+        sub = b[sr:sr+3, sc:sc+3].copy()
+        if direction == 'L':
+            sub = np.rot90(sub, 1)
+        else:
+            sub = np.rot90(sub, -1)
+        b[sr:sr+3, sc:sc+3] = sub
+        return b
+    
+    def check_win(board):
+        for r in range(6):
+            for c in range(2):
+                if np.all(board[r, c:c+5] == 1):
+                    return True
+        for c in range(6):
+            for r in range(2):
+                if np.all(board[r:r+5, c] == 1):
+                    return True
+        for r in range(2):
+            for c in range(2):
+                if all(board[r+i, c+i] == 1 for i in range(5)):
+                    return True
+                if all(board[r+i, c+4-i] == 1 for i in range(5)):
+                    return True
+        return False
+    
+    def count_lines(board, length):
+        count = 0
+        for r in range(6):
+            for c in range(6 - length + 1):
+                if np.sum(board[r, c:c+length]) == length:
+                    count += 1
+        for c in range(6):
+            for r in range(6 - length + 1):
+                if np.sum(board[r:r+length, c]) == length:
+                    count += 1
+        for r in range(6 - length + 1):
+            for c in range(6 - length + 1):
+                if sum(board[r+i, c+i] for i in range(length)) == length:
+                    count += 1
+                if sum(board[r+i, c+length-1-i] for i in range(length)) == length:
+                    count += 1
+        return count
+    
+    def evaluate(y, o):
+        if check_win(y):
+            return 10000
+        if check_win(o):
+            return -10000
+        score = 0
+        score += count_lines(y, 4) * 100
+        score += count_lines(y, 3) * 10
+        score += count_lines(y, 2) * 1
+        score -= count_lines(o, 4) * 150
+        score -= count_lines(o, 3) * 15
+        score -= count_lines(o, 2) * 1
+        return score
+    
+    def apply_move(y, o, r, c, quad, d):
+        ny = y.copy()
+        ny[r, c] = 1
+        ny = rotate_quad(ny, quad, d)
+        no = rotate_quad(o, quad, d)
+        return ny, no
+    
+    empty = get_empty_cells(you, opponent)
+    best_move = None
+    best_score = -float('inf')
+    
+    for (r, c) in empty:
+        for quad in range(4):
+            for d in ['L', 'R']:
+                ny, no = apply_move(you, opponent, r, c, quad, d)
+                if check_win(ny) and not check_win(no):
+                    return f"{r+1},{c+1},{quad},{d}"
+                score = evaluate(ny, no)
+                center_bonus = (3 - abs(r - 2.5)) + (3 - abs(c - 2.5))
+                score += center_bonus * 0.5
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c, quad, d)
+    
+    if best_move:
+        r, c, quad, d = best_move
+        return f"{r+1},{c+1},{quad},{d}"
+    
+    r, c = empty[0]
+    return f"{r+1},{c+1},0,L"
+</code>

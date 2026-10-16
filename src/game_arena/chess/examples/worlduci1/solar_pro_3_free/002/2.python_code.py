@@ -1,0 +1,239 @@
+
+import string
+
+# Piece values (kings are excluded because they are fixed)
+PIECE_VALUE = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 0,  # placeholder; kings are never counted in material
+}
+
+# Central squares for small positional bonuses
+CENTER_SQUARES = {
+    'e4', 'e5', 'd4', 'd5', 'c4', 'c5',
+    'f4', 'f5',
+}
+
+# King attack offsets (adjacent squares)
+KING_OFFSETS = [
+    (1, 0), (-1, 0), (0, 1), (0, -1),
+    (1, 1), (-1, 1), (1, -1), (-1, -1)
+]
+
+# Knight attack offsets
+KNIGHT_OFFSETS = [
+    (2, 1), (1, 2), (-1, 2), (-2, 1),
+    (-2, -1), (-1, -1), (1, -1), (2, -1)
+]
+
+def _adjacent(sq: str) -> set:
+    """Return all squares adjacent to `sq` (king’s movement)."""
+    file = sq[0]
+    rank = sq[1]
+    squares = set()
+    for dr, df in KING_OFFSETS:
+        nf = ord(file) + df
+        nr = int(rank) + dr
+        if 'a' <= chr(nf) <= 'h' and '1' <= str(nr) <= '8':
+            squares.add(f"{chr(nf)}{str(nr)}")
+    return squares
+
+def _knight_attacks(sq: str) -> set:
+    """Return all squares a knight on `sq` can move to."""
+    file = sq[0]
+    rank = sq[1]
+    squares = set()
+    for df, dr in KNIGHT_OFFSETS:
+        nf = ord(file) + df
+        nr = int(rank) + dr
+        if 'a' <= chr(nf) <= 'h' and '1' <= str(nr) <= '8':
+            squares.add(f"{chr(nf)}{str(nr)}")
+    return squares
+
+def _rook_line_clear(board: dict, src: str, dst: str) -> bool:
+    """Return True if rook on `src` attacks `dst` (line clear)."""
+    if src[0] != dst[0] or src[1] != dst[1]:
+        return False
+    rmin = min(int(src[1]), int(dst[1]))
+    rmax = max(int(src[1]), int(dst[1]))
+    for r in range(rmin + 1, rmax):
+        sq = f"{src[0]}{r}"
+        if sq in board:
+            return False
+    return True
+
+def _bishop_line_clear(board: dict, src: str, dst: str) -> bool:
+    """Return True if bishop on `src` attacks `dst` (diagonal clear)."""
+    if abs(ord(src[0]) - ord(dst[0])) != abs(int(src[1]) - int(dst[1])):
+        return False
+    step_file = 1 if ord(dst[0]) > ord(src[0]) else -1
+    step_rank = 1 if int(dst[1]) > int(src[1]) else -1
+    f, r = ord(src[0]), int(src[1])
+    while f != ord(dst[0]) or r != int(dst[1]):
+        f += step_file
+        r += step_rank
+        sq = f"{chr(f)}{str(r)}"
+        if sq in board:
+            return False
+    return True
+
+def _queen_line_clear(board: dict, src: str, dst: str) -> bool:
+    """Return True if queen on `src` attacks `dst` (rook or bishop line)."""
+    return _rook_line_clear(board, src, dst) or _bishop_line_clear(board, src, dst)
+
+def _piece_attacks(board: dict, sq: str, attacker_color: str) -> set:
+    """Return a set of squares attacked by a piece at `sq`."""
+    piece = board[sq]
+    attacker = attacker_color
+    kind = piece[1]
+    attacks = set()
+
+    if kind == 'K':
+        attacks.update(_adjacent(sq))
+    elif kind == 'P':
+        direction = 1 if attacker == 'white' else -1
+        # Pawn attacks one rank ahead on the diagonals
+        rank = int(sq[1])
+        for df in (-1, 1):
+            nf = ord(sq[0]) + df
+            nr = rank + direction
+            if 'a' <= chr(nf) <= 'h' and '1' <= str(nr) <= '8':
+                attacks.add(f"{chr(nf)}{str(nr)}")
+    elif kind == 'N':
+        attacks.update(_knight_attacks(sq))
+    elif kind == 'R':
+        if _rook_line_clear(board, sq, dst):
+            for r in range(int(sq[1]) + 1, 8):
+                sq_line = f"{sq[0]}{str(r)}"
+                if sq_line in board:
+                    break
+                if abs(ord(sq[0]) - ord(sq[0]) != 0) == 0 and sq_line not in board:
+                    attacks.add(sq_line)
+                # End condition when reaching the rank of dst
+                if int(sq[1]) == int(dst[1]):
+                    attacks.add(dst)
+            # For completeness, we handle other ranks similarly
+            # Simple brute‑force for clarity (fine for small board)
+            for r in range(min(int(sq[1]), int(dst[1])) + 1, max(int(sq[1]), int(dst[1]))):
+                sq_line = f"{sq[0]}{str(r)}"
+                if sq_line in board:
+                    break
+                if int(sq[1]) == int(dst[1]):
+                    attacks.add(dst)
+            # Actually rook attack detection is best via the function above
+            # which works for both ranks, but we need to consider only the exact dst square
+            if _rook_line_clear(board, sq, dst):
+                attacks.add(dst)
+    elif kind == 'B':
+        if _bishop_line_clear(board, sq, dst):
+            attacks.add(dst)
+    elif kind == 'Q':
+        if _queen_line_clear(board, sq, dst):
+            attacks.add(dst)
+    return attacks
+
+def _is_check(board: dict, our_color: str, opp_king_sq: str) -> bool:
+    """Return True if `opp_king_sq` is under attack after `board`."""
+    # Simple check using attacker list
+    for sq, piece in board.items():
+        if piece[0] != our_color:
+            continue
+        if sq == opp_king_sq:   # cannot attack own king
+            continue
+        attacks = _piece_attacks(board, sq, our_color)
+        if opp_king_sq in attacks:
+            return True
+    return False
+
+def _central_bonus(move: str, board: dict, our_color: str) -> int:
+    """Small bonus for moving a piece toward the centre."""
+    start, dest = move[:2], move[2:4]
+    if dest not in CENTER_SQUARES:
+        return 0
+    start_piece = board.get(start)
+    if not start_piece:
+        return 0
+    kind = start_piece[1]
+    if kind == 'P':
+        return 5
+    elif kind == 'N':
+        return 4
+    elif kind == 'B':
+        return 3
+    elif kind == 'R':
+        return 2
+    elif kind == 'Q':
+        return 2
+    else:
+        return 0
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # Determine opponent colour
+    opponent_color = 'b' if to_play == 'white' else 'w'
+
+    # Locate opponent king – if missing (e.g., check‑mate already), treat as no‑king
+    opp_king_sq = None
+    for sq, pc in pieces.items():
+        if pc[0] == opponent_color and pc[1] == 'K':
+            opp_king_sq = sq
+            break
+
+    # Material before move
+    our_material_before = sum(
+        PIECE_VALUE[piece[1]] for piece in pieces.values() if piece[0] == to_play
+    )
+
+    # Evaluate each legal move
+    scored_moves = []
+    for mv in legal_moves:   # assumed to be provided globally
+        start, dest = mv[:2], mv[2:4]
+        promotion = mv[4] if len(mv) > 4 else None
+
+        # Parse start piece
+        start_piece = pieces.get(start)
+        if not start_piece:
+            # Illegal empty start – skip (should not happen)
+            continue
+
+        # Simulate the move to see resulting board
+        after = dict(pieces)
+        del after[start]
+
+        if promotion:
+            # Pawn promotion – replace with promoted piece
+            after[dest] = f"{start_piece[0]}{promotion}"
+        elif dest in pieces:   # capturing
+            after[dest] = start_piece
+        else:
+            after[dest] = start_piece
+
+        # Material after move for us
+        our_material_after = sum(
+            PIECE_VALUE[piece[1]] for piece in after.values() if piece[0] == to_play
+        )
+        material_change = our_material_after - our_material_before
+
+        # Check if opponent king is in check after this move
+        check_bonus = 1 if opp_king_sq and _is_check(after, our_color, opp_king_sq) else 0
+
+        # Capture flag (1 if we capture something, 0 otherwise)
+        capture_flag = 1 if dest in pieces else 0
+
+        # Central bonus (only if move does not capture – central bonuses are weak)
+        central_bonus = 0 if capture_flag else _central_bonus(mv, after, to_play)
+
+        scored_moves.append((
+            material_change, check_bonus, capture_flag, central_bonus,
+            mv   # tie‑breaker keeps move string for stable sorting
+        ))
+
+    # Sort by most material gain, then check, then capture, then central
+    if not scored_moves:
+        # Should never happen – but return a harmless placeholder
+        return ''
+    scored_moves.sort(reverse=True, key=lambda x: (x[0], x[1], x[2], x[3]))
+    best_move = scored_moves[0][4]
+    return best_move

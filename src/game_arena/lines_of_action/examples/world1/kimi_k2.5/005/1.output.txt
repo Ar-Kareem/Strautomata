@@ -1,0 +1,173 @@
+The strategy for this policy is to use a 1-ply search with a heuristic evaluation function. It generates all legal moves, evaluates the resulting board state for each move, and selects the best one. Key components of the strategy:
+
+1. **Immediate Win Detection**: If a move connects all friendly pieces into a single component (winning condition), it is selected immediately.
+2. **Opponent Threat Check**: For each candidate move, it checks if the opponent can win on their next turn. Moves that allow an immediate opponent win are heavily penalized.
+3. **Heuristic Evaluation**: The evaluation function prioritizes:
+   - Minimizing the number of connected components of friendly pieces (toward connectivity).
+   - Maximizing the number of opponent connected components (keeping them split).
+   - Capturing opponent pieces (material advantage).
+   - Cohesion (keeping friendly pieces close to their centroid to facilitate future connection).
+   - Penalizing moves that allow opponent immediate victory.
+
+The implementation efficiently handles the 8x8 board constraints and runs comfortably within the 1-second time limit.
+
+<code>
+def policy(board):
+    # Helper to get positions of a player
+    def get_pieces(b, player):
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] == player:
+                    pieces.append((r, c))
+        return pieces
+    
+    # Helper to count connected components (8-connectivity)
+    def count_components(b, player):
+        pieces = get_pieces(b, player)
+        if not pieces:
+            return 0
+        piece_set = set(pieces)
+        visited = set()
+        components = 0
+        for start in pieces:
+            if start in visited:
+                continue
+            components += 1
+            stack = [start]
+            visited.add(start)
+            while stack:
+                r, c = stack.pop()
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = r + dr, c + dc
+                        if (nr, nc) in piece_set and (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            stack.append((nr, nc))
+        return components
+    
+    # Helper to generate all legal moves for a player
+    def generate_moves(b, player):
+        moves = []
+        opponent = -player
+        pieces = get_pieces(b, player)
+        
+        for r, c in pieces:
+            for dr, dc in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]:
+                # Count pieces in the line of movement
+                if dr == 0:  # Horizontal
+                    n = sum(1 for cc in range(8) if b[r][cc] != 0)
+                elif dc == 0:  # Vertical
+                    n = sum(1 for rr in range(8) if b[rr][c] != 0)
+                elif dr == dc:  # Diagonal r-c constant
+                    n = 0
+                    sr, sc = r - min(r, c), c - min(r, c)
+                    while sr < 8 and sc < 8:
+                        if b[sr][sc] != 0:
+                            n += 1
+                        sr += 1
+                        sc += 1
+                else:  # Diagonal r+c constant
+                    n = 0
+                    sr, sc = r - min(r, 7 - c), c + min(r, 7 - c)
+                    while sr < 8 and sc >= 0:
+                        if b[sr][sc] != 0:
+                            n += 1
+                        sr += 1
+                        sc -= 1
+                
+                if n == 0:
+                    continue
+                
+                tr, tc = r + dr * n, c + dc * n
+                
+                # Check bounds
+                if not (0 <= tr < 8 and 0 <= tc < 8):
+                    continue
+                
+                # Check destination not occupied by friendly
+                if b[tr][tc] == player:
+                    continue
+                
+                # Check path is clear of opponent pieces
+                valid = True
+                for i in range(1, n):
+                    rr, cc = r + dr * i, c + dc * i
+                    if b[rr][cc] == opponent:
+                        valid = False
+                        break
+                if valid:
+                    moves.append((r, c, tr, tc))
+        return moves
+    
+    # Generate all my legal moves
+    my_moves = generate_moves(board, 1)
+    if not my_moves:
+        # Should not happen in a valid game state, but return a dummy to avoid crash
+        return "0,0:0,0"
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # Pre-calculate opponent piece count for capture bonus
+    orig_opp_count = len(get_pieces(board, -1))
+    
+    for r1, c1, r2, c2 in my_moves:
+        # Simulate move
+        new_board = [row[:] for row in board]
+        new_board[r1][c1] = 0
+        new_board[r2][c2] = 1
+        
+        # Check if this move wins the game
+        if count_components(new_board, 1) == 1:
+            return f"{r1},{c1}:{r2},{c2}"
+        
+        # Heuristic evaluation
+        score = 0
+        
+        # Capture bonus
+        new_opp_count = len(get_pieces(new_board, -1))
+        score += (orig_opp_count - new_opp_count) * 200
+        
+        # My connectivity (lower is better)
+        my_comp = count_components(new_board, 1)
+        score -= my_comp * 1000
+        
+        # Opponent connectivity (higher is better - keep them split)
+        opp_comp = count_components(new_board, -1)
+        score += opp_comp * 300
+        
+        # Cohesion: sum of distances to centroid (lower is better)
+        my_pieces = get_pieces(new_board, 1)
+        if len(my_pieces) > 1:
+            avg_r = sum(r for r, c in my_pieces) / len(my_pieces)
+            avg_c = sum(c for r, c in my_pieces) / len(my_pieces)
+            cohesion = sum(abs(r - avg_r) + abs(c - avg_c) for r, c in my_pieces)
+            score -= cohesion * 5
+        
+        # Check if opponent can win next turn (heavy penalty)
+        opp_moves = generate_moves(new_board, -1)
+        opp_can_win = False
+        for or1, oc1, or2, oc2 in opp_moves:
+            test_board = [row[:] for row in new_board]
+            test_board[or1][oc1] = 0
+            test_board[or2][oc2] = -1
+            if count_components(test_board, -1) == 1:
+                opp_can_win = True
+                break
+        
+        if opp_can_win:
+            score -= 10000
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r1, c1, r2, c2)
+    
+    if best_move is None:
+        best_move = my_moves[0]
+    
+    r1, c1, r2, c2 = best_move
+    return f"{r1},{c1}:{r2},{c2}"
+</code>

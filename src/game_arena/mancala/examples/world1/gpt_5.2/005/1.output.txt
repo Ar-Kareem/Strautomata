@@ -1,0 +1,354 @@
+The strategy for this policy is a time-bounded, alpha-beta negamax search with iterative deepening and a transposition table. It explicitly models Kalah’s extra-turn rule (no perspective switch) and prioritizes tactical moves (free turns and captures) using strong move ordering plus a small quiescence search to reduce horizon blunders. The evaluation favors store advantage, endgame conversion, immediate tactical threats (captures/free turns), and seed balance.
+
+<code>
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+HOUSES = 6
+STORE = 6
+RING_LEN = 13  # you[0..5], you_store, opp[0..5]; opp store is skipped
+
+
+@dataclass
+class TTEntry:
+    depth: int
+    value: float
+    flag: int  # 0=EXACT, 1=LOWER, 2=UPPER
+    best_move: int
+
+
+TT_EXACT = 0
+TT_LOWER = 1
+TT_UPPER = 2
+
+
+def _legal_moves(you: List[int]) -> List[int]:
+    return [i for i in range(HOUSES) if you[i] > 0]
+
+
+def _terminal(you: List[int], opp: List[int]) -> bool:
+    return sum(you[:HOUSES]) == 0 or sum(opp[:HOUSES]) == 0
+
+
+def _finalize_if_game_over(you: List[int], opp: List[int]) -> None:
+    sy = sum(you[:HOUSES])
+    so = sum(opp[:HOUSES])
+    if sy == 0 and so > 0:
+        opp[STORE] += so
+        for i in range(HOUSES):
+            opp[i] = 0
+    elif so == 0 and sy > 0:
+        you[STORE] += sy
+        for i in range(HOUSES):
+            you[i] = 0
+
+
+def _apply_move(you: List[int], opp: List[int], move: int) -> Tuple[List[int], List[int], bool, bool, int]:
+    """
+    Apply move from current player's perspective.
+    Returns: (next_you, next_opp, extra_turn, game_over, store_gain_for_current_player)
+    next_you/next_opp are from the NEXT player to move perspective (swap if no extra turn).
+    """
+    y = you[:]  # copy
+    o = opp[:]
+
+    before_store = y[STORE]
+
+    seeds = y[move]
+    y[move] = 0
+    slot = (move + 1) % RING_LEN
+
+    last_slot = -1
+    while seeds > 0:
+        if 0 <= slot <= 5:
+            y[slot] += 1
+        elif slot == 6:
+            y[STORE] += 1
+        else:
+            o[slot - 7] += 1
+
+        seeds -= 1
+        last_slot = slot
+        slot = (slot + 1) % RING_LEN
+
+    # Capture
+    if 0 <= last_slot <= 5 and y[last_slot] == 1:
+        opp_idx = 5 - last_slot
+        if o[opp_idx] > 0:
+            captured = o[opp_idx] + 1
+            o[opp_idx] = 0
+            y[last_slot] = 0
+            y[STORE] += captured
+
+    extra = (last_slot == 6)
+
+    # Game over collection
+    _finalize_if_game_over(y, o)
+    game_over = _terminal(y, o)
+
+    store_gain = y[STORE] - before_store
+
+    if not extra:
+        # Switch perspective for next player to move
+        return o, y, extra, game_over, store_gain
+    return y, o, extra, game_over, store_gain
+
+
+def _move_tactics(you: List[int], opp: List[int], move: int) -> Tuple[int, bool]:
+    """
+    Cheap-ish tactical descriptor for ordering:
+    returns (score_hint, is_tactical)
+    """
+    ny, no, extra, _, store_gain = _apply_move(you, opp, move)
+    # store_gain is for the mover (current player)
+    # Heuristic: extra-turns and captures/store gains are tactical
+    hint = store_gain * 50 + (200 if extra else 0)
+
+    # Also slightly prefer moves that reduce opponent capture chances by emptying opposite
+    # (very rough; keep small)
+    hint += 2 * (sum(you[:HOUSES]) - sum(ny[:HOUSES]))  # seeds moved off side tends to be good late
+
+    is_tactical = extra or store_gain > 0
+    return hint, is_tactical
+
+
+def _best_immediate_gain(you: List[int], opp: List[int]) -> int:
+    best = 0
+    for m in _legal_moves(you):
+        _, _, _, _, gain = _apply_move(you, opp, m)
+        if gain > best:
+            best = gain
+    return best
+
+
+def _count_extra_moves(you: List[int]) -> int:
+    # A move ends in store if seeds count makes last land exactly in store.
+    # For move i: distance to store = (6 - i). If seeds % 13 == dist => ends in store (since ring length 13).
+    cnt = 0
+    for i in range(HOUSES):
+        s = you[i]
+        if s <= 0:
+            continue
+        dist = 6 - i
+        if s % RING_LEN == dist:
+            cnt += 1
+    return cnt
+
+
+def _evaluate(you: List[int], opp: List[int]) -> float:
+    # Terminal exact evaluation (from current player's perspective)
+    if _terminal(you, opp):
+        return float(you[STORE] - opp[STORE])
+
+    store_diff = you[STORE] - opp[STORE]
+    house_diff = sum(you[:HOUSES]) - sum(opp[:HOUSES])
+    total = sum(you) + sum(opp)
+
+    # Increase store importance in endgame
+    # (total starts at 48 in standard Kalah; grows irrelevant due to invariance, but keep robust)
+    end_factor = max(0.0, (60.0 - float(total)) / 60.0)  # small if total near normal
+    w_store = 12.0 + 10.0 * end_factor
+
+    # Tactical potentials
+    my_best_gain = _best_immediate_gain(you, opp)
+    op_best_gain = _best_immediate_gain(opp, you)
+    my_extras = _count_extra_moves(you)
+    op_extras = _count_extra_moves(opp)
+
+    # Light structure: having empties can enable captures, but too many empties reduces options.
+    my_empties = sum(1 for i in range(HOUSES) if you[i] == 0)
+    op_empties = sum(1 for i in range(HOUSES) if opp[i] == 0)
+
+    return (
+        w_store * store_diff
+        + 0.35 * house_diff
+        + 3.0 * (my_best_gain - op_best_gain)
+        + 1.2 * (my_extras - op_extras)
+        + 0.15 * (op_empties - my_empties)
+    )
+
+
+def _tactical_moves(you: List[int], opp: List[int]) -> List[int]:
+    moves = _legal_moves(you)
+    tacts = []
+    for m in moves:
+        _, is_t = _move_tactics(you, opp, m)
+        if is_t:
+            tacts.append(m)
+    return tacts
+
+
+def _quiesce(
+    you: List[int],
+    opp: List[int],
+    alpha: float,
+    beta: float,
+    qdepth: int,
+    deadline: float,
+    tt: Dict[Tuple[Tuple[int, ...], Tuple[int, ...]], TTEntry],
+) -> float:
+    if time.perf_counter() >= deadline:
+        raise TimeoutError
+
+    stand_pat = _evaluate(you, opp)
+    if stand_pat >= beta:
+        return stand_pat
+    if stand_pat > alpha:
+        alpha = stand_pat
+    if qdepth <= 0 or _terminal(you, opp):
+        return stand_pat
+
+    moves = _tactical_moves(you, opp)
+    if not moves:
+        return stand_pat
+
+    # order tactical moves by immediate hint
+    scored = []
+    for m in moves:
+        hint, _ = _move_tactics(you, opp, m)
+        scored.append((hint, m))
+    scored.sort(reverse=True)
+
+    for _, m in scored:
+        ny, no, extra, _, _ = _apply_move(you, opp, m)
+        if extra:
+            val = _quiesce(ny, no, alpha, beta, qdepth - 1, deadline, tt)
+        else:
+            val = -_quiesce(ny, no, -beta, -alpha, qdepth - 1, deadline, tt)
+        if val >= beta:
+            return val
+        if val > alpha:
+            alpha = val
+    return alpha
+
+
+def _negamax(
+    you: List[int],
+    opp: List[int],
+    depth: int,
+    alpha: float,
+    beta: float,
+    deadline: float,
+    tt: Dict[Tuple[Tuple[int, ...], Tuple[int, ...]], TTEntry],
+) -> Tuple[float, int]:
+    if time.perf_counter() >= deadline:
+        raise TimeoutError
+
+    key = (tuple(you), tuple(opp))
+
+    if _terminal(you, opp):
+        return float(you[STORE] - opp[STORE]), -1
+
+    if depth <= 0:
+        return _quiesce(you, opp, alpha, beta, 4, deadline, tt), -1
+
+    # TT lookup
+    entry = tt.get(key)
+    if entry is not None and entry.depth >= depth:
+        if entry.flag == TT_EXACT:
+            return entry.value, entry.best_move
+        if entry.flag == TT_LOWER:
+            alpha = max(alpha, entry.value)
+        elif entry.flag == TT_UPPER:
+            beta = min(beta, entry.value)
+        if alpha >= beta:
+            return entry.value, entry.best_move
+
+    moves = _legal_moves(you)
+    if not moves:
+        # Should not happen per problem statement, but keep safe:
+        return float(you[STORE] - opp[STORE]), -1
+
+    # Move ordering: TT best move first, then tactical hint
+    best_first: Optional[int] = entry.best_move if entry is not None else None
+    ordered: List[int] = []
+    if best_first is not None and 0 <= best_first < HOUSES and you[best_first] > 0:
+        ordered.append(best_first)
+
+    rest = [m for m in moves if m != best_first]
+    scored = []
+    for m in rest:
+        hint, _ = _move_tactics(you, opp, m)
+        scored.append((hint, m))
+    scored.sort(reverse=True)
+    ordered.extend(m for _, m in scored)
+
+    orig_alpha = alpha
+    best_val = float("-inf")
+    best_move = ordered[0]
+
+    for m in ordered:
+        ny, no, extra, _, _ = _apply_move(you, opp, m)
+        if extra:
+            val, _ = _negamax(ny, no, depth - 1, alpha, beta, deadline, tt)
+        else:
+            val, _ = _negamax(ny, no, depth - 1, -beta, -alpha, deadline, tt)
+            val = -val
+
+        if val > best_val:
+            best_val = val
+            best_move = m
+        if best_val > alpha:
+            alpha = best_val
+        if alpha >= beta:
+            break
+
+    # Store in TT
+    flag = TT_EXACT
+    if best_val <= orig_alpha:
+        flag = TT_UPPER
+    elif best_val >= beta:
+        flag = TT_LOWER
+    tt[key] = TTEntry(depth=depth, value=best_val, flag=flag, best_move=best_move)
+
+    return best_val, best_move
+
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    # Always return a legal move (disqualification-safe).
+    legal = _legal_moves(you)
+    if not legal:
+        return 0  # fallback; should never occur
+    if len(legal) == 1:
+        return legal[0]
+
+    # Time-bounded iterative deepening.
+    start = time.perf_counter()
+    # Keep a little safety margin under 1s.
+    deadline = start + 0.93
+
+    tt: Dict[Tuple[Tuple[int, ...], Tuple[int, ...]], TTEntry] = {}
+
+    # A quick tactical pre-pass: if there is an immediate winning capture/finish, prefer it.
+    # (still legal, but helps if time is extremely tight)
+    best_quick = legal[0]
+    best_quick_score = -10**9
+    for m in legal:
+        hint, _ = _move_tactics(you, opponent, m)
+        if hint > best_quick_score:
+            best_quick_score = hint
+            best_quick = m
+
+    best_move = best_quick
+    best_val = float("-inf")
+
+    # Depth schedule: Kalah can have long extra-turn sequences; keep moderate max.
+    max_depth = 14
+
+    for depth in range(1, max_depth + 1):
+        if time.perf_counter() >= deadline:
+            break
+        try:
+            val, mv = _negamax(you, opponent, depth, float("-inf"), float("inf"), deadline, tt)
+            if mv != -1 and you[mv] > 0:
+                best_move = mv
+                best_val = val
+        except TimeoutError:
+            break
+
+    # Safety: ensure legality.
+    if 0 <= best_move < HOUSES and you[best_move] > 0:
+        return best_move
+    return legal[0]
+</code>

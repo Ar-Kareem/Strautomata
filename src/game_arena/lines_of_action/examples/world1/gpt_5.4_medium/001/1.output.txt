@@ -1,0 +1,400 @@
+The strategy for this policy is:
+- Generate all legal Lines of Action moves exactly according to the row/column/diagonal distance rule.
+- First, immediately play any move that wins on the spot by connecting all of our pieces.
+- Otherwise use iterative-deepening alpha-beta search with a strong positional heuristic.
+- The evaluation prefers:
+  - fewer connected components,
+  - a larger main connected group,
+  - more local adjacency between friendly pieces,
+  - tighter/less spread piece formations,
+  - centralization,
+  - getting pieces off the edge.
+- Move ordering prioritizes captures, moves toward friendly neighbors, centralization, and leaving the edge, which improves search quality.
+- The policy is built to always return a legal move string.
+
+<code>
+import time
+
+DIRS = [
+    (-1, 0), (1, 0), (0, -1), (0, 1),
+    (-1, -1), (-1, 1), (1, -1), (1, 1)
+]
+
+CENTRAL = [
+    [0, 1, 2, 3, 3, 2, 1, 0],
+    [1, 2, 3, 4, 4, 3, 2, 1],
+    [2, 3, 4, 5, 5, 4, 3, 2],
+    [3, 4, 5, 6, 6, 5, 4, 3],
+    [3, 4, 5, 6, 6, 5, 4, 3],
+    [2, 3, 4, 5, 5, 4, 3, 2],
+    [1, 2, 3, 4, 4, 3, 2, 1],
+    [0, 1, 2, 3, 3, 2, 1, 0],
+]
+
+WIN_SCORE = 1_000_000
+INF = 10**18
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _fmt_move(m):
+    fr, fc, tr, tc = m
+    return f"{fr},{fc}:{tr},{tc}"
+
+
+def _negate_board(board):
+    return [[-board[r][c] for c in range(8)] for r in range(8)]
+
+
+def _apply_move(board, move):
+    fr, fc, tr, tc = move
+    nb = [row[:] for row in board]
+    nb[fr][fc] = 0
+    nb[tr][tc] = 1
+    return nb
+
+
+def _is_connected(board, player):
+    start = None
+    total = 0
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            if row[c] == player:
+                total += 1
+                if start is None:
+                    start = (r, c)
+
+    if total <= 1:
+        return True
+
+    sr, sc = start
+    vis = [[False] * 8 for _ in range(8)]
+    vis[sr][sc] = True
+    stack = [(sr, sc)]
+    seen = 1
+
+    while stack:
+        r, c = stack.pop()
+        for dr, dc in DIRS:
+            nr = r + dr
+            nc = c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and not vis[nr][nc] and board[nr][nc] == player:
+                vis[nr][nc] = True
+                seen += 1
+                stack.append((nr, nc))
+
+    return seen == total
+
+
+def _terminal_value(board, ply):
+    myc = _is_connected(board, 1)
+    oppc = _is_connected(board, -1)
+    if myc and oppc:
+        return -WIN_SCORE + ply
+    if myc:
+        return WIN_SCORE - ply
+    if oppc:
+        return -WIN_SCORE + ply
+    return None
+
+
+def _piece_metrics(board, player):
+    positions = []
+    posset = set()
+    central = 0
+    edge = 0
+    adj = 0
+    sumr = 0
+    sumc = 0
+
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            if row[c] == player:
+                positions.append((r, c))
+                posset.add((r, c))
+                central += CENTRAL[r][c]
+                sumr += r
+                sumc += c
+                if r == 0 or r == 7 or c == 0 or c == 7:
+                    edge += 1
+
+    n = len(positions)
+    if n == 0:
+        return (0, 0, 0, 0, 0, 0)
+
+    visited = set()
+    comps = 0
+    largest = 0
+    for p in positions:
+        if p in visited:
+            continue
+        comps += 1
+        stack = [p]
+        visited.add(p)
+        size = 0
+        while stack:
+            r, c = stack.pop()
+            size += 1
+            for dr, dc in DIRS:
+                q = (r + dr, c + dc)
+                if q in posset and q not in visited:
+                    visited.add(q)
+                    stack.append(q)
+        if size > largest:
+            largest = size
+
+    for r, c in positions:
+        local = 0
+        for dr, dc in DIRS:
+            if (r + dr, c + dc) in posset:
+                local += 1
+        adj += local
+
+    spread = 0
+    for r, c in positions:
+        spread += abs(r * n - sumr) + abs(c * n - sumc)
+
+    return (comps, largest, adj, spread, central, edge)
+
+
+def _evaluate(board):
+    tv = _terminal_value(board, 0)
+    if tv is not None:
+        return tv
+
+    myc, mylargest, myadj, myspread, mycentral, myedge = _piece_metrics(board, 1)
+    opc, oplargest, opadj, opspread, opcentral, opedge = _piece_metrics(board, -1)
+
+    score = 0
+    score += 220 * (opc - myc)
+    score += 35 * (mylargest - oplargest)
+    score += 10 * (myadj - opadj)
+    score += 1 * (opspread - myspread)
+    score += 4 * (mycentral - opcentral)
+    score += 8 * (opedge - myedge)
+    return score
+
+
+def _generate_moves(board):
+    row_counts = [0] * 8
+    col_counts = [0] * 8
+    diag1 = [0] * 15   # r-c+7
+    diag2 = [0] * 15   # r+c
+
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            if row[c] != 0:
+                row_counts[r] += 1
+                col_counts[c] += 1
+                diag1[r - c + 7] += 1
+                diag2[r + c] += 1
+
+    moves = []
+
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            if row[c] != 1:
+                continue
+
+            for dr, dc in DIRS:
+                if dr == 0:
+                    dist = row_counts[r]
+                elif dc == 0:
+                    dist = col_counts[c]
+                elif dr == dc:
+                    dist = diag1[r - c + 7]
+                else:
+                    dist = diag2[r + c]
+
+                tr = r + dr * dist
+                tc = c + dc * dist
+                if not (0 <= tr < 8 and 0 <= tc < 8):
+                    continue
+
+                blocked = False
+                for k in range(1, dist):
+                    mr = r + dr * k
+                    mc = c + dc * k
+                    if board[mr][mc] == -1:
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+
+                if board[tr][tc] == 1:
+                    continue
+
+                moves.append((r, c, tr, tc))
+
+    return moves
+
+
+def _quick_move_score(board, move):
+    fr, fc, tr, tc = move
+    capture = 1 if board[tr][tc] == -1 else 0
+
+    friendly_adj = 0
+    enemy_adj = 0
+    for dr, dc in DIRS:
+        nr = tr + dr
+        nc = tc + dc
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            if nr == fr and nc == fc:
+                continue
+            v = board[nr][nc]
+            if v == 1:
+                friendly_adj += 1
+            elif v == -1:
+                enemy_adj += 1
+
+    from_edge = 1 if (fr == 0 or fr == 7 or fc == 0 or fc == 7) else 0
+    to_edge = 1 if (tr == 0 or tr == 7 or tc == 0 or tc == 7) else 0
+
+    score = 0
+    score += 80 * capture
+    score += 14 * friendly_adj
+    score -= 3 * enemy_adj
+    score += 5 * (CENTRAL[tr][tc] - CENTRAL[fr][fc])
+    score += 8 * (from_edge - to_edge)
+    return score
+
+
+def _ordered_moves(board, moves):
+    if len(moves) <= 1:
+        return moves
+    return sorted(moves, key=lambda m: _quick_move_score(board, m), reverse=True)
+
+
+def _time_check(deadline, node_counter):
+    node_counter[0] += 1
+    if (node_counter[0] & 63) == 0 and time.perf_counter() > deadline:
+        raise _Timeout
+
+
+def _negamax(board, depth, alpha, beta, ply, deadline, node_counter):
+    _time_check(deadline, node_counter)
+
+    tv = _terminal_value(board, ply)
+    if tv is not None:
+        return tv
+
+    if depth == 0:
+        return _evaluate(board)
+
+    moves = _generate_moves(board)
+    if not moves:
+        return -50_000 + ply
+
+    moves = _ordered_moves(board, moves)
+    best = -INF
+
+    for move in moves:
+        post = _apply_move(board, move)
+
+        myc = _is_connected(post, 1)
+        if myc:
+            score = WIN_SCORE - ply
+        else:
+            oppc = _is_connected(post, -1)
+            if oppc:
+                score = -WIN_SCORE + ply
+            else:
+                child = _negate_board(post)
+                score = -_negamax(child, depth - 1, -beta, -alpha, ply + 1, deadline, node_counter)
+
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best
+
+
+def _search_root(board, moves, depth, deadline, node_counter):
+    alpha = -INF
+    beta = INF
+    best_move = moves[0]
+
+    for move in moves:
+        _time_check(deadline, node_counter)
+
+        post = _apply_move(board, move)
+
+        myc = _is_connected(post, 1)
+        if myc:
+            score = WIN_SCORE
+        else:
+            oppc = _is_connected(post, -1)
+            if oppc:
+                score = -WIN_SCORE
+            else:
+                child = _negate_board(post)
+                score = -_negamax(child, depth - 1, -beta, -alpha, 1, deadline, node_counter)
+
+        if score > alpha:
+            alpha = score
+            best_move = move
+
+    return alpha, best_move
+
+
+def policy(board) -> str:
+    board = [list(row) for row in board]
+    moves = _generate_moves(board)
+
+    if not moves:
+        # Should be unreachable in normal play, but keep API total.
+        return "0,0:0,0"
+
+    if len(moves) == 1:
+        return _fmt_move(moves[0])
+
+    # Immediate winning move check + initial ordering.
+    scored = []
+    for move in moves:
+        post = _apply_move(board, move)
+        if _is_connected(post, 1):
+            return _fmt_move(move)
+
+        q = _quick_move_score(board, move)
+        if _is_connected(post, -1):
+            q -= 50_000
+        scored.append((q, move))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    ordered = [m for _, m in scored]
+    best_move = ordered[0]
+
+    deadline = time.perf_counter() + 0.93
+    node_counter = [0]
+
+    num_moves = len(ordered)
+    if num_moves <= 8:
+        max_depth = 5
+    elif num_moves <= 16:
+        max_depth = 4
+    else:
+        max_depth = 3
+
+    for depth in range(1, max_depth + 1):
+        try:
+            score, move = _search_root(board, ordered, depth, deadline, node_counter)
+            best_move = move
+            if move in ordered:
+                ordered.remove(move)
+                ordered.insert(0, move)
+            if abs(score) >= WIN_SCORE // 2:
+                break
+        except _Timeout:
+            break
+
+    return _fmt_move(best_move)
+</code>

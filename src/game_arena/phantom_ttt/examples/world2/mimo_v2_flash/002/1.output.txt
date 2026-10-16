@@ -1,0 +1,145 @@
+### Strategy for Phantom Tic Tac Toe
+
+In Phantom Tic Tac Toe (3x3), the game is a stochastic partial-information variant of Tic-Tac-Toe where I (player 1) aim to achieve three in a row, column, or diagonal, but I can only observe my own confirmed marks (cells with value 1). The opponent's marks are invisible, and attempting to place a mark on an occupied cell (either empty or opponent-occupied) fails without placing a mark (and the game state doesn't change from my perspective, though it may advance the turn implicitly). The game ends when either player achieves three in a line, or all cells are filled; if I attempt a move and fail due to occupation, the board remains unchanged for me, but the game may continue.
+
+Since the opponent is unknown (could be random, greedy, or another AI), and the game has imperfect information, the policy must balance exploration (probing unconfirmed cells to discover if they are empty or occupied) with exploitation (placing marks to build potential lines). A key challenge is the lack of visibility: I cannot directly know where the opponent has marked, so I must infer potential threats or opportunities from the history of successful placements and attempted failures. However, the `policy` function is called only with the current board state (no history), so I must make decisions based solely on `board`.
+
+#### High-Level Approach
+1. **Board Interpretation**:
+   - `board[i][j] == 1`: Confirmed my mark. I must avoid re-attempting these, as it's a wasted move (and may be disallowed or irrelevant).
+   - `board[i][j] == 0`: Unconfirmed. This could be:
+     - Empty: My attempt will succeed, placing a mark (changing to 1 in future states).
+     - Opponent's mark: My attempt will fail, board unchanged.
+   - I have no confirmation of opponent marks, so all `0`s are "suspicious" but must be considered for placement.
+
+2. **Policy Goals**:
+   - **Build Lines**: Prioritize completing or extending rows, columns, or diagonals where I have 1 or 2 marks (out of 3).
+   - **Probe Smartly**: When no immediate wins are possible, choose unconfirmed cells that are part of multiple potential lines (e.g., center or corners) to maximize information gain (failure reveals opponent presence without wasting my mark).
+   - **Avoid Wasteful Placements**: If I suspect a cell is likely opponent-occupied (e.g., based on line states), I might avoid it to prevent failure, but since I can't know for sure, I'll prioritize high-value cells.
+   - **No Legal Moves**: If all cells are 1 (I've filled the board), return `(0, 0)` as a fallback, though this shouldn't happen in a full game (game would end).
+
+3. **Core Logic**:
+   - **Win Check**: First, scan all 8 lines (3 rows, 3 columns, 2 diagonals). If any line has 2 of my marks and 1 unconfirmed cell, attempt to place there for a guaranteed win (if empty) or failure (if opponent, but I still try).
+   - **Block Opponent** (Inference-Based): In perfect info, we'd block opponent wins. Here, I infer potential threats by checking lines where I have 0 marks and 3 unconfirmed cells: if such a line exists, the opponent could be about to win on their next turn (if they have 2 marks there invisibly). To mitigate, I attempt a move in such a line to probe/block.
+   - **Extend My Lines**: If no immediate win/block, prioritize cells that are part of lines where I have 1 mark (extending to 2), especially intersections of such lines (e.g., center for diagonals). This builds potential while probing.
+   - **Fallback/Explore**: If none of the above, pick a random unconfirmed cell (or the first available) to continue probing. This ensures progress and eventual discovery of opponent marks.
+   - **Rotation/Heuristics**: To add smartness without full history, I prioritize:
+     - Center `(1,1)` first (controls most lines).
+     - Corners `(0,0), (0,2), (2,0), (2,2)` next (good for diagonals).
+     - Edges `(0,1), (1,0), (1,2), (2,1)` last (fewer lines).
+     - Within categories, prioritize based on current partial lines (e.g., if I have a mark in row 0, prioritize other cells in row 0).
+
+4. **Efficiency**: The board is small (9 cells), so O(1) checks are fine. Use simple loops to evaluate lines. Time limit is 1 second, but this will run in <10ms.
+
+5. **Potential Improvements (for Arena Competition)**:
+   - This policy is robust against random opponents (exploits empties, probes effectively) and conservative opponents (builds lines steadily).
+   - Against aggressive opponents, the block inference provides some defense without overcommitting.
+   - To beat specific policies in the arena, I'd need opponent knowledge, but since it's general, this heuristic approach maximizes win probability in imperfect info.
+   - Full game tree search with belief states (e.g., tracking possible opponent positions) is possible but complex for 1s; this is a greedy heuristic that simulates smart play.
+
+This strategy should outperform random policies and basic greedy ones by being more adaptive to the partial information.
+
+<code>
+import random
+import itertools
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Smart policy for Phantom Tic Tac Toe.
+    Prioritizes:
+    1. Immediate win (2 my marks + 1 unconfirmed in line).
+    2. Block potential opponent win (infer via lines with 0 my marks + 3 unconfirmed).
+    3. Extend my lines (1 my mark + 2 unconfirmed, prioritizing intersections).
+    4. Explore unconfirmed cells (prioritize center, then corners, then edges).
+    """
+    # Flatten for easier access
+    cells = [(i, j) for i in range(3) for j in range(3)]
+    my_cells = [(i, j) for i in range(3) for j in range(3) if board[i][j] == 1]
+    unconfirmed = [(i, j) for i in range(3) for j in range(3) if board[i][j] == 0]
+    
+    if not unconfirmed:
+        # No legal moves? Return a fallback (shouldn't happen in valid game)
+        return (0, 0)
+    
+    # Helper: Check if a line (list of 3 cells) has 2 my marks and 1 unconfirmed
+    def line_win(line):
+        my_count = sum(1 for (i, j) in line if board[i][j] == 1)
+        unconf_count = sum(1 for (i, j) in line if board[i][j] == 0)
+        return my_count == 2 and unconf_count == 1
+    
+    # Helper: Check if line has 0 my marks and 3 unconfirmed (potential opponent win)
+    def line_threat(line):
+        my_count = sum(1 for (i, j) in line if board[i][j] == 1)
+        unconf_count = sum(1 for (i, j) in line if board[i][j] == 0)
+        return my_count == 0 and unconf_count == 3
+    
+    # Helper: Check if line has 1 my mark and 2 unconfirmed (extend opportunity)
+    def line_extend(line):
+        my_count = sum(1 for (i, j) in line if board[i][j] == 1)
+        unconf_count = sum(1 for (i, j) in line if board[i][j] == 0)
+        return my_count == 1 and unconf_count == 2
+    
+    # Define all lines
+    lines = []
+    # Rows
+    for i in range(3):
+        lines.append([(i, 0), (i, 1), (i, 2)])
+    # Columns
+    for j in range(3):
+        lines.append([(0, j), (1, j), (2, j)])
+    # Diagonals
+    lines.append([(0, 0), (1, 1), (2, 2)])
+    lines.append([(0, 2), (1, 1), (2, 0)])
+    
+    # 1. Immediate Win: Find all winning cells
+    win_cells = []
+    for line in lines:
+        if line_win(line):
+            for (i, j) in line:
+                if board[i][j] == 0:
+                    win_cells.append((i, j))
+    if win_cells:
+        return win_cells[0]  # Return first available win (all are equal value)
+    
+    # 2. Block: Find cells in lines where opponent could win (infer threat)
+    block_cells = []
+    for line in lines:
+        if line_threat(line):
+            for (i, j) in line:
+                if board[i][j] == 0:
+                    block_cells.append((i, j))
+    if block_cells:
+        return block_cells[0]
+    
+    # 3. Extend: Find cells in lines where I have 1 mark
+    extend_candidates = []
+    for line in lines:
+        if line_extend(line):
+            for (i, j) in line:
+                if board[i][j] == 0:
+                    # Score: +1 for each other line this cell is in that has 1 my mark (intersection bonus)
+                    score = 0
+                    for other_line in lines:
+                        if (i, j) in other_line and other_line != line:
+                            if line_extend(other_line):
+                                score += 1
+                    # Prioritize center/corners higher
+                    if (i, j) == (1, 1):
+                        score += 2
+                    elif (i, j) in [(0,0), (0,2), (2,0), (2,2)]:
+                        score += 1
+                    extend_candidates.append((score, (i, j)))
+    
+    if extend_candidates:
+        extend_candidates.sort(key=lambda x: x[0], reverse=True)
+        return extend_candidates[0][1]
+    
+    # 4. Explore: Priority order - center, corners, edges
+    priorities = [(1,1)] + [(0,0), (0,2), (2,0), (2,2)] + [(0,1), (1,0), (1,2), (2,1)]
+    for (i, j) in priorities:
+        if board[i][j] == 0:
+            return (i, j)
+    
+    # Fallback: random (shouldn't reach here)
+    return random.choice(unconfirmed)
+</code>

@@ -1,0 +1,128 @@
+The strategy for this policy is a hybrid approach combining **Targeted Hunting** and **Probabilistic Search**.
+
+1.  **Targeted Hunting**: The algorithm first scans the board for any hits (`1`s). If hits are found, it prioritizes firing at adjacent cells to sink the damaged ship.
+    *   It identifies "lines" of hits. If multiple hits are aligned (e.g., horizontally or vertically), the algorithm prioritizes extending that line to sink the ship faster.
+    *   If hits are isolated, it checks all 4 neighbors (up, down, left, right) as potential targets.
+2.  **Probabilistic Search (Hunt Mode)**: If no targets are identified (or the board is empty of hits), the algorithm switches to a hunt mode. It generates a probability density map of the 10x10 grid. For every empty cell, it calculates a score based on how many possible ship configurations (accounting for ship lengths 5, 4, 3, 3, and 2) could fit through that cell without overlapping known misses (`-1`) or board edges. The cell with the highest probability score is selected. This statistically minimizes the expected time to find a ship.
+
+This ensures that we aggressively finish off wounded ships while efficiently searching for new ones using a mathematically optimal search pattern.
+
+<code>
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship policy that combines targeted hunting with probabilistic search.
+    """
+    rows, cols = 10, 10
+    ships = [5, 4, 3, 3, 2]
+
+    # Helper to get valid neighbors
+    def get_neighbors(r, c):
+        ns = []
+        if r > 0: ns.append((r - 1, c))
+        if r < rows - 1: ns.append((r + 1, c))
+        if c > 0: ns.append((r, c - 1))
+        if c < cols - 1: ns.append((r, c + 1))
+        return ns
+
+    # --- Phase 1: Targeted Hunting ---
+    # Find all coordinates with hits
+    hits = []
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 1:
+                hits.append((r, c))
+
+    if hits:
+        # Identify potential targets (neighbors of hits)
+        potential_targets = {}  # (r, c) -> score
+        
+        # We use a set to avoid duplicates if neighbors overlap
+        hit_neighbors = set()
+        for r, c in hits:
+            for nr, nc in get_neighbors(r, c):
+                if board[nr][nc] == 0:
+                    hit_neighbors.add((nr, nc))
+        
+        # Score the neighbors
+        # Higher score for extending existing lines of hits
+        for r, c in hit_neighbors:
+            score = 1
+            
+            # Check for horizontal alignment (extend left or right)
+            # If current cell (r,c) is to the right of a hit at (r, c-1) and there is a hit at (r, c-2)
+            if c > 1 and board[r][c-1] == 1 and board[r][c-2] == 1:
+                score += 10
+            # If current cell (r,c) is to the left of a hit at (r, c+1) and there is a hit at (r, c+2)
+            elif c < cols - 2 and board[r][c+1] == 1 and board[r][c+2] == 1:
+                score += 10
+            
+            # Check for vertical alignment (extend up or down)
+            if r > 1 and board[r-1][c] == 1 and board[r-2][c] == 1:
+                score += 10
+            elif r < rows - 2 and board[r+1][c] == 1 and board[r+2][c] == 1:
+                score += 10
+                
+            potential_targets[(r, c)] = score
+
+        # Select best target
+        if potential_targets:
+            max_score = max(potential_targets.values())
+            best_moves = [coord for coord, s in potential_targets.items() if s == max_score]
+            return random.choice(best_moves)
+
+    # --- Phase 2: Probabilistic Search (Hunt Mode) ---
+    # If no active targets or no hits, calculate probability density map
+    # Score represents how many ship configurations can pass through this cell
+    
+    max_prob = -1
+    best_moves = []
+
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] != 0:
+                continue
+            
+            current_score = 0
+            
+            # Try to place each ship type covering this cell
+            for ship_len in ships:
+                # Check Horizontal placement
+                # Cell (r,c) can be at offset k (0 to ship_len-1) within the ship
+                for k in range(ship_len):
+                    c_start = c - k
+                    c_end = c_start + ship_len
+                    
+                    if 0 <= c_start and c_end <= cols:
+                        valid = True
+                        # Check if all cells in this placement are not misses (-1)
+                        for col_check in range(c_start, c_end):
+                            if board[r][col_check] == -1:
+                                valid = False
+                                break
+                        if valid:
+                            current_score += 1
+                
+                # Check Vertical placement
+                for k in range(ship_len):
+                    r_start = r - k
+                    r_end = r_start + ship_len
+                    
+                    if 0 <= r_start and r_end <= rows:
+                        valid = True
+                        for row_check in range(r_start, r_end):
+                            if board[row_check][c] == -1:
+                                valid = False
+                                break
+                        if valid:
+                            current_score += 1
+            
+            if current_score > max_prob:
+                max_prob = current_score
+                best_moves = [(r, c)]
+            elif current_score == max_prob:
+                best_moves.append((r, c))
+    
+    return random.choice(best_moves)
+</code>

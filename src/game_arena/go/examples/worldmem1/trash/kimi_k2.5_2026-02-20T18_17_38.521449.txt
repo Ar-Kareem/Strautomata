@@ -1,0 +1,65 @@
+ The strategy for this policy combines tactical awareness (capturing and saving groups), strategic opening play, and basic Ko detection using memory to avoid illegal moves.
+
+The policy works as follows:
+1. **Board Representation**: Converts stone lists into a 19×19 grid for fast local access.
+2. **Ko Detection**: Uses persistent memory to track the opponent's previous stone positions, identifying their last move to prevent immediate recapture (Ko rule violations).
+3. **Legal Move Generation**: Checks all 361 intersections for legality by verifying liberties or captures using iterative flood-fill (BFS).
+4. **Move Evaluation**:
+   - **Capture Priority**: High reward for capturing opponent stones (1000 points per stone).
+   - **Atari Defense**: Rewards saving friendly groups in atari (800 base + 50 per stone saved).
+   - **Connection Bonus**: Rewards moves that connect separate friendly groups.
+   - **Opening Strategy**: Early game prioritizes star points (4-4, 3-4, tengen) and central influence; later game prioritizes proximity to existing stones.
+   - **Randomization**: Small random noise breaks ties between equally good moves.
+
+The algorithm safely passes (returns `(0, 0)`) if no legal moves exist, ensuring compliance with competition rules.
+
+<code>
+import random
+
+def policy(me, opponent, memory):
+    # Convert to sets for Ko detection
+    me_set = set(me)
+    opp_set = set(opponent)
+    
+    # Detect opponent's last move for Ko detection
+    last_opp_move = None
+    if 'prev_opponent' in memory:
+        prev_opp = memory['prev_opponent']
+        if len(opp_set) > len(prev_opp):
+            last_opp_move = (opp_set - prev_opp).pop()
+    
+    # Build board: 0=empty, 1=me, 2=opponent
+    board = [[0]*19 for _ in range(19)]
+    for r, c in me:
+        board[r-1][c-1] = 1
+    for r, c in opponent:
+        board[r-1][c-1] = 2
+    
+    def get_group_info(brd, r, c, color):
+        """Returns (liberty_count, stone_count) for group at r,c using BFS"""
+        stack = [(r, c)]
+        visited = [[False]*19 for _ in range(19)]
+        visited[r][c] = True
+        liberties = set()
+        size = 0
+        
+        while stack:
+            cr, cc = stack.pop()
+            size += 1
+            for dr, dc in [(0,1),(0,-1),(1,0),(-1,0)]:
+                nr, nc = cr+dr, cc+dc
+                if 0 <= nr < 19 and 0 <= nc < 19:
+                    if brd[nr][nc] == 0:
+                        liberties.add((nr, nc))
+                    elif brd[nr][nc] == color and not visited[nr][nc]:
+                        visited[nr][nc] = True
+                        stack.append((nr, nc))
+        return len(liberties), size
+    
+    def is_legal(r, c, color):
+        """Returns (is_legal, captured_coords_list)"""
+        if board[r][c] != 0:
+            return False, []
+        
+        opp_color = 3 - color
+        board[r][c] =

@@ -1,0 +1,173 @@
+<thinking>
+I will implement a Battleship targeting policy that uses a probabilistic “heatmap” of all possible ship placements consistent with known misses, combined with a focused “target” behavior when there are existing hits. The policy:
+
+- Builds a heatmap by enumerating all placements of remaining ship lengths (5,4,3,3,2) that do not overlap any known misses.
+- When there are hits, identifies hit-clusters and potential extension cells (neighbors that are still unknown). These candidate target cells are prioritized (scored higher) so the agent finishes off ships.
+- Picks an unknown cell with the highest score (break ties randomly). If the heatmap is zero (rare), falls back to parity selection for coverage or picks a random unknown.
+
+This balances exploration (parity and probability) and exploitation (finishing ships after a hit), while respecting the requirement to return an untried cell (0..9 indices).
+</thinking>
+<code>
+import random
+from collections import deque
+from typing import List, Tuple
+
+import numpy as np
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Return a (row, col) tuple for where to fire next, given the current board knowledge.
+    board: 10x10 list of lists with values:
+        0 = unknown, -1 = miss, 1 = hit
+    Strategy:
+      - Build a probability heatmap by enumerating all valid placements of ships
+        (lengths 5,4,3,3,2) that do not overlap known misses.
+      - If there are hit clusters, identify their plausible extension cells and
+        prioritize them.
+      - Choose the unknown cell with highest score; break ties randomly.
+    """
+    arr = np.array(board)
+    n = 10
+    assert arr.shape == (n, n)
+
+    # Ship lengths to consider (standard Battleship)
+    ships = [5, 4, 3, 3, 2]
+
+    # Helper: find hit clusters (orthogonally connected)
+    hits = set(map(tuple, np.argwhere(arr == 1)))
+    visited = set()
+    clusters = []
+
+    for hit in hits:
+        if hit in visited:
+            continue
+        q = deque([hit])
+        comp = set()
+        visited.add(hit)
+        while q:
+            r, c = q.popleft()
+            comp.add((r, c))
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < n and 0 <= nc < n and (nr, nc) in hits and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    q.append((nr, nc))
+        clusters.append(comp)
+
+    # Candidate target cells adjacent to clusters (unknown cells)
+    candidate_targets = set()
+    for comp in clusters:
+        if len(comp) == 1:
+            # single hit: any orth neighbor unknown is candidate
+            (r, c) = next(iter(comp))
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < n and 0 <= nc < n and arr[nr, nc] == 0:
+                    candidate_targets.add((nr, nc))
+        else:
+            # determine orientation if possible
+            rows = {p[0] for p in comp}
+            cols = {p[1] for p in comp}
+            if len(rows) == 1:
+                # horizontal cluster: extend left/right
+                r = next(iter(rows))
+                minc = min(c for _, c in comp)
+                maxc = max(c for _, c in comp)
+                left = (r, minc - 1)
+                right = (r, maxc + 1)
+                for cell in (left, right):
+                    nr, nc = cell
+                    if 0 <= nr < n and 0 <= nc < n and arr[nr, nc] == 0:
+                        candidate_targets.add((nr, nc))
+            elif len(cols) == 1:
+                # vertical cluster: extend up/down
+                c = next(iter(cols))
+                minr = min(r for r, _ in comp)
+                maxr = max(r for r, _ in comp)
+                up = (minr - 1, c)
+                down = (maxr + 1, c)
+                for cell in (up, down):
+                    nr, nc = cell
+                    if 0 <= nr < n and 0 <= nc < n and arr[nr, nc] == 0:
+                        candidate_targets.add((nr, nc))
+            else:
+                # unexpected shape; fallback to any adjacent unknowns around cluster
+                for (r, c) in comp:
+                    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < n and 0 <= nc < n and arr[nr, nc] == 0:
+                            candidate_targets.add((nr, nc))
+
+    # Build heatmap by enumerating all placements for each ship length
+    heat = np.zeros((n, n), dtype=float)
+
+    for L in ships:
+        # horizontal placements
+        for r in range(n):
+            for c in range(n - L + 1):
+                span = arr[r, c : c + L]
+                if np.any(span == -1):
+                    continue  # placement hits a known miss -> invalid
+                # Valid placement; increment count for its cells
+                for cc in range(c, c + L):
+                    heat[r, cc] += 1.0
+
+        # vertical placements
+        for c in range(n):
+            for r in range(n - L + 1):
+                span = arr[r : r + L, c]
+                if np.any(span == -1):
+                    continue
+                for rr in range(r, r + L):
+                    heat[rr, c] += 1.0
+
+    # Zero out heat on already-fired cells (we must select unknowns)
+    heat[arr != 0] = 0.0
+
+    # If there are candidate_targets (adjacent to hits), prioritize them.
+    # Score candidate by adjacency to hits (to finish ships) + heat
+    if candidate_targets:
+        best_cells = []
+        best_score = -1.0
+        for cell in candidate_targets:
+            r, c = cell
+            if arr[r, c] != 0:
+                continue
+            # adjacency_count: number of neighboring hits
+            adj_hits = 0
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < n and 0 <= nc < n and arr[nr, nc] == 1:
+                    adj_hits += 1
+            # score: big weight to adjacency (to finish ships), plus heat tie-breaker
+            score = adj_hits * 1000.0 + float(heat[r, c])
+            if score > best_score:
+                best_score = score
+                best_cells = [cell]
+            elif score == best_score:
+                best_cells.append(cell)
+        if best_cells:
+            return random.choice(best_cells)
+
+    # Otherwise pick the cell(s) with maximum heat
+    max_heat = float(np.max(heat))
+    if max_heat > 0:
+        candidates = list(map(tuple, np.argwhere(heat == max_heat)))
+        # Convert numpy ints to python ints
+        candidates = [(int(r), int(c)) for r, c in candidates]
+        return random.choice(candidates)
+
+    # Heatmap is zero (likely very late game). Use parity heuristic for exploration:
+    # Prefer unknown cells where (r+c)%2 == 0 to maximize coverage; otherwise any unknown.
+    unknowns = [(r, c) for r in range(n) for c in range(n) if arr[r, c] == 0]
+    if not unknowns:
+        # No unknowns (shouldn't happen), return a default cell
+        return 0, 0
+
+    parity_unknowns = [cell for cell in unknowns if (cell[0] + cell[1]) % 2 == 0]
+    if parity_unknowns:
+        return random.choice(parity_unknowns)
+
+    return random.choice(unknowns)
+</code>

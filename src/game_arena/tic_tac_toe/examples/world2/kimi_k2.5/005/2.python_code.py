@@ -1,0 +1,136 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Precompute all winning lines (rows, columns, diagonals)
+    LINES = [
+        [(0,0),(0,1),(0,2),(0,3)], [(1,0),(1,1),(1,2),(1,3)], [(2,0),(2,1),(2,2),(2,3)], [(3,0),(3,1),(3,2),(3,3)],  # Rows
+        [(0,0),(1,0),(2,0),(3,0)], [(0,1),(1,1),(2,1),(3,1)], [(0,2),(1,2),(2,2),(3,2)], [(0,3),(1,3),(2,3),(3,3)],  # Cols
+        [(0,0),(1,1),(2,2),(3,3)], [(0,3),(1,2),(2,1),(3,0)]                                                           # Diagonals
+    ]
+    
+    def check_win(player: int) -> bool:
+        """Check if the given player has won."""
+        for line in LINES:
+            if all(board[r][c] == player for r, c in line):
+                return True
+        return False
+    
+    # Get all empty cells
+    empties = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    
+    # 1. Immediate win
+    for r, c in empties:
+        board[r][c] = 1
+        if check_win(1):
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+    
+    # 2. Immediate block
+    for r, c in empties:
+        board[r][c] = -1
+        if check_win(-1):
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+    
+    if not empties:
+        return (0, 0)  # Should not happen in valid game
+    
+    # Evaluation function: score board state based on threats
+    def evaluate() -> int:
+        score = 0
+        for line in LINES:
+            vals = [board[r][c] for r, c in line]
+            mine = vals.count(1)
+            opp = vals.count(-1)
+            
+            if opp == 0:
+                if mine == 4: 
+                    score += 10000
+                elif mine == 3: 
+                    score += 100
+                elif mine == 2: 
+                    score += 10
+                elif mine == 1: 
+                    score += 1
+            elif mine == 0:
+                if opp == 4: 
+                    score -= 10000
+                elif opp == 3: 
+                    score -= 100
+                elif opp == 2: 
+                    score -= 10
+                elif opp == 1: 
+                    score -= 1
+        return score
+    
+    # Alpha-beta minimax
+    def minimax(depth: int, alpha: float, beta: float, is_maximizing: bool) -> int:
+        # Terminal checks
+        if check_win(1):
+            return 10000
+        if check_win(-1):
+            return -10000
+        if depth == 0:
+            return evaluate()
+        
+        if is_maximizing:
+            max_eval = -float('inf')
+            for r in range(4):
+                for c in range(4):
+                    if board[r][c] == 0:
+                        board[r][c] = 1
+                        eval = minimax(depth - 1, alpha, beta, False)
+                        board[r][c] = 0
+                        max_eval = max(max_eval, eval)
+                        alpha = max(alpha, eval)
+                        if beta <= alpha:
+                            break
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for r in range(4):
+                for c in range(4):
+                    if board[r][c] == 0:
+                        board[r][c] = -1
+                        eval = minimax(depth - 1, alpha, beta, True)
+                        board[r][c] = 0
+                        min_eval = min(min_eval, eval)
+                        beta = min(beta, eval)
+                        if beta <= alpha:
+                            break
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Adaptive depth based on game stage
+    n = len(empties)
+    if n >= 12:
+        depth = 2
+    elif n >= 8:
+        depth = 3
+    elif n >= 4:
+        depth = 4
+    else:
+        depth = 6
+    
+    # Move ordering: center, corners, edges (for better pruning)
+    preference = [(1,1), (1,2), (2,1), (2,2), 
+                  (0,0), (0,3), (3,0), (3,3),
+                  (0,1), (0,2), (1,0), (1,3), (2,0), (2,3), (3,1), (3,2)]
+    ordered_moves = [m for m in preference if board[m[0]][m[1]] == 0]
+    
+    best_score = -float('inf')
+    best_move = ordered_moves[0]
+    
+    for r, c in ordered_moves:
+        board[r][c] = 1
+        score = minimax(depth - 1, -float('inf'), float('inf'), False)
+        board[r][c] = 0
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    return best_move

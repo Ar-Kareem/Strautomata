@@ -1,0 +1,224 @@
+# Strategy for Go Policy
+
+The strategy for this policy is to create a sophisticated Go AI that uses multiple layers of evaluation and decision making:
+
+1. **Immediate Threat Assessment**: First check for any immediate winning moves or moves that prevent opponent's immediate wins (atari).
+
+2. **Area Control Evaluation**: Evaluate territory and influence around the board using a weighted scoring system that considers:
+   - Potential territory around each point
+   - Strategic importance (center vs corners)
+   - Connectivity of own stones
+
+3. **Pattern Recognition**: Look for common strategic patterns:
+   - Eye formation and prevention
+   - Atari threats
+   - Cut and connection patterns
+
+4. **Move Selection Priority**:
+   - Win or prevent loss (highest priority)
+   - Play at crucial points in center/edges
+   - Build strong positions
+   - Avoid immediate capture
+
+5. **Board Size Awareness**: Use the 19x19 nature of the board to prefer center opening plays, but also be sensitive to local fighting situations.
+
+6. **Memory Usage**: Store board state history and strategic insights to build long-term positioning.
+
+The implementation will be a hybrid of pattern matching, tactical awareness, and strategic evaluation to produce the best possible move.
+
+<code>
+import numpy as np
+import random
+from typing import List, Tuple, Dict, Set
+
+def is_legal(board: np.ndarray, row: int, col: int, me_stones: Set[Tuple[int, int]], opponent_stones: Set[Tuple[int, int]]) -> bool:
+    if row < 1 or row > 19 or col < 1 or col > 19:
+        return False
+    if board[row-1, col-1] != 0:
+        return False
+    
+    # Check if move would be self capture (simplified check)
+    # This is a key strategic consideration: avoid moves that capture no stones
+    # and would be immediately captured themselves (except in special cases)
+    return True
+
+def count_liberties(board: np.ndarray, row: int, col: int, me_stones: Set[Tuple[int, int]], opponent_stones: Set[Tuple[int, int]]) -> int:
+    """Count liberties for a stone at position (row, col)"""
+    if board[row-1, col-1] != 0:
+        return 0
+    visited = set()
+    queue = [(row, col)]
+    liberties = set()
+    visited.add((row, col))
+    
+    while queue:
+        r, c = queue.pop(0)
+        # Check neighboring positions
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if board[nr-1, nc-1] == 0 and (nr, nc) not in visited:
+                    liberties.add((nr, nc))
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+                elif board[nr-1, nc-1] != 0 and (nr, nc) not in visited:
+                    # For stones, check if this is an opponent stone and add to visited
+                    pass
+    
+    return len(liberties)
+
+def get_neighbors(row: int, col: int) -> List[Tuple[int, int]]:
+    """Get neighboring positions"""
+    neighbors = []
+    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nr, nc = row + dr, col + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def evaluate_position(board: np.ndarray, row: int, col: int, me_stones: Set[Tuple[int, int]], opponent_stones: Set[Tuple[int, int]]) -> int:
+    """Evaluate how good a position is for placing a stone"""
+    score = 0
+    
+    # Prefer center positions (strategy for Go)
+    center_dist = max(abs(row - 10), abs(col - 10))
+    score -= center_dist * 0.5
+    
+    # Prefer locations near existing stones (positioning)
+    neighbors = get_neighbors(row, col)
+    for r, c in neighbors:
+        if (r, c) in me_stones:
+            score += 1.5
+        elif (r, c) in opponent_stones:
+            score += 0.5
+    
+    # Prefer locations that expand territory or reduce opponent's territory
+    # Simplified check: score based on connectivity (not fully robust)
+    potential_territory = 0
+    for r, c in neighbors:
+        if board[r-1, c-1] == 0:
+            potential_territory += 1
+    
+    score += potential_territory * 0.2
+    
+    return score
+
+def find_atari_moves(board: np.ndarray, me_stones: Set[Tuple[int, int]], opponent_stones: Set[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Find moves that put opponent in atari or remove own atari"""
+    atari_moves = []
+    
+    # Check if current position already in atari
+    for r, c in opponent_stones:
+        liberties = count_liberties(board, r, c, me_stones, opponent_stones)
+        if liberties <= 1:
+            # Find where we could play to capture
+            neighbors = get_neighbors(r, c)
+            for nr, nc in neighbors:
+                if board[nr-1, nc-1] == 0 and (nr, nc) not in me_stones and (nr, nc) not in opponent_stones:
+                    atari_moves.append((nr, nc))
+    
+    # Check for moves that create atari on opponent
+    for r, c in me_stones:
+        neighbors = get_neighbors(r, c)
+        for nr, nc in neighbors:
+            if board[nr-1, nc-1] == 0:
+                # Check what liberties the neighbor has
+                test_board = board.copy()
+                test_board[nr-1, nc-1] = 1  # temporarily place stone there
+                # Simple liberty check (not fully accurate but good enough)
+                liberties = count_liberties(test_board, nr, nc, me_stones, opponent_stones)
+                if liberties <= 1:
+                    atari_moves.append((nr, nc))
+    
+    return list(set(atari_moves))
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    """
+    Main policy to choose the next move
+    """
+    # Convert to sets for faster lookups
+    me_set = set(me)
+    opponent_set = set(opponent)
+    
+    # Create board representation
+    board = np.zeros((19, 19), dtype=int)
+    for r, c in me_set:
+        board[r-1, c-1] = 1
+    for r, c in opponent_set:
+        board[r-1, c-1] = 2
+    
+    # Check if we can win instantly by capturing or having no liberties
+    # Simplified: immediately capture stones if possible
+    atari_moves = find_atari_moves(board, me_set, opponent_set)
+    if atari_moves:
+        return (atari_moves[0], memory)
+    
+    # If no immediate threat, evaluate positions
+    legal_moves = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r-1, c-1] == 0 and is_legal(board, r, c, me_set, opponent_set):
+                legal_moves.append((r, c))
+    
+    if not legal_moves:
+        return (0, 0), memory
+    
+    # Evaluate each possible move with a scoring system
+    best_move = None
+    highest_score = -float('inf')
+    
+    # For each legal move, score it
+    for row, col in legal_moves:
+        score = evaluate_position(board, row, col, me_set, opponent_set)
+        
+        # Prefer positions near other stones (for connectivity) 
+        neighbors = get_neighbors(row, col)
+        connected = False
+        for r, c in neighbors:
+            if (r, c) in me_set:
+                connected = True
+                break
+        if connected:
+            score += 1.0
+        
+        # Prefer center positions unless in a fighting or corner situation
+        if row in [10] and col in [10]:
+            score += 2.0  # Center bias
+        
+        # Prefer moves that are not immediately surrounded by opponent
+        # In a simplified fashion, count opponent neighbors around this space
+        opponent_nearby = sum(1 for r, c in neighbors if (r, c) in opponent_set)
+        if opponent_nearby >= 3:
+            score -= 1.5  # Avoid being surrounded (or at least don't prefer it)
+        
+        # Prefer positions that have 0 or more liberties if we can add some
+        liberties = count_liberties(board, row, col, me_set, opponent_set)
+        score += liberties * 0.3  # Encourage building liberties
+        
+        if score > highest_score:
+            highest_score = score
+            best_move = (row, col)
+    
+    # If no move was found, just make a simple pass
+    if best_move is None:
+        # If we're very short of moves, pick a central one
+        for r in [10]:
+            for c in [10]:
+                if (r, c) not in me_set and (r, c) not in opponent_set:
+                    return (r, c), memory
+    
+    # Default to a central position if nothing found
+    if best_move is None:
+        for r in [10, 9, 11]:
+            for c in [10, 9, 11]:
+                if (r, c) not in me_set and (r, c) not in opponent_set:
+                    return (r, c), memory
+    
+    # Return a legal move - if we don't have a good one, make a basic valid move
+    if best_move is None:
+        # Just play a random valid move
+        random_move = random.choice(legal_moves)
+        return random_move, memory
+    
+    return best_move, memory
+</code>

@@ -1,0 +1,264 @@
+<thinking>
+The problem asks for an optimal policy for a symmetric 1-on-1 blackjack-like game with a specific deck (13 distinct cards per player) and a random target score $T$ (10-30). The game is zero-sum (Win/Loss/Draw). Since both players have identical decks and "simultaneous" (independent) play conditions with a comparison at the end, we seek a Nash Equilibrium strategy. Given the small state space, we can compute this using Iterated Best Response.
+
+State Representation:
+- The deck has 13 cards: A, 2-9, 10, J, Q, K.
+- Values: A (1 or 11), 2-9 (face), 10-K (10).
+- Since 10, J, Q, K are functionally identical for value and probability (all value 10), we can compress the state.
+- State tuple: `(mask_low, count_high)`
+  - `mask_low`: 9 bits representing presence of A, 2, 3, 4, 5, 6, 7, 8, 9.
+  - `count_high`: Integer 0-4 representing number of 10-value cards drawn.
+- Total states: $2^9 \times 5 = 2560$. This is small enough to solve within the 1-second time limit.
+
+Algorithm:
+1.  **Caching**: Use a global dictionary to store computed policies for the specific $T$ of the current game, as $T$ is constant per game but random per game. computing the policy takes < 0.2s.
+2.  **Initialization**: Start with a heuristic opponent distribution (e.g., they stay on scores $\ge T-4$).
+3.  **Iteration (Iterated Best Response)**:
+    - Determine the Expected Value (EV) of "STAY" and "HIT" for every possible hand state, working backwards from full hands (13 cards) to empty (0 cards).
+    - EV of STAY depends on the opponent's score distribution (Win if $S > S_{opp}$, Lose if $S < S_{opp}$, Draw if equal or both bust).
+    - EV of HIT is the weighted average of the EVs of valid next states.
+    - Update the optimal policy based on $\max(EV_{stay}, EV_{hit})$.
+    - Recalculate the opponent's score distribution assuming they play this new policy.
+    - Repeat for a few iterations (5-6) to converge to the Nash Equilibrium.
+4.  **Action**: For the current hand observations, map to the state representation, look up the cached policy, and return "HIT" or "STAY".
+
+Specifics:
+- **Ace Handling**: Ace is 11 if `sum + 10 <= T`, else 1. This is handled dynamically in the score calculation.
+- **Winning Logic**:
+  - Me > T: Lose (EV = -1), unless Opp > T (Draw, EV = 0). EV = $-(1 - P(OppBust))$.
+  - Stay ≤ T:
+    - Win: Opp Busts OR (Opp ≤ T AND Me > Opp).
+    - Draw: Opp == Me.
+    - Loss: Opp ≤ T AND Me < Opp.
+
+Implementation details: The solver is embedded in the python file and runs only once per unique `target` encountered.
+</thinking>
+<code>
+import sys
+
+# Cache to store the optimal policy map for a specific target score
+# Keys are integers (target), Values are dicts (state -> action)
+_POLICY_CACHE = {}
+
+def solve_nash(target: int):
+    """
+    Computes the Nash Equilibrium policy for a given target score T
+    using Iterated Best Response.
+    Returns a dictionary mapping state -> action (0: STAY, 1: HIT).
+    State is represent as (mask_low, count_high).
+    """
+    
+    # 1. Precompute state organization
+    # States are grouped by number of cards drawn (0 to 13) to allow backward induction.
+    # mask_low: 9 bits (0..511) representing cards A, 2..9
+    # count_high: 0..4 representing count of 10, J, Q, K
+    states_by_len = [[] for _ in range(14)]
+    for m in range(512):
+        # bit count of m
+        c_low = bin(m).count('1')
+        for ch in range(5):
+            k = c_low + ch
+            states_by_len[k].append((m, ch))
+
+    # Helper: Calculate score given state
+    # Card values: A(idx 0)=1, 2(idx 1)=2 ... 9(idx 8)=9.
+    # 10s add 10.
+    # Ace rule: Add 10 to sum if Ace is present and sum+10 <= target.
+    def get_score(m, ch):
+        val = 0
+        temp_m = m
+        idx = 0
+        while temp_m:
+            if temp_m & 1:
+                val += (idx + 1)
+            temp_m >>= 1
+            idx += 1
+        val += ch * 10
+        
+        # Soft hand check (Ace is at bit 0)
+        if (m & 1): 
+            if val + 10 <= target:
+                return val + 10
+        return val
+
+    # Helper: Compute final score distribution given a policy
+    # Returns array of probs of size target + 2 (indices 0..target, and target+1 for Bust)
+    def get_distribution(pol):
+        # state_probs[(m, ch)] = probability of reaching this state
+        state_probs = {}
+        state_probs[(0,0)] = 1.0
+        
+        outcome_dist = [0.0] * (target + 2)
+        bust_idx = target + 1
+        
+        for k in range(13):
+            if k >= len(states_by_len): break
+            for state in states_by_len[k]:
+                p = state_probs.get(state, 0.0)
+                if p == 0: continue
+                
+                sc = get_score(*state)
+                # If already busted, we effectively stop (game rules say immediate loss, 
+                # but conceptually this mass ends up in 'bust' bin)
+                if sc > target:
+                    outcome_dist[bust_idx] += p
+                    continue
+                
+                # Check policy
+                # Default to STAY(0) if not found (should be found)
+                act = pol.get(state, 0) 
+                
+                if act == 0: # STAY
+                    outcome_dist[sc] += p
+                else: # HIT
+                    m, ch = state
+                    rem_cards = 13 - k
+                    
+                    # Transition to low cards (A..9)
+                    for i in range(9):
+                        # If card i not in hand
+                        if not ((m >> i) & 1):
+                            ns = (m | (1<<i), ch)
+                            state_probs[ns] = state_probs.get(ns, 0.0) + p / rem_cards
+                    
+                    # Transition to high cards (10..K)
+                    rem_high = 4 - ch
+                    if rem_high > 0:
+                        ns = (m, ch + 1)
+                        state_probs[ns] = state_probs.get(ns, 0.0) + (p * rem_high) / rem_cards
+                        
+        # For states with 13 cards, must stay
+        for state in states_by_len[13]:
+            p = state_probs.get(state, 0.0)
+            if p > 0:
+                sc = get_score(*state)
+                idx = bust_idx if sc > target else sc
+                outcome_dist[idx] += p
+                
+        return outcome_dist
+
+    # 2. Initialize Opponent Strategy Heuristic
+    # Opponent stays if score >= target - 4 (bounded by min 10)
+    current_pol = {}
+    heuristic_threshold = max(target - 4, 10)
+    for k in range(14):
+        for s in states_by_len[k]:
+            if get_score(*s) >= heuristic_threshold:
+                current_pol[s] = 0 # STAY
+            else:
+                current_pol[s] = 1 # HIT
+                
+    p_opp = get_distribution(current_pol)
+    
+    # 3. Iterated Best Response to find Nash Eq
+    # 5 iterations is typically sufficient for convergence in this domain
+    for _ in range(5):
+        q_values = {}
+        new_pol = {}
+        
+        p_bust = p_opp[target + 1]
+        
+        # Precompute Cumulative Distribution Function for Opponent Score
+        # cdf[x] = P(Opponent Score < x)
+        cdf = [0.0] * (target + 2)
+        curr = 0.0
+        for x in range(target + 1):
+            cdf[x] = curr
+            curr += p_opp[x]
+            
+        # Backward induction from last round (13 cards) to first (0 cards)
+        for k in range(13, -1, -1):
+            for state in states_by_len[k]:
+                sc = get_score(*state)
+                
+                # Payoff Logic:
+                # Win = 1, Tie = 0, Loss = -1
+                
+                if sc > target:
+                    # Busted. 
+                    # If Opp busts -> Tie (0). If Opp <= T -> Loss (-1).
+                    # EV = 0 * p_bust + (-1) * (1 - p_bust)
+                    ev_stay = -(1.0 - p_bust)
+                    new_pol[state] = 0 # Forced Stay/End
+                    q_values[state] = ev_stay
+                    continue
+                
+                # EV for STAY
+                # We win if Opp busts OR (Opp <= T AND Opp < MyScore)
+                # We tie if Opp == MyScore
+                # We lose if Opp > MyScore (and Opp <= T)
+                
+                prob_less = cdf[sc]
+                prob_eq = p_opp[sc]
+                # prob_more is P(sc < Opp <= T)
+                prob_more = (1.0 - p_bust) - (prob_less + prob_eq)
+                
+                ev_stay = 1.0 * (p_bust + prob_less) + \
+                          0.0 * prob_eq + \
+                          (-1.0) * prob_more
+                
+                # EV for HIT
+                if k == 13:
+                    ev_hit = -999.0 # Cannot hit
+                else:
+                    m, ch = state
+                    rem = 13 - k
+                    sum_ev = 0.0
+                    
+                    # Next states
+                    # Low cards
+                    for i in range(9):
+                        if not ((m >> i) & 1):
+                            sum_ev += q_values[(m | (1<<i), ch)]
+                    # High cards
+                    rem_h = 4 - ch
+                    if rem_h > 0:
+                        sum_ev += q_values[(m, ch+1)] * rem_h
+                    
+                    ev_hit = sum_ev / rem
+                
+                # Decision
+                if ev_hit > ev_stay + 1e-9:
+                    new_pol[state] = 1 # HIT
+                    q_values[state] = ev_hit
+                else:
+                    new_pol[state] = 0 # STAY
+                    q_values[state] = ev_stay
+                    
+        # Update policy and opponent distribution
+        current_pol = new_pol
+        p_opp = get_distribution(current_pol)
+        
+    return current_pol
+
+def policy(hand: list[str], target: int) -> str:
+    # 1. Check/Populate Cache
+    if target not in _POLICY_CACHE:
+        _POLICY_CACHE[target] = solve_nash(target)
+    
+    strategy = _POLICY_CACHE[target]
+    
+    # 2. Parse Hand into State (mask_low, count_high)
+    # Mapping cards to 0..8 (low) or high count
+    card_map = {
+        "A": 0, "2": 1, "3": 2, "4": 3, "5": 4, 
+        "6": 5, "7": 6, "8": 7, "9": 8
+    }
+    
+    mask_low = 0
+    count_high = 0
+    
+    for card in hand:
+        if card in card_map:
+            mask_low |= (1 << card_map[card])
+        else:
+            # 10, J, Q, K
+            count_high += 1
+            
+    # 3. Retrieve Action
+    # State tuple (mask_low, count_high)
+    # Default to STAY if state not found (should not happen)
+    action_code = strategy.get((mask_low, count_high), 0)
+    
+    return "HIT" if action_code == 1 else "STAY"
+</code>

@@ -1,0 +1,184 @@
+The strategy for this policy is to implement a tactical heuristic engine.
+1.  **Board Analysis**: It scans the board to identify connected groups of stones and their liberties (adjacent empty points).
+2.  **Candidate Generation**: It generates potential moves by looking at points adjacent to existing stones and standard star points for openings.
+3.  **Tactical Simulation**: It simulates each candidate move to determine if it captures opponent stones, saves own groups from being captured (Atari), or creates threats.
+4.  **Heuristic Scoring**: Moves are scored based on:
+    *   **Capturing**: High priority to take opponent stones.
+    *   **Saving**: High priority to rescue own stones from immediate capture.
+    *   **Atari**: Putting opponent groups in a vulnerable state (1 liberty).
+    *   **Structure**: Connecting to friendly stones and maintaining liberties.
+5.  **Legality**: It strictly enforces rules against suicide and simple Ko repeats by tracking the previous board state.
+
+<code>
+import numpy as np
+import copy
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    SIZE = 19
+    EMPTY, ME, OPP = 0, 1, 2
+    
+    # Convert input to board representation (0-indexed internally)
+    board = np.zeros((SIZE, SIZE), dtype=int)
+    for r, c in me: board[r-1, c-1] = ME
+    for r, c in opponent: board[r-1, c-1] = OPP
+    
+    prev_board = memory.get('prev_board')
+    
+    # --- Helper: Group Analysis ---
+    def get_groups_info(b):
+        gmap = np.zeros((SIZE, SIZE), dtype=int) # Map (r,c) -> group_id
+        gdata = {} # Map group_id -> {'stones': set, 'libs': set, 'color': int}
+        gid = 0
+        visited = np.zeros((SIZE, SIZE), dtype=bool)
+        
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if b[r,c] != EMPTY and not visited[r,c]:
+                    gid += 1
+                    color = b[r,c]
+                    stones = set()
+                    libs = set()
+                    # BFS
+                    q = [(r,c)]
+                    visited[r,c] = True
+                    while q:
+                        cr, cc = q.pop()
+                        stones.add((cr,cc))
+                        gmap[cr,cc] = gid
+                        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                            nr, nc = cr+dr, cc+dc
+                            if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                                if b[nr,nc] == EMPTY:
+                                    libs.add((nr,nc))
+                                elif b[nr,nc] == color and not visited[nr,nc]:
+                                    visited[nr,nc] = True
+                                    q.append((nr,nc))
+                    gdata[gid] = {'stones': stones, 'libs': libs, 'color': color}
+        return gmap, gdata
+
+    # Analyze current board state
+    gmap, gdata = get_groups_info(board)
+    
+    # --- Generate Candidates ---
+    candidates = set()
+    
+    # If board empty, play star point
+    if len(me) == 0 and len(opponent) == 0:
+        candidates.add((3, 15)) # 4-4 point equivalent
+        candidates.add((15, 3))
+        candidates.add((3, 3))
+        candidates.add((15, 15))
+        candidates.add((9, 9))
+    else:
+        # Generate moves adjacent to existing stones (Manhattan distance <= 2)
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if board[r,c] != EMPTY:
+                    for dr in range(-2, 3):
+                        for dc in range(-2, 3):
+                            nr, nc = r+dr, c+dc
+                            if 0 <= nr < SIZE and 0 <= nc < SIZE and board[nr,nc] == EMPTY:
+                                candidates.add((nr, nc))
+                                
+    best_move = None
+    best_score = -float('inf')
+    
+    # --- Evaluate Candidates ---
+    for r, c in candidates:
+        # 1. Basic Checks & Simulation
+        if board[r,c] != EMPTY: continue
+        
+        b_copy = board.copy()
+        b_copy[r,c] = ME
+        
+        # Check for captures (Opponent groups with 0 liberties)
+        captured_count = 0
+        captured_coords = set()
+        
+        # Identify adjacent opponent groups
+        adj_opp_gids = set()
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < SIZE and 0 <= nc < SIZE and b_copy[nr,nc] == OPP:
+                adj_opp_gids.add(gmap[nr,nc])
+        
+        # Process captures
+        # Note: We rely on gdata from PRE-move state.
+        # If a group had 1 liberty and that liberty was (r,c), it is captured.
+        for gid in adj_opp_gids:
+            if len(gdata[gid]['libs']) == 1 and (r,c) in gdata[gid]['libs']:
+                # Capture occurs
+                cap_stones = gdata[gid]['stones']
+                captured_count += len(cap_stones)
+                captured_coords.update(cap_stones)
+                for sr, sc in cap_stones:
+                    b_copy[sr, sc] = EMPTY
+        
+        # Check for Suicide
+        # Find liberties of the group formed by (r,c)
+        # BFS on b_copy for my group
+        my_libs = set()
+        visited_local = set()
+        stack = [(r,c)]
+        visited_local.add((r,c))
+        is_suicide = True
+        
+        while stack:
+            cr, cc = stack.pop()
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = cr+dr, cc+dc
+                if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                    if b_copy[nr,nc] == EMPTY:
+                        is_suicide = False
+                        my_libs.add((nr,nc))
+                    elif b_copy[nr,nc] == ME and (nr,nc) not in visited_local:
+                        visited_local.add((nr,nc))
+                        stack.append((nr,nc))
+        
+        if is_suicide:
+            continue # Illegal move
+            
+        # Check for Ko
+        if prev_board is not None:
+            if np.array_equal(b_copy, prev_board):
+                continue # Ko violation
+
+        # 2. Scoring
+        score = 0
+        
+        # Priority 1: Capture
+        score += captured_count * 1000
+        
+        # Priority 2: Save own groups (Escape Atari)
+        # Check if (r,c) is adjacent to a friendly group with 1 liberty
+        # (That liberty was effectively filled or group extended)
+        # Note: If we filled the last liberty it would be suicide (handled above).
+        # If we extended a 1-liberty group, we are saving it.
+        adj_my_gids = set()
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < SIZE and 0 <= nc < SIZE and board[nr,nc] == ME:
+                adj_my_gids.add(gmap[nr,nc])
+        
+        for gid in adj_my_gids:
+            if len(gdata[gid]['libs']) == 1:
+                # We are saving this group
+                score += len(gdata[gid]['stones']) * 500
+        
+        # Priority 3: Atari (Put opponent in 1 liberty)
+        # Check opponent groups adjacent to (r,c) that were NOT captured
+        for gid in adj_opp_gids:
+            # If not captured
+            if not (len(gdata[gid]['libs']) == 1 and (r,c) in gdata[gid]['libs']):
+                # Calculate new liberty count roughly
+                # We placed stone at (r,c), removing 1 liberty.
+                # If we captured stones, new liberties might open up.
+                # Approximation: Old libs - (r,c) + new empty spots from captures
+                new_libs_count = len(gdata[gid]['libs'] - {(r,c)})
+                # Add liberties gained from captured adjacent stones?
+                # This is complex to calculate perfectly without re-analyzing whole board.
+                # But if libs become 1, it's usually good.
+                if new_libs_count == 1:
+                    score += len(gdata[gid]['stones']) * 100
+        
+        # Priority 4:

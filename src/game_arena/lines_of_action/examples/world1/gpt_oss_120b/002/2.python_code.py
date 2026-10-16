@@ -1,0 +1,146 @@
+
+import sys
+from collections import deque
+from itertools import combinations
+
+# directions: N, NE, E, SE, S, SW, W, NW
+DIRS = [(-1, 0), (-1, 1), (0, 1), (1, 1),
+        (1, 0), (1, -1), (0, -1), (-1, -1)]
+
+SIZE = 8
+
+
+def inside(r, c):
+    return 0 <= r < SIZE and 0 <= c < SIZE
+
+
+def count_on_line(board, r, c, dr, dc):
+    """Count all pieces (both colors) on the line defined by (dr,dc) that passes through (r,c)."""
+    cnt = 1 if board[r][c] != 0 else 0  # the moving piece itself (always ours when called)
+    # step forward
+    step = 1
+    while True:
+        nr = r + dr * step
+        nc = c + dc * step
+        if not inside(nr, nc):
+            break
+        if board[nr][nc] != 0:
+            cnt += 1
+        step += 1
+    # step backward
+    step = 1
+    while True:
+        nr = r - dr * step
+        nc = c - dc * step
+        if not inside(nr, nc):
+            break
+        if board[nr][nc] != 0:
+            cnt += 1
+        step += 1
+    return cnt
+
+
+def generate_moves(board):
+    """Yield all legal moves for the current player (value 1)."""
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] != 1:
+                continue
+            for dr, dc in DIRS:
+                # distance to move = number of pieces on that line
+                dist = count_on_line(board, r, c, dr, dc)
+                tr = r + dr * dist
+                tc = c + dc * dist
+                if not inside(tr, tc):
+                    continue
+                # can't land on own piece
+                if board[tr][tc] == 1:
+                    continue
+                # check intermediate squares (cannot jump over opponent)
+                blocked = False
+                for step in range(1, dist):
+                    nr = r + dr * step
+                    nc = c + dc * step
+                    if board[nr][nc] == -1:
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+                # legal move found
+                yield (r, c, tr, tc)
+
+
+def apply_move(board, move):
+    """Return a new board after applying move (r1,c1,r2,c2)."""
+    r1, c1, r2, c2 = move
+    new_board = [row[:] for row in board]
+    new_board[r1][c1] = 0
+    new_board[r2][c2] = 1  # capture automatically replaces opponent if present
+    return new_board
+
+
+def connected_components(board):
+    """Return number of 8‑connected components of our pieces (value 1)."""
+    visited = [[False] * SIZE for _ in range(SIZE)]
+    comps = 0
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] != 1 or visited[r][c]:
+                continue
+            comps += 1
+            # BFS
+            q = deque()
+            q.append((r, c))
+            visited[r][c] = True
+            while q:
+                cr, cc = q.popleft()
+                for dr, dc in DIRS:
+                    nr, nc = cr + dr, cc + dc
+                    if inside(nr, nc) and not visited[nr][nc] and board[nr][nc] == 1:
+                        visited[nr][nc] = True
+                        q.append((nr, nc))
+    return comps
+
+
+def pairwise_distance(board):
+    """Sum of Chebyshev distances over all unordered pairs of our pieces."""
+    pieces = [(r, c) for r in range(SIZE) for c in range(SIZE) if board[r][c] == 1]
+    total = 0
+    for (r1, c1), (r2, c2) in combinations(pieces, 2):
+        total += max(abs(r1 - r2), abs(c1 - c2))
+    return total
+
+
+def evaluate(board):
+    """Lower score is better."""
+    comps = connected_components(board)
+    # If already a single component we are winning; give it the best possible score.
+    if comps == 1:
+        return 0
+    dist = pairwise_distance(board)
+    return comps * 1000 + dist
+
+
+def policy(board):
+    """
+    Choose a move for the current player (value 1) on an 8x8 LOA board.
+    Returns a string "r1,c1:r2,c2".
+    """
+    best_move = None
+    best_score = float('inf')
+    for move in generate_moves(board):
+        new_board = apply_move(board, move)
+        score = evaluate(new_board)
+        if score < best_score:
+            best_score = score
+            best_move = move
+            # immediate win – stop searching
+            if score == 0:
+                break
+    if best_move is None:
+        # Should never happen; fallback to first possible move (if any)
+        for move in generate_moves(board):
+            best_move = move
+            break
+    r1, c1, r2, c2 = best_move
+    return f"{r1},{c1}:{r2},{c2}"

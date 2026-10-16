@@ -1,0 +1,238 @@
+
+import numpy as np
+import itertools
+
+def policy(board):
+    """
+    Finds the best move for the current player on the given board.
+
+    Args:
+        board: An 8x8 numpy array representing the board. 1 is the current
+               player, -1 is the opponent, and 0 is an empty cell.
+
+    Returns:
+        A string representing the move in the format "from_row,from_col:to_row,to_col".
+    """
+    board = np.array(board)  # Ensure board is a NumPy array.
+    player = 1
+    opponent = -1
+
+    def get_legal_moves(board, player):
+        """
+        Finds all legal moves for the given player on the given board.
+        """
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if board[r, c] == player:
+                    # Check horizontal moves
+                    count = np.count_nonzero(board[r, :])
+                    for dr in range(-count, count + 1):
+                        if dr == 0:
+                            continue
+                        new_r = r + dr
+                        if 0 <= new_r < 8:
+                            if board[new_r, c] == 0 or board[new_r, c] == -player:
+                                # Check for jumps
+                                if dr > 0:
+                                    blocked = False
+                                    for i in range(r + 1, new_r):
+                                        if board[i, c] == -player:
+                                            blocked = True
+                                            break
+                                    if not blocked:
+                                        moves.append((r, c, new_r, c))
+                                else:
+                                    blocked = False
+                                    for i in range(new_r + 1, r):
+                                        if board[i, c] == -player:
+                                            blocked = True
+                                            break
+                                    if not blocked:
+                                        moves.append((r, c, new_r, c))
+
+
+                    # Check vertical moves
+                    count = np.count_nonzero(board[:, c])
+                    for dc in range(-count, count + 1):
+                        if dc == 0:
+                            continue
+                        new_c = c + dc
+                        if 0 <= new_c < 8:
+                            if board[r, new_c] == 0 or board[r, new_c] == -player:
+                                # Check for jumps
+                                if dc > 0:
+                                    blocked = False
+                                    for i in range(c + 1, new_c):
+                                        if board[r, i] == -player:
+                                            blocked = True
+                                            break
+                                    if not blocked:
+                                        moves.append((r, c, r, new_c))
+                                else:
+                                    blocked = False
+                                    for i in range(new_c + 1, c):
+                                        if board[r, i] == -player:
+                                            blocked = True
+                                            break
+                                    if not blocked:
+                                        moves.append((r, c, r, new_c))
+
+                    # Check diagonal moves (top-left to bottom-right)
+                    diag = board.diagonal(c - r)
+                    count = np.count_nonzero(diag)
+                    for dd in range(-count, count + 1):
+                        if dd == 0:
+                            continue
+                        new_r = r + dd
+                        new_c = c + dd
+                        if 0 <= new_r < 8 and 0 <= new_c < 8:
+                            if board[new_r, new_c] == 0 or board[new_r, new_c] == -player:
+                                # Check for jumps
+                                if dd > 0:
+                                    blocked = False
+                                    for i in range(1, dd):
+                                        if not (0 <= r+i < 8 and 0 <= c+i < 8):
+                                            blocked = True
+                                            break
+                                        if board[r+i, c+i] == -player:
+                                            blocked = True
+                                            break
+                                    if not blocked:
+                                        moves.append((r, c, new_r, new_c))
+                                else:
+                                    blocked = False
+                                    for i in range(-1, dd, -1):
+                                        if not (0 <= r+i < 8 and 0 <= c+i < 8):
+                                            blocked = True
+                                            break
+                                        if board[r+i, c+i] == -player:
+                                            blocked = True
+                                            break
+                                    if not blocked:
+                                        moves.append((r, c, new_r, new_c))
+
+                    # Check diagonal moves (top-right to bottom-left)
+                    diag = np.diag(np.fliplr(board), 7 - (c + r))
+                    count = np.count_nonzero(diag)
+                    for dd in range(-count, count + 1):
+                        if dd == 0:
+                            continue
+
+                        new_r = r + dd
+                        new_c = c - dd
+                        if 0 <= new_r < 8 and 0 <= new_c < 8:
+                            if board[new_r, new_c] == 0 or board[new_r, new_c] == -player:
+
+                                if dd > 0:
+                                    blocked = False
+                                    for i in range(1, dd):
+                                         if not (0 <= r+i < 8 and 0 <= c-i < 8):
+                                            blocked = True
+                                            break
+                                         if board[r+i, c-i] == -player:
+                                            blocked = True
+                                            break
+                                    if not blocked:
+                                        moves.append((r, c, new_r, new_c))
+                                else:
+                                    blocked = False
+                                    for i in range(-1, dd, -1):
+                                         if not (0 <= r+i < 8 and 0 <= c-i < 8):
+                                            blocked = True
+                                            break
+                                         if board[r+i, c-i] == -player:
+                                            blocked = True
+                                            break
+
+                                    if not blocked:
+                                        moves.append((r, c, new_r, new_c))
+
+
+        return moves
+
+    def calculate_connected_component_size(board, player):
+        """
+        Calculates the size of the largest connected component for the given player.
+        """
+        visited = np.zeros_like(board, dtype=bool)
+        max_size = 0
+
+        def dfs(r, c):
+            if r < 0 or r >= 8 or c < 0 or c >= 8 or visited[r, c] or board[r, c] != player:
+                return 0
+            visited[r, c] = True
+            size = 1
+            for dr, dc in itertools.product([-1, 0, 1], [-1, 0, 1]):
+                if dr == 0 and dc == 0:
+                    continue
+                size += dfs(r + dr, c + dc)
+            return size
+
+        for r in range(8):
+            for c in range(8):
+                if board[r, c] == player and not visited[r, c]:
+                    component_size = dfs(r, c)
+                    max_size = max(max_size, component_size)
+        return max_size
+
+    def score_move(board, move, player, opponent):
+        """
+        Scores a move based on connectivity, centralization, and opponent disruption.
+        """
+        from_row, from_col, to_row, to_col = move
+        new_board = board.copy()
+        new_board[to_row, to_col] = player
+        new_board[from_row, from_col] = 0
+
+        # Connectivity
+        own_component_size = calculate_connected_component_size(new_board, player)
+        old_component_size = calculate_connected_component_size(board,player)
+        connectivity_score = own_component_size - old_component_size
+        # Capture Bonus
+        capture_bonus = 0
+        if board[to_row, to_col] == -player:
+           capture_bonus = 5
+
+
+        # Centralization
+        centralization_score = -((abs(to_row - 3.5) + abs(to_col - 3.5)) - (abs(from_row - 3.5) + abs(from_col - 3.5)))
+
+        # Opponent Disruption
+        opponent_component_size_old = calculate_connected_component_size(board,opponent)
+        opponent_component_size = calculate_connected_component_size(new_board, opponent)
+        opponent_disruption_score =  -(opponent_component_size - opponent_component_size_old)
+
+        return connectivity_score*3 + centralization_score*1 + opponent_disruption_score*1 + capture_bonus*5
+
+    legal_moves = get_legal_moves(board, player)
+
+    if not legal_moves:
+        return "0,0:0,0"  # Should not happen, but return a dummy move if no legal moves exist.
+
+    best_move = None
+    best_score = -float('inf')
+
+    #First, prioritize Capturing
+    for move in legal_moves:
+        from_row, from_col, to_row, to_col = move
+        if board[to_row, to_col] == -player:
+           best_move = move
+           break
+
+
+    #If no Capturing prioritize connectivity
+    if best_move is None:
+
+        for move in legal_moves:
+            score = score_move(board, move, player, opponent)
+            if score > best_score:
+                best_score = score
+                best_move = move
+
+    #If no move connects pieces find legal move.
+    if best_move is None:
+        best_move = legal_moves[0]
+
+    from_row, from_col, to_row, to_col = best_move
+    return f"{from_row},{from_col}:{to_row},{to_col}"

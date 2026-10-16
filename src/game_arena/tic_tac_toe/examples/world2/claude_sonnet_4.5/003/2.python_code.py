@@ -1,0 +1,86 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def check_line_for_win(line_positions, player):
+        """Check if a line has 3 of player and 1 empty, return empty position"""
+        values = [board[r][c] for r, c in line_positions]
+        if values.count(player) == 3 and values.count(0) == 1:
+            empty_idx = values.index(0)
+            return line_positions[empty_idx]
+        return None
+    
+    def get_all_lines():
+        """Get all winning lines (rows, cols, diagonals)"""
+        lines = []
+        # Rows
+        for r in range(4):
+            lines.append([(r, c) for c in range(4)])
+        # Columns
+        for c in range(4):
+            lines.append([(r, c) for r in range(4)])
+        # Diagonals
+        lines.append([(i, i) for i in range(4)])
+        lines.append([(i, 3-i) for i in range(4)])
+        return lines
+    
+    all_lines = get_all_lines()
+    
+    # 1. Check for immediate win
+    for line in all_lines:
+        win_move = check_line_for_win(line, 1)
+        if win_move:
+            return win_move
+    
+    # 2. Check for blocking opponent's win
+    for line in all_lines:
+        block_move = check_line_for_win(line, -1)
+        if block_move:
+            return block_move
+    
+    # 3. Heuristic scoring for each empty position
+    def score_position(r, c):
+        if board[r][c] != 0:
+            return -1000
+        
+        score = 0
+        # Center positions are valuable
+        center_dist = abs(r - 1.5) + abs(c - 1.5)
+        score += (6 - center_dist) * 10
+        
+        # Count how many lines this position participates in
+        for line in all_lines:
+            if (r, c) in line:
+                values = [board[row][col] for row, col in line]
+                my_count = values.count(1)
+                opp_count = values.count(-1)
+                
+                # If line is not blocked by opponent
+                if opp_count == 0:
+                    score += my_count * my_count * 10
+                # If we're blocking opponent
+                if my_count == 0:
+                    score += opp_count * opp_count * 5
+        
+        return score
+    
+    # Find best move by scoring
+    best_score = -float('inf')
+    best_move = None
+    
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                score = score_position(r, c)
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+    
+    if best_move:
+        return best_move
+    
+    # Fallback: return first empty position
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    return (0, 0)

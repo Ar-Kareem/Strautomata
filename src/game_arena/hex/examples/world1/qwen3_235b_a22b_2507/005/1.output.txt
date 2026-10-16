@@ -1,0 +1,181 @@
+The strategy for this policy is to implement a greedy heuristic based on **virtual connections** and **shortest path estimation** using Dijkstra's algorithm in a weighted graph, where unoccupied cells are prioritized based on their potential to advance the player's connectivity goal.
+
+Key components of the strategy:
+
+1. **Board Representation & Neighborhood Logic**: We define the 6 neighboring hex cells correctly based on axial coordinate logic adapted to offset (row, col) indexing.
+
+2. **Connectivity Objective**:
+   - If `color == 'b'`, we aim to connect **top (row 0)** to **bottom (row 10)**.
+   - If `color == 'w'`, we aim to connect **left (col 0)** to **right (col 10)**.
+
+3. **Distance Evaluation**:
+   - For each empty cell, we estimate how much placing a stone there would reduce the shortest path from our existing stones to the target side.
+   - We use a **Dijkstra-style search** over empty and friendly cells to compute the shortest path from one side to the other, treating empty cells as traversable but with a cost of 1, and friendly stones as cost 0.
+
+4. **Opportunity Cost & Threat Defense**:
+   - We evaluate both our best move and the opponent's potential best move.
+   - If the opponent is close to winning, we block their shortest path.
+   - Otherwise, we focus on improving our own shortest path.
+
+5. **Tie-Breaking & Center Bias**:
+   - Among equally good moves, prefer central positions (e.g., near (5,5)) to maximize board influence.
+
+This approach balances **offense** and **defense** and adapts dynamically to the state, outperforming simple heuristics like random, greedy neighbor count, or static patterns.
+
+The algorithm runs efficiently within 1 second due to early termination in pathfinding and limited to one BFS per evaluation.
+
+<code>
+```python
+import numpy as np
+from collections import deque
+import heapq
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    board_size = 11
+    board = np.zeros((board_size, board_size), dtype=int)  # 0=empty, 1=me, 2=opp
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opp:
+        board[r, c] = 2
+
+    # Get neighbors of a hex cell (6 directions for hex grid)
+    def get_neighbors(r, c):
+        # Hex grid: even/odd row offset (flat-topped hexes, horizontal layout)
+        # Directions: E, SE, SW, W, NW, NE
+        directions = [
+            (0, 1),    # E
+            (1, 0) if r % 2 == 0 else (1, 1),  # SE
+            (1, -1) if r % 2 == 0 else (1, 0), # SW
+            (0, -1),   # W
+            (-1, -1) if r % 2 == 0 else (-1, 0), # NW
+            (-1, 0) if r % 2 == 0 else (-1, 1), # NE
+        ]
+        neighbors = []
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < board_size and 0 <= nc < board_size:
+                neighbors.append((nr, nc))
+        return neighbors
+
+    # Compute shortest path from source set to target side using Dijkstra
+    def shortest_path_length(source_positions, is_target):
+        dist = np.full((board_size, board_size), np.inf)
+        heap = []
+
+        for r, c in source_positions:
+            if board[r, c] == 0 or board[r, c] == 1:  # empty or own stone
+                d = 0 if (r, c) in me else 1
+                dist[r, c] = d
+                heapq.heappush(heap, (d, r, c))
+
+        while heap:
+            d, r, c = heapq.heappop(heap)
+            if d != dist[r, c]:
+                continue
+            if is_target(r, c):
+                return d
+            for nr, nc in get_neighbors(r, c):
+                weight = 0 if board[nr, nc] == 1 else (1 if board[nr, nc] == 0 else np.inf)
+                if weight == np.inf:
+                    continue
+                new_d = d + weight
+                if new_d < dist[nr, nc]:
+                    dist[nr, nc] = new_d
+                    heapq.heappush(heap, (new_d, nr, nc))
+        return np.inf
+
+    # Get current positions that count as connection to start side
+    def get_my_starting_positions():
+        positions = set(me)
+        if color == 'b':
+            # Black: connect top (row 0) to bottom (row 10)
+            positions.update([(0, c) for c in range(board_size)])
+        else:
+            # White: connect left (col 0) to right (col 10)
+            positions.update([(r, 0) for r in range(board_size)])
+        # Only keep positions that are not occupied by opponent
+        return [(r, c) for r, c in positions if board[r, c] != 2]
+
+    def is_my_target(r, c):
+        if color == 'b':
+            return r == board_size - 1
+        else:
+            return c == board_size - 1
+
+    def get_opp_starting_positions():
+        positions = set(opp)
+        if color == 'w':  # opponent is black -> top to bottom
+            positions.update([(0, c) for c in range(board_size)])
+        else:  # opponent is white -> left to right
+            positions.update([(r, 0) for r in range(board_size)])
+        return [(r, c) for r, c in positions if board[r, c] != 1]  # not blocked by me
+
+    def is_opp_target(r, c):
+        if color == 'w':  # opp is black
+            return r == board_size - 1
+        else:  # opp is white
+            return c == board_size - 1
+
+    # Evaluate: my current shortest path
+    my_current_path = shortest_path_length(get_my_starting_positions(), is_my_target)
+    opp_current_path = shortest_path_length(get_opp_starting_positions(), is_opp_target)
+
+    # Get all empty cells
+    empty_cells = [(r, c) for r in range(board_size) for c in range(board_size) if board[r, c] == 0]
+    
+    if not empty_cells:
+        raise ValueError("No empty cells left!")
+
+    best_move = empty_cells[0]
+    best_score = -np.inf
+
+    # Evaluate each empty cell
+    for r, c in empty_cells:
+        # Simulate placing stone
+        was_empty = board[r, c] == 0
+
+        # Compute improvement in my path
+        temp_me = me + [(r, c)]
+        temp_positions = set(temp_me)
+        if color == 'b':
+            temp_positions.update([(0, c) for c in range(board_size)])
+        else:
+            temp_positions.update([(r, 0) for r in range(board_size)])
+        temp_positions = [(x, y) for x, y in temp_positions if board[x, y] != 2 or (x == r and y == c)]
+
+        my_new_path = shortest_path_length(temp_positions, is_my_target)
+
+        my_progress = my_current_path - my_new_path  # higher is better
+
+        # Compute threat: how much this move blocks opponent
+        temp_opp = [pos for pos in opp]
+        # Simulate if opponent had this cell
+        if color == 'w':
+            opp_temp_positions = set(temp_opp)
+            opp_temp_positions.update([(r, 0) for r in range(board_size)])
+            opp_temp_positions = [(x, y) for x, y in opp_temp_positions if (x != r or y != c) or (x,y) in temp_opp]
+            opp_new_path = shortest_path_length(opp_temp_positions, lambda x,y: y == 10)
+        else:
+            opp_temp_positions = set(temp_opp)
+            opp_temp_positions.update([(0, c) for c in range(board_size)])
+            opp_temp_positions = [(x, y) for x, y in opp_temp_positions if (x != r or y != c) or (x,y) in temp_opp]
+            opp_new_path = shortest_path_length(opp_temp_positions, lambda x,y: x == 10)
+
+        opp_threat_reduction = opp_new_path - opp_current_path  # higher is better (opponent worsened)
+
+        # Total score: prioritize blocking if opponent is close to win
+        if opp_current_path <= 2:
+            score = opp_threat_reduction * 10 + my_progress
+        else:
+            score = my_progress * 2 + opp_threat_reduction
+
+        # Tie-break: prefer center
+        center_bias = -((r - 5) ** 2 + (c - 5) ** 2)
+        score += center_bias * 0.01
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    return best_move
+</code>

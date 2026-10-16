@@ -1,0 +1,88 @@
+
+import numpy as np
+
+def count_edges(i, j, horizontal, vertical):
+    top = horizontal[i, j] != 0
+    bottom = horizontal[i+1, j] != 0
+    left = vertical[i, j] != 0
+    right = vertical[i, j+1] != 0
+    return top + bottom + left + right
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    legal_moves = []
+
+    # Generate all legal horizontal moves (only cols 0-3 are valid)
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+
+    # Generate all legal vertical moves (only rows 0-3 are valid)
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+
+    if not legal_moves:
+        return "0,0,H"  # Fallback (should never happen)
+
+    best_capture_move = None
+    max_capture = -1
+    min_danger_after_capture = float('inf')
+
+    best_non_capture_move = None
+    min_danger = float('inf')
+
+    for move in legal_moves:
+        r, c, dir = move
+        capture_count = 0
+        danger_count = 0
+        adjacent_boxes = []
+
+        if dir == 'H':
+            if r > 0:
+                adjacent_boxes.append((r-1, c))
+            if r < 4:
+                adjacent_boxes.append((r, c))
+        else:  # Vertical
+            if c > 0:
+                adjacent_boxes.append((r, c-1))
+            if c < 4:
+                adjacent_boxes.append((r, c))
+
+        for (i, j) in adjacent_boxes:
+            if i < 0 or i >= 4 or j < 0 or j >= 4:
+                continue
+            if capture[i, j] != 0:
+                continue
+
+            current_edges = count_edges(i, j, horizontal, vertical)
+            new_edges = current_edges + 1  # Adding this move
+
+            if new_edges == 4:
+                capture_count += 1
+            elif new_edges == 3:
+                danger_count += 1
+
+        # Evaluate move type
+        if capture_count > 0:
+            # Capturing move - prioritize by most captures then least danger
+            if capture_count > max_capture or (capture_count == max_capture and danger_count < min_danger_after_capture):
+                max_capture = capture_count
+                min_danger_after_capture = danger_count
+                best_capture_move = move
+        else:
+            # Non-capturing move - prioritize least danger
+            if danger_count < min_danger:
+                min_danger = danger_count
+                best_non_capture_move = move
+
+    # Decision logic
+    if max_capture > 0:
+        selected_move = best_capture_move
+    else:
+        selected_move = best_non_capture_move if best_non_capture_move is not None else legal_moves[0]
+
+    # Format result
+    r, c, dir = selected_move
+    return f"{r},{c},{dir}"

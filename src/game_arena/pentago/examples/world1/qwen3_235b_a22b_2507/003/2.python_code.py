@@ -1,0 +1,152 @@
+
+import numpy as np
+
+def _is_winning(board):
+    """Check if the player whose board is given has 5 or more in a row."""
+    # Check all horizontal, vertical, and diagonal lines for 5 consecutive
+    b = board.astype(int)
+    # Horizontal and vertical
+    for i in range(6):
+        for j in range(2):
+            if np.all(b[i, j:j+5]) or np.all(b[j:j+5, i]):
+                return True
+    # Diagonals: main and anti
+    for i in range(2):
+        for j in range(2):
+            if b[i, j] and b[i+1,j+1] and b[i+2,j+2] and b[i+3,j+3] and b[i+4,j+4]:
+                return True
+            if b[i, j+5] and b[i+1,j+4] and b[i+2,j+3] and b[i+3,j+2] and b[i+4,j+1]:
+                return True
+            if b[i, 5-j] and b[i+1,4-j] and b[i+2,3-j] and b[i+3,2-j] and b[i+4,1-j]:
+                return True
+            if b[i, j] and b[i+1,j+1] and b[i+2,j+2] and b[i+3,j+3] and b[i+4,j+4]:
+                return True
+    # More systematic:
+    # Check all possible lines of 5
+    for i in range(6):
+        for j in range(6):
+            # Horizontal
+            if j <= 1 and np.all(b[i, j:j+5]):
+                return True
+            # Vertical
+            if i <= 1 and np.all(b[i:i+5, j]):
+                return True
+            # Diagonal down-right
+            if i <= 1 and j <= 1 and np.all([b[i+k, j+k] for k in range(5)]):
+                return True
+            # Diagonal down-left
+            if i <= 1 and j >= 4 and np.all([b[i+k, j-k] for k in range(5)]):
+                return True
+    return False
+
+def _rotate_quad(board, quad, direction):
+    """Rotate the specified quadrant in-place. Returns a new board."""
+    b = board.copy()
+    if quad == 0:
+        sub = b[0:3, 0:3]
+    elif quad == 1:
+        sub = b[0:3, 3:6]
+    elif quad == 2:
+        sub = b[3:6, 0:3]
+    elif quad == 3:
+        sub = b[3:6, 3:6]
+    else:
+        return b
+    if direction == 'R':
+        sub[:] = np.rot90(sub, 3)  # 90 deg clockwise
+    elif direction == 'L':
+        sub[:] = np.rot90(sub, 1)  # 90 deg anticlockwise
+    return b
+
+def policy(you, opponent) -> str:
+    # Convert to numpy arrays
+    you = np.array(you)
+    opponent = np.array(opponent)
+    # Total board to check occupancy
+    board = you | opponent  # 1 where occupied
+
+    best_move = None
+    prevent_opp_win_moves = []
+    other_moves = []
+
+    # Try every possible placement and rotation
+    for r in range(6):
+        for c in range(6):
+            if board[r, c]:  # occupied
+                continue
+            for quad in range(4):
+                for direction in ['L', 'R']:
+                    # Simulate your move: place and rotate
+                    new_you = you.copy()
+                    new_you[r, c] = 1
+                    new_opp = opponent.copy()
+
+                    # Apply rotation to both
+                    new_you = _rotate_quad(new_you, quad, direction)
+                    new_opp = _rotate_quad(new_opp, quad, direction)
+
+                    # Check if this move makes you win
+                    if _is_winning(new_you):
+                        move_str = f"{r+1},{c+1},{quad},{direction}"
+                        return move_str  # Best move: win immediately
+
+                    # Check if opponent gets 5 in a row? If yes, avoid (unless it's a draw, but opponent winning alone is bad)
+                    if _is_winning(new_opp):
+                        continue  # Don't allow opponent to win
+                    else:
+                        move_str = f"{r+1},{c+1},{quad},{direction}"
+                        prevent_opp_win_moves.append(move_str)
+
+                    # Heuristic: evaluate how good the move is (e.g., max consecutive marbles)
+                    score = _evaluate_board(new_you)
+                    other_moves.append((score, move_str))
+
+    # If we have moves that don't let opponent win, pick the best one by score
+    if other_moves:
+        # Sort by score descending
+        other_moves.sort(key=lambda x: x[0], reverse=True)
+        best_move = other_moves[0][1]
+    elif prevent_opp_win_moves:
+        best_move = prevent_opp_win_moves[0]  # fallback
+    else:
+        # Should not happen, but just pick any legal move
+        for r in range(6):
+            for c in range(6):
+                if not board[r, c]:
+                    best_move = f"{r+1},{c+1},0,L"
+                    break
+            if best_move:
+                break
+
+    return best_move
+
+def _evaluate_board(board):
+    """Evaluate the board for the player by counting the longest lines and potential threats."""
+    score = 0
+    b = board.astype(int)
+
+    # Check all horizontal
+    for i in range(6):
+        for j in range(2):
+            count = np.sum(b[i, j:j+5])
+            score += count ** 2  # Encourage more in a line
+
+    # Vertical
+    for j in range(6):
+        for i in range(2):
+            count = np.sum(b[i:i+5, j])
+            score += count ** 2
+
+    # Diagonal down-right
+    for i in range(2):
+        for j in range(2):
+            count = sum(b[i+k, j+k] for k in range(5))
+            score += count ** 2
+
+    # Diagonal down-left
+    for i in range(2):
+        for j in range(4,6):
+            count = sum(b[i+k, j-k] for k in range(5))
+            score += count ** 2
+
+    return score

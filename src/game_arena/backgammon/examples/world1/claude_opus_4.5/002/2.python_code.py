@@ -1,0 +1,133 @@
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    dice = state['dice']
+    my_off = state['my_off']
+    
+    if not dice:
+        return "H:P,P"
+    
+    def get_legal_moves():
+        moves = []
+        d = sorted(dice, reverse=True)
+        if len(d) == 0:
+            return [("H", "P", "P")]
+        if len(d) == 1:
+            d = [d[0], 0]
+        
+        high, low = d[0], d[1] if len(d) > 1 else 0
+        
+        for order in ['H', 'L']:
+            if order == 'H':
+                first_die, second_die = high, low
+            else:
+                first_die, second_die = low, high
+                if high == low:
+                    continue
+            
+            first_moves = get_single_moves(my_pts, opp_pts, my_bar, my_off, first_die)
+            if not first_moves:
+                first_moves = [("P", my_pts[:], my_bar, my_off)]
+            
+            for f1, pts1, bar1, off1 in first_moves:
+                if second_die == 0:
+                    moves.append((order, f1, "P", pts1, off1))
+                else:
+                    second_moves = get_single_moves(pts1, opp_pts, bar1, off1, second_die)
+                    if not second_moves:
+                        second_moves = [("P", pts1[:], bar1, off1)]
+                    for f2, pts2, bar2, off2 in second_moves:
+                        moves.append((order, f1, f2, pts2, off2))
+        
+        if not moves:
+            return [("H", "P", "P", my_pts[:], my_off)]
+        return moves
+    
+    def get_single_moves(pts, opp, bar, off, die):
+        results = []
+        pts = pts[:]
+        
+        if bar > 0:
+            dest = 24 - die
+            if opp[dest] < 2:
+                new_pts = pts[:]
+                new_pts[dest] += 1
+                results.append(("B", new_pts, bar - 1, off))
+            return results
+        
+        all_home = all(pts[i] == 0 for i in range(6, 24)) and bar == 0
+        
+        for i in range(24):
+            if pts[i] > 0:
+                dest = i - die
+                if dest >= 0:
+                    if opp[dest] < 2:
+                        new_pts = pts[:]
+                        new_pts[i] -= 1
+                        new_pts[dest] += 1
+                        results.append((f"A{i}", new_pts, bar, off))
+                elif all_home:
+                    if dest == -1 or (i == max(j for j in range(6) if pts[j] > 0) and dest < 0):
+                        new_pts = pts[:]
+                        new_pts[i] -= 1
+                        results.append((f"A{i}", new_pts, bar, off + 1))
+        
+        return results
+    
+    def evaluate(pts, off):
+        score = 0
+        score += off * 100
+        pip = sum((i + 1) * pts[i] for i in range(24))
+        score -= pip * 0.5
+        
+        for i in range(24):
+            if pts[i] == 1:
+                danger = min(i + 1, 6)
+                score -= danger * 3
+        
+        for i in range(6):
+            if pts[i] >= 2:
+                score += 5
+        
+        consecutive = 0
+        for i in range(24):
+            if pts[i] >= 2:
+                consecutive += 1
+                if consecutive >= 2:
+                    score += consecutive * 2
+            else:
+                consecutive = 0
+        
+        return score
+    
+    moves = get_legal_moves()
+    
+    if not moves:
+        return "H:P,P"
+    
+    best_move = None
+    best_score = float('-inf')
+    
+    for m in moves:
+        if len(m) >= 5:
+            order, f1, f2, pts, off = m[0], m[1], m[2], m[3], m[4]
+        else:
+            order, f1, f2 = m[0], m[1], m[2]
+            pts, off = my_pts, my_off
+        
+        score = evaluate(pts, off)
+        if f1 != "P":
+            score += 1
+        if f2 != "P":
+            score += 1
+        
+        if score > best_score:
+            best_score = score
+            best_move = (order, f1, f2)
+    
+    if best_move is None:
+        return "H:P,P"
+    
+    return f"{best_move[0]}:{best_move[1]},{best_move[2]}"

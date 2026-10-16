@@ -1,0 +1,142 @@
+
+import random
+import numpy as np
+
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Initialize board
+    board = np.zeros((19, 19), dtype=int)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = 2
+
+    # If no stones on board, play center
+    if not me and not opponent:
+        return (10, 10), memory
+
+    # Helper to get neighbors
+    def neighbors(r, c):
+        return [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
+
+    # Helper to get liberties of a group
+    def liberties(group):
+        lib = set()
+        for r, c in group:
+            for nr, nc in neighbors(r, c):
+                if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                    lib.add((nr, nc))
+        return lib
+
+    # Helper to find groups
+    def find_groups(player):
+        groups = []
+        visited = set()
+        
+        def dfs(r, c, group):
+            if (r, c) in visited or board[r, c] != player:
+                return
+            visited.add((r, c))
+            group.append((r, c))
+            for nr, nc in neighbors(r, c):
+                if 0 <= nr < 19 and 0 <= nc < 19:
+                    dfs(nr, nc, group)
+        
+        for r in range(19):
+            for c in range(19):
+                if board[r, c] == player and (r, c) not in visited:
+                    group = []
+                    dfs(r, c, group)
+                    groups.append(group)
+        return groups
+
+    # Find groups
+    my_groups = find_groups(1)
+    opp_groups = find_groups(2)
+
+    # Score moves based on priorities
+    def score_move(r, c):
+        score = 0
+        
+        # Check if move captures
+        # Temporarily place stone
+        board[r, c] = 1
+        
+        # Check opponent groups
+        for opp_group in opp_groups:
+            if len(liberties(opp_group)) <= 1:
+                score += 100  # Capture
+        
+        # Check own liberties
+        # Find groups that would connect
+        connected_groups = []
+        for my_group in my_groups:
+            if (r-1, c) in my_group or (r+1, c) in my_group or (r, c-1) in my_group or (r, c+1) in my_group:
+                connected_groups.append(my_group)
+        
+        if connected_groups:
+            # Calculate liberties of the new combined group
+            combined_group = set()
+            for g in connected_groups:
+                combined_group.update(g)
+            combined_group.add((r, c))
+            
+            # Count liberties of combined group
+            lib_count = len(liberties([list(combined_group)]))
+            if lib_count == 1:
+                score -= 50  # Avoid self-atari
+            else:
+                score += lib_count  # More liberties = better
+        
+        # Restore board
+        board[r, c] = 0
+        
+        return score
+
+    # Generate all valid moves
+    valid_moves = []
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] == 0:  # Empty intersection
+                # Check for suicide rule (simplified)
+                # If placing here creates a group with no liberties, it's suicide
+                board[r, c] = 1
+                
+                # Find the group created
+                group = []
+                stack = [(r, c)]
+                visited = set()
+                while stack:
+                    cr, cc = stack.pop()
+                    if (cr, cc) in visited:
+                        continue
+                    visited.add((cr, cc))
+                    group.append((cr, cc))
+                    for nr, nc in neighbors(cr, cc):
+                        if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 1:
+                            stack.append((nr, nc))
+                
+                # Check liberties
+                if liberties(group):
+                    valid_moves.append((r, c))
+                
+                board[r, c] = 0
+
+    if not valid_moves:
+        return (0, 0), memory  # Pass if no valid moves
+
+    # Score all moves
+    scored_moves = [(score_move(r, c), (r, c)) for r, c in valid_moves]
+    
+    # Sort by score (desc)
+    scored_moves.sort(reverse=True)
+    
+    # Select top move, with some randomness for variety
+    if scored_moves:
+        # Take top 3 moves
+        top_moves = [m for s, m in scored_moves if s >= scored_moves[0][0] - 10]
+        chosen_move = random.choice(top_moves)
+        return (chosen_move[0] + 1, chosen_move[1] + 1), memory  # Convert to 1-based indexing
+
+    # Fallback
+    return random.choice(valid_moves), memory

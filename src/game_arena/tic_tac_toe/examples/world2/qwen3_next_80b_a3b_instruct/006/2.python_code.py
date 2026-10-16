@@ -1,0 +1,189 @@
+
+import numpy as np
+import time
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    board = np.array(board, dtype=int)
+    
+    # Get empty positions
+    empty_positions = np.where(board == 0)
+    empty_positions = list(zip(empty_positions[0], empty_positions[1]))
+    
+    # If no legal moves, return something (should never happen per constraints)
+    if len(empty_positions) == 0:
+        return (0, 0)
+    
+    # Start time for timeout handling
+    start_time = time.time()
+    
+    # If board is empty, take center position (prioritize center)
+    if len(empty_positions) == 16:
+        return (1, 1)  # Center of 4x4 grid
+    
+    # Minimax with alpha-beta pruning
+    def evaluate_board(board, player):
+        # Check for win/loss
+        if check_win(board, player):
+            return 1000
+        if check_win(board, -player):
+            return -1000
+        
+        # Center control bonus
+        center_bonus = 0
+        center_positions = [(1, 1), (1, 2), (2, 1), (2, 2)]
+        for r, c in center_positions:
+            if board[r, c] == player:
+                center_bonus += 1
+            elif board[r, c] == -player:
+                center_bonus -= 1
+        
+        # Count potential winning lines
+        def count_patterns(board, player):
+            score = 0
+            # Check all rows, columns, diagonals
+            lines = []
+            # Rows
+            for r in range(4):
+                lines.append(board[r, :])
+            # Columns
+            for c in range(4):
+                lines.append(board[:, c])
+            # Diagonals
+            for r in range(2):
+                for c in range(2):
+                    # Top-left to bottom-right diagonals of length 4
+                    diag = [board[r+i, c+i] for i in range(4) if r+i < 4 and c+i < 4]
+                    if len(diag) == 4:
+                        lines.append(diag)
+                    # Top-right to bottom-left diagonals
+                    diag = [board[r+i, c+3-i] for i in range(4) if r+i < 4 and c+3-i >= 0]
+                    if len(diag) == 4:
+                        lines.append(diag)
+            
+            for line in lines:
+                # Count player's pieces and empty spaces
+                player_count = np.sum(line == player)
+                opponent_count = np.sum(line == -player)
+                empty_count = np.sum(line == 0)
+                
+                if player_count == 3 and empty_count == 1:
+                    score += 50  # One move away from winning
+                elif player_count == 2 and empty_count == 2:
+                    score += 10  # Potential winning line
+                elif opponent_count == 3 and empty_count == 1:
+                    score -= 50  # Need to block opponent
+                elif opponent_count == 2 and empty_count == 2:
+                    score -= 10  # Opponent has potential line
+            
+            return score
+        
+        pattern_score = count_patterns(board, player)
+        return center_bonus * 5 + pattern_score
+    
+    def check_win(board, player):
+        # Check rows
+        for r in range(4):
+            if np.all(board[r, :] == player):
+                return True
+        
+        # Check columns
+        for c in range(4):
+            if np.all(board[:, c] == player):
+                return True
+        
+        # Check main diagonals
+        if np.all(np.diag(board) == player) or np.all(np.diag(np.fliplr(board)) == player):
+            return True
+        
+        # Check all possible 4-cell diagonals (in 4x4, only two full diagonals exist)
+        # We don't need to check shorter diagonals since win requires 4 in a row
+        
+        return False
+    
+    def minimax(board, depth, alpha, beta, maximizing_player, player):
+        # Timeout check
+        if time.time() - start_time > 0.9:
+            return 0, None
+        
+        empty_positions = np.where(board == 0)
+        empty_positions = list(zip(empty_positions[0], empty_positions[1]))
+        
+        # Check terminal states
+        if check_win(board, player):
+            return 1000, None
+        if check_win(board, -player):
+            return -1000, None
+        if len(empty_positions) == 0:
+            return 0, None
+        
+        # Depth limit
+        if depth == 0:
+            return evaluate_board(board, player), None
+        
+        if maximizing_player:
+            max_eval = float('-inf')
+            best_move = None
+            
+            for r, c in empty_positions:
+                board[r, c] = player
+                eval_score, _ = minimax(board, depth-1, alpha, beta, False, player)
+                board[r, c] = 0  # Undo move
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = (r, c)
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break  # Beta cutoff
+            
+            return max_eval, best_move
+        
+        else:
+            min_eval = float('inf')
+            best_move = None
+            
+            for r, c in empty_positions:
+                board[r, c] = -player
+                eval_score, _ = minimax(board, depth-1, alpha, beta, True, player)
+                board[r, c] = 0  # Undo move
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = (r, c)
+                
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break  # Alpha cutoff
+            
+            return min_eval, best_move
+    
+    # For early game, use shallower search; for late game, go deeper
+    empty_count = len(empty_positions)
+    depth = 8 if empty_count <= 6 else 6 if empty_count <= 10 else 4
+    
+    # If we're about to win immediately, return that move
+    for r, c in empty_positions:
+        board[r, c] = 1
+        if check_win(board, 1):
+            board[r, c] = 0
+            return (r, c)
+        board[r, c] = 0
+    
+    # If opponent is about to win, block it
+    for r, c in empty_positions:
+        board[r, c] = -1
+        if check_win(board, -1):
+            board[r, c] = 0
+            return (r, c)
+        board[r, c] = 0
+    
+    # Run minimax
+    _, best_move = minimax(board, depth, float('-inf'), float('inf'), True, 1)
+    
+    # Fallback: if minimax fails or times out, pick first empty spot
+    if best_move is None:
+        return empty_positions[0]
+    
+    return best_move

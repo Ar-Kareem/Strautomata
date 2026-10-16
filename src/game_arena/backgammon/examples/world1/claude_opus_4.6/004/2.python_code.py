@@ -1,0 +1,194 @@
+
+import itertools
+
+def policy(state: dict) -> str:
+    my_pts = list(state['my_pts'])
+    opp_pts = list(state['opp_pts'])
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = list(state['dice'])
+    
+    # Generate all candidate moves and pick the best one
+    best_move = "H:P,P"
+    best_score = float('-inf')
+    
+    def is_blocked(pt, o_pts):
+        """Check if a point is blocked by opponent (2+ checkers)"""
+        # Opponent's point index is mirrored: opponent at index i means they occupy point i
+        # from their perspective, but opp_pts[i] gives opponent checkers at absolute point i
+        return o_pts[pt] >= 2 if 0 <= pt <= 23 else False
+    
+    def can_bear_off(m_pts):
+        """Check if all checkers are in home board (points 0-5)"""
+        for i in range(6, 24):
+            if m_pts[i] > 0:
+                return False
+        return True
+    
+    def apply_single_move(m_pts, o_pts, m_bar, m_off, die, frm):
+        """Apply a single die move. Returns new state or None if illegal."""
+        mp = list(m_pts)
+        op = list(o_pts)
+        mb = m_bar
+        mo = m_off
+        
+        if frm == 'B':
+            if mb <= 0:
+                return None
+            dest = 24 - die
+            if dest < 0 or dest > 23:
+                return None
+            if op[dest] >= 2:
+                return None
+            mb -= 1
+            if op[dest] == 1:
+                op[dest] = 0
+            mp[dest] += 1
+        elif frm == 'P':
+            return (mp, op, mb, mo)
+        else:
+            pt = frm  # integer
+            if mb > 0:
+                return None  # must move from bar first
+            if mp[pt] <= 0:
+                return None
+            dest = pt - die
+            if dest < 0:
+                # Bearing off
+                if not can_bear_off(mp):
+                    return None
+                # Can bear off if dest < 0 only if pt is exact or highest
+                if dest < 0 and pt != die - 1:
+                    # Check no checker on higher point
+                    has_higher = False
+                    for h in range(pt + 1, 6):
+                        if mp[h] > 0:
+                            has_higher = True
+                            break
+                    if has_higher:
+                        return None
+                mp[pt] -= 1
+                mo += 1
+            else:
+                if op[dest] >= 2:
+                    return None
+                mp[pt] -= 1
+                if op[dest] == 1:
+                    op[dest] = 0
+                mp[dest] += 1
+        
+        return (mp, op, mb, mo)
+    
+    def evaluate(mp, op, mb, mo, ob):
+        score = 0.0
+        # Borne off
+        score += mo * 50
+        # Opponent on bar
+        opp_bar_now = 15 - ob  # we need to recalculate
+        # Actually let's count opponent hits
+        opp_total = sum(op) + ob
+        opp_hit_extra = 15 - opp_total  # these went to bar due to our hits
+        # Simpler: just use what we have
+        
+        # Pip count (lower is better)
+        pip = 0
+        for i in range(24):
+            pip += mp[i] * (i + 1)
+        pip += mb * 25
+        score -= pip * 1.5
+        
+        # Bar penalty
+        score -= mb * 40
+        
+        # Made points (2+ checkers)
+        for i in range(24):
+            if mp[i] >= 2:
+                score += 8
+                if i <= 5:  # home board
+                    score += 12
+                if i <= 5 and mp[i] >= 3:
+                    score += 2  # slight bonus but diminishing
+        
+        # Blots
+        for i in range(24):
+            if mp[i] == 1:
+                # Penalty depends on position - more dangerous further from home
+                score -= 5 + i * 0.8
+        
+        # Prime detection (consecutive made points)
+        consec = 0
+        max_consec = 0
+        for i in range(24):
+            if mp[i] >= 2:
+                consec += 1
+                max_consec = max(max_consec, consec)
+            else:
+                consec = 0
+        if max_consec >= 3:
+            score += max_consec * 8
+        if max_consec >= 6:
+            score += 50
+        
+        # Count opponent bar (from change in opponent checkers)
+        opp_on_board = sum(op)
+        opp_bar_calc = 15 - opp_on_board - opp_off  # rough estimate
+        score += max(0, opp_bar_calc) * 15  # not reliable, skip
+        
+        # Hits (opponent checkers we removed)
+        orig_opp_total = sum(state['opp_pts']) + state['opp_bar'] + state['opp_off']
+        new_opp_total = sum(op) + state['opp_off']  # opp_off doesn't change from our moves
+        hits = orig_opp_total - new_opp_total - state['opp_bar']
+        score += hits * 20
+        
+        return score
+    
+    # Generate from-locations
+    locations = ['B'] + [i for i in range(24) if my_pts[i] > 0] + ['P']
+    
+    if len(dice) == 0:
+        return "H:P,P"
+    
+    if len(dice) == 1:
+        die_val = dice[0]
+        for frm in locations:
+            frm_code = frm
+            result = apply_single_move(my_pts, opp_pts, my_bar, my_off, die_val, frm)
+            if result is not None:
+                mp, op, mb, mo = result
+                sc = evaluate(mp, op, mb, mo, opp_bar)
+                if sc > best_score:
+                    best_score = sc
+                    f1 = f"B" if frm == 'B' else (f"P" if frm == 'P' else f"A{frm}")
+                    best_move = f"H:{f1},P"
+        return best_move
+    
+    d1, d2 = dice[0], dice[1]
+    high = max(d1, d2)
+    low = min(d1, d2)
+    
+    for order in ['H', 'L']:
+        first_die = high if order == 'H' else low
+        second_die = low if order == 'H' else high
+        
+        for frm1 in locations:
+            r1 = apply_single_move(my_pts, opp_pts, my_bar, my_off, first_die, frm1)
+            if r1 is None:
+                continue
+            mp1, op1, mb1, mo1 = r1
+            
+            locs2 = ['B'] + [i for i in range(24) if mp1[i] > 0] + ['P']
+            for frm2 in locs2:
+                r2 = apply_single_move(mp1, op1, mb1, mo1, second_die, frm2)
+                if r2 is None:
+                    continue
+                mp2, op2, mb2, mo2 = r2
+                sc = evaluate(mp2, op2, mb2, mo2, opp_bar)
+                if sc > best_score:
+                    best_score = sc
+                    f1 = "B" if frm1 == 'B' else ("P" if frm1 == 'P' else f"A{frm1}")
+                    f2 = "B" if frm2 == 'B' else ("P" if frm2 == 'P' else f"A{frm2}")
+                    best_move = f"{order}:{f1},{f2}"
+    
+    return best_move

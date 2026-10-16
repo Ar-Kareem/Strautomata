@@ -1,0 +1,154 @@
+## Strategy
+
+This is **misère Nim** (the player taking the last object loses). I implement Bouton's exact misère-Nim theory, which gives provably optimal play:
+
+1. **All piles ≤ 1:** the mover loses iff the count of 1-piles is odd. The only legal move is taking one object — I take it (winning if the count is even; otherwise every move loses anyway).
+
+2. **Exactly one pile ≥ 2** (size `B`, with `k` piles of size 1): the *unique* winning move leaves an **odd** number of 1-piles — take `B` if `k` is odd, else take `B-1`. (This is the endgame correction that normal-play Nim bots get wrong.)
+
+3. **At least two piles ≥ 2:** play normal Nim.
+   - If XOR ≠ 0, move to XOR = 0. Such a move always exists, and because at least two piles are ≥ 2, the result always still contains a pile ≥ 2 — a genuine misère P-position. From any winning position I therefore always hand the opponent a theoretically lost position, so I win against *any* opponent once I'm winning.
+   - If XOR = 0 (true P-position, lost only vs. perfect play), I use a heuristic: evaluate candidate moves and pick the one **minimizing the opponent's probability of finding a winning reply**, i.e. (#misère-winning replies)/(#legal replies) in the resulting position, computed with the exact theory above. This maximizes comeback chances against random/imperfect bots, and (as I verified by endgame analysis) any move from such positions eventually defeats normal-play-XOR bots, since they mishandle the one-big-pile endgame.
+
+All branches are proven to return a legal move (`1 ≤ take ≤ piles[pile]`), with defensive legality checks and fallbacks, so disqualification is impossible. Runtime is O(1) for winning positions and at most a few thousand cheap evaluations for the heuristic branch — far below the 1-second budget, and independent of pile magnitudes.
+
+<code>
+"""Misère-Nim (4 piles) policy - the player taking the LAST object LOSES.
+
+Perfect play via Bouton's misère-Nim theory:
+  * all piles <= 1        : mover loses iff #1-piles is odd (only move: take 1)
+  * exactly one pile >= 2 : unique winning move leaves an odd number of 1s
+                            (take B if k odd, else B-1)
+  * >= 2 piles >= 2       : play normal Nim; XOR != 0 -> move to XOR == 0
+                            (always leaves a pile >= 2, a true misère
+                            P-position). XOR == 0 -> lost vs perfect play;
+                            use a reply-probability-minimizing heuristic.
+"""
+from __future__ import annotations
+
+
+def policy(piles: list[int]) -> str:
+    p = [int(v) for v in piles]
+    n = len(p)
+
+    nonempty = [i for i in range(n) if p[i] > 0]
+    if not nonempty:
+        # Board is empty: no legal move exists (game already over).
+        return "0,1"
+
+    big = [i for i in range(n) if p[i] >= 2]
+    ones = [i for i in range(n) if p[i] == 1]
+    k = len(ones)
+
+    # ---------- Case 1: all piles are 0 or 1 ---------------------------
+    if not big:
+        # Only possible move: take one object.  (Winning iff k is even;
+        # if k is odd, every move loses - this one is as good as any.)
+        return "{},1".format(ones[0])
+
+    # ---------- Case 2: exactly one pile of size >= 2 ------------------
+    if len(big) == 1:
+        i = big[0]
+        if k % 2 == 1:
+            t = p[i]        # remove it entirely -> k (odd) ones remain
+        else:
+            t = p[i] - 1    # leave one here     -> k+1 (odd) ones remain
+        return "{},{}".format(i, t)
+
+    # ---------- Case 3: at least two piles of size >= 2 ----------------
+    x = 0
+    for v in p:
+        x ^= v
+
+    if x != 0:
+        # Winning position: make the Nim-sum zero.  A pile i with
+        # p[i] ^ x < p[i] always exists (checked over ALL nonempty piles,
+        # including 1-piles).  The resulting position still contains a
+        # pile >= 2 (another big pile is untouched), hence it is a true
+        # misère P-position: the opponent is lost against our perfect play.
+        best_i = -1
+        best_t = -1
+        for i in nonempty:
+            target = p[i] ^ x
+            if target < p[i]:
+                t = p[i] - target
+                if best_t < 0 or t < best_t:
+                    best_i, best_t = i, t
+        if best_t > 0:
+            return "{},{}".format(best_i, best_t)
+        j = max(nonempty, key=lambda z: p[z])   # defensive (unreachable)
+        return "{},1".format(j)
+
+    # x == 0: genuine P-position (lost only against perfect opponents).
+    # Heuristic: pick the move minimizing the opponent's chance of finding
+    # a winning reply, i.e. (#winning replies)/(#legal replies) in the
+    # resulting position, where winning replies are counted exactly with
+    # misère theory.  Keeps the game hard for normal-play bots (which
+    # blunder in the misère endgame) and for random bots.
+    def reply_stats(q):
+        nb = 0          # piles with >= 2 objects
+        o = 0           # piles with exactly 1
+        M = 0           # total legal moves from q
+        xx = 0
+        for v in q:
+            if v >= 2:
+                nb += 1
+            elif v == 1:
+                o += 1
+            M += v
+            xx ^= v
+        if M <= 0:
+            return 0, 0
+        if nb == 0:
+            # all 0/1 piles: mover wins iff #ones even (then every move wins)
+            return (o if o % 2 == 0 else 0), M
+        if nb == 1:
+            # exactly one winning (endgame-correction) move exists
+            return 1, M
+        if xx == 0:
+            return 0, M
+        W = 0
+        for v in q:
+            if v > 0 and (v ^ xx) < v:
+                W += 1
+        return W, M
+
+    total = sum(p)
+    cand = []
+    if total <= 5000:
+        # enumerate every legal move (positions are small)
+        for i in range(n):
+            for t in range(1, p[i] + 1):
+                cand.append((i, t))
+    else:
+        # huge piles: sample a fixed candidate set per pile
+        for i in range(n):
+            pi = p[i]
+            if pi <= 0:
+                continue
+            for t in (1, 2, 3, pi // 2, pi - 2, pi - 1, pi):
+                if 1 <= t <= pi:
+                    cand.append((i, t))
+
+    best_key = None
+    best_move = None
+    for i, t in cand:
+        q = list(p)
+        q[i] -= t
+        W, M = reply_stats(q)
+        if M <= 0:
+            continue        # would mean taking the last object ourselves
+        key = (W / M, -M)  # minimize escape prob; tie-break: keep game long
+        if best_key is None or key < best_key:
+            best_key = key
+            best_move = (i, t)
+
+    if best_move is not None:
+        i, t = best_move
+        if 0 <= i < n and 1 <= t <= p[i]:
+            return "{},{}".format(i, t)
+
+    # Defensive fallback (unreachable): take one from the largest pile.
+    j = max(nonempty, key=lambda z: p[z])
+    return "{},1".format(j)
+</code>

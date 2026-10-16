@@ -1,0 +1,299 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    """
+    Havannah playing policy for a 15x15 hex board.
+    
+    Strategy:
+    1. Check for immediate winning moves
+    2. Block opponent's winning moves
+    3. Score remaining moves by strategic position
+    
+    Returns:
+        (row, col) - The next move to play
+    """
+    N = len(valid_mask)
+    
+    # Create board representation: 0=empty, 1=me, 2=opp
+    board = [[0] * N for _ in range(N)]
+    for r, c in me:
+        if 0 <= r < N and 0 <= c < N:
+            board[r][c] = 1
+    for r, c in opp:
+        if 0 <= r < N and 0 <= c < N:
+            board[r][c] = 2
+    
+    # Get list of valid moves
+    valid_moves = [(r, c) for r in range(N) for c in range(N) 
+                   if valid_mask[r][c] and board[r][c] == 0]
+    
+    if not valid_moves:
+        # Should not happen, but return first valid if exists
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c]:
+                    return (r, c)
+        return (7, 7)  # Fallback to center
+    
+    # Check for winning moves
+    win_move = find_winning_move(board, valid_moves, 1, N)
+    if win_move is not None:
+        return win_move
+    
+    # Check if opponent has winning move and block it
+    opp_win = find_winning_move(board, valid_moves, 2, N)
+    if opp_win is not None:
+        return opp_win
+    
+    # Score remaining moves
+    best_score = -float('inf')
+    best_move = valid_moves[0]
+    
+    for r, c in valid_moves:
+        score = 0
+        
+        # Central positions are valuable (0-indexed, center is 7,7)
+        center_r, center_c = N // 2, N // 2
+        dist_from_center = abs(r - center_r) + abs(c - center_c)
+        score += (14 - dist_from_center) * 2
+        
+        # Value positions near corners for bridge/fork potential
+        corners = [(0, 0), (0, N-1), (N-1, 0), (N-1, N-1)]
+        for corner in corners:
+            dist = abs(r - corner[0]) + abs(c - corner[1])
+            if dist <= 3:
+                score += (4 - dist) * 3
+        
+        # Value positions near edges for fork potential
+        if r <= 1 or r >= N-2 or c <= 1 or c >= N-2:
+            score += 5
+        
+        # Bonus for being on edge (very valuable for forks)
+        is_edge = (r == 0 or r == N-1 or c == 0 or c == N-1)
+        if is_edge:
+            score += 10
+            
+            # Bonus for being near corner (for bridge potential)
+            dist_to_nearest_corner = min(
+                abs(r - 0) + abs(c - 0),
+                abs(r - 0) + abs(c - (N-1)),
+                abs(r - (N-1)) + abs(c - 0),
+                abs(r - (N-1)) + abs(c - (N-1))
+            )
+            if dist_to_nearest_corner <= 2:
+                score += 8
+        
+        # Small randomization to avoid predictability
+        score += (r * 17 + c * 31) % 5
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    return best_move
+
+
+def get_neighbors(r, c, N):
+    """Get valid neighbors on hex grid."""
+    # Hex grid neighbors depend on row parity
+    # Odd rows have different offset
+    neighbors = []
+    if r % 2 == 0:  # Even row
+        potential = [(r-1, c), (r-1, c+1), (r, c-1), (r, c+1), (r+1, c), (r+1, c+1)]
+    else:  # Odd row
+        potential = [(r-1, c-1), (r-1, c), (r, c-1), (r, c+1), (r+1, c-1), (r+1, c)]
+    
+    for nr, nc in potential:
+        if 0 <= nr < N and 0 <= nc < N:
+            neighbors.append((nr, nc))
+    return neighbors
+
+
+def is_corner(r, c, N):
+    """Check if position is a corner cell."""
+    return (r == 0 and c == 0) or (r == 0 and c == N-1) or \
+           (r == N-1 and c == 0) or (r == N-1 and c == N-1)
+
+
+def is_edge(r, c, N):
+    """Check if position is an edge cell (not corner)."""
+    if is_corner(r, c, N):
+        return False
+    return r == 0 or r == N-1 or c == 0 or c == N-1
+
+
+def find_winning_move(board, valid_moves, player, N):
+    """Check if any move wins for the given player."""
+    for r, c in valid_moves:
+        # Temporarily place stone
+        board[r][c] = player
+        
+        # Check if this move wins
+        if check_win(board, r, c, player, N):
+            board[r][c] = 0  # Restore
+            return (r, c)
+        
+        board[r][c] = 0  # Restore
+    
+    return None
+
+
+def check_win(board, r, c, player, N):
+    """Check if the move at (r,c) wins for player."""
+    # Check all three win conditions
+    return check_ring(board, r, c, player, N) or \
+           check_bridge(board, player, N) or \
+           check_fork(board, player, N)
+
+
+def check_ring(board, r, c, player, N):
+    """Check if placing at (r,c) creates a ring."""
+    # Use flood fill to find cycles
+    # A ring exists if we can form a loop
+    
+    visited = set()
+    start_neighbors = [n for n in get_neighbors(r, c, N) if board[n[0]][n[1]] == player]
+    
+    for start in start_neighbors:
+        # Try to find path back to r,c (excluding the direct neighbor we came from)
+        queue = [(start, [start])]
+        seen = {start}
+        
+        while queue:
+            curr, path = queue.pop(0)
+            
+            # Check if we can connect back to (r,c) through a different path
+            neighbors = get_neighbors(curr[0], curr[1], N)
+            for nxt in neighbors:
+                if nxt == (r, c) and len(path) >= 3:
+                    return True
+                    
+                if nxt in seen:
+                    continue
+                if board[nxt[0]][nxt[1]] != player:
+                    continue
+                    
+                seen.add(nxt)
+                queue.append((nxt, path + [nxt]))
+    
+    return False
+
+
+def check_bridge(board, player, N):
+    """Check if player has connected any two corners."""
+    # Find which corners player occupies
+    corners = [(0, 0), (0, N-1), (N-1, 0), (N-1, N-1)]
+    connected_corners = set()
+    
+    for corner in corners:
+        r, c = corner
+        if board[r][c] == player:
+            connected_corners.add(corner)
+    
+    if len(connected_corners) < 2:
+        return False
+    
+    # Check if any two connected corners have a path between them
+    corners_list = list(connected_corners)
+    for i in range(len(corners_list)):
+        for j in range(i+1, len(corners_list)):
+            if bfs_connect(board, corners_list[i], corners_list[j], player, N):
+                return True
+    
+    return False
+
+
+def bfs_connect(board, start, end, player, N):
+    """BFS to check if start and end are connected via player's stones."""
+    if start == end:
+        return True
+    
+    queue = [start]
+    visited = {start}
+    
+    while queue:
+        curr = queue.pop(0)
+        
+        neighbors = get_neighbors(curr[0], curr[1], N)
+        for nxt in neighbors:
+            if nxt == end:
+                return True
+            if nxt in visited:
+                continue
+            if board[nxt[0]][nxt[1]] != player:
+                continue
+                
+            visited.add(nxt)
+            queue.append(nxt)
+    
+    return False
+
+
+def check_fork(board, player, N):
+    """Check if player has connected 3+ edges."""
+    # Find all edge cells player occupies
+    edge_cells = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == player and is_edge(r, c, N):
+                edge_cells.append((r, c))
+    
+    if len(edge_cells) < 2:
+        return False
+    
+    # Identify which edges are connected
+    # Top edge: r=0 (excluding corners)
+    # Bottom edge: r=N-1 (excluding corners)
+    # Left edge: c=0 (excluding corners)
+    # Right edge: c=N-1 (excluding corners)
+    
+    connected_edges = set()
+    
+    # BFS from each edge cell to find connected components
+    visited = set()
+    components = []
+    
+    for cell in edge_cells:
+        if cell in visited:
+            continue
+            
+        # BFS to find all connected edge cells
+        component = []
+        queue = [cell]
+        visited.add(cell)
+        
+        while queue:
+            curr = queue.pop(0)
+            component.append(curr)
+            
+            for nxt in get_neighbors(curr[0], curr[1], N):
+                if nxt in visited:
+                    continue
+                if board[nxt[0]][nxt[1]] != player:
+                    continue
+                if not is_edge(nxt[0], nxt[1], N):
+                    continue
+                    
+                visited.add(nxt)
+                queue.append(nxt)
+        
+        components.append(component)
+    
+    # Check each component to see which edges it touches
+    for component in components:
+        edges_in_component = set()
+        
+        for r, c in component:
+            if r == 0:
+                edges_in_component.add('top')
+            if r == N-1:
+                edges_in_component.add('bottom')
+            if c == 0:
+                edges_in_component.add('left')
+            if c == N-1:
+                edges_in_component.add('right')
+        
+        # Fork requires 3 or more different edges
+        if len(edges_in_component) >= 3:
+            return True
+    
+    return False

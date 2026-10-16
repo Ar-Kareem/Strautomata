@@ -1,0 +1,182 @@
+The strategy implemented in this policy is a minimax search with alpha-beta pruning to a depth of 2. The evaluation function considers connectivity of pieces, mobility (number of legal moves), and center control. The policy first checks for immediate winning moves that connect all pieces. If no winning move exists, it uses minimax to evaluate potential moves up to two plies ahead. The heuristic evaluation balances opponent connectivity, mobility advantage, and piece positioning (penalizing edge pieces while rewarding center pieces).
+
+```python
+def count_connected_components(board, player):
+    visited = [[False]*8 for _ in range(8)]
+    count = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player and not visited[r][c]:
+                stack = [(r,c)]
+                visited[r][c] = True
+                while stack:
+                    x, y = stack.pop()
+                    for dr in [-1,0,1]:
+                        for dc in [-1,0,1]:
+                            if dr==0 and dc==0:
+                                continue
+                            nx, ny = x+dr, y+dc
+                            if 0<=nx<8 and 0<=ny<8 and not visited[nx][ny] and board[nx][ny]==player:
+                                visited[nx][ny] = True
+                                stack.append((nx,ny))
+                count += 1
+    return count
+
+def generate_moves(board, player):
+    row_counts = [0]*8
+    col_counts = [0]*8
+    diag1_counts = {}
+    diag2_counts = {}
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != 0:
+                row_counts[r] += 1
+                col_counts[c] += 1
+                key1 = r - c
+                key2 = r + c
+                diag1_counts[key1] = diag1_counts.get(key1,0) + 1
+                diag2_counts[key2] = diag2_counts.get(key2,0) + 1
+
+    moves = []
+    directions = [ (0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1) ]
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                for dr, dc in directions:
+                    if dr == 0 and dc != 0:
+                        d = row_counts[r]
+                    elif dc == 0 and dr != 0:
+                        d = col_counts[c]
+                    elif dr != 0 and dc != 0 and dr == dc:
+                        d = diag1_counts.get(r-c, 0)
+                    elif dr != 0 and dc != 0 and dr == -dc:
+                        d = diag2_counts.get(r+c, 0)
+                    else:
+                        continue
+
+                    if d == 0:
+                        continue
+
+                    target_r = r + dr * d
+                    target_c = c + dc * d
+
+                    if target_r < 0 or target_r >= 8 or target_c < 0 or target_c >= 8:
+                        continue
+
+                    found_opponent = False
+                    for step in range(1, d):
+                        x = r + dr * step
+                        y = c + dc * step
+                        if board[x][y] == -1:
+                            found_opponent = True
+                            break
+
+                    if found_opponent:
+                        continue
+
+                    if board[target_r][target_c] == player:
+                        continue
+
+                    moves.append( (r, c, target_r, target_c) )
+    return moves
+
+def apply_move(board, move, player):
+    new_board = [row[:] for row in board]
+    r1, c1, r2, c2 = move
+    new_board[r1][c1] = 0
+    new_board[r2][c2] = player
+    return new_board
+
+def evaluate_board(board):
+    our_components = count_connected_components(board, 1)
+    opponent_components = count_connected_components(board, -1)
+
+    if our_components == 1:
+        return 10000
+    if opponent_components == 1:
+        return -10000
+
+    our_mobility = len(generate_moves(board, 1))
+    opponent_mobility = len(generate_moves(board, -1))
+    mobility_advantage = our_mobility - opponent_mobility
+
+    score = (opponent_components - our_components) * 10 + mobility_advantage * 0.1
+
+    center_bonus = 0
+    edge_penalty = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == 1:
+                if 2 <= r <= 5 and 2 <= c <= 5:
+                    center_bonus += 1
+                else:
+                    edge_penalty += 1
+    score += center_bonus * 0.1
+    score -= edge_penalty * 0.1
+
+    return score
+
+def minimax(board, player, depth, alpha, beta):
+    if depth == 0:
+        return evaluate_board(board)
+
+    moves = generate_moves(board, player)
+    if not moves:
+        if player == 1:
+            return -10000
+        else:
+            return 10000
+
+    if player == 1:
+        max_eval = -10000
+        for move in moves:
+            new_board = apply_move(board, move, player)
+            eval_score = minimax(new_board, -player, depth-1, alpha, beta)
+            if eval_score > max_eval:
+                max_eval = eval_score
+            if max_eval >= beta:
+                break
+            if max_eval > alpha:
+                alpha = max_eval
+        return max_eval
+    else:
+        min_eval = 10000
+        for move in moves:
+            new_board = apply_move(board, move, player)
+            eval_score = minimax(new_board, -player, depth-1, alpha, beta)
+            if eval_score < min_eval:
+                min_eval = eval_score
+            if min_eval <= alpha:
+                break
+            if min_eval < beta:
+                beta = min_eval
+        return min_eval
+
+def policy(board):
+    moves = generate_moves(board, 1)
+    if not moves:
+        return "0,0:0,0"
+
+    for move in moves:
+        new_board = apply_move(board, move, 1)
+        if count_connected_components(new_board, 1) == 1:
+            r1, c1, r2, c2 = move
+            return f"{r1},{c1}:{r2},{c2}"
+
+    best_move = None
+    best_score = -10000
+    alpha = -10000
+    beta = 10000
+
+    for move in moves:
+        new_board = apply_move(board, move, 1)
+        score = minimax(new_board, -1, 1, alpha, beta)
+        if score > best_score:
+            best_score = score
+            best_move = move
+        if score > alpha:
+            alpha = score
+
+    r1, c1, r2, c2 = best_move
+    return f"{r1},{c1}:{r2},{c2}"
+```

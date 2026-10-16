@@ -1,0 +1,295 @@
+
+import re
+import random
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # 1. Immediate Win Check
+    # If any move results in checkmate (#), take it.
+    for move in legal_moves:
+        if '#' in move:
+            return move
+
+    # 2. Evaluation Constants
+    PIECE_VALUES = {
+        'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+    }
+    
+    # Simplified Piece-Square Tables (White perspective).
+    # Scores are mirrored for Black.
+    # 0=a1..7=h1 (index 0-7), 56=a8..63=h8
+    PST = {
+        'P': [
+             0,  0,  0,  0,  0,  0,  0,  0,
+            50, 50, 50, 50, 50, 50, 50, 50,
+            10, 10, 20, 30, 30, 20, 10, 10,
+             5,  5, 10, 25, 25, 10,  5,  5,
+             0,  0,  0, 20, 20,  0,  0,  0,
+             5, -5,-10,  0,  0,-10, -5,  5,
+             5, 10, 10,-20,-20, 10, 10,  5,
+             0,  0,  0,  0,  0,  0,  0,  0
+        ],
+        'N': [
+            -50,-40,-30,-30,-30,-30,-40,-50,
+            -40,-20,  0,  0,  0,  0,-20,-40,
+            -30,  0, 10, 15, 15, 10,  0,-30,
+            -30,  5, 15, 20, 20, 15,  5,-30,
+            -30,  0, 15, 20, 20, 15,  0,-30,
+            -30,  5, 10, 15, 15, 10,  5,-30,
+            -40,-20,  0,  5,  5,  0,-20,-40,
+            -50,-40,-30,-30,-30,-30,-40,-50
+        ],
+        'B': [
+            -20,-10,-10,-10,-10,-10,-10,-20,
+            -10,  0,  0,  0,  0,  0,  0,-10,
+            -10,  0,  5, 10, 10,  5,  0,-10,
+            -10,  5,  5, 10, 10,  5,  5,-10,
+            -10,  0, 10, 10, 10, 10,  0,-10,
+            -10, 10, 10, 10, 10, 10, 10,-10,
+            -10,  5,  0,  0,  0,  0,  5,-10,
+            -20,-10,-10,-10,-10,-10,-10,-20
+        ],
+        'R': [
+              0,  0,  0,  0,  0,  0,  0,  0,
+              5, 10, 10, 10, 10, 10, 10,  5,
+             -5,  0,  0,  0,  0,  0,  0, -5,
+             -5,  0,  0,  0,  0,  0,  0, -5,
+             -5,  0,  0,  0,  0,  0,  0, -5,
+             -5,  0,  0,  0,  0,  0,  0, -5,
+             -5,  0,  0,  0,  0,  0,  0, -5,
+              0,  0,  0,  5,  5,  0,  0,  0
+        ],
+        'Q': [
+            -20,-10,-10, -5, -5,-10,-10,-20,
+            -10,  0,  0,  0,  0,  0,  0,-10,
+            -10,  0,  5,  5,  5,  5,  0,-10,
+             -5,  0,  5,  5,  5,  5,  0, -5,
+              0,  0,  5,  5,  5,  5,  0, -5,
+            -10,  5,  5,  5,  5,  5,  0,-10,
+            -10,  0,  5,  0,  0,  0,  0,-10,
+            -20,-10,-10, -5, -5,-10,-10,-20
+        ],
+        'K': [
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -20,-30,-30,-40,-40,-30,-30,-20,
+            -10,-20,-20,-20,-20,-20,-20,-10,
+             20, 20,  0,  0,  0,  0, 20, 20,
+             20, 30, 10,  0,  0, 10, 30, 20
+        ]
+    }
+
+    # 3. Helpers
+    def parse_square(sq_str):
+        # returns r(0-7), f(0-7)
+        if not sq_str: return -1, -1
+        f = ord(sq_str[0]) - ord('a')
+        r = int(sq_str[1]) - 1
+        return r, f
+
+    def square_to_str(r, f):
+        return f"{chr(f + ord('a'))}{r + 1}"
+
+    def get_pst_score(p_type, r, f, is_white_piece):
+        table = PST.get(p_type)
+        if not table: return 0
+        if is_white_piece:
+            idx = r * 8 + f
+        else:
+            # Mirror rank for black
+            idx = (7 - r) * 8 + f
+        # Bounds check
+        if 0 <= idx < 64: return table[idx]
+        return 0
+
+    def evaluate_board(current_pieces, my_color_is_white):
+        score = 0
+        for sq, code in current_pieces.items():
+            color_char = code[0]
+            p_type = code[1]
+            r, f = parse_square(sq)
+            
+            is_white_piece = (color_char == 'w')
+            mat_val = PIECE_VALUES.get(p_type, 0)
+            pst_val = get_pst_score(p_type, r, f, is_white_piece)
+            
+            total = mat_val + pst_val
+            
+            # Add to score if it's my piece, subtract if opponent's
+            if is_white_piece == my_color_is_white:
+                score += total
+            else:
+                score -= total
+        return score
+
+    def simulate_move(current_pieces, move_str, player_color):
+        # Creates a new pieces dictionary after applying the move
+        new_pieces = current_pieces.copy()
+        clean = move_str.replace('+', '').replace('#', '')
+        
+        is_white = (player_color == 'white')
+        color_char = 'w' if is_white else 'b'
+
+        # Function to find source square based on logic
+        def get_source_sq(p_type, d_sq, d_file_hint, d_rank_hint, is_capture):
+            dst_r, dst_f = parse_square(d_sq)
+            
+            candidates = []
+            target_code = color_char + p_type
+            
+            for sq, code in current_pieces.items():
+                if code == target_code:
+                    r, f = parse_square(sq)
+                    candidates.append((r, f, sq))
+
+            # Filter by hints
+            if d_file_hint:
+                val = ord(d_file_hint) - ord('a')
+                candidates = [c for c in candidates if c[1] == val]
+            if d_rank_hint:
+                val = int(d_rank_hint) - 1
+                candidates = [c for c in candidates if c[0] == val]
+            
+            final_sq = None
+            
+            # Geometry filter
+            for r, f, sq in candidates:
+                dr, df = dst_r - r, dst_f - f
+                
+                valid = False
+                path_clear = True
+                
+                if p_type == 'N':
+                    if abs(dr) * abs(df) == 2: valid = True
+                
+                elif p_type == 'P':
+                    direction = 1 if is_white else -1
+                    if is_capture:
+                        # Diagonal capture step
+                        if dr == direction and abs(df) == 1: valid = True
+                    else:
+                        # Forward 1 or 2
+                        if df == 0:
+                            if dr == direction: valid = True
+                            # Double move from start rank
+                            if dr == 2 * direction:
+                                if (is_white and r == 1) or (not is_white and r == 6):
+                                    # check intermediate square
+                                    mid_sq = square_to_str(r + direction, f)
+                                    if mid_sq not in current_pieces:
+                                        valid = True
+                                        
+                elif p_type == 'K':
+                    if max(abs(dr), abs(df)) == 1: valid = True
+                    
+                elif p_type in 'RBQ':
+                    is_diag = abs(dr) == abs(df)
+                    is_orth = dr == 0 or df == 0
+                    
+                    if p_type == 'R' and is_orth: valid = True
+                    elif p_type == 'B' and is_diag: valid = True
+                    elif p_type == 'Q' and (is_orth or is_diag): valid = True
+                    
+                    if valid:
+                        # Check Path
+                        steps = max(abs(dr), abs(df))
+                        step_r = dr // steps
+                        step_f = df // steps
+                        cur_r, cur_f = r + step_r, f + step_f
+                        while (cur_r, cur_f) != (dst_r, dst_f):
+                            if square_to_str(cur_r, cur_f) in current_pieces:
+                                path_clear = False
+                                break
+                            cur_r += step_r
+                            cur_f += step_f
+                            
+                        if not path_clear: valid = False
+
+                if valid:
+                    final_sq = sq
+                    break # Greedy first match
+            
+            return final_sq
+
+        # CASTLING
+        if clean == 'O-O' or clean == 'O-O-O':
+            rank_idx = '1' if is_white else '8'
+            king_src = f'e{rank_idx}'
+            
+            if clean == 'O-O':
+                king_dst = f'g{rank_idx}'
+                rook_src = f'h{rank_idx}'
+                rook_dst = f'f{rank_idx}'
+            else:
+                king_dst = f'c{rank_idx}'
+                rook_src = f'a{rank_idx}'
+                rook_dst = f'd{rank_idx}'
+            
+            if king_src in new_pieces: del new_pieces[king_src]
+            if rook_src in new_pieces: del new_pieces[rook_src]
+            new_pieces[king_dst] = f'{color_char}K'
+            new_pieces[rook_dst] = f'{color_char}R'
+            return new_pieces
+
+        # REGULAR MOVES
+        # Regex to parse standard algebraic notation
+        # Groups: 1=Piece, 2=DisambFile, 3=DisambRank, 4=Capture(x), 5=Dest, 6=Promo
+        regex = r'^([BNRQK])?([a-h])?([1-8])?(x)?([a-h][1-8])(=[BNRQ])?$'
+        m = re.match(regex, clean)
+        
+        if m:
+            p_type = m.group(1) if m.group(1) else 'P'
+            d_file = m.group(2)
+            d_rank = m.group(3)
+            capture = m.group(4)
+            dst_sq = m.group(5)
+            promo = m.group(6)
+            
+            src_sq = get_source_sq(p_type, dst_sq, d_file, d_rank, bool(capture))
+            
+            if src_sq:
+                # Execute move
+                del new_pieces[src_sq]
+                
+                # Check En Passant: Pawn move, capture, dest empty
+                if p_type == 'P' and capture and dst_sq not in pieces:
+                    # Remove pawn behind destination
+                    dst_r, dst_f = parse_square(dst_sq)
+                    direction = 1 if is_white else -1
+                    ep_sq = square_to_str(dst_r - direction, dst_f)
+                    if ep_sq in new_pieces:
+                        del new_pieces[ep_sq]
+
+                # Place piece
+                placed_piece = color_char + p_type
+                if promo:
+                    placed_piece = color_char + promo[1] # e.g. wQ
+                
+                new_pieces[dst_sq] = placed_piece
+
+        return new_pieces
+
+    # 4. Main Search Loop
+    best_move = legal_moves[0] if legal_moves else ''
+    best_score = -float('inf')
+    
+    my_color_white = (to_play == 'white')
+    
+    # Shuffle checks to avoid position bias in equal scores
+    moves_check = list(legal_moves)
+    random.shuffle(moves_check)
+
+    for move in moves_check:
+        try:
+            next_state = simulate_move(pieces, move, to_play)
+            score = evaluate_board(next_state, my_color_white)
+            
+            if score > best_score:
+                best_score = score
+                best_move = move
+        except Exception:
+            # Fallback if logic fails on specific move string
+            continue
+            
+    return best_move

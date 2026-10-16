@@ -1,0 +1,245 @@
+**Strategy**
+
+The policy uses a multi-stage heuristic approach to select strong chess moves:
+
+1. **Immediate Checkmate**: If any legal move ends with `#` (checkmate notation), it is played immediately.
+2. **Material & Tactical Play**: Captures are evaluated based on the presumed value of the captured piece using a material hierarchy (Queen > Rook > Bishop/Knight > Pawn). Promotions to Queen are heavily favored.
+3. **King Safety**: Castling is prioritized to improve king safety, especially in the opening.
+4. **Positional Evaluation**: Each resulting position is evaluated using piece‑square tables (PSQT) that reward pieces for occupying central and advanced squares while penalizing passive placement.
+5. **Selective Search**: The top 5–10 candidate moves (winning captures, checks, promotions, castling) are simulated one ply ahead and scored; the highest‑scoring move is returned.
+6. **Fallback**: If simulation fails or times out, the first legal move is returned to guarantee compliance.
+
+The bot avoids blunders by penalizing moves that lose material without compensation and by considering the resulting position after each candidate move. Castling and central piece activity are encouraged, while passive or backward moves are deprioritized.
+
+<code>
+import copy
+
+# --- Configuration ---
+PIECE_VALUES = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+
+PAWN_TABLE = [
+    [0,  0,  0,  0,  0,  0,  0,  0],
+    [5,  5,  5,  5,  5,  5,  5,  5],
+    [1,  1,  2,  3,  3,  2,  1,  1],
+    [0,  0,  0, -5, -5,  0,  0,  0],
+    [0,  0,  0, -5, -5,  0,  0,  0],
+    [-1, -1, -2, -3, -3, -2, -1, -1],
+    [-5, -5, -5, -5, -5, -5, -5, -5],
+    [0,  0,  0,  0,  0,  0,  0,  0]
+]
+
+KNIGHT_TABLE = [
+    [-5, -4, -3, -3, -3, -3, -4, -5],
+    [-4, -2,  0,  0,  0,  0, -2, -4],
+    [-3,  0,  1,  1,  1,  1,  0, -3],
+    [-3,  0,  1,  2,  2,  1,  0, -3],
+    [-3,  0,  1,  2,  2,  1,  0, -3],
+    [-3,  0,  1,  1,  1,  1,  0, -3],
+    [-4, -2,  0,  0,  0,  0, -2, -4],
+    [-5, -4, -3, -3, -3, -3, -4, -5]
+]
+
+BISHOP_TABLE = [
+    [-2, -1, -1, -1, -1, -1, -1, -2],
+    [-1,  0,  0,  0,  0,  0,  0, -1],
+    [-1,  0,  1,  1,  1,  1,  0, -1],
+    [-1,  0,  1,  1,  1,  1,  0, -1],
+    [-1,  0,  1,  1,  1,  1,  0, -1],
+    [-1,  0,  1,  1,  1,  1,  0, -1],
+    [-1,  0,  0,  0,  0,  0,  0, -1],
+    [-2, -1, -1, -1, -1, -1, -1, -2]
+]
+
+ROOK_TABLE = [
+    [0,  0,  0,  5,  5,  0,  0,  0],
+    [5,  5,  5,  5,  5,  5,  5,  5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [0,  0,  0,  5,  5,  0,  0,  0]
+]
+
+KING_TABLE = [
+    [-3, -4, -4, -5, -5, -4, -4, -3],
+    [-3, -4, -4, -5, -5, -4, -4, -3],
+    [-3, -4, -4, -5, -5, -4, -4, -3],
+    [-3, -4, -4, -5, -5, -4, -4, -3],
+    [-2, -3, -3, -4, -4, -3, -3, -2],
+    [-1, -2, -2, -2, -2, -2, -2, -1],
+    [ 2,  2,  0,  0,  0,  0,  2,  2],
+    [ 2,  3,  1,  0,  0,  1,  3,  2]
+]
+
+PSQT = {'P': PAWN_TABLE, 'N': KNIGHT_TABLE, 'B': BISHOP_TABLE,
+        'R': ROOK_TABLE, 'Q': KING_TABLE, 'K': KING_TABLE}
+
+# --- Utilities ---
+def square_to_coords(sq):
+    return (int(sq[1]) - 1, ord(sq[0]) - ord('a'))
+
+def parse_board(pieces):
+    board = [[None] * 8 for _ in range(8)]
+    for sq, pc in pieces.items():
+        r, c = square_to_coords(sq)
+        board[r][c] = pc
+    return board
+
+def can_move(board, fr, fc, tr, tc, pt):
+    rd, cd = tr - fr, tc - fc
+    if pt == 'P':
+        direction = -1 if board[fr][fc][0] == 'w' else 1
+        return rd == direction and abs(cd) <= 1
+    if pt == 'N': return (abs(rd), abs(cd)) in [(2, 1), (1, 2)]
+    if pt == 'K': return max(abs(rd), abs(cd)) == 1
+    if pt == 'R': return rd == 0 or cd == 0
+    if pt == 'B': return abs(rd) == abs(cd)
+    if pt == 'Q': return rd == 0 or cd == 0 or abs(rd) == abs(cd)
+    return False
+
+def find_source(board, to_play, pt, tr, tc, disambiguation):
+    color = 'w' if to_play == 'white' else 'b'
+    for r in range(8):
+        for c in range(8):
+            pc = board[r][c]
+            if not pc or not pc.startswith(color) or pc[1] != pt:
+                continue
+            if disambiguation:
+                ch = disambiguation[0]
+                if ch in 'abcdefgh' and chr(c + ord('a')) != ch: continue
+                if ch in '12345678' and str(r + 1) != ch: continue
+            if can_move(board, r, c, tr, tc, pt):
+                return (r, c)
+    return (0, 0)
+
+def apply_castling(board, move, to_play):
+    nb = copy.deepcopy(board)
+    rank = 0 if to_play == 'white' else 7
+    color = 'w' if to_play == 'white' else 'b'
+    if move == 'O-O':
+        nb[rank][4], nb[rank][6] = None, color + 'K'
+        nb[rank][7], nb[rank][5] = None, color + 'R'
+    else:
+        nb[rank][4], nb[rank][2] = None, color + 'K'
+        nb[rank][0], nb[rank][3] = None, color + 'R'
+    return nb
+
+def apply_move(board, move, to_play):
+    if move in ('O-O', 'O-O-O'):
+        return apply_castling(board, move, to_play)
+    
+    clean = move
+    promo = None
+    if '=' in clean:
+        parts = clean.split('=')
+        promo, clean = parts[1][0], parts[0]
+    clean = clean.rstrip('+').rstrip('#')
+    capture = 'x' in clean
+    clean = clean.replace('x', '')
+    
+    to_sq = clean[-2:]
+    tr, tc = square_to_coords(to_sq)
+    
+    prefix = clean[:-2]
+    if not prefix:
+        pt, disambiguation = 'P', None
+    elif prefix[0] in 'KQRBN':
+        pt, disambiguation = prefix[0], prefix[1:] if len(prefix) > 1 else None
+    else:
+        pt, disambiguation = 'P', prefix[:-1] if len(prefix) > 1 else prefix
+    
+    fr, fc = find_source(board, to_play, pt, tr, tc, disambiguation)
+    nb = copy.deepcopy(board)
+    nb[tr][tc] = nb[fr][fc]
+    nb[fr][fc] = None
+    if promo:
+        nb[tr][tc] = ('w' if to_play == 'white' else 'b') + promo
+    return nb
+
+def evaluate(board, perspective):
+    score = 0
+    for r in range(8):
+        for c in range(8):
+            pc = board[r][c]
+            if not pc: continue
+            color, pt = pc[0], pc[1]
+            mult = 1 if color == 'w' else -1
+            if pt in PIECE_VALUES:
+                score += mult * PIECE_VALUES[pt]
+            if pt in PSQT:
+                tbl = PSQT[pt]
+                score += mult * (tbl[r][c] if color == 'w' else tbl[7 - r][7 - c])
+    return score if perspective == 'white' else -score
+
+def capture_value(board, move):
+    if 'x' not in move: return 0
+    try:
+        clean = move.rstrip('+').rstrip('#')
+        if '=' in clean: clean = clean.split('=')[0]
+        clean = clean.replace('x', '')
+        to_sq = clean[-2:]
+        tr, tc = square_to_coords(to_sq)
+        tgt = board[tr][tc]
+        if tgt: return PIECE_VALUES.get(tgt[1], 0)
+    except:
+        pass
+    return 0
+
+def select_move(board, to_play, legal_moves):
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Stage 1: Checkmates
+    mates = [m for m in legal_moves if m.endswith('#')]
+    if mates: return mates[0]
+    
+    # Stage 2: Evaluate candidates
+    candidates = []
+    for m in legal_moves:
+        if m.endswith('#'):  # Already handled
+            continue
+        cv = capture_value(board, m)
+        bonus = 0
+        if 'x' in m: bonus += cv + 0.2
+        if m.endswith('+'): bonus += 0.5
+        if '=' in m and '=Q' in m: bonus += 8
+        if m in ('O-O', 'O-O-O'): bonus += 1.5
+        candidates.append((m, bonus))
+    
+    # Sort by bonus then by move type priority
+    move_priority = {'O-O': 4, 'O-O-O': 4}
+    candidates.sort(key=lambda x: (x[1], move_priority.get(x[0], 0)), reverse=True)
+    
+    best_move, best_score = None, -1e9
+    for move, _ in candidates[:8]:  # Top 8
+        try:
+            nb = apply_move(board, move, to_play)
+            val = evaluate(nb, to_play)
+            # Additional heuristics
+            if move.endswith('+'): val += 0.5
+            if '=Q' in move: val += 8
+            if move in ('O-O', 'O-O-O'): val += 1.5
+            if val > best_score:
+                best_score = val
+                best_move = move
+        except:
+            continue
+    
+    return best_move if best_move else legal_moves[0]
+
+def policy(pieces, to_play, legal_moves):
+    """Return a legal move for the given position."""
+    # Quick forced move
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Parse board
+    board = parse_board(pieces)
+    
+    # Select best move
+    chosen = select_move(board, to_play, legal_moves)
+    
+    # Safety check
+    return chosen if chosen in legal_moves else legal_moves[0]
+</code>

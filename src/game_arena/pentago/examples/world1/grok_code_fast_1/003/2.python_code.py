@@ -1,0 +1,111 @@
+
+import numpy as np
+
+def check_win(board):
+    for player in [1, -1]:
+        # Check rows
+        for r in range(6):
+            for c in range(2):
+                if np.all(board[r, c:c+5] == player):
+                    return player
+        # Check columns
+        for c in range(6):
+            for r in range(2):
+                if np.all(board[r:r+5, c] == player):
+                    return player
+        # Check main diagonals
+        for r in range(2):
+            for c in range(2):
+                if np.all([board[r+i, c+i] == player for i in range(5)]):
+                    return player
+        # Check anti-diagonals
+        for r in range(2):
+            for c in range(4, 6):
+                if np.all([board[r+i, c-i] == player for i in range(5)]):
+                    return player
+    return 0
+
+def potential_fives(board, player):
+    count = 0
+    # Rows
+    for r in range(6):
+        for start in range(2):
+            line = board[r, start:start+5]
+            if np.all((line == player) | (line == 0)):
+                count += 1
+    # Columns
+    for c in range(6):
+        for start in range(2):
+            line = board[start:start+5, c]
+            if np.all((line == player) | (line == 0)):
+                count += 1
+    # Main diagonals
+    for rstart in range(2):
+        for cstart in range(2):
+            diag = np.array([board[rstart+i, cstart+i] for i in range(5)])
+            if np.all((diag == player) | (diag == 0)):
+                count += 1
+    # Anti-diagonals
+    for rstart in range(2):
+        for cstart in range(4, 6):
+            diag = np.array([board[rstart+i, cstart-i] for i in range(5)])
+            if np.all((diag == player) | (diag == 0)):
+                count += 1
+    return count
+
+def apply_move(board, move):
+    r, c, quad, dir_str = move
+    board = board.copy()
+    board[r, c] = 1
+    # Get quadrant submatrix
+    if quad == 0:
+        sub = board[0:3, 0:3].copy()
+        rows, cols = slice(0, 3), slice(0, 3)
+    elif quad == 1:
+        sub = board[0:3, 3:6].copy()
+        rows, cols = slice(0, 3), slice(3, 6)
+    elif quad == 2:
+        sub = board[3:6, 0:3].copy()
+        rows, cols = slice(3, 6), slice(0, 3)
+    elif quad == 3:
+        sub = board[3:6, 3:6].copy()
+        rows, cols = slice(3, 6), slice(3, 6)
+    # Rotate submatrix
+    newsub = np.zeros((3, 3), dtype=int)
+    if dir_str == 'R':  # clockwise
+        for i in range(3):
+            for j in range(3):
+                newsub[j, 2 - i] = sub[i, j]
+    elif dir_str == 'L':  # counterclockwise
+        for i in range(3):
+            for j in range(3):
+                newsub[2 - j, i] = sub[i, j]
+    # Put back
+    board[rows, cols] = newsub
+    return board
+
+def policy(you, opponent):
+    board = np.zeros((6, 6), dtype=int)
+    for r in range(6):
+        for c in range(6):
+            if you[r][c]:
+                board[r, c] = 1
+            elif opponent[r][c]:
+                board[r, c] = -1
+    best_move = None
+    best_score = -np.inf
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 0:
+                for quad in range(4):
+                    for dir_str in ['L', 'R']:
+                        after_board = apply_move(board, (r, c, quad, dir_str))
+                        win = check_win(after_board)
+                        if win == 1:
+                            score = 1000
+                        else:
+                            score = potential_fives(after_board, 1) - potential_fives(after_board, -1)
+                        if score > best_score:
+                            best_score = score
+                            best_move = (r + 1, c + 1, quad, dir_str)  # 1-indexed row and col
+    return f"{best_move[0]},{best_move[1]},{best_move[2]},{best_move[3]}"

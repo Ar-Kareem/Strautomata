@@ -1,0 +1,212 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Return a legal Breakthrough move ((fr,fc),(tr,tc)).
+    Strategy: prefer immediate wins/captures, otherwise pick move maximizing a minimax(1) evaluation:
+    - material advantage (high weight)
+    - advancement towards goal
+    - potential captures next turn
+    - penalty for pieces immediately capturable by opponent
+    """
+    # Helpers
+    BOARD_MIN, BOARD_MAX = 0, 7
+    me_set = set(me)
+    opp_set = set(opp)
+
+    if color == 'w':
+        dir_fwd = 1
+        goal_row = 7
+        opp_color = 'b'
+    else:
+        dir_fwd = -1
+        goal_row = 0
+        opp_color = 'w'
+
+    def in_bounds(r, c):
+        return 0 <= r <= 7 and 0 <= c <= 7
+
+    def gen_moves_for(side_pieces, enemy_pieces, side_color):
+        """Generate legal moves for given side pieces sets and color."""
+        moves = []
+        d = 1 if side_color == 'w' else -1
+        for (r, c) in list(side_pieces):
+            fr = (r, c)
+            # forward
+            nr, nc = r + d, c
+            if in_bounds(nr, nc) and (nr, nc) not in side_pieces and (nr, nc) not in enemy_pieces:
+                moves.append((fr, (nr, nc)))
+            # diag left
+            nr, nc = r + d, c - 1
+            if in_bounds(nr, nc):
+                if (nr, nc) in enemy_pieces:
+                    # capture
+                    moves.append((fr, (nr, nc)))
+                elif (nr, nc) not in side_pieces:
+                    # diagonal non-capturing move into empty square is allowed
+                    moves.append((fr, (nr, nc)))
+            # diag right
+            nr, nc = r + d, c + 1
+            if in_bounds(nr, nc):
+                if (nr, nc) in enemy_pieces:
+                    moves.append((fr, (nr, nc)))
+                elif (nr, nc) not in side_pieces:
+                    moves.append((fr, (nr, nc)))
+        return moves
+
+    def apply_move(side_pieces, enemy_pieces, move):
+        """Return new (side_set, enemy_set) after applying move (does not check legality)."""
+        (fr, to) = move
+        new_side = set(side_pieces)
+        new_enemy = set(enemy_pieces)
+        if fr in new_side:
+            new_side.remove(fr)
+        # capture?
+        if to in new_enemy:
+            new_enemy.remove(to)
+        new_side.add(to)
+        return new_side, new_enemy
+
+    def is_win(side_pieces, enemy_pieces, side_color):
+        if len(enemy_pieces) == 0:
+            return True
+        # any piece on opponent home row?
+        if side_color == 'w':
+            for (r, c) in side_pieces:
+                if r == 7:
+                    return True
+        else:
+            for (r, c) in side_pieces:
+                if r == 0:
+                    return True
+        return False
+
+    def eval_board(my_pieces, their_pieces, my_color):
+        """Heuristic evaluation from my perspective (higher is better)."""
+        # Material
+        mat = (len(my_pieces) - len(their_pieces)) * 1000
+
+        # Advancement: sum of rows (white wants higher rows, black wants lower rows)
+        adv = 0
+        if my_color == 'w':
+            adv = sum(r for (r, c) in my_pieces)
+            adv += 0  # keep linear
+        else:
+            # for black, higher score when rows are low (closer to 0)
+            adv = sum(7 - r for (r, c) in my_pieces)
+        adv_score = adv * 8  # moderate weight
+
+        # Potential captures next turn (how many enemy pieces I could capture next move)
+        pot_caps = 0
+        d = 1 if my_color == 'w' else -1
+        for (r, c) in my_pieces:
+            for dc in (-1, 1):
+                t = (r + d, c + dc)
+                if in_bounds(*t) and t in their_pieces:
+                    pot_caps += 1
+        pot_score = pot_caps * 250
+
+        # Vulnerability: negative for pieces that enemy can capture immediately next move
+        vuln = 0
+        opp_d = 1 if my_color == 'b' else -1  # opponent's forward dir
+        # opponent color is opposite of my_color
+        for (r, c) in my_pieces:
+            # if any opponent piece can move diagonally onto (r,c)
+            for dc in (-1, 1):
+                src = (r - opp_d, c - dc)  # opponent must be one step behind diagonally
+                if in_bounds(*src) and src in their_pieces:
+                    # opponent can capture onto (r,c)
+                    vuln += 1
+        vuln_penalty = vuln * 450
+
+        # Center control: reward being near center columns
+        center_bonus = 0
+        for (r, c) in my_pieces:
+            center_bonus += max(0, 3 - abs(3.5 - c))  # between 0 and ~3
+        center_score = center_bonus * 6
+
+        score = mat + adv_score + pot_score - vuln_penalty + center_score
+        return score
+
+    # Generate my legal moves
+    my_moves = gen_moves_for(me_set, opp_set, color)
+    # If no legal moves, as a fallback try to move a random piece forward if possible (shouldn't happen)
+    if not my_moves:
+        # try to find any single legal forward or diagonal by brute force scanning pieces
+        for (r, c) in me:
+            for (nr, nc) in [(r + dir_fwd, c), (r + dir_fwd, c - 1), (r + dir_fwd, c + 1)]:
+                if in_bounds(nr, nc) and (nr, nc) not in me_set:
+                    # if it's empty or is a capture onto opponent
+                    if (nr, nc) in opp_set or (nr, nc) not in opp_set:
+                        return ((r, c), (nr, nc))
+        # Nothing found; as absolute fallback, just return the first piece attempting a no-op (shouldn't be reached)
+        fr = me[0]
+        # try to find any in-bound target (even if occupied - but avoid illegal). We'll choose same square if forced.
+        return (fr, fr)
+
+    # Check for immediate winning moves and immediate captures; pick immediate win first
+    best_move = None
+    for move in my_moves:
+        new_me, new_opp = apply_move(me_set, opp_set, move)
+        if is_win(new_me, new_opp, color):
+            return move  # immediate win
+
+    # Minimax(1): for each my move, simulate opponent responses and take worst-case evaluation
+    best_score = None
+    best_moves = []
+    for move in my_moves:
+        new_me, new_opp = apply_move(me_set, opp_set, move)
+
+        # if I win straight away (already checked), skip (we would've returned)
+        # Generate opponent moves
+        opp_moves = gen_moves_for(new_opp, new_me, opp_color)
+        if not opp_moves:
+            # Opponent has no moves => strong position/win
+            score = 10**9
+        else:
+            # Opponent will minimize my eval; compute worst-case (minimum) eval after their best response
+            worst = float('inf')
+            for opp_move in opp_moves:
+                opp_after, me_after = apply_move(new_opp, new_me, opp_move)
+                # Evaluate from my perspective: my pieces are me_after, their pieces opp_after
+                s = eval_board(me_after, opp_after, color)
+                # If opponent reaches goal or captures all my pieces, that's very bad
+                if is_win(opp_after, me_after, opp_color):
+                    s = -10**9
+                if s < worst:
+                    worst = s
+            score = worst
+
+        # Prefer captures and advancement among ties: compute simple tie-breaker
+        is_capture = (move[1] in opp_set)
+        # Promotion proximity
+        fr_r, fr_c = move[0]
+        to_r, to_c = move[1]
+        # tie breaker encourages captures and forward moves
+        tie_break = (1000 if is_capture else 0) + (abs((to_r - fr_r)) * 10)
+        score_with_tie = score + tie_break * 0.001  # tiny adjustment to break ties deterministically
+
+        if best_score is None or score_with_tie > best_score:
+            best_score = score_with_tie
+            best_moves = [move]
+        elif score_with_tie == best_score:
+            best_moves.append(move)
+
+    # Choose among best moves deterministically: prefer capture, then most advancement, then leftmost piece
+    def move_sort_key(m):
+        (fr, to) = m
+        cap = 1 if to in opp_set else 0
+        adv = (to[0] - fr[0]) if color == 'w' else (fr[0] - to[0])
+        # prefer higher adv, prefer captures, prefer central column
+        col_center = -abs(to[1] - 3.5)
+        return (cap, adv, col_center, -fr[0], fr[1])
+
+    best_moves.sort(key=move_sort_key, reverse=True)
+    chosen = best_moves[0]
+
+    # Final sanity: ensure chosen move is legal; if not, pick any legal move
+    if chosen not in my_moves:
+        chosen = my_moves[0]
+
+    return chosen

@@ -1,0 +1,74 @@
+
+import numpy as np
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    you = np.array(you)
+    opponent = np.array(opponent)
+    
+    rows, cols = you.shape
+    directions = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    
+    def get_legal_moves(you_board, opp_board):
+        moves = []
+        for r in range(rows):
+            for c in range(cols):
+                if you_board[r, c] == 1:
+                    for dr, dc, dir_char in directions:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < rows and 0 <= nc < cols:
+                            if opp_board[nr, nc] == 1:
+                                moves.append((r, c, dir_char))
+        return moves
+
+    def make_move(you_board, opp_board, r, c, direction):
+        new_you = you_board.copy()
+        new_opp = opp_board.copy()
+        
+        dr, dc, _ = next((dr, dc, d) for dr, dc, d in directions if d == direction)
+        nr, nc = r + dr, c + dc
+        
+        new_you[r, c] = 0
+        new_you[nr, nc] = 1
+        new_opp[nr, nc] = 0
+        
+        return new_you, new_opp
+    
+    def has_no_moves(you_board, opp_board):
+        return len(get_legal_moves(you_board, opp_board)) == 0
+    
+    # Get all legal moves
+    legal_moves = get_legal_moves(you, opponent)
+    
+    if not legal_moves:
+        # Should not happen, but return a default legal string if needed
+        return "0,0,U"
+    
+    # Step 1: Check for winning move (move after which opponent has no moves)
+    for r, c, direction in legal_moves:
+        new_you, new_opp = make_move(you, opponent, r, c, direction)
+        if has_no_moves(new_opp, new_you):
+            return f"{r},{c},{direction}"
+    
+    # Step 2: Avoid moves that allow opponent to win on their next turn
+    safe_moves = []
+    for r, c, direction in legal_moves:
+        new_you, new_opp = make_move(you, opponent, r, c, direction)
+        if not has_no_moves(new_opp, new_you):
+            safe_moves.append((r, c, direction))
+    
+    if not safe_moves:
+        # No safe moves, must pick a potentially losing move from legal_moves
+        safe_moves = legal_moves
+        
+    # Step 3: Among safe moves, prioritize moves that maximize future mobility
+    best_move = safe_moves[0]
+    max_future_moves = -1
+    
+    for r, c, direction in safe_moves:
+        new_you, new_opp = make_move(you, opponent, r, c, direction)
+        future_moves_count = len(get_legal_moves(new_you, new_opp))
+        if future_moves_count > max_future_moves:
+            max_future_moves = future_moves_count
+            best_move = (r, c, direction)
+            
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"

@@ -1,0 +1,256 @@
+
+import time
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    start_time = time.time()
+    time_limit = 0.95
+
+    def coord_to_idx(r, c):
+        return r * 8 + c
+
+    my_set = {coord_to_idx(r, c) for r, c in me}
+    opp_set = {coord_to_idx(r, c) for r, c in opp}
+    if color == 'w':
+        white, black = my_set, opp_set
+    else:
+        white, black = opp_set, my_set
+    turn = color
+    root_player = color
+
+    WIN = 10 ** 6
+    INF = 10 ** 9
+
+    deadline = start_time + time_limit
+
+    class TimeoutException(Exception):
+        pass
+
+    def check_time():
+        if time.time() > deadline:
+            raise TimeoutException()
+
+    def idx_to_coord(i):
+        return (i // 8, i % 8)
+
+    def generate_moves(white, black, turn):
+        moves = []
+        if turn == 'w':
+            pieces = white
+            for idx in pieces:
+                r, c = divmod(idx, 8)
+                if r == 7:
+                    continue
+                # forward
+                forward = idx + 8
+                if forward not in white and forward not in black:
+                    moves.append((idx, forward, False))
+                # left diagonal
+                if c > 0:
+                    left = idx + 7
+                    if left not in white:
+                        moves.append((idx, left, left in black))
+                # right diagonal
+                if c < 7:
+                    right = idx + 9
+                    if right not in white:
+                        moves.append((idx, right, right in black))
+        else:
+            pieces = black
+            for idx in pieces:
+                r, c = divmod(idx, 8)
+                if r == 0:
+                    continue
+                # forward
+                forward = idx - 8
+                if forward not in white and forward not in black:
+                    moves.append((idx, forward, False))
+                # left diagonal
+                if c > 0:
+                    left = idx - 9
+                    if left not in black:
+                        moves.append((idx, left, left in white))
+                # right diagonal
+                if c < 7:
+                    right = idx - 7
+                    if right not in black:
+                        moves.append((idx, right, right in white))
+        return moves
+
+    def apply_move(state, move):
+        from_idx, to_idx, is_cap = move
+        white, black, turn = state
+        if turn == 'w':
+            new_white = set(white)
+            new_white.remove(from_idx)
+            new_white.add(to_idx)
+            new_black = set(black)
+            if is_cap:
+                new_black.remove(to_idx)
+            new_turn = 'b'
+        else:
+            new_black = set(black)
+            new_black.remove(from_idx)
+            new_black.add(to_idx)
+            new_white = set(white)
+            if is_cap:
+                new_white.remove(to_idx)
+            new_turn = 'w'
+        return (new_white, new_black, new_turn)
+
+    def terminal(state):
+        white, black, _ = state
+        # promotion win
+        for idx in white:
+            if idx >= 56:  # row 7
+                return True, 'w'
+        for idx in black:
+            if idx < 8:    # row 0
+                return True, 'b'
+        # elimination win
+        if not black:
+            return True, 'w'
+        if not white:
+            return True, 'b'
+        return False, None
+
+    def evaluate(state, root_player):
+        white, black, _ = state
+        # material
+        material = (len(white) - len(black)) * 100
+        # advancement
+        white_adv = sum(idx // 8 for idx in white)
+        black_adv = sum(7 - (idx // 8) for idx in black)
+        advance = white_adv - black_adv
+        # center control
+        center_weights = [0, 0, 1, 2, 2, 1, 0, 0]
+        white_center = sum(center_weights[idx % 8] for idx in white)
+        black_center = sum(center_weights[idx % 8] for idx in black)
+        center = white_center - black_center
+        # attack threats
+        white_attacked = 0
+        for idx in white:
+            r, c = divmod(idx, 8)
+            attacked = False
+            if r < 7:
+                if c > 0 and (idx + 7) in black:
+                    attacked = True
+                if not attacked and c < 7 and (idx + 9) in black:
+                    attacked = True
+            if attacked:
+                white_attacked += 1
+        black_attacked = 0
+        for idx in black:
+            r, c = divmod(idx, 8)
+            attacked = False
+            if r > 0:
+                if c > 0 and (idx - 9) in white:
+                    attacked = True
+                if not attacked and c < 7 and (idx - 7) in white:
+                    attacked = True
+            if attacked:
+                black_attacked += 1
+        attack = black_attacked - white_attacked
+        total = material + advance * 5 + center * 3 + attack * 20
+        return total if root_player == 'w' else -total
+
+    def order_moves(moves, turn):
+        def key(m):
+            _, to_idx, is_cap = m
+            if is_cap:
+                target_row = to_idx // 8
+                if turn == 'w':
+                    priority = target_row          # lower row = more advanced black piece
+                else:
+                    priority = 7 - target_row      # higher row = more advanced white piece
+                return (0, priority)
+            else:
+                return (1, 0)
+        return sorted(moves, key=key)
+
+    def alpha_beta(state, depth, alpha, beta, root_player, ply):
+        check_time()
+        term, winner = terminal(state)
+        if term:
+            if winner == root_player:
+                return WIN - ply, None
+            else:
+                return -WIN + ply, None
+        if depth == 0:
+            return evaluate(state, root_player), None
+        moves = generate_moves(state[0], state[1], state[2])
+        if not moves:
+            return evaluate(state, root_player), None
+        moves = order_moves(moves, state[2])
+        is_max = (state[2] == root_player)
+        best_move = None
+        if is_max:
+            value = -INF
+            for move in moves:
+                new_state = apply_move(state, move)
+                new_value, _ = alpha_beta(new_state, depth - 1, alpha, beta, root_player, ply + 1)
+                if new_value > value:
+                    value = new_value
+                    best_move = move
+                alpha = max(alpha, value)
+                if value >= beta:
+                    break
+            return value, best_move
+        else:
+            value = INF
+            for move in moves:
+                new_state = apply_move(state, move)
+                new_value, _ = alpha_beta(new_state, depth - 1, alpha, beta, root_player, ply + 1)
+                if new_value < value:
+                    value = new_value
+                    best_move = move
+                beta = min(beta, value)
+                if value <= alpha:
+                    break
+            return value, best_move
+
+    # --- Root search ---
+    root_state = (white, black, turn)
+    root_moves = generate_moves(white, black, turn)
+    if not root_moves:                     # should never happen, but safety
+        # return any move (first piece forward if possible, else dummy)
+        dummy_from = next(iter(white if color == 'w' else black), 0)
+        return idx_to_coord(dummy_from), idx_to_coord(dummy_from)
+    root_moves = order_moves(root_moves, turn)
+
+    best_move_overall = None
+    depth = 1
+    max_depth = 20
+    while depth <= max_depth:
+        try:
+            check_time()
+            # promote previous best move to front
+            if best_move_overall is not None:
+                for i, move in enumerate(root_moves):
+                    if move == best_move_overall:
+                        root_moves.insert(0, root_moves.pop(i))
+                        break
+            alpha = -INF
+            beta = INF
+            current_best_move = None
+            current_best_value = -INF
+            for move in root_moves:
+                check_time()
+                new_state = apply_move(root_state, move)
+                val, _ = alpha_beta(new_state, depth - 1, alpha, beta, root_player, 1)
+                if val > current_best_value:
+                    current_best_value = val
+                    current_best_move = move
+                    alpha = max(alpha, current_best_value)
+                if current_best_value >= beta:
+                    break
+            # depth completed successfully
+            best_move_overall = current_best_move
+            depth += 1
+        except TimeoutException:
+            break
+
+    if best_move_overall is None:          # no depth finished
+        best_move_overall = root_moves[0]
+
+    from_idx, to_idx, _ = best_move_overall
+    return idx_to_coord(from_idx), idx_to_coord(to_idx)

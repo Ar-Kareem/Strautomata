@@ -1,0 +1,360 @@
+The strategy for this policy is a fast adversarial search with Kalah-specific heuristics.
+
+It uses:
+- Full legal move generation and exact move simulation.
+- Alpha-beta minimax with:
+  - extra-turn handling,
+  - terminal sweeping,
+  - move ordering,
+  - iterative deepening.
+- A strong evaluation that values:
+  - current store lead,
+  - seeds on board,
+  - extra-turn opportunities,
+  - capture opportunities,
+  - starving / endgame pressure,
+  - avoiding giving the opponent strong replies.
+- Immediate tactical priorities:
+  - take winning terminal moves,
+  - prefer forced extra turns and large captures when good.
+
+It is designed to always return a legal move, be robust under time limits, and play substantially better than a naive heuristic.
+
+<code>
+from __future__ import annotations
+
+import time
+from math import inf
+
+# Kalah policy for 6-house standard board.
+# API:
+#   def policy(you: list[int], opponent: list[int]) -> int
+
+
+# ---------- Core game mechanics ----------
+
+def _is_side_empty(side):
+    return side[0] == 0 and side[1] == 0 and side[2] == 0 and side[3] == 0 and side[4] == 0 and side[5] == 0
+
+
+def _sweep_if_terminal(you, opp):
+    you_empty = _is_side_empty(you)
+    opp_empty = _is_side_empty(opp)
+    if not (you_empty or opp_empty):
+        return False
+
+    if not you_empty:
+        s = you[0] + you[1] + you[2] + you[3] + you[4] + you[5]
+        you[6] += s
+        you[0] = you[1] = you[2] = you[3] = you[4] = you[5] = 0
+    if not opp_empty:
+        s = opp[0] + opp[1] + opp[2] + opp[3] + opp[4] + opp[5]
+        opp[6] += s
+        opp[0] = opp[1] = opp[2] = opp[3] = opp[4] = opp[5] = 0
+    return True
+
+
+def _legal_moves(you):
+    return [i for i in range(6) if you[i] > 0]
+
+
+def _simulate_move(you, opp, move):
+    """
+    Returns:
+      new_you, new_opp, extra_turn, terminal
+    State remains from current player's perspective unless extra_turn is False;
+    caller decides perspective swap.
+    """
+    y = you[:]
+    o = opp[:]
+
+    stones = y[move]
+    y[move] = 0
+
+    side = 0  # 0 = your side, 1 = opponent side
+    idx = move + 1
+    last_side = None
+    last_idx = None
+
+    while stones > 0:
+        if side == 0:
+            while idx <= 6 and stones > 0:
+                # Includes own store at index 6
+                if idx == 6:
+                    y[6] += 1
+                else:
+                    y[idx] += 1
+                stones -= 1
+                last_side, last_idx = 0, idx
+                idx += 1
+            side = 1
+            idx = 0
+        else:
+            while idx <= 5 and stones > 0:
+                # Skip opponent store
+                o[idx] += 1
+                stones -= 1
+                last_side, last_idx = 1, idx
+                idx += 1
+            side = 0
+            idx = 0
+
+    extra_turn = (last_side == 0 and last_idx == 6)
+
+    # Capture
+    if last_side == 0 and 0 <= last_idx <= 5:
+        # Last seed landed in your house that was empty before drop => now exactly 1
+        if y[last_idx] == 1:
+            opp_idx = 5 - last_idx
+            if o[opp_idx] > 0:
+                y[6] += y[last_idx] + o[opp_idx]
+                y[last_idx] = 0
+                o[opp_idx] = 0
+
+    terminal = _sweep_if_terminal(y, o)
+    return y, o, extra_turn, terminal
+
+
+# ---------- Heuristic evaluation ----------
+
+def _count_nonzero_houses(side):
+    c = 0
+    for i in range(6):
+        if side[i] > 0:
+            c += 1
+    return c
+
+
+def _extra_turn_moves(side):
+    c = 0
+    for i in range(6):
+        stones = side[i]
+        if stones <= 0:
+            continue
+        # Distance from house i to own store
+        dist = 6 - i
+        if stones % 13 == dist:
+            c += 1
+    return c
+
+
+def _capture_potential(you, opp):
+    score = 0
+    for i in range(6):
+        stones = you[i]
+        if stones <= 0:
+            continue
+
+        # Simulate only last landing position modulo cycle 13
+        pos = i
+        side = 0
+        s = stones
+        while s > 0:
+            pos += 1
+            if side == 0:
+                if pos == 6:
+                    if s == 1:
+                        # lands in store; no capture
+                        pass
+                    side = 1
+                    pos = -1
+                else:
+                    if s == 1:
+                        j = pos
+                        if 0 <= j <= 5 and you[j] == 0 and opp[5 - j] > 0:
+                            score += 1 + opp[5 - j]
+                    # continue
+            else:
+                if pos == 5:
+                    side = 0
+                    pos = -1
+            s -= 1
+    return score
+
+
+def _terminal_eval(you, opp):
+    return 100000 * (you[6] - opp[6])
+
+
+def _evaluate(you, opp):
+    # Terminal
+    if _is_side_empty(you) or _is_side_empty(opp):
+        y = you[:]
+        o = opp[:]
+        _sweep_if_terminal(y, o)
+        return _terminal_eval(y, o)
+
+    store_diff = you[6] - opp[6]
+    board_you = you[0] + you[1] + you[2] + you[3] + you[4] + you[5]
+    board_opp = opp[0] + opp[1] + opp[2] + opp[3] + opp[4] + opp[5]
+    board_diff = board_you - board_opp
+
+    extra_you = _extra_turn_moves(you)
+    extra_opp = _extra_turn_moves(opp)
+
+    cap_you = _capture_potential(you, opp)
+    cap_opp = _capture_potential(opp, you)
+
+    mobility_you = _count_nonzero_houses(you)
+    mobility_opp = _count_nonzero_houses(opp)
+
+    # Endgame pressure: if one side is close to empty, store lead matters more.
+    near_empty_you = 6 - mobility_you
+    near_empty_opp = 6 - mobility_opp
+
+    val = 0
+    val += 38 * store_diff
+    val += 6 * board_diff
+    val += 22 * (extra_you - extra_opp)
+    val += 10 * (cap_you - cap_opp)
+    val += 3 * (mobility_you - mobility_opp)
+    val += 4 * (near_empty_opp - near_empty_you)
+
+    # Encourage having stones closer to store
+    pos_you = sum((i + 1) * you[i] for i in range(6))
+    pos_opp = sum((i + 1) * opp[i] for i in range(6))
+    val += 1.2 * (pos_you - pos_opp)
+
+    return val
+
+
+# ---------- Search ----------
+
+def _move_order(you, opp, moves):
+    scored = []
+    for m in moves:
+        y2, o2, extra, terminal = _simulate_move(you, opp, m)
+        if terminal:
+            score = 100000 + (y2[6] - o2[6]) * 100
+        else:
+            gain = y2[6] - you[6]
+            # If not extra turn, next perspective swaps; use immediate heuristic only
+            score = gain * 50
+            if extra:
+                score += 200
+            # Favor empties that may capture / keep tempo
+            score += _evaluate(y2, o2) * 0.2
+        scored.append((score, m))
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+
+def _alphabeta(you, opp, depth, alpha, beta, end_time):
+    if time.perf_counter() >= end_time:
+        raise TimeoutError
+
+    if depth <= 0 or _is_side_empty(you) or _is_side_empty(opp):
+        return _evaluate(you, opp)
+
+    moves = _legal_moves(you)
+    if not moves:
+        y = you[:]
+        o = opp[:]
+        _sweep_if_terminal(y, o)
+        return _terminal_eval(y, o)
+
+    moves = _move_order(you, opp, moves)
+
+    best = -inf
+    for m in moves:
+        y2, o2, extra, terminal = _simulate_move(you, opp, m)
+
+        if terminal:
+            val = _terminal_eval(y2, o2)
+        elif extra:
+            val = _alphabeta(y2, o2, depth - 1, alpha, beta, end_time)
+        else:
+            val = -_alphabeta(o2, y2, depth - 1, -beta, -alpha, end_time)
+
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best
+
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    legal = [i for i in range(6) if you[i] > 0]
+    if not legal:
+        return 0  # should not happen per spec
+
+    # Fast tactical check: immediate terminal win / huge swing
+    best_legal = legal[0]
+    best_immediate = -10**18
+    for m in legal:
+        y2, o2, extra, terminal = _simulate_move(you, opponent, m)
+        if terminal:
+            score = 10**12 + (y2[6] - o2[6]) * 10**6
+        else:
+            score = (_evaluate(y2, o2) if extra else -_evaluate(o2, y2))
+        if score > best_immediate:
+            best_immediate = score
+            best_legal = m
+
+    start = time.perf_counter()
+    # Keep margin for safety
+    end_time = start + 0.92
+
+    best_move = best_legal
+    best_score = -inf
+
+    ordered_root = _move_order(you, opponent, legal)
+
+    # Iterative deepening
+    depth = 1
+    try:
+        while depth <= 12:
+            current_best_move = ordered_root[0]
+            current_best_score = -inf
+
+            for m in ordered_root:
+                if time.perf_counter() >= end_time:
+                    raise TimeoutError
+
+                y2, o2, extra, terminal = _simulate_move(you, opponent, m)
+
+                if terminal:
+                    val = _terminal_eval(y2, o2)
+                elif extra:
+                    val = _alphabeta(y2, o2, depth - 1, -inf, inf, end_time)
+                else:
+                    val = -_alphabeta(o2, y2, depth - 1, -inf, inf, end_time)
+
+                if val > current_best_score:
+                    current_best_score = val
+                    current_best_move = m
+
+            best_move = current_best_move
+            best_score = current_best_score
+
+            # Reorder root moves based on latest information
+            root_scores = []
+            for m in ordered_root:
+                y2, o2, extra, terminal = _simulate_move(you, opponent, m)
+                if terminal:
+                    val = _terminal_eval(y2, o2)
+                elif extra:
+                    val = _evaluate(y2, o2)
+                else:
+                    val = -_evaluate(o2, y2)
+                if m == best_move:
+                    val += 1e6
+                root_scores.append((val, m))
+            root_scores.sort(reverse=True)
+            ordered_root = [m for _, m in root_scores]
+
+            depth += 1
+
+    except TimeoutError:
+        pass
+    except Exception:
+        # Absolute safety: return a legal move no matter what.
+        return best_legal if best_legal in legal else legal[0]
+
+    if best_move not in legal:
+        return legal[0]
+    return best_move
+</code>

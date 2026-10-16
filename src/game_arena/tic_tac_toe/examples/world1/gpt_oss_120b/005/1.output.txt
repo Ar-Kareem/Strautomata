@@ -1,0 +1,130 @@
+**Strategy Overview**
+
+The policy uses a classic *minimax* search with full game‑tree evaluation.  
+
+1. **Terminal detection** – the board is checked for a win (three `1`s or three `‑1`s) or for a full board (draw).  
+2. **Recursive evaluation** –  
+   * When it is our turn (`1`), we try every legal move, simulate it, and pick the move with the **maximum** score.  
+   * When it is the opponent’s turn (`‑1`), we simulate all opponent moves and take the **minimum** score.  
+3. **Scoring** – a terminal win for us returns `+1`, a terminal loss returns `‑1`, and a draw returns `0`.  
+4. **Move selection** – the root call (our turn) returns the coordinates of the move that yields the highest minimax value. Because the whole game tree (at most 9! ≈ 362 880 nodes) is tiny, the search finishes well within the time limit and always plays perfectly: it will win when possible, block any opponent win, and never lose.
+
+The implementation also includes a small cache (dictionary) to avoid recomputing identical board states, which further speeds up the decision.
+
+```python
+<code>
+from __future__ import annotations
+from typing import List, Tuple, Dict
+
+Board = List[List[int]]
+Move = Tuple[int, int]
+
+def policy(board: Board) -> Move:
+    """
+    Return the optimal (row, col) for player 1 on the given 3x3 Tic‑Tac‑Toe board.
+    The board uses:
+        0  – empty cell
+        1  – our mark
+       -1  – opponent's mark
+    The function assumes it is player 1's turn.
+    """
+    # ---- helper functions -------------------------------------------------
+    def board_to_key(b: Board) -> Tuple[int, ...]:
+        """Convert a 3x3 board into a hashable tuple."""
+        return tuple(cell for row in b for cell in row)
+
+    def check_winner(b: Board) -> int:
+        """Return 1 if we win, -1 if opponent wins, 0 otherwise."""
+        lines = []
+
+        # rows and columns
+        for i in range(3):
+            lines.append(b[i])                         # row i
+            lines.append([b[0][i], b[1][i], b[2][i]]) # column i
+
+        # diagonals
+        lines.append([b[0][0], b[1][1], b[2][2]])
+        lines.append([b[0][2], b[1][1], b[2][0]])
+
+        for line in lines:
+            s = sum(line)
+            if s == 3:
+                return 1
+            if s == -3:
+                return -1
+        return 0
+
+    def is_full(b: Board) -> bool:
+        return all(cell != 0 for row in b for cell in row)
+
+    # ---- minimax with memoisation -----------------------------------------
+    memo: Dict[Tuple[int, ...], int] = {}
+
+    def minimax(b: Board, player: int) -> int:
+        """
+        Return the minimax value of board `b` when it is `player`'s turn.
+        player = 1  -> we maximise
+        player = -1 -> opponent minimises
+        """
+        key = board_to_key(b)
+        if key in memo:
+            return memo[key]
+
+        winner = check_winner(b)
+        if winner != 0:
+            memo[key] = winner
+            return winner
+
+        if is_full(b):
+            memo[key] = 0
+            return 0
+
+        # generate all possible moves
+        best = -float('inf') if player == 1 else float('inf')
+
+        for r in range(3):
+            for c in range(3):
+                if b[r][c] == 0:
+                    b[r][c] = player
+                    val = minimax(b, -player)
+                    b[r][c] = 0
+
+                    if player == 1:
+                        if val > best:
+                            best = val
+                    else:
+                        if val < best:
+                            best = val
+
+        memo[key] = best
+        return best
+
+    # ---- choose the best move for player 1 ---------------------------------
+    best_move: Move = (-1, -1)
+    best_score = -float('inf')
+
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                board[r][c] = 1
+                score = minimax(board, -1)   # opponent to move next
+                board[r][c] = 0
+
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+
+                # early exit: winning move found
+                if best_score == 1:
+                    return best_move
+
+    # Fallback – should never happen because there is always at least one empty cell
+    if best_move == (-1, -1):
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == 0:
+                    return (r, c)
+
+    return best_move
+</code>
+```

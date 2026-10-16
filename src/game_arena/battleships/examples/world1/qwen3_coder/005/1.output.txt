@@ -1,0 +1,105 @@
+<thinking>
+I need to implement a smart battleship targeting strategy. Here's my approach:
+
+1. **Hunt Mode**: When there are no current hits, target cells that could potentially contain ships using a checkerboard pattern (since ships are placed horizontally/vertically, we don't need to check every cell).
+
+2. **Target Mode**: When we have a hit, we need to:
+   - Continue hunting in the four directions (up, down, left, right) from that hit
+   - Keep track of multiple potential ship segments
+   - Prioritize continuing to attack along a line once we've established a direction
+
+3. **Ship Sinking Logic**: Once we know a ship is sunk (no more adjacent hits that aren't part of sunk ships), we should go back to hunting.
+
+4. **Probability-based targeting**: In hunt mode, prioritize cells that have higher probability of containing ships based on remaining ship lengths.
+
+Let me think about implementation details:
+- Track consecutive hits to determine ship orientation
+- When there's a single hit, try all four directions
+- When there are multiple hits in a line, continue along that axis
+- Use a probability map for hunt mode to prioritize likely ship positions
+
+My strategy:
+1. First check if we have any hit ships that need follow-up
+2. If not, use probability-based hunting with checkerboard pattern
+3. For follow-up hits, prioritize the direction that continues a line if one exists
+</thinking>
+
+<code>
+import random
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert board to more convenient format
+    hits = []  # List of (row, col) where we hit a ship
+    misses = []  # List of (row, col) where we missed
+    unknown = []  # List of (row, col) we haven't fired at
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.append((r, c))
+            elif board[r][c] == -1:
+                misses.append((r, c))
+            else:  # board[r][c] == 0
+                unknown.append((r, c))
+    
+    # If no hits, we're in hunt mode
+    if not hits:
+        # Use checkerboard pattern for efficient hunting
+        # Check even rows and cols first
+        checkerboard = [(r, c) for r, c in unknown if (r + c) % 2 == 0]
+        if checkerboard:
+            return random.choice(checkerboard)
+        else:
+            return random.choice(unknown)
+    
+    # We have hits, so we're in target mode
+    # Find adjacent cells to hits that are still unknown
+    adjacent_to_hits = []
+    
+    for r, c in hits:
+        # Check four directions
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                adjacent_to_hits.append((nr, nc))
+    
+    # If we have adjacent cells to hit, prioritize those
+    if adjacent_to_hits:
+        # Prefer continuing in a line if we have multiple hits
+        line_continuations = []
+        
+        for r, c in hits:
+            # Check if this hit has a neighbor that's also a hit
+            # Look for horizontal or vertical lines
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                    # We found two hits in a line - continue in that direction
+                    # Direction vector is (dr, dc)
+                    # Continue in that direction from both ends
+                    continuation1 = (r - dr, c - dc)
+                    continuation2 = (nr + dr, nc + dc)
+                    
+                    for cont_r, cont_c in [continuation1, continuation2]:
+                        if (0 <= cont_r < 10 and 0 <= cont_c < 10 and 
+                            board[cont_r][cont_c] == 0):
+                            line_continuations.append((cont_r, cont_c))
+        
+        # If we found line continuations, prioritize them
+        if line_continuations:
+            # Filter to only those that are in adjacent_to_hits
+            valid_continuations = [pos for pos in line_continuations if pos in adjacent_to_hits]
+            if valid_continuations:
+                return random.choice(valid_continuations)
+        
+        # Otherwise, just pick a random adjacent cell
+        return random.choice(adjacent_to_hits)
+    
+    # If no adjacent unknown cells, go back to hunt mode
+    checkerboard = [(r, c) for r, c in unknown if (r + c) % 2 == 0]
+    if checkerboard:
+        return random.choice(checkerboard)
+    else:
+        return random.choice(unknown)
+</code>

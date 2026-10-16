@@ -1,0 +1,184 @@
+
+import time
+from typing import List, Tuple, Set
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    start_time = time.time()
+    
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Setup directions and goals based on color
+    if color == 'w':
+        my_dir = 1
+        my_goal = 7
+        opp_goal = 0
+    else:
+        my_dir = -1
+        my_goal = 0
+        opp_goal = 7
+    
+    def generate_moves(pieces: Set[Tuple[int, int]], opposition: Set[Tuple[int, int]], direction: int):
+        """Generate all legal moves for pieces moving in the given direction."""
+        moves = []
+        for r, c in pieces:
+            nr = r + direction
+            if 0 <= nr < 8:
+                # Straight forward
+                if (nr, c) not in pieces and (nr, c) not in opposition:
+                    moves.append(((r, c), (nr, c)))
+                # Diagonal left
+                if c > 0:
+                    nc = c - 1
+                    if (nr, nc) in opposition or (nr, nc) not in pieces:
+                        moves.append(((r, c), (nr, nc)))
+                # Diagonal right
+                if c < 7:
+                    nc = c + 1
+                    if (nr, nc) in opposition or (nr, nc) not in pieces:
+                        moves.append(((r, c), (nr, nc)))
+        return moves
+    
+    # Get all legal moves for current position
+    root_moves = generate_moves(me_set, opp_set, my_dir)
+    
+    # If any immediate winning move exists, take it
+    for move in root_moves:
+        if move[1][0] == my_goal:
+            return move
+    
+    # Fallback if no moves (shouldn't happen in valid game state)
+    if not root_moves:
+        return ((me[0][0], me[0][1]), (me[0][0] + my_dir, me[0][1])) if me else ((0, 0), (0, 0))
+    
+    def evaluate(my_p: Set[Tuple[int, int]], op_p: Set[Tuple[int, int]]) -> int:
+        """Evaluate position from perspective of player 'color'."""
+        # Material advantage
+        score = (len(my_p) - len(op_p)) * 100
+        
+        # Advancement (distance to goal)
+        if color == 'w':
+            # White wants high row numbers
+            my_progress = sum(r for r, _ in my_p)
+            opp_progress = sum(7 - r for r, _ in op_p)
+        else:
+            # Black wants low row numbers (0)
+            my_progress = sum(7 - r for r, _ in my_p)
+            opp_progress = sum(r for r, _ in op_p)
+        
+        score += (my_progress - opp_progress) * 10
+        
+        # Center control bonus (columns 2-5)
+        for _, c in my_p:
+            if 2 <= c <= 5:
+                score += 2
+        
+        return score
+    
+    def negamax(pieces: Set[Tuple[int, int]], op_p: Set[Tuple[int, int]], 
+                depth: int, alpha: float, beta: float, player: str) -> int:
+        """
+        Negamax search with alpha-beta pruning.
+        player: whose turn it is ('w' or 'b')
+        """
+        # Check if current player already won (reached goal)
+        goal = 7 if player == 'w' else 0
+        for r, _ in pieces:
+            if r == goal:
+                return 10000
+        
+        # Check if opponent all captured
+        if not op_p:
+            return 10000
+        
+        if depth == 0:
+            if player == color:
+                return evaluate(pieces, op_p)
+            else:
+                return -evaluate(op_p, pieces)
+        
+        direction = 1 if player == 'w' else -1
+        moves = generate_moves(pieces, op_p, direction)
+        
+        if not moves:
+            return -10000  # No legal moves = loss
+        
+        # Move ordering: captures first, then forward moves
+        moves.sort(key=lambda m: (m[1] in op_p, 
+                                  abs(m[1][0] - goal) < abs(m[0][0] - goal)), 
+                   reverse=True)
+        
+        best_val = -float('inf')
+        for fr, to in moves:
+            # Make move
+            new_pieces = set(pieces)
+            new_pieces.remove(fr)
+            new_pieces.add(to)
+            new_opp = set(op_p)
+            
+            if to in new_opp:
+                new_opp.remove(to)
+            
+            # Immediate win check in search
+            if to[0] == goal:
+                return 10000
+            
+            # Recursive search
+            val = -negamax(new_opp, new_pieces, depth - 1, -beta, -alpha, 
+                          'b' if player == 'w' else 'w')
+            
+            if val > best_val:
+                best_val = val
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+                
+        return best_val
+    
+    # Iterative deepening
+    best_move = root_moves[0]
+    
+    for depth in range(1, 5):  # Search depths 1 through 4
+        current_best = best_move
+        best_score = -float('inf')
+        
+        # Root move ordering
+        move_scores = []
+        for m in root_moves:
+            fr, to = m
+            score = 0
+            if to in opp_set:  # Capture
+                score += 100
+            # Forward progress
+            score += (to[0] - fr[0]) * my_dir * 10
+            move_scores.append((score, m))
+        
+        move_scores.sort(reverse=True)
+        
+        for _, move in move_scores:
+            # Time check
+            if time.time() - start_time > 0.95:
+                return best_move
+            
+            fr, to = move
+            
+            # Update board
+            new_me = set(me_set)
+            new_me.remove(fr)
+            new_me.add(to)
+            new_opp = set(opp_set)
+            if to in new_opp:
+                new_opp.remove(to)
+            
+            # Search
+            score = -negamax(new_opp, new_me, depth - 1, -float('inf'), 
+                           float('inf'), 'b' if color == 'w' else 'w')
+            
+            if score > best_score:
+                best_score = score
+                current_best = move
+        
+        best_move = current_best
+    
+    return best_move

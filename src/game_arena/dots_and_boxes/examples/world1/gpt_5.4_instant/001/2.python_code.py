@@ -1,0 +1,205 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    N = 4  # 4x4 boxes, arrays are 5x5 for edge indexing
+
+    def legal_moves(h, v):
+        moves = []
+        for r in range(5):
+            for c in range(5):
+                if h[r, c] == 0:
+                    moves.append((r, c, 'H'))
+                if v[r, c] == 0:
+                    moves.append((r, c, 'V'))
+        return moves
+
+    def adjacent_boxes(move):
+        r, c, d = move
+        boxes = []
+        if d == 'H':
+            if r > 0 and c < N:
+                boxes.append((r - 1, c))
+            if r < N and c < N:
+                boxes.append((r, c))
+        else:  # 'V'
+            if c > 0 and r < N:
+                boxes.append((r, c - 1))
+            if c < N and r < N:
+                boxes.append((r, c))
+        return boxes
+
+    def box_edge_count(h, v, br, bc):
+        cnt = 0
+        if h[br, bc] != 0:
+            cnt += 1
+        if h[br + 1, bc] != 0:
+            cnt += 1
+        if v[br, bc] != 0:
+            cnt += 1
+        if v[br, bc + 1] != 0:
+            cnt += 1
+        return cnt
+
+    def apply_move(h, v, cap, move, player=1):
+        h2 = h.copy()
+        v2 = v.copy()
+        cap2 = cap.copy()
+        r, c, d = move
+        if d == 'H':
+            h2[r, c] = player
+        else:
+            v2[r, c] = player
+
+        gained = 0
+        for br, bc in adjacent_boxes(move):
+            if cap2[br, bc] == 0 and box_edge_count(h2, v2, br, bc) == 4:
+                cap2[br, bc] = player
+                gained += 1
+        return h2, v2, cap2, gained
+
+    def is_capturing_move(h, v, cap, move):
+        _, _, _, gained = apply_move(h, v, cap, move, player=1)
+        return gained > 0
+
+    def creates_third_side(h, v, cap, move):
+        # True if after this move any adjacent unclaimed box has exactly 3 sides.
+        r, c, d = move
+        for br, bc in adjacent_boxes(move):
+            if cap[br, bc] != 0:
+                continue
+            before = box_edge_count(h, v, br, bc)
+            after = before + 1
+            if after == 3:
+                return True
+        return False
+
+    def move_risk_score(h, v, cap, move):
+        # Lower is better.
+        # Penalize creating 3-sided boxes heavily, then 2-sided boxes lightly.
+        score = 0
+        for br, bc in adjacent_boxes(move):
+            if cap[br, bc] != 0:
+                continue
+            before = box_edge_count(h, v, br, bc)
+            after = before + 1
+            if after == 3:
+                score += 100
+            elif after == 2:
+                score += 3
+            elif after == 1:
+                score += 1
+            elif after == 4:
+                score -= 1000  # capturing is great
+        # Slight centrality preference can be helpful in neutral cases.
+        r, c, d = move
+        score += abs(r - 2) * 0.05 + abs(c - 2) * 0.05
+        return score
+
+    def available_box_closures(h, v, cap):
+        # Returns moves that capture at least one box in current state.
+        caps = []
+        for mv in legal_moves(h, v):
+            if is_capturing_move(h, v, cap, mv):
+                caps.append(mv)
+        return caps
+
+    def greedy_capture_sequence(h, v, cap):
+        # Approximate best forced capturing continuation for the side to move:
+        # repeatedly take available capturing moves, preferring those that
+        # capture more boxes immediately.
+        total = 0
+        h2, v2, cap2 = h.copy(), v.copy(), cap.copy()
+        while True:
+            caps = []
+            for mv in legal_moves(h2, v2):
+                hh, vv, cc, gained = apply_move(h2, v2, cap2, mv, player=1)
+                if gained > 0:
+                    # prefer larger immediate gains, then lower risk
+                    risk = move_risk_score(h2, v2, cap2, mv)
+                    caps.append((gained, -risk, mv, hh, vv, cc))
+            if not caps:
+                break
+            caps.sort(reverse=True, key=lambda x: (x[0], x[1]))
+            gained, _, mv, h2, v2, cap2 = caps[0]
+            total += gained
+        return total
+
+    def opponent_chain_value_after_sacrifice(h, v, cap, move):
+        # Simulate our non-capturing move, then estimate how many boxes the opponent
+        # can force immediately by greedily taking captures.
+        h2, v2, cap2, gained = apply_move(h, v, cap, move, player=1)
+        if gained > 0:
+            return -gained  # not a sacrifice; actually good for us
+
+        # Opponent's turn. Re-use same capture logic; player sign does not affect
+        # availability of captures for counting purposes.
+        opp_total = 0
+        while True:
+            caps = []
+            for mv in legal_moves(h2, v2):
+                hh, vv, cc, g = apply_move(h2, v2, cap2, mv, player=-1)
+                if g > 0:
+                    # Opponent prefers bigger captures.
+                    caps.append((g, mv, hh, vv, cc))
+            if not caps:
+                break
+            caps.sort(reverse=True, key=lambda x: x[0])
+            g, mv, h2, v2, cap2 = caps[0]
+            opp_total += g
+        return opp_total
+
+    moves = legal_moves(horizontal, vertical)
+    if not moves:
+        return "0,0,H"  # unreachable in valid games, but keeps return type valid
+
+    # 1. Take captures immediately.
+    capturing = []
+    for mv in moves:
+        hh, vv, cc, gained = apply_move(horizontal, vertical, capture, mv, player=1)
+        if gained > 0:
+            # Also estimate additional captures we can continue to take.
+            cont = greedy_capture_sequence(hh, vv, cc)
+            score = gained + cont
+            capturing.append((score, gained, -move_risk_score(horizontal, vertical, capture, mv), mv))
+    if capturing:
+        capturing.sort(reverse=True)
+        r, c, d = capturing[0][3]
+        return f"{r},{c},{d}"
+
+    # 2. Prefer safe moves that do not create a 3-sided box.
+    safe = [mv for mv in moves if not creates_third_side(horizontal, vertical, capture, mv)]
+    if safe:
+        safe_scored = []
+        for mv in safe:
+            score = move_risk_score(horizontal, vertical, capture, mv)
+            safe_scored.append((score, mv))
+        safe_scored.sort(key=lambda x: x[0])
+        r, c, d = safe_scored[0][1]
+        return f"{r},{c},{d}"
+
+    # 3. No safe move exists: minimize opponent's forced chain.
+    sacrifice_scored = []
+    for mv in moves:
+        opp = opponent_chain_value_after_sacrifice(horizontal, vertical, capture, mv)
+        risk = move_risk_score(horizontal, vertical, capture, mv)
+        sacrifice_scored.append((opp, risk, mv))
+    sacrifice_scored.sort(key=lambda x: (x[0], x[1]))
+    r, c, d = sacrifice_scored[0][2]
+
+    # Final legality safeguard.
+    if d == 'H':
+        if horizontal[r, c] == 0:
+            return f"{r},{c},{d}"
+    else:
+        if vertical[r, c] == 0:
+            return f"{r},{c},{d}"
+
+    # Absolute fallback: first legal move.
+    for rr, cc, dd in moves:
+        if dd == 'H' and horizontal[rr, cc] == 0:
+            return f"{rr},{cc},{dd}"
+        if dd == 'V' and vertical[rr, cc] == 0:
+            return f"{rr},{cc},{dd}"
+
+    return "0,0,H"

@@ -1,0 +1,186 @@
+The strategy for this policy is to use an iterative deepening Minimax search with Alpha-Beta pruning. Given the 6x6 board size, a depth of 2 is computationally feasible within the 1-second time limit in Python. The evaluation function is based on "territory" or mobility, specifically calculating the number of squares reachable by each player's amazons. This metric is efficient to compute and strongly correlates with winning positions in Amazons. The move generation logic strictly adheres to the rules, including the vacated starting square accessibility for arrow shots.
+
+<code>
+import numpy as np
+import sys
+
+# Constants
+BOARD_SIZE = 6
+DIRECTIONS = [(dr, dc) for dr in [-1, 0, 1] for dc in [-1, 0, 1] if not (dr == 0 and dc == 0)]
+
+def get_reachable_count(board, locs):
+    """Calculates total reachable empty squares for a list of amazon locations."""
+    count = 0
+    for r, c in locs:
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr, nc] == 0:
+                count += 1
+                nr += dr
+                nc += dc
+    return count
+
+def get_legal_moves(board, my_locs):
+    """Generates all legal moves for the current player."""
+    moves = []
+    # my_locs is a list of (r, c) tuples for the current player
+    
+    for fr, fc in my_locs:
+        # Generate amazon moves
+        for mdr, mdc in DIRECTIONS:
+            tr, tc = fr + mdr, fc + mdc
+            # Path tracing for move
+            while 0 <= tr < BOARD_SIZE and 0 <= tc < BOARD_SIZE and board[tr, tc] == 0:
+                # Valid move found (fr, fc) -> (tr, tc)
+                # Now generate arrow shots from (tr, tc)
+                
+                for adr, adc in DIRECTIONS:
+                    ar, ac = tr + adr, tc + adc
+                    # Path tracing for arrow
+                    while 0 <= ar < BOARD_SIZE and 0 <= ac < BOARD_SIZE:
+                        # Check if arrow path is valid
+                        # Arrow can land on empty square OR the vacated amazon square (fr, fc)
+                        # Note: board[tr, tc] is currently 0 (target square)
+                        
+                        if board[ar, ac] == 0 or (ar == fr and ac == fc):
+                            moves.append((fr, fc, tr, tc, ar, ac))
+                            
+                            # If arrow lands on vacated square, it stops there (valid)
+                            # We continue checking extensions of the arrow ray
+                            # unless the arrow landed exactly on the vacated square?
+                            # Actually, if we pass through (fr, fc), we must ensure we don't stop 'inside' it
+                            # unless we are landing there.
+                            # But logic above handles landing.
+                            # What if (fr, fc) is in the middle of the path?
+                            # The ray continues. board[fr, fc] is 1 (occupied in array), 
+                            # but logically empty.
+                            # However, we need to be careful with the `while` loop condition.
+                            
+                            # Correction: board[ar, ac] == 0 check is strictly for empty squares on board.
+                            # If we are at (fr, fc), board[fr, fc] is 1 (my amazon).
+                            # So `board[ar, ac] == 0` fails.
+                            # We need a special check for the vacated square.
+                            
+                            if ar == fr and ac == fc:
+                                # Landed on vacated square. Arrow stops. 
+                                # Do not extend ray further.
+                                break
+                            
+                            # Continue ray
+                            ar += adr
+                            ac += adc
+                        else:
+                            # Blocked by something else (opponent, arrow, or self if not vacated)
+                            break
+                            
+                # Continue move ray
+                tr += mdr
+                tc += mdc
+    return moves
+
+def minimax(board, my_locs, opp_locs, depth, alpha, beta, maximizing_player):
+    """Minimax with Alpha-Beta pruning."""
+    
+    # Terminal state check
+    moves = get_legal_moves(board, my_locs)
+    
+    if depth == 0:
+        # Evaluate current state
+        my_score = get_reachable_count(board, my_locs)
+        opp_score = get_reachable_count(board, opp_locs)
+        return my_score - opp_score, None
+    
+    if not moves:
+        # No moves left for current player = Loss
+        return (-float('inf') if maximizing_player else float('inf')), None
+
+    best_move = moves[0] # Default
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        for fr, fc, tr, tc, ar, ac in moves:
+            # Apply move
+            # Update board
+            board[fr, fc] = 0
+            board[tr, tc] = 1
+            board[ar, ac] = -1
+            
+            # Update locations
+            # Find index of moved amazon and update
+            idx = my_locs.index((fr, fc))
+            original_loc = my_locs[idx]
+            my_locs[idx] = (tr, tc)
+            
+            # Recursive call (switching turns)
+            eval_score, _ = minimax(board, opp_locs, my_locs, depth - 1, alpha, beta, False)
+            
+            # Undo move
+            my_locs[idx] = original_loc
+            board[ar, ac] = 0
+            board[tr, tc] = 0
+            board[fr, fc] = 1
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = (fr, fc, tr, tc, ar, ac)
+            
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+                
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for fr, fc, tr, tc, ar, ac in moves:
+            # Apply move
+            # Opponent is '2' on board
+            board[fr, fc] = 0
+            board[tr, tc] = 2
+            board[ar, ac] = -1
+            
+            idx = my_locs.index((fr, fc))
+            original_loc = my_locs[idx]
+            my_locs[idx] = (tr, tc)
+            
+            # Recursive call
+            eval_score, _ = minimax(board, opp_locs, my_locs, depth - 1, alpha, beta, True)
+            
+            # Undo move
+            my_locs[idx] = original_loc
+            board[ar, ac] = 0
+            board[tr, tc] = 0
+            board[fr, fc] = 2
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = (fr, fc, tr, tc, ar, ac)
+            
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+                
+        return min_eval, best_move
+
+def policy(board):
+    board = np.array(board, dtype=int)
+    
+    # Locate amazons
+    my_locs = list(map(tuple, np.argwhere(board == 1)))
+    opp_locs = list(map(tuple, np.argwhere(board == 2)))
+    
+    # Run Minimax
+    # Depth 2 is safe for 1 second
+    _, best_move = minimax(board, my_locs, opp_locs, 2, -float('inf'), float('inf'), True)
+    
+    if best_move is None:
+        # Fallback: should not happen if moves exist, but safety first
+        # Return first possible move if available
+        moves = get_legal_moves(board, my_locs)
+        if moves:
+            best_move = moves[0]
+        else:
+            return "0,0:0,0:0,0" # No legal moves possible (loss)
+
+    fr, fc, tr, tc, ar, ac = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+</code>

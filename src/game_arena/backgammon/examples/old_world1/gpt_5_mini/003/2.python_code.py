@@ -1,0 +1,302 @@
+
+import copy
+from typing import List, Tuple, Optional
+
+def policy(state: dict) -> str:
+    """
+    Determine a legal backgammon move string for the current state.
+    Strategy:
+    - Infer movement direction by comparing counts in the low-home (0..5) and high-home (18..23).
+    - Consider both orders of dice application (H and L).
+    - Search for legal two-move sequences (simulate the first move and check second).
+    - Score sequences preferring hits, then total pip advancement.
+    - If no two-move sequence, search for single-die moves; if only one die can be played, play the higher die.
+    - Always obey bar requirement: if my_bar > 0, must use 'B' for the first move(s).
+    - Return action string in format "<H|L>:<FROM1>,<FROM2>".
+    """
+    my_pts: List[int] = state.get('my_pts', [0]*24)
+    opp_pts: List[int] = state.get('opp_pts', [0]*24)
+    my_bar: int = int(state.get('my_bar', 0))
+    opp_bar: int = int(state.get('opp_bar', 0))
+    my_off: int = int(state.get('my_off', 0))
+    dice: List[int] = list(state.get('dice', []))  # list of 0,1,2 ints in 1..6
+    # Normalize dice: length can be 0,1,2
+    if len(dice) == 0:
+        return "H:P,P"
+    if len(dice) == 1:
+        dice = [dice[0]]
+    # determine high/low labeling
+    if len(dice) == 2:
+        d1, d2 = dice[0], dice[1]
+        high_die = max(d1, d2)
+        low_die = min(d1, d2)
+    else:
+        high_die = dice[0]
+        low_die = None
+
+    # Infer orientation: if more checkers in high-home region (18..23), assume moving increasing (towards 23).
+    sum_low_home = sum(my_pts[0:6])
+    sum_high_home = sum(my_pts[18:24])
+    moving_increasing = True if sum_high_home >= sum_low_home else False
+    # Define helpers for destinations and home check
+    def dest_of(start: int, die: int) -> Optional[int]:
+        """Return destination index or None if bearing off (outside 0..23)."""
+        if moving_increasing:
+            return start + die
+        else:
+            return start - die
+
+    def bar_entry_dest(die: int) -> int:
+        """Compute bar entry index given die."""
+        if moving_increasing:
+            # entry at die-1 (0-based)
+            return die - 1
+        else:
+            # entry at 24 - die
+            return 24 - die
+
+    def in_home_board(idx: int) -> bool:
+        if moving_increasing:
+            return 18 <= idx <= 23
+        else:
+            return 0 <= idx <= 5
+
+    def all_in_home(pts: List[int]) -> bool:
+        # true if all checkers are in home board or borne off
+        outside = 0
+        if moving_increasing:
+            outside = sum(pts[0:18])
+        else:
+            outside = sum(pts[6:24])
+        return outside == 0
+
+    def dest_is_legal(dest: Optional[int], opp_pts_local: List[int], my_pts_local: List[int]) -> bool:
+        """Check if landing on dest is legal given opponent occupancy and home rules.
+        dest is None or int; for offboard (dest<0 or dest>=24) we handle separately.
+        """
+        if dest is None:
+            return False
+        if 0 <= dest < 24:
+            return opp_pts_local[dest] < 2
+        else:
+            # bearing off; only allowed if all in home
+            return all_in_home(my_pts_local)
+
+    # Generate candidate start points (absolute indices) where we have checkers.
+    def candidate_starts(pts: List[int]) -> List[str]:
+        res = []
+        if my_bar > 0:
+            res.append('B')
+            return res
+        for i in range(24):
+            if pts[i] > 0:
+                res.append(f'A{i}')
+        if not res:
+            res.append('P')  # no checkers (shouldn't happen normally)
+        return res
+
+    # Helper to apply a move to simulated boards
+    def apply_move(start_token: str, die: int, my_pts_local: List[int], opp_pts_local: List[int], my_bar_local: int):
+        """Apply move from start_token using die, mutate the lists, return updated values and a flag if hit occurred."""
+        hit = 0
+        # Copy lists assumed done by caller if needed
+        if start_token == 'P':
+            return my_pts_local, opp_pts_local, my_bar_local, hit
+        if start_token == 'B':
+            # moving from bar: consume one from bar and place on entry point
+            if my_bar_local <= 0:
+                # illegal; but return without change
+                return my_pts_local, opp_pts_local, my_bar_local, hit
+            my_bar_local -= 1
+            dest = bar_entry_dest(die)
+            if 0 <= dest < 24:
+                if opp_pts_local[dest] == 1:
+                    # hit opponent blot
+                    opp_pts_local[dest] = 0
+                    hit = 1
+                # place our checker
+                my_pts_local[dest] += 1
+            else:
+                # would be bearing off from bar? improbable; ignore
+                pass
+            return my_pts_local, opp_pts_local, my_bar_local, hit
+        # start_token is 'A{idx}'
+        idx = int(start_token[1:])
+        # reduce from start
+        if idx < 0 or idx >= 24:
+            return my_pts_local, opp_pts_local, my_bar_local, hit
+        if my_pts_local[idx] <= 0:
+            return my_pts_local, opp_pts_local, my_bar_local, hit
+        my_pts_local[idx] -= 1
+        dest = dest_of(idx, die)
+        if dest is not None and 0 <= dest < 24:
+            if opp_pts_local[dest] == 1:
+                opp_pts_local[dest] = 0
+                hit = 1
+            my_pts_local[dest] += 1
+        else:
+            # bearing off: do not place on board; increment my_off implicitly (we don't track my_off_local here)
+            pass
+        return my_pts_local, opp_pts_local, my_bar_local, hit
+
+    # Check if a single move is legal from start with die
+    def single_move_legal(start_token: str, die: int, my_pts_local: List[int], opp_pts_local: List[int], my_bar_local: int) -> bool:
+        if start_token == 'P':
+            return False
+        if start_token == 'B':
+            if my_bar_local <= 0:
+                return False
+            dest = bar_entry_dest(die)
+            if 0 <= dest < 24:
+                return opp_pts_local[dest] < 2
+            else:
+                # bar entry off-board? treat as illegal
+                return False
+        idx = int(start_token[1:])
+        if idx < 0 or idx >= 24:
+            return False
+        if my_pts_local[idx] <= 0:
+            return False
+        dest = dest_of(idx, die)
+        if 0 <= dest < 24:
+            return opp_pts_local[dest] < 2
+        else:
+            # bearing off: allowed only if all in home
+            return all_in_home(my_pts_local)
+
+    # Build list of start tokens initially available
+    starts_initial = candidate_starts(my_pts)
+
+    # Utility to enumerate all possible start tokens for a given current my_pts_local and my_bar_local
+    def current_start_tokens(my_pts_local: List[int], my_bar_local: int) -> List[str]:
+        if my_bar_local > 0:
+            return ['B']
+        res = []
+        for i in range(24):
+            if my_pts_local[i] > 0:
+                res.append(f'A{i}')
+        if not res:
+            res.append('P')
+        return res
+
+    # Try sequences for a given order (first_die, second_die). Return best found or None.
+    def find_best_sequence(first_die: int, second_die: int) -> Optional[Tuple[str, str, int, int]]:
+        # Returns (from1, from2, hits, move_score) or None
+        best = None  # tuple as above, higher hits then higher score preferred
+        # initial tokens
+        starts = current_start_tokens(my_pts, my_bar)
+        for start1 in starts:
+            # check if move1 legal
+            if not single_move_legal(start1, first_die, my_pts, opp_pts, my_bar):
+                continue
+            # simulate move1
+            my_pts1 = my_pts.copy()
+            opp_pts1 = opp_pts.copy()
+            my_bar1 = my_bar
+            my_pts1, opp_pts1, my_bar1, hit1 = apply_move(start1, first_die, my_pts1, opp_pts1, my_bar1)
+            # now try second move
+            starts2 = current_start_tokens(my_pts1, my_bar1)
+            any_second = False
+            for start2 in starts2:
+                if not single_move_legal(start2, second_die, my_pts1, opp_pts1, my_bar1):
+                    continue
+                any_second = True
+                # simulate second move to compute hits and score
+                my_pts2 = my_pts1.copy()
+                opp_pts2 = opp_pts1.copy()
+                my_bar2 = my_bar1
+                my_pts2, opp_pts2, my_bar2, hit2 = apply_move(start2, second_die, my_pts2, opp_pts2, my_bar2)
+                total_hits = hit1 + hit2
+                # score pip advancement: number of pips moved effectively (we can count die values used for non-bear-off; bearing off counts too)
+                # However moves that bear off still beneficial; we count die value for simplicity
+                move_score = first_die + second_die + (2 * total_hits)  # bias hits more
+                candidate = (start1, start2, total_hits, move_score)
+                if best is None or (candidate[2], candidate[3]) > (best[2], best[3]):
+                    best = candidate
+            # if no second move was possible then maybe only one die can be played after move1; that's okay but engine will check overall legality:
+            # We only accept sequences that play both dice here. If none available for any start1 then function returns None.
+        return best
+
+    # Try both orders if two dice
+    action_from1 = 'P'
+    action_from2 = 'P'
+    chosen_order = 'H'
+    if len(dice) == 2:
+        # try H order first (higher die first)
+        order_candidates = []
+        seq_H = find_best_sequence(high_die, low_die)
+        seq_L = find_best_sequence(low_die, high_die)
+        # choose better between seq_H and seq_L
+        chosen_seq = None
+        chosen_order = 'H'
+        if seq_H and seq_L:
+            # compare hits then score
+            if (seq_H[2], seq_H[3]) >= (seq_L[2], seq_L[3]):
+                chosen_seq = seq_H
+                chosen_order = 'H'
+            else:
+                chosen_seq = seq_L
+                chosen_order = 'L'
+        elif seq_H:
+            chosen_seq = seq_H
+            chosen_order = 'H'
+        elif seq_L:
+            chosen_seq = seq_L
+            chosen_order = 'L'
+        else:
+            chosen_seq = None
+
+        if chosen_seq:
+            action_from1, action_from2 = chosen_seq[0], chosen_seq[1]
+            return f"{chosen_order}:{action_from1},{action_from2}"
+
+        # No two-die sequence found. Now check single-die availability.
+        # Determine if only one die can be played (must play higher die if only one playable).
+        # Check single-die possible start tokens for each die.
+        def any_single_playable(die: int) -> Optional[str]:
+            starts = current_start_tokens(my_pts, my_bar)
+            for s in starts:
+                if single_move_legal(s, die, my_pts, opp_pts, my_bar):
+                    return s
+            return None
+
+        playable_high = any_single_playable(high_die)
+        playable_low = any_single_playable(low_die)
+        # If only one die playable, must play the higher if it's that one
+        if playable_high and not playable_low:
+            # play high
+            return f"H:{playable_high},P"  # first die is high
+        if playable_low and not playable_high:
+            # if only low playable but rule says must play higher when only one can be played, but high not playable, so low must be played
+            # order must indicate which die is first. We will indicate L: start,P
+            return f"L:{playable_low},P"
+        if playable_high and playable_low:
+            # Both single plays possible but we couldn't find a two-die sequence (likely because first move blocks second).
+            # Engine requires playing both if both can be played; but since we couldn't find two-move sequence, play the higher die only may be illegal.
+            # To be safe, pick one legal two-step attempt where second is the same as P (i.e., only one die). We prefer playing the higher die.
+            return f"H:{playable_high},P"
+        # No single plays possible - pass
+        return "H:P,P"
+
+    else:
+        # Single die case: play any legal start. If more than one legal, prefer hits then advancement.
+        die = dice[0]
+        starts = current_start_tokens(my_pts, my_bar)
+        best = None
+        for s in starts:
+            if not single_move_legal(s, die, my_pts, opp_pts, my_bar):
+                continue
+            # simulate and compute hit
+            my_pts1 = my_pts.copy()
+            opp_pts1 = opp_pts.copy()
+            my_bar1 = my_bar
+            my_pts1, opp_pts1, my_bar1, hit = apply_move(s, die, my_pts1, opp_pts1, my_bar1)
+            score = die + (10 * hit)
+            cand = (s, hit, score)
+            if best is None or (cand[1], cand[2]) > (best[1], best[2]):
+                best = cand
+        if best:
+            # single die action; denote H by convention (only one die)
+            return f"H:{best[0]},P"
+        else:
+            return "H:P,P"

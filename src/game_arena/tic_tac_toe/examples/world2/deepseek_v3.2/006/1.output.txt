@@ -1,0 +1,239 @@
+<thinking>
+We are writing a policy for 4x4 Tic Tac Toe. The game is 4x4, and we are player 1 (value 1 on board). The opponent is -1. We need to return a move as (row, col) where each is 0–3.
+
+We have 1 second execution time. We can implement a minimax algorithm with alpha-beta pruning to find the best move. Since the board is 4x4, the branching factor is up to 16, but minimax depth could be up to 16 moves. That's too large for naive minimax. We need to limit depth.
+
+We can use a heuristic evaluation function for non-terminal states.
+
+We need to check winning conditions: 4 in a row horizontally, vertically, or diagonally. There are two main diagonals (top-left to bottom-right, and top-right to bottom-left). Also, there are smaller diagonals? Actually, in 4x4, any straight line of 4 cells in a row, column, or the two main diagonals of length 4.
+
+We can evaluate by counting lines where we have potential to win and blocking opponent.
+
+Simpler: Use a basic heuristic: For each row, column, diagonal, evaluate based on counts of 1 and -1.
+
+If a line has both 1 and -1, it's blocked (no one can win there). Otherwise, we can assign a score based on number of 1's or -1's.
+
+We can assign: 
+- For our own line: score = (count of 1)^2 (or 10^(count-1))
+- For opponent line: score = -(count of -1)^2
+
+We sum over all lines.
+
+But we have to consider that there are 4 rows, 4 columns, 2 diagonals = 10 lines.
+
+Alternatively, we can use a more sophisticated evaluation: also consider possible forks, etc.
+
+But given time, we can implement minimax with depth 3 or 4? With branching factor up to 16, depth 3 = 16^3 = 4096 nodes, which is fine. Depth 4 = 65536 nodes, still okay within 1 second if we prune.
+
+Better: Use iterative deepening with a time limit? But we only have 1 second total, we can just set a fixed depth.
+
+We'll implement minimax with alpha-beta, depth-limited, and a heuristic evaluation.
+
+We need to handle terminal states: win for us (return high score), win for opponent (return low score), draw (return 0).
+
+Heuristic: For each line, compute count1 and count_neg1. If both are >0, skip. Otherwise, if count1 >0: add 10^(count1-1). If count_neg1 >0: subtract 10^(count_neg1-1). This gives higher weight for lines closer to win.
+
+We'll also consider that we are maximizing player.
+
+We need to generate moves: all empty cells.
+
+We can also order moves to improve pruning: maybe prioritize moves that are in lines that are already occupied.
+
+We'll implement a simple move ordering: sort moves by heuristic of that move (evaluate after making move).
+
+But to keep simple, we can just iterate.
+
+Implementation steps:
+
+1. Function to check if a player has won.
+2. Function to evaluate board for non-terminal.
+3. Minimax with alpha-beta, depth limit.
+
+We'll set depth limit to 4 (maybe 5). We'll see.
+
+We'll also add a transposition table? Probably not necessary.
+
+Let's code.
+
+Edge cases: board could be full.
+
+We'll also consider that we are player 1.
+
+We'll write the policy function to call minimax root.
+
+We'll need to decide depth. Since 4x4 is relatively small, we could go deeper. Let's compute worst-case: depth 6 maybe 16^6 = 16 million, too high. So depth 4 is safe.
+
+We can also use iterative deepening until time runs out. But we don't have a time measurement inside function? We can start with depth 1 and increase until time runs out, but we need to keep track of time. We can use a timeout approach.
+
+We have 1 second total. We'll implement iterative deepening with a time limit. We'll measure time at the start and stop when nearing 1 second.
+
+We'll use `time.perf_counter()`.
+
+We'll keep the best move found so far from previous depth.
+
+Plan:
+- Start with depth=1.
+- While time remaining, increase depth and run minimax.
+- If time runs out, return best move from previous depth.
+- Set a safety margin (e.g., 0.9 seconds).
+
+We'll implement a class to keep state.
+
+Let's code.
+
+</thinking>
+<code>
+import time
+import math
+from typing import Optional, List, Tuple
+
+class TicTacToe4x4:
+    def __init__(self, board: List[List[int]]):
+        self.board = board
+        self.size = 4
+        self.winning_lines = self._generate_winning_lines()
+    
+    def _generate_winning_lines(self) -> List[List[Tuple[int, int]]]:
+        """Generate all winning lines: rows, columns, diagonals."""
+        lines = []
+        # rows
+        for r in range(self.size):
+            lines.append([(r, c) for c in range(self.size)])
+        # columns
+        for c in range(self.size):
+            lines.append([(r, c) for r in range(self.size)])
+        # main diagonals
+        lines.append([(i, i) for i in range(self.size)])
+        lines.append([(i, self.size - 1 - i) for i in range(self.size)])
+        return lines
+    
+    def check_winner(self) -> Optional[int]:
+        """Return 1 if player 1 wins, -1 if player -1 wins, 0 for draw, None if game not over."""
+        for line in self.winning_lines:
+            values = [self.board[r][c] for (r, c) in line]
+            if values[0] != 0 and all(v == values[0] for v in values):
+                return values[0]
+        # check for draw
+        if all(self.board[r][c] != 0 for r in range(self.size) for c in range(self.size)):
+            return 0
+        return None
+    
+    def evaluate(self) -> float:
+        """Heuristic evaluation for non-terminal state."""
+        score = 0
+        for line in self.winning_lines:
+            count1 = 0
+            count_neg1 = 0
+            for (r, c) in line:
+                if self.board[r][c] == 1:
+                    count1 += 1
+                elif self.board[r][c] == -1:
+                    count_neg1 += 1
+            if count1 > 0 and count_neg1 > 0:
+                continue  # blocked line
+            if count1 > 0:
+                score += 10 ** (count1 - 1)
+            if count_neg1 > 0:
+                score -= 10 ** (count_neg1 - 1)
+        return score
+    
+    def get_possible_moves(self) -> List[Tuple[int, int]]:
+        moves = []
+        for r in range(self.size):
+            for c in range(self.size):
+                if self.board[r][c] == 0:
+                    moves.append((r, c))
+        return moves
+    
+    def make_move(self, move: Tuple[int, int], player: int) -> None:
+        r, c = move
+        self.board[r][c] = player
+    
+    def undo_move(self, move: Tuple[int, int]) -> None:
+        r, c = move
+        self.board[r][c] = 0
+    
+    def is_terminal(self) -> bool:
+        return self.check_winner() is not None
+
+def minimax(game: TicTacToe4x4, depth: int, alpha: float, beta: float, maximizing_player: bool) -> float:
+    """Minimax with alpha-beta pruning, depth limited."""
+    winner = game.check_winner()
+    if winner is not None:
+        if winner == 1:
+            return 10000  # win for us
+        elif winner == -1:
+            return -10000  # win for opponent
+        else:
+            return 0  # draw
+    if depth == 0:
+        return game.evaluate()
+    
+    moves = game.get_possible_moves()
+    if maximizing_player:
+        max_eval = -math.inf
+        for move in moves:
+            game.make_move(move, 1)
+            eval = minimax(game, depth - 1, alpha, beta, False)
+            game.undo_move(move)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = math.inf
+        for move in moves:
+            game.make_move(move, -1)
+            eval = minimax(game, depth - 1, alpha, beta, True)
+            game.undo_move(move)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Time management: iterative deepening with time limit
+    start_time = time.perf_counter()
+    time_limit = 0.9  # seconds, leave some margin
+    best_move = None
+    game = TicTacToe4x4([row[:] for row in board])  # copy
+    
+    # If it's the first move, we can pick a corner or center? But we'll let minimax decide.
+    # However, to speed up, we can pick a reasonable first move if board is empty.
+    # Check if board is empty
+    empty_count = sum(cell == 0 for row in board for cell in row)
+    if empty_count == 16:
+        # first move: choose center or corner? In 4x4, center is not a single cell.
+        # We can choose (1,1) as a good starting point.
+        return (1, 1)
+    
+    depth = 1
+    while time.perf_counter() - start_time < time_limit:
+        current_best = None
+        best_score = -math.inf
+        moves = game.get_possible_moves()
+        # Order moves by heuristic? Not implemented for simplicity.
+        for move in moves:
+            game.make_move(move, 1)
+            score = minimax(game, depth, -math.inf, math.inf, False)
+            game.undo_move(move)
+            if score > best_score:
+                best_score = score
+                current_best = move
+            # break if time is running out
+            if time.perf_counter() - start_time > time_limit:
+                break
+        if current_best is not None:
+            best_move = current_best
+        depth += 1
+        if depth > 16:  # max depth
+            break
+    
+    # fallback: if no move found (should not happen), pick first available
+    if best_move is None:
+        moves = game.get_possible_moves()
+        best_move = moves[0]
+    return best_move
+</code>

@@ -1,0 +1,203 @@
+
+import copy
+
+def policy(state):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    my_off = state['my_off']
+    opp_bar = state['opp_bar']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    moves = []
+    
+    if not dice:
+        return "H:P,P"
+    
+    if len(dice) == 1:
+        d1 = dice[0]
+        d2 = None
+        higher = d1
+        lower = None
+    else:
+        d1, d2 = dice
+        higher = max(d1, d2)
+        lower = min(d1, d2)
+    
+    if my_bar > 0:
+        for order in ['H', 'L']:
+            if order == 'H':
+                first_d = higher
+                second_d = lower
+            else:
+                first_d = lower
+                second_d = higher
+            
+            dest1 = 17 + first_d
+            if not (0 <= dest1 <= 23):
+                continue
+            if opp_pts[dest1] >= 2:
+                continue
+            
+            from1 = 'B'
+            
+            second_moves = []
+            if my_bar - 1 > 0:
+                if d2 is not None:
+                    dest2 = 17 + second_d
+                    if 0 <= dest2 <= 23 and opp_pts[dest2] < 2:
+                        from2 = 'B'
+                    else:
+                        from2 = 'P'
+                    second_moves = [from2]
+                else:
+                    second_moves = ['P']
+            else:
+                from2_candidates = []
+                for p in range(24):
+                    if my_pts[p] > 0:
+                        if d2 is None:
+                            from2_candidates.append(f'A{p}')
+                            continue
+                        dest = p - second_d
+                        if 0 <= dest <= 23 and opp_pts[dest] < 2:
+                            from2_candidates.append(f'A{p}')
+                all_in_home = True
+                for i in range(6, 24):
+                    if my_pts[i] > 0:
+                        all_in_home = False
+                        break
+                if all_in_home:
+                    for p in range(6):
+                        if my_pts[p] > 0:
+                            from2_candidates.append(f'A{p}')
+                second_moves = from2_candidates
+            
+            for from2 in second_moves:
+                move_str = f"{order}:{from1},{from2}"
+                moves.append(move_str)
+    else:
+        for order in ['H', 'L']:
+            if order == 'H':
+                first_d = higher
+                second_d = lower
+            else:
+                first_d = lower
+                second_d = higher
+            
+            first_moves = []
+            for p in range(24):
+                if my_pts[p] > 0:
+                    if d2 is None:
+                        first_moves.append(f'A{p}')
+                        continue
+                    dest = p - first_d
+                    if 0 <= dest <= 23 and opp_pts[dest] < 2:
+                        first_moves.append(f'A{p}')
+            all_in_home = True
+            for i in range(6, 24):
+                if my_pts[i] > 0:
+                    all_in_home = False
+                    break
+            if all_in_home:
+                for p in range(6):
+                    if my_pts[p] > 0:
+                        first_moves.append(f'A{p}')
+            
+            for from1 in first_moves:
+                p1 = int(from1[1:]) if from1.startswith('A') else None
+                second_moves = []
+                if d2 is None:
+                    second_moves = ['P']
+                else:
+                    for p in range(24):
+                        if my_pts[p] > 0:
+                            dest = p - second_d
+                            if 0 <= dest <= 23 and opp_pts[dest] < 2:
+                                second_moves.append(f'A{p}')
+                    all_in_home_after = all_in_home
+                    if all_in_home_after:
+                        for p in range(6):
+                            if my_pts[p] > 0:
+                                second_moves.append(f'A{p}')
+                for from2 in second_moves:
+                    move_str = f"{order}:{from1},{from2}"
+                    moves.append(move_str)
+    
+    if not moves:
+        return "H:P,P"
+    
+    def evaluate(move_str):
+        order, parts = move_str[0], move_str[2:].split(',')
+        from1, from2 = parts[0], parts[1]
+        
+        d1_h = higher
+        d2_h = lower
+        d1_l = lower
+        d2_l = higher
+        
+        d1 = d1_h if order == 'H' else d1_l
+        d2 = d2_h if order == 'H' else d2_l
+        
+        score = 0
+        
+        if from1 == 'B':
+            dest1 = 17 + d1
+            if 0 <= dest1 <= 23:
+                if opp_pts[dest1] == 1:
+                    score += 5
+                elif opp_pts[dest1] == 0:
+                    score += 1
+                if my_bar > 0 and from2 == 'B':
+                    dest2 = 17 + d2
+                    if 0 <= dest2 <= 23:
+                        if opp_pts[dest2] == 1:
+                            score += 5
+                        elif opp_pts[dest2] == 0:
+                            score += 1
+        else:
+            p1 = int(from1[1:])
+            if my_pts[p1] > 0:
+                dest1 = p1 - d1
+                if 0 <= dest1 <= 23:
+                    if opp_pts[dest1] == 1:
+                        score += 5
+                    elif opp_pts[dest1] == 0:
+                        score += 1
+                    all_in_home = True
+                    for i in range(6, 24):
+                        if my_pts[i] > 0:
+                            all_in_home = False
+                            break
+                    if all_in_home and p1 < 6:
+                        score += 10
+        
+        if from2 != 'P':
+            if from2 == 'B':
+                dest2 = 17 + d2
+                if 0 <= dest2 <= 23:
+                    if opp_pts[dest2] == 1:
+                        score += 5
+                    elif opp_pts[dest2] == 0:
+                        score += 1
+            else:
+                p2 = int(from2[1:])
+                if my_pts[p2] > 0:
+                    dest2 = p2 - d2
+                    if 0 <= dest2 <= 23:
+                        if opp_pts[dest2] == 1:
+                            score += 5
+                        elif opp_pts[dest2] == 0:
+                            score += 1
+                        all_in_home = True
+                        for i in range(6, 24):
+                            if my_pts[i] > 0:
+                                all_in_home = False
+                                break
+                        if all_in_home and p2 < 6:
+                            score += 10
+        return score
+    
+    best_move = max(moves, key=evaluate)
+    return best_move

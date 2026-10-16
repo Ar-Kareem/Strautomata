@@ -1,0 +1,116 @@
+The strategy for this policy is a fast heuristic Go player: it always chooses a legal move, prioritizing captures, saving its own groups in atari, and creating pressure by reducing opponent liberties. If no legal move exists, it passes. The policy computes group liberties to avoid suicide and uses a simple score to select the best move.
+
+<code>
+from collections import deque
+
+BOARD_SIZE = 19
+
+def neighbors(pos):
+    r, c = pos
+    if r > 1: yield (r-1, c)
+    if r < BOARD_SIZE: yield (r+1, c)
+    if c > 1: yield (r, c-1)
+    if c < BOARD_SIZE: yield (r, c+1)
+
+def build_board(me, opponent):
+    board = {}
+    for p in me:
+        board[p] = 1
+    for p in opponent:
+        board[p] = -1
+    return board
+
+def get_group(board, start):
+    color = board[start]
+    group = set([start])
+    q = deque([start])
+    while q:
+        p = q.popleft()
+        for nb in neighbors(p):
+            if board.get(nb) == color and nb not in group:
+                group.add(nb)
+                q.append(nb)
+    return group
+
+def liberties(board, group):
+    libs = set()
+    for p in group:
+        for nb in neighbors(p):
+            if nb not in board:
+                libs.add(nb)
+    return libs
+
+def simulate_move(board, move, color):
+    temp = dict(board)
+    temp[move] = color
+    opp = -color
+    captured = set()
+    # capture opponent groups with no liberties
+    for nb in neighbors(move):
+        if temp.get(nb) == opp:
+            grp = get_group(temp, nb)
+            if len(liberties(temp, grp)) == 0:
+                captured |= grp
+    for p in captured:
+        del temp[p]
+    # check my liberties after capture
+    my_group = get_group(temp, move)
+    my_libs = liberties(temp, my_group)
+    return temp, captured, len(my_libs)
+
+def legal_move(board, move, color):
+    if move in board:
+        return False
+    temp, captured, my_libs = simulate_move(board, move, color)
+    if len(captured) > 0:
+        return True
+    return my_libs > 0
+
+def policy(me, opponent, memory):
+    board = build_board(me, opponent)
+    best_move = None
+    best_score = -10**9
+
+    # precompute liberties for groups to detect atari
+    group_libs = {}
+    for p in board:
+        if p not in group_libs:
+            grp = get_group(board, p)
+            libs = liberties(board, grp)
+            for q in grp:
+                group_libs[q] = len(libs)
+
+    for r in range(1, BOARD_SIZE+1):
+        for c in range(1, BOARD_SIZE+1):
+            move = (r, c)
+            if not legal_move(board, move, 1):
+                continue
+            temp, captured, my_libs = simulate_move(board, move, 1)
+            score = 0
+            score += 10 * len(captured)
+            score += my_libs  # prefer moves with more liberties
+
+            # saving own atari
+            for nb in neighbors(move):
+                if board.get(nb) == 1 and group_libs.get(nb, 2) == 1:
+                    score += 5
+
+            # putting opponent in atari
+            for nb in neighbors(move):
+                if board.get(nb) == -1:
+                    grp = get_group(temp, nb)
+                    libs = liberties(temp, grp)
+                    if len(libs) == 1:
+                        score += 3
+
+            # slight preference to center
+            score += 0.1 * (10 - abs(10 - r) - abs(10 - c))
+
+            if score > best_score:
+                best_score = score
+                best_move = move
+
+    if best_move is None:
+        return (0, 0), memory
+    return best_move, memory
+</code>

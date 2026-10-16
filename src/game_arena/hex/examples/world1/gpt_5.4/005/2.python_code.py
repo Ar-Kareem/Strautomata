@@ -1,0 +1,327 @@
+
+from heapq import heappush, heappop
+
+N = 11
+
+def neighbors(r, c):
+    # Hex neighbors for the coordinate system described:
+    # all 8 surrounding cells except (r-1,c-1) and (r+1,c+1)
+    cand = [
+        (r, c - 1), (r, c + 1),
+        (r - 1, c), (r - 1, c + 1),
+        (r + 1, c), (r + 1, c - 1),
+    ]
+    out = []
+    for rr, cc in cand:
+        if 0 <= rr < N and 0 <= cc < N:
+            out.append((rr, cc))
+    return out
+
+def all_empty(me_set, opp_set):
+    occ = me_set | opp_set
+    return [(r, c) for r in range(N) for c in range(N) if (r, c) not in occ]
+
+def is_win(stones, color):
+    s = set(stones)
+    stack = []
+    seen = set()
+    if color == 'b':
+        for c in range(N):
+            if (0, c) in s:
+                stack.append((0, c))
+                seen.add((0, c))
+        target_row = N - 1
+        while stack:
+            r, c = stack.pop()
+            if r == target_row:
+                return True
+            for nb in neighbors(r, c):
+                if nb in s and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+    else:
+        for r in range(N):
+            if (r, 0) in s:
+                stack.append((r, 0))
+                seen.add((r, 0))
+        target_col = N - 1
+        while stack:
+            r, c = stack.pop()
+            if c == target_col:
+                return True
+            for nb in neighbors(r, c):
+                if nb in s and nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+    return False
+
+def shortest_path_cost(me_set, opp_set, color):
+    INF = 10**9
+    dist = [[INF] * N for _ in range(N)]
+    pq = []
+
+    def cell_cost(pos):
+        if pos in opp_set:
+            return None
+        if pos in me_set:
+            return 0
+        return 1
+
+    if color == 'b':
+        for c in range(N):
+            pos = (0, c)
+            cc = cell_cost(pos)
+            if cc is not None:
+                dist[0][c] = cc
+                heappush(pq, (cc, 0, c))
+        def is_goal(r, c):
+            return r == N - 1
+    else:
+        for r in range(N):
+            pos = (r, 0)
+            cc = cell_cost(pos)
+            if cc is not None:
+                dist[r][0] = cc
+                heappush(pq, (cc, r, 0))
+        def is_goal(r, c):
+            return c == N - 1
+
+    best_goal = INF
+    while pq:
+        d, r, c = heappop(pq)
+        if d != dist[r][c]:
+            continue
+        if d >= best_goal:
+            continue
+        if is_goal(r, c):
+            best_goal = d
+            continue
+        for rr, cc in neighbors(r, c):
+            w = cell_cost((rr, cc))
+            if w is None:
+                continue
+            nd = d + w
+            if nd < dist[rr][cc]:
+                dist[rr][cc] = nd
+                heappush(pq, (nd, rr, cc))
+    return best_goal
+
+def shortest_path_with_parents(me_set, opp_set, color):
+    INF = 10**9
+    dist = [[INF] * N for _ in range(N)]
+    parent = [[None] * N for _ in range(N)]
+    pq = []
+
+    def cell_cost(pos):
+        if pos in opp_set:
+            return None
+        if pos in me_set:
+            return 0
+        return 1
+
+    if color == 'b':
+        starts = [(0, c) for c in range(N)]
+        def is_goal(r, c):
+            return r == N - 1
+    else:
+        starts = [(r, 0) for r in range(N)]
+        def is_goal(r, c):
+            return c == N - 1
+
+    for r, c in starts:
+        cc = cell_cost((r, c))
+        if cc is not None:
+            dist[r][c] = cc
+            heappush(pq, (cc, r, c))
+
+    goal = None
+    best_goal = INF
+    while pq:
+        d, r, c = heappop(pq)
+        if d != dist[r][c]:
+            continue
+        if is_goal(r, c):
+            goal = (r, c)
+            best_goal = d
+            break
+        for rr, cc in neighbors(r, c):
+            w = cell_cost((rr, cc))
+            if w is None:
+                continue
+            nd = d + w
+            if nd < dist[rr][cc]:
+                dist[rr][cc] = nd
+                parent[rr][cc] = (r, c)
+                heappush(pq, (nd, rr, cc))
+
+    path = []
+    if goal is not None:
+        cur = goal
+        while cur is not None:
+            path.append(cur)
+            pr = parent[cur[0]][cur[1]]
+            cur = pr
+        path.reverse()
+    return best_goal, path
+
+def bridge_patterns(cell):
+    r, c = cell
+    # Pairs that often serve as bridge endpoints around a move.
+    patterns = []
+    # Horizontal-ish bridge
+    if r - 1 >= 0 and c + 1 < N and r + 1 < N and c - 1 >= 0:
+        patterns.append(((r - 1, c + 1), (r + 1, c - 1)))
+    # Vertical-ish bridge
+    if r - 1 >= 0 and c >= 0 and r + 1 < N and c >= 0:
+        patterns.append(((r - 1, c), (r + 1, c)))
+    # Diagonal-ish bridge
+    if c - 1 >= 0 and c + 1 < N:
+        patterns.append(((r, c - 1), (r, c + 1)))
+    # Other useful slants
+    if r - 1 >= 0 and c + 1 < N and r + 1 < N and c >= 0:
+        patterns.append(((r - 1, c + 1), (r + 1, c)))
+    if r - 1 >= 0 and c >= 0 and r + 1 < N and c - 1 >= 0:
+        patterns.append(((r - 1, c), (r + 1, c - 1)))
+    return patterns
+
+def cell_score(move, me_set, opp_set, color):
+    r, c = move
+    score = 0.0
+
+    # Centrality
+    center = 5
+    score += 1.5 * (10 - (abs(r - center) + abs(c - center)))
+
+    # Axis relevance
+    if color == 'b':
+        score += 0.8 * (10 - abs(r - center))
+    else:
+        score += 0.8 * (10 - abs(c - center))
+
+    # Friendly adjacency / enemy adjacency
+    my_adj = 0
+    opp_adj = 0
+    for nb in neighbors(r, c):
+        if nb in me_set:
+            my_adj += 1
+        elif nb in opp_set:
+            opp_adj += 1
+    score += 4.0 * my_adj + 1.5 * opp_adj
+
+    # Bridge / connection completion
+    for a, b in bridge_patterns(move):
+        if a in me_set and b in me_set:
+            score += 6.0
+        if a in opp_set and b in opp_set:
+            score += 3.0  # useful as interference too
+
+    # Edge affinity by color
+    if color == 'b':
+        if r == 0 or r == N - 1:
+            score += 2.0
+    else:
+        if c == 0 or c == N - 1:
+            score += 2.0
+
+    # Opening preference
+    total = len(me_set) + len(opp_set)
+    if total < 2:
+        if move in [(5, 5), (5, 4), (4, 5), (5, 6), (6, 5)]:
+            score += 8.0
+
+    return score
+
+def opponent_color(color):
+    return 'w' if color == 'b' else 'b'
+
+def policy(me, opp, color):
+    me_set = set(me)
+    opp_set = set(opp)
+    empties = all_empty(me_set, opp_set)
+
+    # Safety fallback
+    if not empties:
+        return (0, 0)
+
+    # 1) Immediate winning move
+    for mv in empties:
+        if is_win(me_set | {mv}, color):
+            return mv
+
+    # 2) Immediate block of opponent winning move
+    oc = opponent_color(color)
+    opp_wins = []
+    for mv in empties:
+        if is_win(opp_set | {mv}, oc):
+            opp_wins.append(mv)
+    if opp_wins:
+        # If multiple, choose best blocking move among them
+        best = max(opp_wins, key=lambda m: cell_score(m, me_set, opp_set, color))
+        return best
+
+    # 3) Path-based strategic choice
+    my_base = shortest_path_cost(me_set, opp_set, color)
+    opp_base = shortest_path_cost(opp_set, me_set, oc)
+
+    best_move = None
+    best_val = -10**18
+
+    # Candidate narrowing: all empties if modest, else prioritize path cells + local cells
+    candidates = set()
+
+    _, my_path = shortest_path_with_parents(me_set, opp_set, color)
+    _, opp_path = shortest_path_with_parents(opp_set, me_set, oc)
+
+    for p in my_path + opp_path:
+        if p not in me_set and p not in opp_set:
+            candidates.add(p)
+        for nb in neighbors(*p):
+            if nb not in me_set and nb not in opp_set:
+                candidates.add(nb)
+
+    for stone in me_set | opp_set:
+        for nb in neighbors(*stone):
+            if nb not in me_set and nb not in opp_set:
+                candidates.add(nb)
+
+    if len(candidates) < 12:
+        for mv in empties:
+            candidates.add(mv)
+
+    # Ensure legality and non-empty set
+    candidates = [mv for mv in candidates if mv in set(empties)]
+    if not candidates:
+        candidates = empties
+
+    for mv in candidates:
+        new_me = me_set | {mv}
+        my_new = shortest_path_cost(new_me, opp_set, color)
+        opp_new = shortest_path_cost(opp_set, new_me, oc)
+
+        # Improve own path, worsen opponent path
+        val = 30.0 * (my_base - my_new) + 22.0 * (opp_new - opp_base)
+
+        # Static heuristics
+        val += cell_score(mv, me_set, opp_set, color)
+
+        # Slight preference for moves on both shortest paths
+        if mv in my_path:
+            val += 5.0
+        if mv in opp_path:
+            val += 4.0
+
+        # Strong preference if it creates a near-forced connection
+        if my_new == 0:
+            val += 1000.0
+        if opp_new > opp_base:
+            val += 3.0
+
+        if val > best_val:
+            best_val = val
+            best_move = mv
+
+    if best_move is not None and best_move in set(empties):
+        return best_move
+
+    # Final guaranteed legal fallback
+    return max(empties, key=lambda m: cell_score(m, me_set, opp_set, color))

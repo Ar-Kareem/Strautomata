@@ -1,0 +1,298 @@
+The strategy for this policy is a fast tactical Go bot with strict legality checking and a lightweight heuristic evaluation.
+
+High-level approach:
+1. Build the board from `me` and `opponent`.
+2. Generate only legal moves, always guaranteeing a legal return. If no legal move exists, return `(0, 0)`.
+3. Strong tactical priorities:
+   - Play immediate captures.
+   - Save own groups in atari.
+   - Prefer moves that create liberties, connect groups, and occupy valuable nearby intersections.
+4. Positional heuristics:
+   - Prefer moves near existing stones rather than isolated random points.
+   - Prefer center/opening influence when the board is sparse.
+   - Slightly favor star points early.
+5. Use a one-ply score with local features so it runs comfortably within the time limit.
+
+This is not a full search engine, but it is robust, legal, and tactically aware enough to outperform naive random or purely positional policies.
+
+<code>
+from collections import deque
+
+BOARD_SIZE = 19
+DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+EMPTY = 0
+ME = 1
+OPP = 2
+
+
+def inside(r, c):
+    return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+
+
+def neighbors(r, c):
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if inside(nr, nc):
+            yield nr, nc
+
+
+def build_board(me, opponent):
+    board = [[EMPTY] * (BOARD_SIZE + 1) for _ in range(BOARD_SIZE + 1)]
+    for r, c in me:
+        if inside(r, c):
+            board[r][c] = ME
+    for r, c in opponent:
+        if inside(r, c):
+            board[r][c] = OPP
+    return board
+
+
+def group_and_liberties(board, r, c):
+    color = board[r][c]
+    if color == EMPTY:
+        return set(), set()
+    group = set()
+    liberties = set()
+    dq = deque([(r, c)])
+    group.add((r, c))
+    while dq:
+        cr, cc = dq.popleft()
+        for nr, nc in neighbors(cr, cc):
+            v = board[nr][nc]
+            if v == EMPTY:
+                liberties.add((nr, nc))
+            elif v == color and (nr, nc) not in group:
+                group.add((nr, nc))
+                dq.append((nr, nc))
+    return group, liberties
+
+
+def apply_move(board, move, color):
+    r, c = move
+    if move == (0, 0):
+        return [row[:] for row in board], True, 0
+
+    if not inside(r, c) or board[r][c] != EMPTY:
+        return None, False, 0
+
+    nb = [row[:] for row in board]
+    nb[r][c] = color
+    opp = OPP if color == ME else ME
+    captured = 0
+
+    checked = set()
+    for nr, nc in neighbors(r, c):
+        if nb[nr][nc] == opp and (nr, nc) not in checked:
+            grp, libs = group_and_liberties(nb, nr, nc)
+            checked |= grp
+            if not libs:
+                captured += len(grp)
+                for gr, gc in grp:
+                    nb[gr][gc] = EMPTY
+
+    mygrp, mylibs = group_and_liberties(nb, r, c)
+    if not mylibs:
+        return None, False, 0
+
+    return nb, True, captured
+
+
+def is_legal(board, move, color):
+    _, ok, _ = apply_move(board, move, color)
+    return ok
+
+
+def all_legal_moves(board, color):
+    moves = []
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if board[r][c] == EMPTY and is_legal(board, (r, c), color):
+                moves.append((r, c))
+    return moves
+
+
+def count_total_stones(me, opponent):
+    return len(me) + len(opponent)
+
+
+def adjacent_counts(board, r, c):
+    my_adj = 0
+    opp_adj = 0
+    empty_adj = 0
+    for nr, nc in neighbors(r, c):
+        v = board[nr][nc]
+        if v == ME:
+            my_adj += 1
+        elif v == OPP:
+            opp_adj += 1
+        else:
+            empty_adj += 1
+    return my_adj, opp_adj, empty_adj
+
+
+def local_density(board, r, c, radius=2):
+    my_cnt = 0
+    opp_cnt = 0
+    for rr in range(max(1, r - radius), min(BOARD_SIZE, r + radius) + 1):
+        for cc in range(max(1, c - radius), min(BOARD_SIZE, c + radius) + 1):
+            if rr == r and cc == c:
+                continue
+            if board[rr][cc] == ME:
+                my_cnt += 1
+            elif board[rr][cc] == OPP:
+                opp_cnt += 1
+    return my_cnt, opp_cnt
+
+
+def star_point_score(r, c):
+    stars = {(4, 4), (4, 10), (4, 16),
+             (10, 4), (10, 10), (10, 16),
+             (16, 4), (16, 10), (16, 16)}
+    return 3 if (r, c) in stars else 0
+
+
+def center_score(r, c):
+    return 18 - (abs(r - 10) + abs(c - 10))
+
+
+def tactical_urgent_moves(board):
+    urgent = []
+
+    # Capture opponent groups in atari
+    seen = set()
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if board[r][c] == OPP and (r, c) not in seen:
+                grp, libs = group_and_liberties(board, r, c)
+                seen |= grp
+                if len(libs) == 1:
+                    move = next(iter(libs))
+                    if is_legal(board, move, ME):
+                        urgent.append((100000 + len(grp) * 100, move))
+
+    # Save own groups in atari
+    seen = set()
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if board[r][c] == ME and (r, c) not in seen:
+                grp, libs = group_and_liberties(board, r, c)
+                seen |= grp
+                if len(libs) == 1:
+                    move = next(iter(libs))
+                    if is_legal(board, move, ME):
+                        urgent.append((90000 + len(grp) * 100, move))
+
+    urgent.sort(reverse=True)
+    dedup = []
+    used = set()
+    for score, mv in urgent:
+        if mv not in used:
+            used.add(mv)
+            dedup.append(mv)
+    return dedup
+
+
+def evaluate_move(board, move, total_stones):
+    nb, ok, captured = apply_move(board, move, ME)
+    if not ok:
+        return -10**18
+
+    if move == (0, 0):
+        return -10**9
+
+    r, c = move
+    score = 0.0
+
+    # Captures are very valuable
+    score += captured * 500
+
+    # Inspect resulting own group
+    grp, libs = group_and_liberties(nb, r, c)
+    score += len(libs) * 18
+    score += len(grp) * 2
+
+    # Connection value: how many distinct friendly groups were adjacent before move
+    touched_groups = set()
+    for nr, nc in neighbors(r, c):
+        if board[nr][nc] == ME:
+            g, _ = group_and_liberties(board, nr, nc)
+            touched_groups.add(tuple(sorted(g)))
+    score += max(0, len(touched_groups) - 1) * 40
+
+    # Pressure nearby opponent groups
+    seen_opp = set()
+    for nr, nc in neighbors(r, c):
+        if nb[nr][nc] == OPP and (nr, nc) not in seen_opp:
+            og, olibs = group_and_liberties(nb, nr, nc)
+            seen_opp |= og
+            if len(olibs) == 1:
+                score += 120
+            elif len(olibs) == 2:
+                score += 35
+
+    # Shape and locality
+    my_adj, opp_adj, empty_adj = adjacent_counts(board, r, c)
+    score += my_adj * 10
+    score += opp_adj * 8
+    score += empty_adj * 2
+
+    my_d, opp_d = local_density(board, r, c, radius=2)
+    if my_d + opp_d > 0:
+        score += min(my_d, 6) * 3
+        score += min(opp_d, 6) * 4
+    else:
+        # Sparse board opening preference
+        score += center_score(r, c) * 1.5
+        score += star_point_score(r, c)
+
+    # Opening / midgame preferences
+    if total_stones < 8:
+        score += center_score(r, c) * 2.0
+        score += star_point_score(r, c) * 2.0
+    elif total_stones < 30:
+        score += center_score(r, c) * 0.8
+        score += star_point_score(r, c) * 1.0
+
+    # Avoid very edge-heavy opening unless locally relevant
+    dist_edge = min(r - 1, c - 1, BOARD_SIZE - r, BOARD_SIZE - c)
+    if total_stones < 12 and dist_edge <= 1 and my_d + opp_d == 0:
+        score -= 25
+
+    # Mild preference against filling own liberties in crowded spots
+    if my_adj >= 3 and opp_adj == 0:
+        score -= 20
+
+    return score
+
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    board = build_board(me, opponent)
+
+    # Tactical urgent moves first
+    urgent = tactical_urgent_moves(board)
+    for mv in urgent:
+        if is_legal(board, mv, ME):
+            return mv
+
+    legal = all_legal_moves(board, ME)
+    if not legal:
+        return (0, 0)
+
+    total_stones = count_total_stones(me, opponent)
+
+    best_move = None
+    best_score = -10**18
+
+    for mv in legal:
+        s = evaluate_move(board, mv, total_stones)
+        if s > best_score:
+            best_score = s
+            best_move = mv
+
+    if best_move is not None:
+        return best_move
+
+    # Fallback, guaranteed legal if legal list non-empty
+    return legal[0] if legal else (0, 0)
+</code>

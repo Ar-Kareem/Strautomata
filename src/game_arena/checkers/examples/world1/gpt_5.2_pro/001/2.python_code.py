@@ -1,0 +1,393 @@
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import List, Tuple, Optional, Dict, Set
+
+Square = Tuple[int, int]
+MoveTuple = Tuple[Square, Square]
+
+
+@dataclass(frozen=True)
+class Move:
+    fr: Square
+    to: Square
+    capture: bool = False
+    cap_sq: Optional[Square] = None  # square of captured piece (if any)
+
+
+INF = 10**9
+
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> MoveTuple:
+    """
+    Returns a legal checkers move ((from_row, from_col), (to_row, to_col)).
+    Captures are mandatory when available.
+    """
+    start_t = time.time()
+    # Hard time budget; keep margin for Python overhead in the arena.
+    deadline = start_t + 0.92
+
+    my_men_s = set(map(tuple, my_men))
+    my_kings_s = set(map(tuple, my_kings))
+    opp_men_s = set(map(tuple, opp_men))
+    opp_kings_s = set(map(tuple, opp_kings))
+
+    # Generate legal moves; if any capture exists, only captures are legal.
+    legal = generate_legal_moves(my_men_s, my_kings_s, opp_men_s, opp_kings_s, color)
+    if not legal:
+        # Should indicate game over; arena typically won't call policy here.
+        # Return a dummy but well-typed move as a last resort.
+        if my_men_s:
+            p = next(iter(my_men_s))
+            return (p, p)
+        if my_kings_s:
+            p = next(iter(my_kings_s))
+            return (p, p)
+        return ((0, 0), (0, 0))
+
+    # If only one legal move, play it instantly.
+    if len(legal) == 1:
+        m = legal[0]
+        return (m.fr, m.to)
+
+    # Iterative deepening negamax with alpha-beta and a small transposition table.
+    tt: Dict[tuple, tuple[int, int]] = {}  # key -> (depth, score)
+    best_move = legal[0]
+
+    # Order moves at root to stabilize best_move quickly.
+    legal_sorted = sorted(legal, key=lambda mv: move_order_key(mv, my_men_s, my_kings_s, opp_men_s, opp_kings_s, color), reverse=True)
+
+    depth = 1
+    while time.time() < deadline:
+        cur_best = None
+        cur_best_score = -INF
+        alpha, beta = -INF, INF
+
+        for mv in legal_sorted:
+            if time.time() >= deadline:
+                break
+            nxt = apply_move(my_men_s, my_kings_s, opp_men_s, opp_kings_s, color, mv)
+            score = -negamax(*nxt, depth - 1, -beta, -alpha, deadline, tt)
+            if score > cur_best_score:
+                cur_best_score = score
+                cur_best = mv
+            if score > alpha:
+                alpha = score
+
+        if time.time() >= deadline:
+            break
+        if cur_best is not None:
+            best_move = cur_best
+            # Re-order next iteration around best line (principal variation heuristic).
+            legal_sorted = reorder_with_best_first(legal_sorted, best_move)
+
+        depth += 1
+        # Practical cap to avoid wasting time in extreme positions
+        if depth > 10:
+            break
+
+    return (best_move.fr, best_move.to)
+
+
+def reorder_with_best_first(moves: List[Move], best: Move) -> List[Move]:
+    if not moves or moves[0] == best:
+        return moves
+    out = [best]
+    out.extend(m for m in moves if m != best)
+    return out
+
+
+def inside(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def promotion_row(color: str) -> int:
+    return 7 if color == "w" else 0
+
+
+def forward_dir(color: str) -> int:
+    return 1 if color == "w" else -1
+
+
+def opponent_color(color: str) -> str:
+    return "b" if color == "w" else "w"
+
+
+def generate_legal_moves(
+    my_men: Set[Square],
+    my_kings: Set[Square],
+    opp_men: Set[Square],
+    opp_kings: Set[Square],
+    color: str
+) -> List[Move]:
+    occ = my_men | my_kings | opp_men | opp_kings
+    opp_all = opp_men | opp_kings
+
+    captures: List[Move] = []
+    normals: List[Move] = []
+
+    # Men
+    f = forward_dir(color)
+    man_steps = [(f, -1), (f, 1)]
+    for (r, c) in my_men:
+        for dr, dc in man_steps:
+            r1, c1 = r + dr, c + dc
+            # normal
+            if inside(r1, c1) and (r1, c1) not in occ:
+                normals.append(Move((r, c), (r1, c1), False, None))
+            # capture
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            if inside(r2, c2) and (r2, c2) not in occ and inside(r1, c1) and (r1, c1) in opp_all:
+                captures.append(Move((r, c), (r2, c2), True, (r1, c1)))
+
+    # Kings
+    king_steps = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    for (r, c) in my_kings:
+        for dr, dc in king_steps:
+            r1, c1 = r + dr, c + dc
+            if inside(r1, c1) and (r1, c1) not in occ:
+                normals.append(Move((r, c), (r1, c1), False, None))
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            if inside(r2, c2) and (r2, c2) not in occ and inside(r1, c1) and (r1, c1) in opp_all:
+                captures.append(Move((r, c), (r2, c2), True, (r1, c1)))
+
+    return captures if captures else normals
+
+
+def apply_move(
+    my_men: Set[Square],
+    my_kings: Set[Square],
+    opp_men: Set[Square],
+    opp_kings: Set[Square],
+    color: str,
+    mv: Move
+) -> tuple[Set[Square], Set[Square], Set[Square], Set[Square], str]:
+    # Copy sets (small: at most 12 each at start).
+    n_my_men = set(my_men)
+    n_my_kings = set(my_kings)
+    n_opp_men = set(opp_men)
+    n_opp_kings = set(opp_kings)
+
+    fr, to = mv.fr, mv.to
+
+    # Remove moving piece
+    moving_is_king = fr in n_my_kings
+    if moving_is_king:
+        n_my_kings.remove(fr)
+    else:
+        # must be in men
+        if fr in n_my_men:
+            n_my_men.remove(fr)
+
+    # Handle capture
+    if mv.capture and mv.cap_sq is not None:
+        cs = mv.cap_sq
+        if cs in n_opp_men:
+            n_opp_men.remove(cs)
+        elif cs in n_opp_kings:
+            n_opp_kings.remove(cs)
+
+    # Place moved piece, with promotion if applicable
+    if moving_is_king:
+        n_my_kings.add(to)
+    else:
+        if to[0] == promotion_row(color):
+            n_my_kings.add(to)
+        else:
+            n_my_men.add(to)
+
+    # Swap perspective: next player to move becomes "my_*"
+    next_color = opponent_color(color)
+    return (n_opp_men, n_opp_kings, n_my_men, n_my_kings, next_color)
+
+
+def state_key(
+    my_men: Set[Square],
+    my_kings: Set[Square],
+    opp_men: Set[Square],
+    opp_kings: Set[Square],
+    color: str
+) -> tuple:
+    # Frozensets are hashable and small here; adequate for a small TT.
+    return (color, frozenset(my_men), frozenset(my_kings), frozenset(opp_men), frozenset(opp_kings))
+
+
+def negamax(
+    my_men: Set[Square],
+    my_kings: Set[Square],
+    opp_men: Set[Square],
+    opp_kings: Set[Square],
+    color: str,
+    depth: int,
+    alpha: int,
+    beta: int,
+    deadline: float,
+    tt: Dict[tuple, tuple[int, int]]
+) -> int:
+    if time.time() >= deadline:
+        return evaluate(my_men, my_kings, opp_men, opp_kings, color)
+
+    # Terminal checks
+    if not opp_men and not opp_kings:
+        return INF - 10  # win
+    if not my_men and not my_kings:
+        return -INF + 10  # loss
+
+    key = state_key(my_men, my_kings, opp_men, opp_kings, color)
+    if key in tt:
+        tt_depth, tt_score = tt[key]
+        if tt_depth >= depth:
+            return tt_score
+
+    moves = generate_legal_moves(my_men, my_kings, opp_men, opp_kings, color)
+    if not moves:
+        return -INF + 20  # no legal move: loss
+
+    if depth <= 0:
+        return evaluate(my_men, my_kings, opp_men, opp_kings, color)
+
+    # Move ordering
+    moves.sort(key=lambda mv: move_order_key(mv, my_men, my_kings, opp_men, opp_kings, color), reverse=True)
+
+    best = -INF
+    a = alpha
+    for mv in moves:
+        if time.time() >= deadline:
+            break
+        nxt = apply_move(my_men, my_kings, opp_men, opp_kings, color, mv)
+        score = -negamax(*nxt, depth - 1, -beta, -a, deadline, tt)
+        if score > best:
+            best = score
+        if best > a:
+            a = best
+        if a >= beta:
+            break
+
+    tt[key] = (depth, best)
+    return best
+
+
+def move_order_key(
+    mv: Move,
+    my_men: Set[Square],
+    my_kings: Set[Square],
+    opp_men: Set[Square],
+    opp_kings: Set[Square],
+    color: str
+) -> int:
+    """
+    Larger is searched first.
+    """
+    score = 0
+    # Captures first
+    if mv.capture:
+        score += 10_000
+        if mv.cap_sq in opp_kings:
+            score += 2_000
+        else:
+            score += 800
+
+    # Promotion incentive
+    fr_r, _ = mv.fr
+    to_r, to_c = mv.to
+    if mv.fr in my_men and to_r == promotion_row(color):
+        score += 3_000
+
+    # Prefer central squares
+    if 2 <= to_r <= 5 and 2 <= to_c <= 5:
+        score += 120
+    elif 1 <= to_r <= 6 and 1 <= to_c <= 6:
+        score += 40
+
+    # Prefer advancing men
+    if mv.fr in my_men:
+        score += 25 * (to_r - fr_r) if color == "w" else 25 * (fr_r - to_r)
+
+    # Small preference for king activity (not too big)
+    if mv.fr in my_kings:
+        score += 40
+
+    return score
+
+
+def evaluate(
+    my_men: Set[Square],
+    my_kings: Set[Square],
+    opp_men: Set[Square],
+    opp_kings: Set[Square],
+    color: str
+) -> int:
+    # Material
+    score = 0
+    score += 100 * len(my_men) + 175 * len(my_kings)
+    score -= 100 * len(opp_men) + 175 * len(opp_kings)
+
+    # Men advancement toward promotion
+    pr = promotion_row(color)
+    f = forward_dir(color)
+    # Distance to promotion: smaller is better.
+    for (r, c) in my_men:
+        dist = abs(pr - r)
+        score += 6 * (7 - dist)
+        # Encourage staying off the edge a bit
+        if 1 <= c <= 6:
+            score += 2
+
+    # Opponent advancement (relative to them)
+    opp_color = opponent_color(color)
+    opp_pr = promotion_row(opp_color)
+    for (r, c) in opp_men:
+        dist = abs(opp_pr - r)
+        score -= 6 * (7 - dist)
+        if 1 <= c <= 6:
+            score -= 2
+
+    # Center control
+    for (r, c) in my_men | my_kings:
+        if 2 <= r <= 5 and 2 <= c <= 5:
+            score += 12
+    for (r, c) in opp_men | opp_kings:
+        if 2 <= r <= 5 and 2 <= c <= 5:
+            score -= 12
+
+    # Mobility (light)
+    my_moves = generate_legal_moves(my_men, my_kings, opp_men, opp_kings, color)
+    opp_moves = generate_legal_moves(opp_men, opp_kings, my_men, my_kings, opponent_color(color))
+    score += 2 * len(my_moves)
+    score -= 2 * len(opp_moves)
+
+    # Safety: penalize pieces that are capturable immediately
+    threatened = threatened_squares(my_men, my_kings, opp_men, opp_kings, color)
+    # threatened contains our squares that opponent can capture next
+    for sq in threatened:
+        if sq in my_kings:
+            score -= 45
+        else:
+            score -= 30
+
+    return score
+
+
+def threatened_squares(
+    my_men: Set[Square],
+    my_kings: Set[Square],
+    opp_men: Set[Square],
+    opp_kings: Set[Square],
+    color: str
+) -> Set[Square]:
+    """
+    Returns subset of (my_men | my_kings) that are capturable by opponent on their next move.
+    """
+    # Opponent to move:
+    opp_color = opponent_color(color)
+    # Generate opponent capture moves; mark captured squares.
+    caps = generate_legal_moves(opp_men, opp_kings, my_men, my_kings, opp_color)
+    out: Set[Square] = set()
+    # Only captures are in caps if any exist; otherwise no forced capture, but we still
+    # only care about actual capture moves, so filter.
+    for mv in caps:
+        if mv.capture and mv.cap_sq is not None:
+            out.add(mv.cap_sq)
+    return out

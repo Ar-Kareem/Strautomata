@@ -1,0 +1,114 @@
+The strategy for this policy uses a recursive dynamic programming approach with memoization to maximize the expected score. Given the small size of the deck (13 distinct cards) and the known target, the policy can calculate the exact expected outcome of "HIT" versus "STAY". 
+
+It considers every possible card remaining in the deck, simulates the result of drawing that card, and looks ahead to the optimal future play. By averaging the expected values of all possible next cards, the policy determines if the expected gain of hitting outweighs the risk of busting. This method effectively performs card counting and optimal stopping, ensuring the decision is mathematically grounded to get the closest possible score to the target.
+
+<code>
+import functools
+
+# Card definition mapping
+# Indices 0-12 correspond to cards: A, 2, 3, 4, 5, 6, 7, 8, 9, 10, J, Q, K
+CARD_NAMES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+CARD_VALUES = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10] # Value of non-Ace cards
+IS_ACE = [True, False, False, False, False, False, False, False, False, False, False, False, False]
+FULL_DECK_MASK = (1 << 13) - 1
+BUST_PENALTY = -100000  # Large penalty for busting to discourage risky hits
+
+def calculate_score(mask: int, target: int) -> int:
+    """
+    Calculates the best possible score for the hand represented by mask
+    according to the game rules.
+    Ace is 11 if it doesn't bust, otherwise 1.
+    """
+    score = 0
+    has_ace = False
+    
+    for i in range(13):
+        if (mask >> i) & 1:
+            if IS_ACE[i]:
+                has_ace = True
+            else:
+                score += CARD_VALUES[i]
+    
+    if has_ace:
+        if score + 11 <= target:
+            return score + 11
+        else:
+            return score + 1
+            
+    return score
+
+@functools.lru_cache(maxsize=None)
+def solve_state(mask: int, target: int) -> float:
+    """
+    Recursive function to find the optimal expected value for a given state.
+    State is defined by the cards currently held (mask) and the target score.
+    """
+    current_score = calculate_score(mask, target)
+    
+    # If current hand is bust, return penalty
+    if current_score > target:
+        return BUST_PENALTY
+        
+    # If deck is exhausted, return current score
+    if mask == FULL_DECK_MASK:
+        return current_score
+    
+    # Option 1: STAY
+    # The value is simply the current score
+    value_stay = current_score
+    
+    # Option 2: HIT
+    # The value is the average of the optimal values of all possible next states
+    value_hit_sum = 0
+    count = 0
+    
+    for i in range(13):
+        # If card is still in the deck
+        if not (mask >> i) & 1:
+            next_mask = mask | (1 << i)
+            # Recursively solve the next state
+            future_value = solve_state(next_mask, target)
+            value_hit_sum += future_value
+            count += 1
+            
+    value_hit = value_hit_sum / count
+    
+    # Return the maximum utility action
+    return max(value_stay, value_hit)
+
+def policy(hand: list[str], target: int) -> str:
+    # Convert hand list of strings to a bitmask integer
+    current_mask = 0
+    for card in hand:
+        idx = CARD_NAMES.index(card)
+        current_mask |= (1 << idx)
+        
+    # Get current score
+    current_score = calculate_score(current_mask, target)
+    
+    # If already bust, just return STAY (though game should be over)
+    if current_score > target:
+        return "STAY"
+        
+    # Calculate utility of STAYing now
+    utility_stay = current_score
+    
+    # Calculate utility of HITting
+    utility_hit_sum = 0
+    count = 0
+    
+    for i in range(13):
+        if not (current_mask >> i) & 1:
+            next_mask = current_mask | (1 << i)
+            future_utility = solve_state(next_mask, target)
+            utility_hit_sum += future_utility
+            count += 1
+            
+    utility_hit = utility_hit_sum / count
+    
+    # Decide
+    if utility_hit > utility_stay:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

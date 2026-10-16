@@ -1,0 +1,243 @@
+
+import numpy as np
+import collections
+import time
+
+# Utility: Check if square is valid and a dark square
+def is_valid_square(r, c):
+    return 0 <= r < 8 and 0 <= c < 8 and (r + c) % 2 == 1
+
+# Utility: Generate all possible (simple or king) moves for a piece at (r, c) for a player
+def get_moves(board, piece_squares, is_king, my_color, color):
+    moves = []
+    for r, c in piece_squares:
+        possible_directions = []
+        if color == 'b':
+            possible_directions = [(-1, -1), (-1, 1)]
+        else:
+            possible_directions = [(1, -1), (1, 1)]
+
+        if is_king:
+            possible_directions.extend([-dr, -dc] for dr, dc in possible_directions)
+
+        for dr, dc in possible_directions:
+            tr, tc = r + dr, c + dc
+            if is_valid_square(tr, tc) and board[tr][tc] is None:
+                moves.append(((r, c), (tr, tc)))
+            # Check for capture
+            ttr, ttc = r + 2 * dr, c + 2 * dc
+            if is_valid_square(ttr, ttc) and board[tr][tc] in [f"{opp}_man", f"{opp}_king"] and board[ttr][ttc] is None:
+                # Capture is allowed
+                moves.append(((r, c), (ttr, ttc)))
+    return moves
+
+# Create a board representation with None for empty, or labels for pieces
+def build_board(my_men, my_kings, opp_men, opp_kings, color):
+    if color == 'b':
+        opp = 'w'
+    else:
+        opp = 'b'
+    board = np.full((8, 8), None)
+    for r, c in my_men:
+        board[r][c] = f"{color}_man"
+    for r, c in my_kings:
+        board[r][c] = f"{color}_king"
+    for r, c in opp_men:
+        board[r][c] = f"{opp}_man"
+    for r, c in opp_kings:
+        board[r][c] = f"{opp}_king"
+    return board, opp
+
+# Apply a move to a board and return a new one
+def apply_move(board, move, color, opp):
+    (fr, fc), (tr, tc) = move
+    new_board = np.copy(board)
+    if new_board[fr][fc] == f"{color}_man":
+        new_board[fr][fc] = None
+        new_board[tr][tc] = f"{color}_man"
+        # Check if reaches last row to crown
+        if tr == 0 and color == 'b' or tr == 7 and color == 'w':
+            new_board[tr][tc] = f"{color}_king"
+    elif new_board[fr][fc] == f"{color}_king":
+        new_board[fr][fc] = None
+        new_board[tr][tc] = f"{color}_king"
+    # Clear captured
+    if abs(fr - tr) == 2:
+        jr, jc = (fr + tr) // 2, (fc + tc) // 2
+        if new_board[jr][jc] is not None and not new_board[jr][jc].startswith(color):
+            new_board[jr][jc] = None
+    return new_board
+
+# Get all pieces for the given color
+def get_all_pieces(board, color):
+    men = []
+    kings = []
+    for r in range(8):
+        for c in range(8):
+            if not is_valid_square(r, c):
+                continue
+            if board[r][c] == f"{color}_man":
+                men.append((r, c))
+            elif board[r][c] == f"{color}_king":
+                kings.append((r, c))
+    return men, kings
+
+# Evaluation function for a board state for the given color
+def evaluate_board(board, color):
+    score = 0
+    opp = 'w' if color == 'b' else 'b'
+
+    # Count pieces and kings
+    my_men, my_kings = get_all_pieces(board, color)
+    opp_men, opp_kings = get_all_pieces(board, opp)
+    score += 5 * (len(my_men) - len(opp_men))
+    score += 10 * (len(my_kings) - len(opp_kings))
+
+    # Mobility: More available moves for me is better
+    _, _, _, _, legal_moves = generate_all_legal_moves(board, color)
+    score += len(legal_moves) * 2.5
+    score -= len(calculate_moves(board, opp)) * 1.5
+
+    # Central control (closer to center is better)
+    for r, c in my_men + my_kings:
+        dist = abs(r - 3) + abs(c - 3)  # Manhattan distance to center
+        score += (8 - dist) / 10
+    for r, c in opp_men + opp_kings:
+        dist = abs(r - 3) + abs(c - 3)
+        score -= (8 - dist) / 10
+
+    return score
+
+# Generate all legal moves for a player, prioritizing captures
+def generate_all_legal_moves(board, color):
+    if color == 'b':
+        opp = 'w'
+    else:
+        opp = 'b'
+    is_captures = False
+    men, kings = get_all_pieces(board, color)
+    moves = []
+
+    # Generate captures
+    for piece in men + kings:
+        for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            ttr, ttc = piece[0] + 2 * dr, piece[1] + 2 * dc
+            if is_valid_square(ttr, ttc) and board[ttr][ttc] is None:
+                mid_r, mid_c = piece[0] + dr, piece[1] + dc
+                if board[mid_r][mid_c] is not None and board[mid_r][mid_c].startswith(opp):
+                    moves.append(((piece[0], piece[1]), (ttr, ttc)))
+
+    if len(moves) > 0:
+        # Only capture moves are legal
+        return moves, moves, len(men) + len(kings), 0, True
+
+    # Generate all simple moves
+    for r, c in men + kings:
+        for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            tr, tc = r + dr, c + dc
+            if is_valid_square(tr, tc) and board[tr][tc] is None:
+                moves.append(((r, c), (tr, tc)))
+            # Check if piece can become king after move
+            if (r + dr) == (0 if color == 'b' else 7) and board[r][c] == f"{color}_man":
+                continue
+
+    return moves, [], len(men) + len(kings), len(opp_men) + len(opp_kings), False
+
+# Minimax with alpha-beta pruning and depth limit
+def minimax(board, depth, alpha, beta, maximizing, color, opp):
+    moves, captures, my_piece_count, opp_piece_count, has_captures = generate_all_legal_moves(board, color)
+
+    if depth == 0 or has_captures and depth <= 1 or not has_captures and my_piece_count == 0 or not has_captures and opp_piece_count == 0:
+        return evaluate_board(board, color), None
+
+    if maximizing:
+        max_eval = float('-inf')
+        best_move = None
+        for move in moves:
+            new_board = apply_move(board, move, color, opp)
+            next_color, next_opp = opp, color
+            # If a capture move, need to check for multiple jumps
+            if abs(move[0][0] - move[1][0]) == 2 and any(np.equal(new_board, f"{opp}_man") | np.equal(new_board, f"{opp}_king")):
+                # Recursive multiple jump check
+                remaining = calculate_moves(new_board, color)
+                if len(remaining) > 0:
+                    new_board = apply_move(new_board, remaining[0], color, opp)
+            eval, _ = minimax(new_board, depth - 1, alpha, beta, False, next_color, next_opp)
+            if eval > max_eval:
+                max_eval = eval
+                best_move = move
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        best_move = None
+        for move in moves:
+            new_board = apply_move(board, move, color, opp)
+            next_color, next_opp = opp, color
+            if abs(move[0][0] - move[1][0]) == 2 and any(np.equal(new_board, f"{opp}_man") | np.equal(new_board, f"{opp}_king")):
+                # Recursive multiple jump check
+                remaining = calculate_moves(new_board, color)
+                if len(remaining) > 0:
+                    new_board = apply_move(new_board, remaining[0], color, opp)
+            eval, _ = minimax(new_board, depth - 1, alpha, beta, True, next_color, next_opp)
+            if eval < min_eval:
+                min_eval = eval
+                best_move = move
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+# Recursive function to check multi-jump for a piece
+def calculate_moves(board, color):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if not is_valid_square(r, c):
+                continue
+            if board[r][c] is not None and board[r][c].startswith(color):
+                for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                    ttr, ttc = r + 2 * dr, c + 2 * dc
+                    if is_valid_square(ttr, ttc) and board[ttr][ttc] is None:
+                        mid_r, mid_c = r + dr, c + dc
+                        if board[mid_r][mid_c] is not None and not board[mid_r][mid_c].startswith(color):
+                            moves.append(((r, c), (ttr, ttc)))
+    return moves
+
+# Final policy function that ties it all together
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Build the board
+    board, opp = build_board(my_men, my_kings, opp_men, opp_kings, color)
+
+    # Generate legal moves and prioritize captures
+    legal_moves, captures, _, _, has_captures = generate_all_legal_moves(board, color)
+    if has_captures:
+        return self_play_prioritize_captures(board, color, opp, captures)
+    
+    # No captures: use minimax search (with depth limit to respect time constraint)
+    _, best_move = minimax(board, depth=3, alpha=float('-inf'), beta=float('inf'), maximizing=True, color=color, opp=opp)
+    return best_move
+
+# A helper to find a capture when captures are available
+def self_play_prioritize_captures(board, color, opp, possible_captures):
+    if not possible_captures:
+        return None
+    # Try to get the move that gives the most captures or favorable position
+    move_evaluate = []
+    for from_pos, to_pos in possible_captures:
+        new_board = apply_move(board, (from_pos, to_pos), color, opp)
+        remaining = calculate_moves(new_board, color)
+        if len(remaining) > 0:
+            # If can continue capturing, prefer that
+            next_board = apply_move(new_board, remaining[0], color, opp)
+            move_value = evaluate_board(next_board, color)
+            move_evaluate.append((move_value, (from_pos, to_pos)))
+        else:
+            move_value = evaluate_board(new_board, color)
+            move_evaluate.append((move_value, (from_pos, to_pos)))
+    
+    # Sort captures based on max evaluation
+    move_evaluate.sort(reverse=True, key=lambda x: x[0])
+    return move_evaluate[0][1]

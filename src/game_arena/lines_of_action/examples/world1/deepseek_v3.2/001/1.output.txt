@@ -1,0 +1,370 @@
+<thinking>
+I need to create a strong AI policy for Lines of Action. The game has interesting movement rules: pieces move horizontally, vertically, or diagonally, and the number of squares moved equals the total pieces in that line (row, column, or diagonal). The objective is to connect all your pieces into a single contiguous group.
+
+Key considerations:
+1. Need to implement move generation based on the rules.
+2. Need a good evaluation function to assess board positions.
+3. Should implement search with pruning (alpha-beta or similar) given the 1-second time constraint.
+4. Need to consider connectivity as the win condition.
+
+Approach:
+1. First implement all legal moves for the current player.
+2. Use iterative deepening with alpha-beta pruning to search for the best move.
+3. Evaluation function should consider:
+   - Piece count advantage
+   - Connectivity of our pieces (goal is to connect all)
+   - Central control (center pieces are more valuable)
+   - Mobility (number of legal moves available)
+   - Threat to opponent's pieces
+
+Given the time constraint (1 second), I should balance search depth with evaluation complexity. Probably depth 3-4 with a decent evaluation will work.
+
+Let me outline the plan:
+1. Move generation function that finds all legal moves for current player.
+2. Evaluation function.
+3. Alpha-beta search with iterative deepening.
+4. Handle time management to stay within 1 second.
+
+The evaluation should heavily weight connectivity since that's the win condition. We can compute number of connected components for our pieces - the fewer components, the better.
+
+Implementation details:
+- Represent board as 8x8 list of lists.
+- For move generation, need to check all directions from each of our pieces.
+- For each direction, count total pieces in that line (row, col, or diagonal).
+- Check if the target square is within bounds.
+- Check if there are any opponent pieces between source and target (can't jump over opponent).
+- Landing on opponent piece is allowed (capture).
+
+Let me design the evaluation:
+1. Connectivity score: (number_of_our_pieces - number_of_connected_components) * weight
+2. Piece advantage: (our_pieces - opponent_pieces) * weight
+3. Central control: sum of values for our pieces based on position (center squares worth more)
+4. Mobility: number of legal moves available to us minus opponent's mobility
+5. Threat: pieces that are under attack or can be captured
+
+I'll implement iterative deepening with alpha-beta. The root node is the current position.
+
+Edge cases:
+- Immediate win: if a move connects all our pieces, take it.
+- Prevent opponent's immediate win.
+- Avoid moves that disconnect our pieces.
+
+Given the time limit, I'll implement a time-limited search that stops when time is almost up.
+
+Let me write the code structure:
+1. Policy function that calls the search.
+2. Move generator.
+3. Evaluation function.
+4. Alpha-beta with iterative deepening.
+5. Time management.
+
+I'll use standard Python imports. No need for numpy necessarily.
+
+Implementation:
+</thinking>
+
+<code>
+import time
+import math
+from collections import deque
+
+def policy(board):
+    """
+    Main policy function that returns the best move for the current player.
+    """
+    # Create a game state object
+    state = LOAState(board)
+    
+    # Get all legal moves
+    legal_moves = state.get_legal_moves()
+    
+    if not legal_moves:
+        # No legal moves (shouldn't happen in valid game states)
+        return ""
+    
+    # Check for immediate win
+    for move in legal_moves:
+        new_state = state.make_move(move)
+        if new_state.is_win(state.current_player):
+            return move
+    
+    # Use iterative deepening with alpha-beta pruning
+    start_time = time.time()
+    time_limit = 0.95  # Use 95% of 1 second
+    
+    best_move = legal_moves[0]
+    depth = 1
+    
+    while time.time() - start_time < time_limit:
+        try:
+            # Search with increasing depth
+            move, score = alpha_beta_search(state, depth, start_time, time_limit)
+            if move:
+                best_move = move
+            depth += 1
+        except TimeoutError:
+            break
+    
+    return best_move
+
+
+class LOAState:
+    """Represents a Lines of Action game state."""
+    
+    def __init__(self, board, current_player=1):
+        self.board = [row[:] for row in board]  # Deep copy
+        self.current_player = current_player
+        self.opponent = -current_player
+    
+    def get_piece_positions(self, player):
+        """Get positions of all pieces for the given player."""
+        positions = []
+        for r in range(8):
+            for c in range(8):
+                if self.board[r][c] == player:
+                    positions.append((r, c))
+        return positions
+    
+    def count_pieces_in_line(self, start_r, start_c, dr, dc):
+        """Count pieces in a line starting from (start_r, start_c) in direction (dr, dc)."""
+        count = 0
+        r, c = start_r, start_c
+        
+        # Move in both directions from the starting position
+        # Forward direction
+        fr, fc = r + dr, c + dc
+        while 0 <= fr < 8 and 0 <= fc < 8:
+            if self.board[fr][fc] != 0:
+                count += 1
+            fr += dr
+            fc += dc
+        
+        # Backward direction  
+        br, bc = r - dr, c - dc
+        while 0 <= br < 8 and 0 <= bc < 8:
+            if self.board[br][bc] != 0:
+                count += 1
+            br -= dr
+            bc -= dc
+        
+        # Don't count the piece at the starting position itself
+        return count
+    
+    def get_legal_moves(self):
+        """Generate all legal moves for current player."""
+        moves = []
+        our_pieces = self.get_piece_positions(self.current_player)
+        
+        # Directions: (dr, dc) for all 8 directions
+        directions = [
+            (0, 1),   # right
+            (0, -1),  # left
+            (1, 0),   # down
+            (-1, 0),  # up
+            (1, 1),   # down-right
+            (1, -1),  # down-left
+            (-1, 1),  # up-right
+            (-1, -1)  # up-left
+        ]
+        
+        for r, c in our_pieces:
+            for dr, dc in directions:
+                # Count pieces in this line
+                piece_count = self.count_pieces_in_line(r, c, dr, dc)
+                
+                if piece_count == 0:
+                    continue
+                
+                # Check forward move
+                target_r, target_c = r + dr * piece_count, c + dc * piece_count
+                if 0 <= target_r < 8 and 0 <= target_c < 8:
+                    if self.is_valid_move(r, c, target_r, target_c, dr, dc):
+                        moves.append(f"{r},{c}:{target_r},{target_c}")
+                
+                # Check backward move
+                target_r, target_c = r - dr * piece_count, c - dc * piece_count
+                if 0 <= target_r < 8 and 0 <= target_c < 8:
+                    if self.is_valid_move(r, c, target_r, target_c, -dr, -dc):
+                        moves.append(f"{r},{c}:{target_r},{target_c}")
+        
+        return moves
+    
+    def is_valid_move(self, from_r, from_c, to_r, to_c, dr, dc):
+        """Check if move from (from_r, from_c) to (to_r, to_c) in direction (dr, dc) is valid."""
+        # Can't stay in place
+        if from_r == to_r and from_c == to_c:
+            return False
+        
+        # Target square can't have our own piece (can't capture friendly)
+        if self.board[to_r][to_c] == self.current_player:
+            return False
+        
+        # Check all squares between (excluding start and end) for opponent pieces
+        # We can jump over friendly pieces but not opponent pieces
+        r, c = from_r + dr, from_c + dc
+        while (r != to_r or c != to_c):
+            if not (0 <= r < 8 and 0 <= c < 8):
+                return False
+            if self.board[r][c] == self.opponent:
+                return False  # Can't jump over opponent
+            r += dr
+            c += dc
+        
+        return True
+    
+    def make_move(self, move_str):
+        """Apply a move and return new state."""
+        # Parse move
+        from_part, to_part = move_str.split(":")
+        from_r, from_c = map(int, from_part.split(","))
+        to_r, to_c = map(int, to_part.split(","))
+        
+        # Create new state with opponent as next to move
+        new_state = LOAState(self.board, self.opponent)
+        
+        # Move the piece
+        piece = new_state.board[from_r][from_c]
+        new_state.board[from_r][from_c] = 0
+        new_state.board[to_r][to_c] = piece
+        
+        return new_state
+    
+    def count_connected_components(self, player):
+        """Count number of connected components for player's pieces."""
+        visited = [[False for _ in range(8)] for _ in range(8)]
+        components = 0
+        
+        for r in range(8):
+            for c in range(8):
+                if self.board[r][c] == player and not visited[r][c]:
+                    components += 1
+                    # BFS to mark all connected pieces
+                    queue = deque([(r, c)])
+                    visited[r][c] = True
+                    
+                    while queue:
+                        cr, cc = queue.popleft()
+                        # Check all 8 directions
+                        for dr in [-1, 0, 1]:
+                            for dc in [-1, 0, 1]:
+                                if dr == 0 and dc == 0:
+                                    continue
+                                nr, nc = cr + dr, cc + dc
+                                if (0 <= nr < 8 and 0 <= nc < 8 and 
+                                    self.board[nr][nc] == player and 
+                                    not visited[nr][nc]):
+                                    visited[nr][nc] = True
+                                    queue.append((nr, nc))
+        
+        return components
+    
+    def is_win(self, player):
+        """Check if player has won (all pieces connected)."""
+        return self.count_connected_components(player) == 1
+    
+    def evaluate(self):
+        """Evaluate the board position for the current player."""
+        if self.is_win(self.current_player):
+            return 10000
+        if self.is_win(self.opponent):
+            return -10000
+        
+        # Basic piece count
+        our_pieces = len(self.get_piece_positions(self.current_player))
+        opponent_pieces = len(self.get_piece_positions(self.opponent))
+        piece_score = (our_pieces - opponent_pieces) * 100
+        
+        # Connectivity (fewer components is better)
+        our_components = self.count_connected_components(self.current_player)
+        opponent_components = self.count_connected_components(self.opponent)
+        connectivity_score = (opponent_components - our_components) * 200
+        
+        # Central control
+        center_score = 0
+        center_squares = [(3, 3), (3, 4), (4, 3), (4, 4)]
+        for r, c in center_squares:
+            if self.board[r][c] == self.current_player:
+                center_score += 30
+            elif self.board[r][c] == self.opponent:
+                center_score -= 30
+        
+        # Extended center (bigger bonus for being closer to center)
+        for r in range(8):
+            for c in range(8):
+                # Distance from center
+                dist_from_center = abs(r - 3.5) + abs(c - 3.5)
+                position_value = 8 - dist_from_center
+                
+                if self.board[r][c] == self.current_player:
+                    center_score += position_value
+                elif self.board[r][c] == self.opponent:
+                    center_score -= position_value
+        
+        # Mobility (number of legal moves)
+        our_mobility = len(self.get_legal_moves())
+        
+        # Switch perspective to evaluate opponent's mobility
+        temp_state = LOAState(self.board, self.opponent)
+        opponent_mobility = len(temp_state.get_legal_moves())
+        
+        mobility_score = (our_mobility - opponent_mobility) * 10
+        
+        # Combine scores
+        total_score = (piece_score + connectivity_score + 
+                      center_score + mobility_score)
+        
+        return total_score
+
+
+def alpha_beta_search(state, depth, start_time, time_limit):
+    """Alpha-beta search with iterative deepening support."""
+    
+    def alphabeta(node, depth, alpha, beta, maximizing_player):
+        # Check time
+        if time.time() - start_time > time_limit:
+            raise TimeoutError()
+        
+        # Terminal node or depth limit
+        if depth == 0 or node.is_win(node.current_player) or node.is_win(node.opponent):
+            return node.evaluate()
+        
+        legal_moves = node.get_legal_moves()
+        
+        if maximizing_player:
+            value = -math.inf
+            for move in legal_moves:
+                child = node.make_move(move)
+                value = max(value, alphabeta(child, depth - 1, alpha, beta, False))
+                alpha = max(alpha, value)
+                if value >= beta:
+                    break  # Beta cutoff
+            return value
+        else:
+            value = math.inf
+            for move in legal_moves:
+                child = node.make_move(move)
+                value = min(value, alphabeta(child, depth - 1, alpha, beta, True))
+                beta = min(beta, value)
+                if value <= alpha:
+                    break  # Alpha cutoff
+            return value
+    
+    # Root level search
+    legal_moves = state.get_legal_moves()
+    best_move = None
+    best_value = -math.inf
+    
+    for move in legal_moves:
+        # Check time
+        if time.time() - start_time > time_limit:
+            raise TimeoutError()
+        
+        child_state = state.make_move(move)
+        value = alphabeta(child_state, depth - 1, -math.inf, math.inf, False)
+        
+        if value > best_value:
+            best_value = value
+            best_move = move
+    
+    return best_move, best_value
+</code>

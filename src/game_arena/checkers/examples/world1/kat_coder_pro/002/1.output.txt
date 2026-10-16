@@ -1,0 +1,362 @@
+# Checkers AI Policy
+
+## Strategy
+
+The strategy for this policy is to use a minimax algorithm with alpha-beta pruning to evaluate the best possible moves several turns ahead. The evaluation function considers several factors:
+
+1. Piece count difference (kings are worth more than regular pieces)
+2. Mobility (number of legal moves available)
+3. King promotion potential (pieces closer to promotion are more valuable)
+4. Piece safety (pieces that can be captured are penalized)
+5. Center control (pieces in the center are more valuable)
+
+The algorithm will recursively explore the game tree to a certain depth, using the evaluation function to score each position. It will then choose the move that leads to the best score for the current player.
+
+<code>
+import numpy as np
+from typing import Tuple, List, Set
+
+def policy(my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]], 
+           opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]], 
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Main policy function that returns the best move for the current player.
+    
+    Args:
+        my_men: List of coordinates for player's regular pieces
+        my_kings: List of coordinates for player's kings
+        opp_men: List of coordinates for opponent's regular pieces
+        opp_kings: List of coordinates for opponent's kings
+        color: Player's color ('b' or 'w')
+        
+    Returns:
+        Best move as ((from_row, from_col), (to_row, to_col))
+    """
+    
+    # Convert inputs to sets for faster operations
+    my_men_set = set(my_men)
+    my_kings_set = set(my_kings)
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+    
+    # Get all legal moves
+    legal_moves = get_all_legal_moves(my_men_set, my_kings_set, opp_men_set, opp_kings_set, color)
+    
+    if not legal_moves:
+        # No legal moves available (shouldn't happen in valid game state)
+        return ((0, 0), (0, 0))
+    
+    # Sort moves by capture potential for better alpha-beta pruning
+    legal_moves.sort(key=lambda move: is_capture_move(move, my_men_set, my_kings_set, opp_men_set, opp_kings_set, color), reverse=True)
+    
+    # Use minimax with alpha-beta pruning to find the best move
+    best_move = None
+    best_score = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Depth of search - balance between strength and speed
+    depth = 6 if len(my_men_set) + len(my_kings_set) + len(opp_men_set) + len(opp_kings_set) > 12 else 8
+    
+    for move in legal_moves:
+        # Make the move
+        new_my_men, new_my_kings, new_opp_men, new_opp_kings = make_move(
+            move, my_men_set.copy(), my_kings_set.copy(), 
+            opp_men_set.copy(), opp_kings_set.copy(), color
+        )
+        
+        # Evaluate the resulting position
+        score = minimax(new_my_men, new_my_kings, new_opp_men, new_opp_kings, 
+                       get_opponent_color(color), depth - 1, alpha, beta, False)
+        
+        # Update best move if this is better
+        if score > best_score:
+            best_score = score
+            best_move = move
+        
+        # Update alpha
+        alpha = max(alpha, best_score)
+    
+    return best_move
+
+def get_opponent_color(color: str) -> str:
+    """Get the opponent's color."""
+    return 'w' if color == 'b' else 'b'
+
+def is_valid_square(row: int, col: int) -> bool:
+    """Check if a square is valid on the checkerboard."""
+    return 0 <= row <= 7 and 0 <= col <= 7 and (row + col) % 2 == 1
+
+def is_capture_move(move: Tuple[Tuple[int, int], Tuple[int, int]], 
+                   my_men: Set[Tuple[int, int]], my_kings: Set[Tuple[int, int]], 
+                   opp_men: Set[Tuple[int, int]], opp_kings: Set[Tuple[int, int]], 
+                   color: str) -> bool:
+    """Check if a move is a capture move."""
+    from_pos, to_pos = move
+    from_row, from_col = from_pos
+    to_row, to_col = to_pos
+    
+    # Check if this is a capture move (jumping over opponent piece)
+    if abs(to_row - from_row) == 2:
+        return True
+    
+    return False
+
+def get_possible_moves(piece: Tuple[int, int], is_king: bool, color: str, 
+                      my_men: Set[Tuple[int, int]], my_kings: Set[Tuple[int, int]], 
+                      opp_men: Set[Tuple[int, int]], opp_kings: Set[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """Get all possible moves for a single piece."""
+    row, col = piece
+    moves = []
+    
+    # Determine direction based on color and piece type
+    if color == 'b':
+        directions = [(-1, -1), (-1, 1)]  # Regular pieces move up
+        if is_king:
+            directions.extend([(1, -1), (1, 1)])  # Kings can also move down
+    else:  # white
+        directions = [(1, -1), (1, 1)]  # Regular pieces move down
+        if is_king:
+            directions.extend([(-1, -1), (-1, 1)])  # Kings can also move up
+    
+    # Check each direction for possible moves
+    for d_row, d_col in directions:
+        new_row, new_col = row + d_row, col + d_col
+        
+        # Check if destination is valid and empty
+        if is_valid_square(new_row, new_col) and (new_row, new_col) not in my_men and (new_row, new_col) not in my_kings:
+            # Regular move
+            if (new_row, new_col) not in opp_men and (new_row, new_col) not in opp_kings:
+                moves.append((new_row, new_col))
+            
+            # Capture move
+            else:
+                jump_row, jump_col = new_row + d_row, new_col + d_col
+                if is_valid_square(jump_row, jump_col) and (jump_row, jump_col) not in my_men and (jump_row, jump_col) not in my_kings and (jump_row, jump_col) not in opp_men and (jump_row, jump_col) not in opp_kings:
+                    moves.append((jump_row, jump_col))
+    
+    return moves
+
+def get_all_legal_moves(my_men: Set[Tuple[int, int]], my_kings: Set[Tuple[int, int]], 
+                       opp_men: Set[Tuple[int, int]], opp_kings: Set[Tuple[int, int]], 
+                       color: str) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """Get all legal moves for the current player."""
+    all_moves = []
+    
+    # Check for capture moves first (they are mandatory)
+    capture_moves = []
+    
+    # Check captures for regular pieces
+    for piece in my_men:
+        moves = get_possible_moves(piece, False, color, my_men, my_kings, opp_men, opp_kings)
+        for move in moves:
+            if abs(move[0] - piece[0]) == 2:  # Capture move
+                capture_moves.append((piece, move))
+    
+    # Check captures for kings
+    for piece in my_kings:
+        moves = get_possible_moves(piece, True, color, my_men, my_kings, opp_men, opp_kings)
+        for move in moves:
+            if abs(move[0] - piece[0]) == 2:  # Capture move
+                capture_moves.append((piece, move))
+    
+    # If there are capture moves, return only those
+    if capture_moves:
+        return capture_moves
+    
+    # Otherwise return all regular moves
+    for piece in my_men:
+        moves = get_possible_moves(piece, False, color, my_men, my_kings, opp_men, opp_kings)
+        for move in moves:
+            all_moves.append((piece, move))
+    
+    for piece in my_kings:
+        moves = get_possible_moves(piece, True, color, my_men, my_kings, opp_men, opp_kings)
+        for move in moves:
+            all_moves.append((piece, move))
+    
+    return all_moves
+
+def make_move(move: Tuple[Tuple[int, int], Tuple[int, int]], 
+             my_men: Set[Tuple[int, int]], my_kings: Set[Tuple[int, int]], 
+             opp_men: Set[Tuple[int, int]], opp_kings: Set[Tuple[int, int]], 
+             color: str) -> Tuple[Set[Tuple[int, int]], Set[Tuple[int, int]], Set[Tuple[int, int]], Set[Tuple[int, int]]]:
+    """Make a move and return the new board state."""
+    from_pos, to_pos = move
+    from_row, from_col = from_pos
+    to_row, to_col = to_pos
+    
+    # Check if this is a capture move
+    is_capture = abs(to_row - from_row) == 2
+    
+    # Remove the piece from its original position
+    if from_pos in my_men:
+        my_men.remove(from_pos)
+        is_king = False
+    else:  # from_pos in my_kings
+        my_kings.remove(from_pos)
+        is_king = True
+    
+    # Check if we need to remove an opponent's piece (capture)
+    if is_capture:
+        captured_row = (from_row + to_row) // 2
+        captured_col = (from_col + to_col) // 2
+        captured_pos = (captured_row, captured_col)
+        
+        if captured_pos in opp_men:
+            opp_men.remove(captured_pos)
+        else:  # captured_pos in opp_kings
+            opp_kings.remove(captured_pos)
+    
+    # Check if the piece should be promoted to king
+    should_promote = (color == 'b' and to_row == 0) or (color == 'w' and to_row == 7)
+    
+    if should_promote:
+        my_kings.add(to_pos)
+    else:
+        if is_king:
+            my_kings.add(to_pos)
+        else:
+            my_men.add(to_pos)
+    
+    return my_men, my_kings, opp_men, opp_kings
+
+def evaluate_position(my_men: Set[Tuple[int, int]], my_kings: Set[Tuple[int, int]], 
+                     opp_men: Set[Tuple[int, int]], opp_kings: Set[Tuple[int, int]], 
+                     color: str) -> float:
+    """Evaluate the current position from the perspective of the current player."""
+    score = 0.0
+    
+    # Piece values
+    regular_value = 1.0
+    king_value = 1.5
+    
+    # Count pieces
+    my_piece_count = len(my_men) + len(my_kings)
+    opp_piece_count = len(opp_men) + len(opp_kings)
+    
+    # Material advantage
+    my_material = len(my_men) * regular_value + len(my_kings) * king_value
+    opp_material = len(opp_men) * regular_value + len(opp_kings) * king_value
+    
+    score += my_material - opp_material
+    
+    # Mobility (number of legal moves)
+    my_moves = len(get_all_legal_moves(my_men, my_kings, opp_men, opp_kings, color))
+    opp_moves = len(get_all_legal_moves(opp_men, opp_kings, my_men, my_kings, get_opponent_color(color)))
+    
+    score += 0.1 * (my_moves - opp_moves)
+    
+    # King promotion potential (pieces closer to promotion are more valuable)
+    for row, col in my_men:
+        if color == 'b':
+            dist_to_promotion = row
+        else:  # white
+            dist_to_promotion = 7 - row
+        
+        score += 0.1 * (7 - dist_to_promotion)
+    
+    for row, col in opp_men:
+        if color == 'b':  # opponent is white
+            dist_to_promotion = 7 - row
+        else:  # opponent is black
+            dist_to_promotion = row
+        
+        score -= 0.1 * (7 - dist_to_promotion)
+    
+    # Center control
+    center_squares = {(3, 3), (3, 5), (4, 2), (4, 4)}
+    
+    for row, col in my_men | my_kings:
+        if (row, col) in center_squares:
+            score += 0.2
+    
+    for row, col in opp_men | opp_kings:
+        if (row, col) in center_squares:
+            score -= 0.2
+    
+    # Piece safety (penalize pieces that can be captured)
+    for row, col in my_men | my_kings:
+        if can_be_captured(row, col, opp_men, opp_kings, get_opponent_color(color)):
+            score -= 0.5
+    
+    return score
+
+def can_be_captured(row: int, col: int, opp_men: Set[Tuple[int, int]], 
+                   opp_kings: Set[Tuple[int, int]], opp_color: str) -> bool:
+    """Check if a piece can be captured by the opponent."""
+    # This is a simplified check - in a full implementation, we'd need to check all possible captures
+    # For now, we'll just check if the piece is adjacent to an opponent piece that could potentially capture it
+    for d_row in [-1, 1]:
+        for d_col in [-1, 1]:
+            check_row, check_col = row + d_row, col + d_col
+            if is_valid_square(check_row, check_col):
+                if (check_row, check_col) in opp_men or (check_row, check_col) in opp_kings:
+                    # Check if this opponent piece could capture our piece
+                    jump_row, jump_col = check_row + d_row, check_col + d_col
+                    if is_valid_square(jump_row, jump_col):
+                        return True
+    
+    return False
+
+def minimax(my_men: Set[Tuple[int, int]], my_kings: Set[Tuple[int, int]], 
+           opp_men: Set[Tuple[int, int]], opp_kings: Set[Tuple[int, int]], 
+           color: str, depth: int, alpha: float, beta: float, is_maximizing: bool) -> float:
+    """Minimax algorithm with alpha-beta pruning."""
+    # Base case: reached maximum depth or game is over
+    if depth == 0 or (len(my_men) + len(my_kings) == 0) or (len(opp_men) + len(opp_kings) == 0):
+        return evaluate_position(my_men, my_kings, opp_men, opp_kings, color)
+    
+    # Get all legal moves
+    legal_moves = get_all_legal_moves(my_men, my_kings, opp_men, opp_kings, color)
+    
+    if not legal_moves:
+        # No legal moves - either stalemate or opponent has won
+        if is_maximizing:
+            return float('-inf')
+        else:
+            return float('inf')
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for move in legal_moves:
+            # Make the move
+            new_my_men, new_my_kings, new_opp_men, new_opp_kings = make_move(
+                move, my_men.copy(), my_kings.copy(), 
+                opp_men.copy(), opp_kings.copy(), color
+            )
+            
+            # Recursively evaluate
+            eval_score = minimax(new_my_men, new_my_kings, new_opp_men, new_opp_kings, 
+                               get_opponent_color(color), depth - 1, alpha, beta, False)
+            
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            
+            # Alpha-beta pruning
+            if beta <= alpha:
+                break
+        
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            # Make the move
+            new_my_men, new_my_kings, new_opp_men, new_opp_kings = make_move(
+                move, my_men.copy(), my_kings.copy(), 
+                opp_men.copy(), opp_kings.copy(), color
+            )
+            
+            # Recursively evaluate
+            eval_score = minimax(new_my_men, new_my_kings, new_opp_men, new_opp_kings, 
+                               get_opponent_color(color), depth - 1, alpha, beta, True)
+            
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            
+            # Alpha-beta pruning
+            if beta <= alpha:
+                break
+        
+        return min_eval
+</code>

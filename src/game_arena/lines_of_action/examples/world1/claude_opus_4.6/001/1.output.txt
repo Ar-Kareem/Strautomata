@@ -1,0 +1,228 @@
+## Strategy
+
+My strategy implements a minimax search with alpha-beta pruning and iterative deepening to find strong moves within the time limit. The evaluation function considers:
+
+1. **Connectedness**: How connected our pieces are (primary goal is to form one connected group)
+2. **Center of mass distance**: Sum of distances of our pieces to their center of mass (we want pieces clustered together)
+3. **Opponent evaluation**: We also evaluate the opponent's position (we want to disrupt their connectivity)
+4. **Number of connected components**: Fewer components = better (1 = win)
+5. **Piece count considerations**: Capturing opponent pieces while preserving our own
+
+The search uses iterative deepening to maximize depth within the time budget, with move ordering based on captures and centralization to improve alpha-beta pruning efficiency.
+
+<code>
+import numpy as np
+from collections import deque
+import time
+
+def policy(board) -> str:
+    board = np.array(board)
+    start_time = time.time()
+    time_limit = 0.85  # conservative time limit
+    
+    def get_pieces(bd, player):
+        return list(zip(*np.where(bd == player)))
+    
+    def count_in_line(bd, r, c, dr, dc):
+        """Count all pieces along the full line through (r,c) in direction (dr,dc)."""
+        count = 0
+        # Count in both directions along the line
+        for sign in [-1, 1]:
+            nr, nc = r + sign * dr, c + sign * dc
+            while 0 <= nr < 8 and 0 <= nc < 8:
+                if bd[nr][nc] != 0:
+                    count += 1
+                nr += sign * dr
+                nc += sign * dc
+        # Count the piece at (r,c) itself
+        if bd[r][c] != 0:
+            count += 1
+        return count
+    
+    def get_legal_moves(bd, player):
+        moves = []
+        pieces = get_pieces(bd, player)
+        directions = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
+        for r, c in pieces:
+            for dr, dc in directions:
+                dist = count_in_line(bd, r, c, dr, dc)
+                tr, tc = r + dr * dist, c + dc * dist
+                if not (0 <= tr < 8 and 0 <= tc < 8):
+                    continue
+                # Can't land on own piece
+                if bd[tr][tc] == player:
+                    continue
+                # Check path for enemy pieces (can't jump over enemy)
+                blocked = False
+                for step in range(1, dist):
+                    mr, mc = r + dr * step, c + dc * step
+                    if bd[mr][mc] == -player:
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+                moves.append((r, c, tr, tc))
+        return moves
+    
+    def connected_components(bd, player):
+        pieces = set(get_pieces(bd, player))
+        if not pieces:
+            return 0, 0
+        visited = set()
+        components = 0
+        max_comp = 0
+        for p in pieces:
+            if p not in visited:
+                components += 1
+                q = deque([p])
+                visited.add(p)
+                comp_size = 0
+                while q:
+                    cr, cc = q.popleft()
+                    comp_size += 1
+                    for dr in [-1, 0, 1]:
+                        for dc in [-1, 0, 1]:
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr, nc = cr + dr, cc + dc
+                            if (nr, nc) in pieces and (nr, nc) not in visited:
+                                visited.add((nr, nc))
+                                q.append((nr, nc))
+                max_comp = max(max_comp, comp_size)
+        return components, max_comp
+    
+    def evaluate(bd, player):
+        pieces_me = get_pieces(bd, player)
+        pieces_opp = get_pieces(bd, -player)
+        
+        if not pieces_me:
+            return -100000
+        if not pieces_opp:
+            return 100000
+        
+        comp_me, max_me = connected_components(bd, player)
+        comp_opp, max_opp = connected_components(bd, -player)
+        
+        if comp_me == 1:
+            return 100000
+        if comp_opp == 1:
+            return -100000
+        
+        # Center of mass and spread for me
+        mr = sum(r for r, c in pieces_me) / len(pieces_me)
+        mc_ = sum(c for r, c in pieces_me) / len(pieces_me)
+        spread_me = sum(abs(r - mr) + abs(c - mc_) for r, c in pieces_me)
+        
+        # Center of mass and spread for opponent
+        orr = sum(r for r, c in pieces_opp) / len(pieces_opp)
+        oc = sum(c for r, c in pieces_opp) / len(pieces_opp)
+        spread_opp = sum(abs(r - orr) + abs(c - oc) for r, c in pieces_opp)
+        
+        # Adjacency count for me
+        piece_set_me = set(pieces_me)
+        adj_me = 0
+        for r, c in pieces_me:
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    if (r+dr, c+dc) in piece_set_me:
+                        adj_me += 1
+        
+        score = 0
+        score -= comp_me * 50
+        score += comp_opp * 30
+        score -= spread_me * 3
+        score += spread_opp * 1.5
+        score += adj_me * 5
+        score += max_me * 10
+        score -= max_opp * 5
+        
+        return score
+    
+    def make_move(bd, move, player):
+        nbd = bd.copy()
+        r, c, tr, tc = move
+        nbd[r][c] = 0
+        nbd[tr][tc] = player
+        return nbd
+    
+    def order_moves(bd, moves, player):
+        scored = []
+        for move in moves:
+            r, c, tr, tc = move
+            score = 0
+            if bd[tr][tc] == -player:
+                score += 100  # capture
+            # Prefer moves toward center
+            score -= abs(tr - 3.5) + abs(tc - 3.5)
+            scored.append((score, move))
+        scored.sort(reverse=True)
+        return [m for _, m in scored]
+    
+    def minimax(bd, player, depth, alpha, beta, maximizing):
+        if time.time() - start_time > time_limit:
+            return evaluate(bd, 1), None
+        
+        if depth == 0:
+            return evaluate(bd, 1), None
+        
+        current = 1 if maximizing else -1
+        moves = get_legal_moves(bd, current)
+        
+        if not moves:
+            return evaluate(bd, 1), None
+        
+        moves = order_moves(bd, moves, current)
+        
+        best_move = moves[0]
+        
+        if maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                if time.time() - start_time > time_limit:
+                    break
+                nbd = make_move(bd, move, current)
+                eval_score, _ = minimax(nbd, player, depth - 1, alpha, beta, False)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                if time.time() - start_time > time_limit:
+                    break
+                nbd = make_move(bd, move, current)
+                eval_score, _ = minimax(nbd, player, depth - 1, alpha, beta, True)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    # Iterative deepening
+    best_move = None
+    legal = get_legal_moves(board, 1)
+    if not legal:
+        return "0,0:0,0"
+    
+    best_move = legal[0]
+    
+    for depth in range(1, 20):
+        if time.time() - start_time > time_limit * 0.7:
+            break
+        score, move = minimax(board, 1, depth, -float('inf'), float('inf'), True)
+        if move is not None:
+            best_move = move
+        if abs(score) >= 90000:
+            break
+    
+    r, c, tr, tc = best_move
+    return f"{r},{c}:{tr},{tc}"
+</code>

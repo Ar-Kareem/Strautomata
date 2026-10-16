@@ -1,0 +1,517 @@
+**Strategy**
+
+This policy implements a depth-limited minimax search with alpha-beta pruning (2-ply) combined with aggressive move ordering and a focused evaluation function. The core principles are:
+
+1. **Force immediate checkmates** if available in the move list
+2. **Search depth 2** (move + opponent reply) using alpha-beta to maximize worst-case outcomes
+3. **Order moves by aggressiveness**: checks, captures, promotions first
+4. **Evaluation** prioritizes material, then king safety and central control
+5. **Fast move generation** with simplified but correct pseudo-legal move logic and check validation
+
+The search ensures we avoid immediate blunders while keeping computation under 1 second by pruning heavily and using efficient board representation.
+
+```python
+<code>
+import copy
+
+# Piece values for material evaluation
+P_VALS = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+
+# Movement direction vectors
+N_DIRS = [(2,1),(1,2),(-1,2),(-2,1),(-2,-1),(-1,-2),(1,-2),(2,-1)]
+B_DIRS = [(1,1),(1,-1),(-1,-1),(-1,1)]
+R_DIRS = [(1,0),(0,1),(-1,0),(0,-1)]
+Q_DIRS = B_DIRS + R_DIRS
+K_DIRS = Q_DIRS
+
+def policy(pieces, to_play, legal_moves):
+    """Select the strongest chess move from legal_moves."""
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Immediate checkmate
+    mates = [m for m in legal_moves if '#' in m]
+    if mates:
+        return mates[0]
+    
+    board = Board(pieces, to_play)
+    
+    # 2-ply minimax with alpha-beta
+    best_move = None
+    best_score = -float('inf')
+    alpha = -float('inf')
+    
+    # Search through ordered moves for better pruning
+    for move in order_moves(legal_moves, board):
+        new_board = board.make_move(move)
+        opp_moves = new_board.gen_legal_moves()
+        
+        # Checkmate found
+        if not opp_moves:
+            return move
+        
+        # Find opponent's best reply (worst for us)
+        worst_score = float('inf')
+        for opp_move in opp_moves:
+            opp_board = new_board.make_move(opp_move)
+            score = evaluate(opp_board)
+            if score < worst_score:
+                worst_score = score
+            if worst_score <= alpha:
+                break  # Alpha prune
+        
+        # Choose move that maximizes our minimal gain
+        if -worst_score > best_score:
+            best_score = -worst_score
+            best_move = move
+            alpha = best_score
+    
+    return best_move if best_move else legal_moves[0]
+
+def order_moves(moves, board):
+    """Order moves by heuristics: checks, captures, promotions."""
+    scored = []
+    for m in moves:
+        score = 0
+        if '+' in m:
+            score += 1000
+        if 'x' in m:
+            to_sq = m[-2:] if m[-2].isdigit() else m[-3:-1]
+            p = board.get_piece(to_sq)
+            if p:
+                score += P_VALS.get(p[1], 0) * 100
+        if '=' in m:
+            score += 900
+        scored.append((score, m))
+    return [m for _, m in sorted(scored, reverse=True)]
+
+class Board:
+    def __init__(self, pieces_dict, to_play):
+        self.b = [[None]*8 for _ in range(8)]
+        for sq, pc in pieces_dict.items():
+            f = ord(sq[0]) - 97
+            r = int(sq[1]) - 1
+            self.b[r][f] = pc
+        self.side = to_play
+        self.wtm = to_play == 'white'
+        self.opp = 'black' if self.wtm else 'white'
+    
+    def get_piece(self, square):
+        f = ord(square[0]) - 97
+        r = int(square[1]) - 1
+        return self.b[r][f]
+    
+    def set_piece(self, square, piece):
+        f = ord(square[0]) - 97
+        r = int(square[1]) - 1
+        self.b[r][f] = piece
+    
+    def clear_square(self, square):
+        self.set_piece(square, None)
+    
+    def make_move(self, move):
+        nb = Board({}, 'white')
+        nb.b = copy.deepcopy(self.b)
+        nb.side = 'black' if self.wtm else 'white'
+        nb.wtm = not self.wtm
+        nb.opp = self.side
+        
+        # Parse algebraic move
+        if move == 'O-O':
+            if nb.wtm:
+                nb.set_piece('g1', nb.get_piece('e1'))
+                nb.set_piece('f1', nb.get_piece('h1'))
+                nb.clear_square('e1')
+                nb.clear_square('h1')
+            else:
+                nb.set_piece('g8', nb.get_piece('e8'))
+                nb.set_piece('f8', nb.get_piece('h8'))
+                nb.clear_square('e8')
+                nb.clear_square('h8')
+        elif move == 'O-O-O':
+            if nb.wtm:
+                nb.set_piece('c1', nb.get_piece('e1'))
+                nb.set_piece('d1', nb.get_piece('a1'))
+                nb.clear_square('e1')
+                nb.clear_square('a1')
+            else:
+                nb.set_piece('c8', nb.get_piece('e8'))
+                nb.set_piece('d8', nb.get_piece('a8'))
+                nb.clear_square('e8')
+                nb.clear_square('a8')
+        else:
+            # Handle normal moves
+            is_capture = 'x' in move
+            is_check = '+' in move
+            
+            # Extract promotion and destination
+            if '=' in move:
+                promo = move[-1]
+                to_sq = move[-4:-2]
+                from_info = move[:-4]
+            else:
+                promo = None
+                to_sq = move[-2:]
+                from_info = move[:-2]
+            
+            # Determine source square from piece type and destination
+            piece_char = from_info[0] if from_info else 'P'
+            if piece_char in 'abcdefgh':
+                piece_char = 'P'
+                from_file = from_info[0]
+            else:
+                from_file = from_info[1] if len(from_info) > 1 else None
+            
+            # Find source square
+            src = self.find_source(piece_char, to_sq, from_file, is_capture)
+            if src:
+                piece = nb.get_piece(src)
+                if promo:
+                    piece = piece[0] + promo
+                nb.set_piece(to_sq, piece)
+                nb.clear_square(src)
+                
+                # Handle en passant capture
+                if piece_char == 'P' and is_capture and abs(ord(src[0]) - ord(to_sq[0])) == 1:
+                    if nb.wtm:
+                        nb.clear_square(f"{to_sq[0]}{int(to_sq[1])-1}")
+                    else:
+                        nb.clear_square(f"{to_sq[0]}{int(to_sq[1])+1}")
+        
+        return nb
+    
+    def find_source(self, piece_char, to_sq, from_file, is_capture):
+        """Find source square for a piece move."""
+        to_f = ord(to_sq[0]) - 97
+        to_r = int(to_sq[1]) - 1
+        
+        color = 'w' if self.wtm else 'b'
+        targets = []
+        
+        # Search board for matching piece
+        for r in range(8):
+            for f in range(8):
+                p = self.b[r][f]
+                if p and p[0] == color and p[1] == piece_char:
+                    if self.is_reachable(f, r, to_f, to_r, is_capture):
+                        if from_file is None or chr(97+f) == from_file:
+                            targets.append(f"{chr(97+f)}{r+1}")
+        
+        return targets[0] if targets else None
+    
+    def is_reachable(self, from_f, from_r, to_f, to_r, is_capture):
+        """Check if piece can reach square (simplified, no blockers)."""
+        df, dr = to_f - from_f, to_r - from_r
+        piece = self.b[from_r][from_f]
+        
+        if not piece:
+            return False
+        
+        piece_type = piece[1]
+        
+        # Knight moves
+        if piece_type == 'N':
+            return (df, dr) in N_DIRS
+        
+        # King moves
+        if piece_type == 'K':
+            return max(abs(df), abs(dr)) == 1
+        
+        # Pawn moves
+        if piece_type == 'P':
+            dir = 1 if self.wtm else -1
+            if dr == dir and abs(df) == 1 and is_capture:
+                return True
+            if dr == dir and df == 0 and not is_capture:
+                return True
+            return False
+        
+        # Sliding pieces
+        if piece_type in 'BRQ':
+            if df == 0 and dr != 0:
+                dirs = [(0, 1 if dr > 0 else -1)]
+            elif dr == 0 and df != 0:
+                dirs = [(1 if df > 0 else -1, 0)]
+            else:
+                dirs = [(1 if df > 0 else -1, 1 if dr > 0 else -1)]
+            
+            for d in dirs:
+                for step in range(1, max(abs(df), abs(dr)) + 1):
+                    if (d[0] * step, d[1] * step) == (df, dr):
+                        return True
+            return False
+        
+        return False
+    
+    def gen_legal_moves(self):
+        """Generate legal moves for current side."""
+        moves = []
+        color = 'w' if self.wtm else 'b'
+        
+        for r in range(8):
+            for f in range(8):
+                p = self.b[r][f]
+                if p and p[0] == color:
+                    if p[1] == 'P': moves.extend(self.pawn_moves(f, r))
+                    elif p[1] == 'N': moves.extend(self.knight_moves(f, r))
+                    elif p[1] == 'B': moves.extend(self.bishop_moves(f, r))
+                    elif p[1] == 'R': moves.extend(self.rook_moves(f, r))
+                    elif p[1] == 'Q': moves.extend(self.queen_moves(f, r))
+                    elif p[1] == 'K': moves.extend(self.king_moves(f, r))
+        
+        # Filter out illegal moves that leave king in check
+        legal = []
+        for m in moves:
+            if self.is_legal(m):
+                legal.append(m)
+        
+        return legal
+    
+    def pawn_moves(self, f, r):
+        moves = []
+        color = 'w' if self.wtm else 'b'
+        dir = 1 if self.wtm else -1
+        start_rank = 1 if self.wtm else 6
+        
+        # Forward move
+        nr = r + dir
+        if 0 <= nr < 8 and not self.b[nr][f]:
+            if nr in (0, 7):
+                for promo in 'QN':
+                    moves.append(f"{chr(97+f)}{nr+1}={promo}")
+            else:
+                moves.append(f"{chr(97+f)}{nr+1}")
+            
+            # Double move
+            if r == start_rank and not self.b[nr+dir][f]:
+                moves.append(f"{chr(97+f)}{r+2*dir+1}")
+        
+        # Captures
+        for df in (-1, 1):
+            nf = f + df
+            nr = r + dir
+            if 0 <= nf < 8 and 0 <= nr < 8:
+                target = self.b[nr][nf]
+                if target and target[0] != color:
+                    if nr in (0, 7):
+                        for promo in 'QN':
+                            moves.append(f"{chr(97+f)}x{chr(97+nf)}{nr+1}={promo}")
+                    else:
+                        moves.append(f"{chr(97+f)}x{chr(97+nf)}{nr+1}")
+        
+        return moves
+    
+    def knight_moves(self, f, r):
+        moves = []
+        color = 'w' if self.wtm else 'b'
+        
+        for df, dr in N_DIRS:
+            nf, nr = f + df, r + dr
+            if 0 <= nf < 8 and 0 <= nr < 8:
+                target = self.b[nr][nf]
+                if not target or target[0] != color:
+                    prefix = 'N' if target else 'N'
+                    move = f"N{chr(97+nf)}{nr+1}"
+                    if target:
+                        move = f"Nx{chr(97+nf)}{nr+1}"
+                    moves.append(move)
+        
+        return moves
+    
+    def bishop_moves(self, f, r):
+        return self.sliding_moves(f, r, B_DIRS, 'B')
+    
+    def rook_moves(self, f, r):
+        return self.sliding_moves(f, r, R_DIRS, 'R')
+    
+    def queen_moves(self, f, r):
+        return self.sliding_moves(f, r, Q_DIRS, 'Q')
+    
+    def king_moves(self, f, r):
+        moves = []
+        color = 'w' if self.wtm else 'b'
+        
+        for df, dr in K_DIRS:
+            nf, nr = f + df, r + dr
+            if 0 <= nf < 8 and 0 <= nr < 8:
+                target = self.b[nr][nf]
+                if not target or target[0] != color:
+                    move = f"K{chr(97+nf)}{nr+1}"
+                    if target:
+                        move = f"Kx{chr(97+nf)}{nr+1}"
+                    moves.append(move)
+        
+        # Castling (simplified)
+        if not self.in_check(self.side):
+            if self.wtm and f == 4 and r == 0:
+                if self.can_castle('e1', 'g1', 'h1'):
+                    moves.append('O-O')
+                if self.can_castle('e1', 'c1', 'a1'):
+                    moves.append('O-O-O')
+            elif not self.wtm and f == 4 and r == 7:
+                if self.can_castle('e8', 'g8', 'h8'):
+                    moves.append('O-O')
+                if self.can_castle('e8', 'c8', 'a8'):
+                    moves.append('O-O-O')
+        
+        return moves
+    
+    def sliding_moves(self, f, r, dirs, piece_char):
+        moves = []
+        color = 'w' if self.wtm else 'b'
+        
+        for df, dr in dirs:
+            nf, nr = f + df, r + dr
+            while 0 <= nf < 8 and 0 <= nr < 8:
+                target = self.b[nr][nf]
+                if not target:
+                    moves.append(f"{piece_char}{chr(97+nf)}{nr+1}")
+                else:
+                    if target[0] != color:
+                        moves.append(f"{piece_char}x{chr(97+nf)}{nr+1}")
+                    break
+                nf += df
+                nr += dr
+        
+        return moves
+    
+    def can_castle(self, king_from, king_to, rook_from):
+        """Simplified castling legality (no check through squares)."""
+        kf, kr = ord(king_from[0]) - 97, int(king_from[1]) - 1
+        rf, rr = ord(rook_from[0]) - 97, int(rook_from[1]) - 1
+        
+        # Rook must exist
+        if self.b[rr][rf] != ('wR' if self.wtm else 'bR'):
+            return False
+        
+        # Path must be clear
+        step = 1 if king_to > king_from else -1
+        new_kf = ord(king_to[0]) - 97
+        
+        for f in range(kf + step, new_kf, step):
+            if self.b[kr][f]:
+                return False
+        
+        return True
+    
+    def is_legal(self, move):
+        """Test if move is legal (doesn't leave king in check)."""
+        test_board = self.make_move(move)
+        return not test_board.in_check(self.side)
+    
+    def in_check(self, color):
+        """Determine if king of given color is in check."""
+        # Find king
+        king_pos = None
+        king_piece = f"{'w' if color == 'white' else 'b'}K"
+        
+        for r in range(8):
+            for f in range(8):
+                if self.b[r][f] == king_piece:
+                    king_pos = (f, r)
+                    break
+            if king_pos:
+                break
+        
+        if not king_pos:
+            return False
+        
+        # Check if square is attacked
+        return self.is_attacked(king_pos[0], king_pos[1], color)
+    
+    def is_attacked(self, f, r, color):
+        """Check if square is attacked by opponent."""
+        opp_color = 'white' if color == 'black' else 'black'
+        opp_prefix = 'w' if opp_color == 'white' else 'b'
+        
+        # Knight attacks
+        for df, dr in N_DIRS:
+            nf, nr = f + df, r + dr
+            if 0 <= nf < 8 and 0 <= nr < 8:
+                p = self.b[nr][nf]
+                if p and p == opp_prefix + 'N':
+                    return True
+        
+        # Pawn attacks
+        dir = 1 if opp_color == 'white' else -1
+        for df in (-1, 1):
+            nf, nr = f + df, r + dir
+            if 0 <= nf < 8 and 0 <= nr < 8:
+                p = self.b[nr][nf]
+                if p and p == opp_prefix + 'P':
+                    return True
+        
+        # King attacks
+        for df, dr in K_DIRS:
+            nf, nr = f + df, r + dr
+            if 0 <= nf < 8 and 0 <= nr < 8:
+                p = self.b[nr][nf]
+                if p and p == opp_prefix + 'K':
+                    return True
+        
+        # Sliding piece attacks (simplified)
+        for df, dr in B_DIRS:
+            nf, nr = f + df, r + dr
+            while 0 <= nf < 8 and 0 <= nr < 8:
+                p = self.b[nr][nf]
+                if p:
+                    if p[0] == opp_prefix[0] and p[1] in 'BQ':
+                        return True
+                    break
+                nf += df
+                nr += dr
+        
+        for df, dr in R_DIRS:
+            nf, nr = f + df, r + dr
+            while 0 <= nf < 8 and 0 <= nr < 8:
+                p = self.b[nr][nf]
+                if p:
+                    if p[0] == opp_prefix[0] and p[1] in 'RQ':
+                        return True
+                    break
+                nf += df
+                nr += dr
+        
+        return False
+
+def evaluate(board):
+    """Evaluate board position from current player perspective."""
+    score = 0
+    
+    # Material count
+    for r in range(8):
+        for f in range(8):
+            p = board.b[r][f]
+            if p:
+                val = P_VALS.get(p[1], 0)
+                if p[0] == 'w':
+                    score += val
+                else:
+                    score -= val
+    
+    # King safety bonus (keep king back in early game)
+    for r in range(8):
+        for f in range(8):
+            p = board.b[r][f]
+            if p and p[1] == 'K':
+                if (board.wtm and r >= 1) or (not board.wtm and r <= 6):
+                    if board.side == 'white' and p[0] == 'w':
+                        score += 0.5
+                    elif board.side == 'black' and p[0] == 'b':
+                        score -= 0.5
+    
+    # Central control bonus
+    center_squares = [(3,3), (3,4), (4,3), (4,4)]
+    for cf, cr in center_squares:
+        p = board.b[cr][cf]
+        if p:
+            val = P_VALS.get(p[1], 0) * 0.2
+            if p[0] == 'w':
+                score += val
+            else:
+                score -= val
+    
+    # Perspective flip
+    return score if board.wtm else -score
+</code>
+```

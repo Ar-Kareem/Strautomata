@@ -1,0 +1,135 @@
+The strategy for this policy is to implement a greedy heuristic-based agent that evaluates moves based on several key objectives in Breakthrough:
+
+1. **Forward Progress**: Prioritize moving pieces closer to the opponent's home row, especially avoiding leaving pieces idle.
+2. **Capturing Opponent Pieces**: Prefer captures that remove opponent pieces, especially if they open paths forward.
+3. **Avoiding Pointless Moves**: Avoid moving a piece backward or sideways (which is not allowed anyway), and prefer forward advancement.
+4. **Winning Condition Check**: Always check if any move leads to an immediate win (reaching opponent's home row), and prioritize it.
+5. **Center Control**: Prefer moves toward the center columns (column 3 and 4) to maintain board control.
+6. **Threat Evaluation**: Avoid moves that place a piece in a position where it can be captured on the next turn, when possible.
+
+The policy generates all legal moves and ranks them using a hand-crafted evaluation function that scores each move based on:
+- Whether it wins the game
+- Whether it captures an opponent piece
+- How much it advances the piece toward the opponent’s home row
+- Whether the destination is in the center
+- Whether the source and destination are safe from immediate capture
+
+The move with the highest score is selected. This ensures strong forward pressure and efficient use of each move.
+
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    # Build board representation for fast lookup
+    board = np.zeros((8, 8), dtype=int)
+    my_set = set(me)
+    opp_set = set(opp)
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opp:
+        board[r, c] = 2
+
+    # Define direction based on color
+    if color == 'b':
+        direction = -1  # Black moves up (row decreases)
+        opponent_home_row = 0
+    else:  # color == 'w'
+        direction = 1   # White moves down (row increases)
+        opponent_home compulsory_breakthrough_elimination_sqrtle
+        opponent_home_row = 7
+
+    # Generate all legal moves
+    legal_moves = []
+    capture_moves = []
+    advance_moves = []
+    for r, c in me:
+        nr_forward = r + direction
+        if 0 <= nr_forward < 8:
+            # Forward move (straight)
+            if 0 <= c < 8 and board[nr_forward, c] == 0:
+                move = ((r, c), (nr_forward, c))
+                legal_moves.append(move)
+                if nr_forward == opponent_home_row:
+                    return move  # Winning move - play immediately
+                advance_moves.append(move)
+            # Diagonal left capture
+            if c - 1 >= 0:
+                if board[nr_forward, c-1] == 2 and (nr_forward, c-1) in opp_set:
+                    move = ((r, c), (nr_forward, c-1))
+                    legal_moves.append(move)
+                    capture_moves.append(move)
+                    if nr_forward == opponent_home_row:
+                        return move  # Winning capture
+            # Diagonal right capture
+            if c + 1 < 8:
+                if board[nr_forward, c+1] == 2 and (nr_forward, c+1) in opp_set:
+                    move = ((r, c), (nr_forward, c+1))
+                    legal_moves.append(move)
+                    capture_moves.append(move)
+                    if nr_forward == opponent_home_row:
+                        return move  # Winning capture
+
+    # If no legal moves, something is wrong - but per rules, moves exist unless stalemate impossible in Breakthrough
+    if not legal_moves:
+        # Fallback: try to return any move, though this should not happen
+        return ((me[0][0], me[0][1]), (me[0][0] + direction, me[0][1]))
+
+    def evaluate_move(move):
+        (fr, fc), (tr, tc) = move
+        score = 0.0
+
+        # Reward progress toward opponent's home row
+        progress = abs(tr - opponent_home_row) - abs(fr - opponent_home_row)
+        # Since we want to reduce distance to opponent_home_row, progress should be negative
+        # So actual progress: opponent_home_row - tr for black, tr for white
+        if color == 'b':
+            dist_before = fr
+            dist_after = tr
+        else:
+            dist_before = 7 - fr
+            dist_after = 7 - tr
+        progress = dist_before - dist_after  # positive progress is good
+        score += progress * 10
+
+        # Reward captures
+        if board[tr, tc] == 2:
+            score += 20
+
+        # Prefer center columns
+        center_bonus = 2 - abs(tc - 3.5)  # peaks at columns 3 and 4
+        score += center_bonus * 2
+
+        # Penalize moving into a square that can be captured next turn
+        # Check if after move, opponent can capture from left or right diagonal
+        opp_dir = -direction
+        danger = 0
+        # Check if opponent can capture from (tr + opp_dir, tc - 1) or (tr + opp_dir, tc + 1)
+        for dc in [-1, 1]:
+            orow = tr + opp_dir
+            ocol = tc + dc
+            if 0 <= orow < 8 and 0 <= ocol < 8:
+                if board[orow, ocol] == 2:  # opponent piece can potentially capture
+                    danger += 1
+        score -= danger * 5
+
+        # Penalize leaving a piece that can be captured now (unless it's a capture move)
+        # But only if we don't immediately win
+        # If the source square is under threat from opponent, prefer to move it
+        # But penalize if we move a piece and leave it vulnerable
+        # But we already accounted for destination danger
+
+        return score
+
+    # Combine captures and advances
+    moves_to_evaluate = capture_moves + advance_moves if not capture_moves else capture_moves
+    # But always include all legal moves
+    moves_to_evaluate = legal_moves
+
+    # Sort by score descending
+    scored_moves = [(move, evaluate_move(move)) for move in moves_to_evaluate]
+    scored_moves.sort(key=lambda x: x[1], reverse=True)
+
+    best_move = scored_moves[0][0]
+    return best_move
+</code>

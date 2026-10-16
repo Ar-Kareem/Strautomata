@@ -1,0 +1,479 @@
+**Thinking Process:**
+
+1.  **Analyze the Game & Rules:**
+    *   **Game:** Clobber (5x6 board).
+    *   **State:** `you` and `opponent` 2D arrays (0/1).
+    *   **Objective:** Move a piece to capture an adjacent opponent piece. The player unable to move loses.
+    *   **Move Format:** "row,col,dir" (e.g., "2,3,R").
+    *   **Constraint:** Must return a *legal* move.
+
+2.  **Identify the Strategy:**
+    *   Since Clobber is a solved game for the 5x6 board (specifically, the standard setup where the board is initialized with 1s on odd cells and 0s on even cells, or the "Edge" variant where 1s are only on odd *rows*), the goal is usually to move to a "winning" or "drawing" position based on the Nim-sum (Grundy value) of the board regions.
+    *   However, without knowing the *exact* initial position (e.g., standard fill vs edge fill) or the opponent's strategy, a rigid "best move" lookup table might fail if the board state deviates.
+    *   **Heuristic Approach:** A robust strategy for games like Clobber (which is an impartial game but played as a partisan one here) is to maximize local advantage.
+        *   **Winning Condition:** If a move exists that leaves the opponent with no moves (instant win), take it.
+        *   **Safety:** Avoid moving a piece to a square where it can be immediately captured *unless* no safer moves exist. In Clobber, a piece on a "2" square (in standard play) is safe from capture by a "1" square piece (which is the standard initial piece).
+        *   **Standard Theory:** In a standard solved 5x6 Clobber game (initially populated on odd cells), players usually try to stay on "safe" squares (where the sum of coordinates `row + col` is even, assuming 0-indexing, if pieces start on `row + col` odd). Moving to a square with `row + col` even is often a defensive strategy.
+
+3.  **Algorithm:**
+    1.  Iterate through all board cells to find pieces belonging to `you`.
+    2.  For each piece, check the 4 orthogonal directions.
+    3.  If a direction contains an `opponent` piece (Legal Move):
+        *   **Instant Win Check:** Simulate the move. If, after the move, the opponent has no legal moves, return this move immediately.
+    4.  **Safety/Safety Heuristic:** If no instant win is found, we need a "safe" move. A move is "safe" if we don't immediately lose.
+        *   However, calculating the full game tree is expensive.
+        *   **Simpler Heuristic:** Prioritize moves that capture a piece and land on a "safe" parity.
+        *   In standard Clobber (pieces on odd parity), landing on even parity is often safe. Let's assume a standard board layout where the player wants to preserve their "1" pieces (odd parity).
+        *   Let's prioritize:
+            1.  **Immediate Win:** Move that leaves opponent no moves.
+            2.  **Capture & Safety:** Move that captures and lands on a square with `row + col` even (safe parity).
+            3.  **Any Capture:** If no safe moves available.
+
+4.  **Refining the "Safe" Logic:**
+    *   If we are `you` and the board is standard (pieces on odd `r+c`), then our pieces are on `r+c` odd. We capture to `r+c` even. The opponent is on `r+c` odd.
+    *   If we move to `r+c` even, the opponent (on odd) can capture us only if they are adjacent. But wait, in standard Clobber, if we land on even, and the opponent is on odd, they *can* capture us if adjacent.
+    *   Actually, the "Standard" 5x6 game is a First Player Win. The strategy involves specific moves.
+    *   Let's stick to a robust logical check:
+        *   **Check 1: Instant Win.** Does `Move -> Opponent has 0 moves`?
+        *   **Check 2: Parity Safety.** In standard Clobber, pieces on `r+c` even are "safe" (unless in specific edge cases). If I am on odd (standard start), moving to even is correct.
+        *   **Check 3: Fallback.** If no "safe" moves (by parity) exist, pick any move.
+
+5.  **Implementation Details:**
+    *   Input `you` and `opponent` are lists of lists (or numpy arrays? The prompt says "list[int]" but describes 5x6 arrays. I'll treat them as 2D lists/arrays).
+    *   I need a helper to check if a specific move is valid.
+    *   I need a helper to check if a specific board state has *any* moves for a player.
+
+6.  **Code Structure:**
+    *   `policy(you, opponent)`:
+        *   Identify all `you` positions.
+        *   Define directions mapping (Up/Down/Left/Right).
+        *   Loop through `you` positions.
+        *   For each valid capture:
+            *   Simulate board.
+            *   Check if opponent has no moves (Win).
+            *   If Win, return move.
+        *   If no win found, loop again.
+        *   For each valid capture:
+            *   Check if landing square `(r2, c2)` has safe parity. (Assuming standard start: our pieces are on `r+c` odd, so `r2+c2` even is target).
+            *   If safe, return move.
+        *   If still nothing, return the first valid move found (last resort).
+
+7.  **Safety Check details:**
+    *   "You" pieces are at `(r, c)` where `r+c` is odd (assuming standard start).
+    *   Target is `(r_new, c_new) = (r+dr, c+dc)`.
+    *   `r_new + c_new` will be even.
+    *   The opponent is on `r+c` odd.
+    *   If we land on even, the opponent (odd) cannot capture us? No, that's incorrect. Parity flips with every move.
+    *   Actually, in Clobber, "safe" squares often refer to the '2' squares in the 'Nim-value' decomposition of the 5x6 board. But without a full solver, relying on the standard parity heuristic is the most stable "safe" strategy for a 5x6 board.
+
+    *Self-Correction:* The prompt says "You are always the player to move". It doesn't specify who is the first player. The state `you` and `opponent` can be arbitrary. However, the "Safe" heuristic `r+c` even is derived from the fact that in the 5x6 game, the "target" positions (the squares that give the First Player the win) are usually on the even parity if the player started on odd.
+
+    Let's go with:
+    1.  **Win**: Check immediate win.
+    2.  **Safe**: Capture to `r+c` even (if standard start) or `r+c` odd (if inverted start). But I don't know the start.
+    *   *Actually*, in Clobber, the parity of `r+c` usually alternates with moves. If I am `you`, I want to leave the opponent in a losing position.
+    *   Let's try a generic "Good Move" heuristic:
+        *   If I am winning, I want to stay on "safe" squares.
+        *   Since I don't know the initial configuration, I can check the board density.
+        *   Usually, pieces are on `r+c` odd.
+        *   Let's try to prefer moves to `r+c` even. If that fails, try `r+c` odd.
+        *   Or, just prefer moves that capture. Any capture is better than passing (not possible).
+
+    *   **Better Strategy:**
+        *   Iterate moves.
+        *   Check "Winning Move" (Opponent has 0 moves).
+        *   Check "Safe Move" (Move to a square that is not immediately capturable? Hard to check locally).
+        *   Let's implement a **Solver-lite** approach: The 5x6 board is small. 30 squares.
+        *   However, 1 second time limit on a 3GHz CPU.
+        *   A full Minimax is possible but risky in Python if depth > 2 or 3.
+        *   Given Clobber is often a "solved" game, most opponents in a gaming arena will expect the "Standard Solution".
+        *   The Standard Solution for 5x6 (Odd cells occupied):
+            *   Player 1 wins.
+            *   Winning moves involve moving the piece at (0,1) to (0,2) or similar.
+        *   Let's implement a logic that looks for:
+            1.  **Win in 1**: Self-explanatory.
+            2.  **Prefer Right/Down moves**: In standard Clobber, the strategy involves moving pieces towards the right or down to maintain the "grid" shape.
+            3.  **Parity**: If `you` has pieces mostly on odd parity, prefer moving to even parity. If mostly on even, prefer odd.
+
+    *   **Final Plan:**
+        1.  List all legal moves.
+        2.  Check each move for **Instant Win**. Return immediately if found.
+        3.  Filter moves: Calculate the parity of the current board. Count `you` pieces on odd vs even `r+c`.
+            *   If `count(odd) > count(even)`: We are likely the "Odd" player. Prioritize landing on `even`.
+            *   If `count(even) > count(odd)`: Prioritize landing on `odd`.
+        4.  Return the first move satisfying the parity preference. If no preference, return the first move.
+
+    *   *Note on imports*: I'll use standard libraries. `numpy` is allowed but standard list manipulation is usually faster for small boards in Python unless heavy matrix ops are needed. I'll stick to pure Python lists to avoid overhead.
+
+    *   *Refining "Win Check"*:
+        To check if opponent has moves:
+        Iterate `opponent` pieces. Check adjacencies. If any adjacency is `you` (empty after my move), then opponent has a move.
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    ...
+```
+Wait, the return type is `int` in the prompt? No, "Return a string move in the format 'row,col,dir'". The example shows `def policy(...) -> int:` in the snippet, but the text says "Return a string". The text explicitly says "Return a string move in the format 'row,col,dir'". I will return a string.
+
+Let's write the code.
+
+**Step 1: Helper to check if a specific player has legal moves on a board state.**
+**Step 2: Main policy logic.**
+**Step 3: Construct the move string.**
+
+Let's refine the "Safe" logic.
+In 5x6 Clobber (standard):
+- Player 1 (Odd `r+c`) moves to Even `r+c`.
+- Player 2 (Even `r+c`) moves to Odd `r+c`.
+Usually, Player 1 wants to move to Even.
+
+If the input `you` has pieces mostly on `r+c` Odd, we should move to `r+c` Even.
+If `you` has pieces mostly on `r+c` Even, we should move to `r+c` Odd.
+
+Let's code this.
+
+```python
+def policy(you: list[int], opponent: list[int]) -> str:
+    # Directions mapping
+    # row, col offsets
+    # U: (-1, 0), D: (1, 0), L: (0, -1), R: (0, 1)
+    dirs = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    rows = 5
+    cols = 6
+    
+    # Determine current player's parity preference
+    # Count 'you' pieces on odd vs even parity
+    you_odd = 0
+    you_even = 0
+    for r in range(rows):
+        for c in range(cols):
+            if you[r][c]:
+                if (r + c) % 2 != 0:
+                    you_odd += 1
+                else:
+                    you_even += 1
+    
+    # If we have more pieces on odd, we are likely the "Odd" player, so we want to move to Even.
+    # If more on Even, move to Odd.
+    target_parity = 1 if you_odd >= you_even else 0  # 1 means target odd, 0 means target even (Wait...)
+    # If I am mostly on Odd (r+c odd), I want to land on Even (r+c even). Target parity = 0 (Even).
+    # If I am mostly on Even, I want to land on Odd. Target parity = 1 (Odd).
+    if you_odd >= you_even:
+        target_parity = 0 # Want even
+    else:
+        target_parity = 1 # Want odd
+
+    # Check for Instant Win and collect moves
+    moves = []
+    win_moves = []
+    safe_moves = []
+
+    for r in range(rows):
+        for c in range(cols):
+            if you[r][c]:
+                for dr, dc, d_name in dirs:
+                    nr, nc = r + dr, c + dc
+                    # Check bounds
+                    if 0 <= nr < rows and 0 <= nc < cols:
+                        if opponent[nr][nc]:
+                            # Valid capture found
+                            move_str = f"{r},{c},{d_name}"
+                            
+                            # Check Instant Win: Simulate move and see if opponent has moves
+                            # Create temp board state (conceptually)
+                            # New You: (r,c) -> (nr, nc)
+                            # New Opponent: (nr, nc) removed
+                            
+                            # Optimized "Opponent has moves" check
+                            opponent_has_move = False
+                            # We need to iterate opponent pieces. 
+                            # But (nr, nc) is removed.
+                            
+                            # Check opponent pieces for valid captures
+                            # Since we only need to know IF they have a move, we can break early
+                            
+                            for or_ in range(rows):
+                                if opponent_has_move: break
+                                for oc in range(cols):
+                                    if opponent[or_][oc]:
+                                        # Check adjacencies
+                                        for dr2, dc2, _ in dirs:
+                                            nor, noc = or_ + dr2, oc + dc2
+                                            if 0 <= nor < rows and 0 <= noc < cols:
+                                                # If adjacent to us (or empty? No, must capture us)
+                                                # If we move to (nr, nc), that square becomes 'us'.
+                                                # If opponent is adjacent to (nr, nc), they can capture us there.
+                                                # Also, if opponent is adjacent to (r, c) (our old spot), they can't capture there (it's empty).
+                                                
+                                                # So, opponent can move if they are adjacent to:
+                                                # 1. (nr, nc) (our new location)
+                                                
+                                                if nor == nr and noc == nc:
+                                                    opponent_has_move = True
+                                                    break
+                                                # 2. Wait, they can also move to (r, c) if it's not adjacent to (nr, nc) ? No.
+                                                # Opponent captures US. They need to land on OUR square.
+                                                # Our new square is (nr, nc).
+                                                # So, any opponent adjacent to (nr, nc) can capture us?
+                                                # ONLY if that direction points to (nr, nc).
+                                                
+                                                # Opponent at (or_, oc) wants to move to (nor, noc).
+                                                # If (nor, noc) is us (which is (nr, nc)), it's valid.
+                                            if opponent_has_move: break
+                                    if opponent_has_move: break
+                            # Note: The logic above is slightly incorrect. 
+                            # Correct "Opponent Has Move" check:
+                            # Iterate opponent (or, oc).
+                            # Iterate directions (dr2, dc2).
+                            # dest = (or+dr2, oc+dc2).
+                            # Is dest in bounds? Is dest == (nr, nc) (our new location)? 
+                            # If yes, opponent has a move.
+                            
+                            # Let's rewrite the opponent check cleanly:
+                            opponent_has_move = False
+                            for or_ in range(rows):
+                                for oc in range(cols):
+                                    if opponent[or_][oc]:
+                                        for dr2, dc2, _ in dirs:
+                                            nor, noc = or_ + dr2, oc + dc2
+                                            if 0 <= nor < rows and 0 <= noc < cols:
+                                                # Is this destination the square we just moved to?
+                                                if nor == nr and noc == nc:
+                                                    opponent_has_move = True
+                                                    break
+                                    if opponent_has_move: break
+                                if opponent_has_move: break
+
+                            if not opponent_has_move:
+                                return move_str # INSTANT WIN
+            
+                            # If not instant win, categorize by parity
+                            if (nr + nc) % 2 == target_parity:
+                                safe_moves.append(move_str)
+                            else:
+                                moves.append(move_str) # Unsafe moves buffer
+
+    # If we found safe moves, return the first one
+    if safe_moves:
+        return safe_moves[0]
+    
+    # Otherwise return any move (we are guaranteed at least one legal move)
+    if moves:
+        return moves[0]
+        
+    # Should not be reached given problem constraints
+    return "0,0,R"
+```
+
+Let me double check the opponent check logic.
+If `you` moves from `(r,c)` to `(nr, nc)`:
+1. `(r,c)` becomes empty.
+2. `(nr, nc)` becomes `you`.
+3. Old opponent piece at `(nr, nc)` is gone.
+
+Opponent (remaining pieces) can move if:
+There is an opponent piece at `(or, oc)` and an adjacent square `(dr, dc)` that contains `you`.
+In the *new* state, `you` is at `(nr, nc)`.
+So, if opponent is adjacent to `(nr, nc)`, they can move.
+
+Does the opponent care about `(r,c)`? No, `(r,c)` is empty. An opponent piece can only move onto a `you` piece. They cannot move onto empty.
+So, opponent cannot move to `(r,c)` unless `you` is there.
+Since `you` is no longer there, opponent has no moves targeting `(r,c)`.
+
+So, checking if any opponent piece is adjacent to `(nr, nc)` is the correct way to see if the opponent has a move (assuming no other `you` pieces exist).
+However, `you` might have *other* pieces on the board!
+So, opponent might have a move targeting *another* `you` piece, not the one that just moved.
+If we are trying to find an "Instant Win", we need to ensure the opponent has *zero* moves *anywhere*.
+My current check only checks if the opponent can capture the piece that just moved.
+I need to check if opponent can capture *any* `you` piece.
+
+Correct "Opponent Has Moves" check:
+Iterate all opponent pieces `(or, oc)`.
+Check all 4 directions `(dr, dc)`.
+`dest = (or+dr, oc+dc)`.
+If `dest` is valid:
+  If `you[dest_row][dest_col] == 1` (Note: `you` array here refers to the *new* `you` state).
+  `you` array update:
+  - `you[dest_row][dest_col] = 1` (the piece that moved)
+  - `you[r][c] = 0` (old position)
+  - The captured opponent piece `(nr, nc)` is gone.
+  
+  So, for the `you` array, I need to simulate:
+  `temp_you = copy(you)`
+  `temp_you[r][c] = 0`
+  `temp_you[nr][nc] = 1`
+  
+  Then check opponent moves against `temp_you`.
+
+Wait, `you` is the player to move. `opponent` is the other.
+So, in `temp_you`, I have my pieces.
+Opponent pieces are `opponent`, except the one at `(nr, nc)` is removed.
+`temp_opponent = copy(opponent)`
+`temp_opponent[nr][nc] = 0`
+
+If `temp_opponent` has any piece adjacent to a `temp_you` piece, then opponent has a move.
+
+This requires copying arrays or simulating efficiently.
+Given the board is small (5x6, 30 cells), copying and iterating is cheap.
+
+Let's refine the "Instant Win" check in the code.
+
+```python
+# ... inside the loop ...
+# Valid capture found: (r, c) -> (nr, nc)
+# Simulate new state
+# New You: move piece
+# New Opponent: remove piece at (nr, nc)
+
+# Check if Opponent has any legal move in the new state
+opponent_has_move = False
+
+# Iterate over opponent pieces (using original opponent list, but skipping (nr, nc))
+for or_ in range(rows):
+    for oc in range(cols):
+        if opponent[or_][oc]:
+            # Skip the piece we are about to capture
+            if or_ == nr and oc == nc:
+                continue
+            
+            # Check adjacencies
+            for dr2, dc2, _ in dirs:
+                nor, noc = or_ + dr2, oc + dc2
+                if 0 <= nor < rows and 0 <= noc < cols:
+                    # Check if destination is a 'you' piece
+                    # In the new state, 'you' has piece at (nr, nc) instead of (r, c)
+                    is_you_piece = False
+                    if nor == nr and noc == nc:
+                        is_you_piece = True
+                    elif you[nor][noc] == 1 and not (nor == r and noc == c):
+                        is_you_piece = True
+                    
+                    if is_you_piece:
+                        opponent_has_move = True
+                        break
+        if opponent_has_move: break
+    if opponent_has_move: break
+
+if not opponent_has_move:
+    return move_str # INSTANT WIN
+# ...
+```
+
+This logic seems robust.
+The check `you[nor][noc] == 1` refers to the original `you` array.
+But we moved `(r,c)` to `(nr, nc)`.
+So `you` at `(nr, nc)` in original is 0 (or 1 if overlap, but can't overlap).
+Wait, `you` array is `you[row][col]`. It's the current state.
+Current state: `you[r][c] = 1`, `you[nr][nc] = 0`.
+New state: `you[r][c] = 0`, `you[nr][nc] = 1`.
+
+So, to check if `you[nor][noc]` is 1 in the *new* state:
+- If `(nor, noc) == (nr, nc)`: YES (we just moved there).
+- If `(nor, noc) == (r, c)`: NO (we left there).
+- Otherwise: Check `you[nor][noc]` (original).
+
+Let's implement this check.
+
+Also, regarding imports:
+The prompt says "You may use any standard Python imports, including numpy".
+I'll use `copy` for safety, or just manually track the state.
+Actually, since I'm just iterating, I don't need full deep copies if I'm careful with the logic above.
+
+Let's write the final code.
+
+```python
+def policy(you: list[int], opponent: list[int]) -> str:
+    # Directions: (row_offset, col_offset, char)
+    dirs = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    rows = 5
+    cols = 6
+    
+    # 1. Determine target parity
+    # Count your pieces on odd and even squares
+    you_odd = 0
+    you_even = 0
+    for r in range(rows):
+        for c in range(cols):
+            if you[r][c]:
+                if (r + c) % 2 != 0:
+                    you_odd += 1
+                else:
+                    you_even += 1
+    
+    # Target parity: Move to the parity you currently have fewer of.
+    # If you have many on Odd, you want to move to Even (0).
+    # If you have many on Even, you want to move to Odd (1).
+    target_parity = 0 if you_odd >= you_even else 1
+
+    # Lists to store moves
+    instant_win_move = None
+    safe_moves = []
+    other_moves = []
+
+    # Iterate all your pieces
+    for r in range(rows):
+        for c in range(cols):
+            if you[r][c]:
+                for dr, dc, d_name in dirs:
+                    nr, nc = r + dr, c + dc
+                    
+                    # Check bounds and opponent presence
+                    if 0 <= nr < rows and 0 <= nc < cols and opponent[nr][nc]:
+                        move_str = f"{r},{c},{d_name}"
+                        
+                        # --- INSTANT WIN CHECK ---
+                        # Simulate the move: 
+                        # You: (r, c) -> (nr, nc)
+                        # Opponent: (nr, nc) removed
+                        
+                        # Check if opponent has ANY legal move in the new state
+                        opponent_has_move = False
+                        
+                        for or_ in range(rows):
+                            for oc in range(cols):
+                                if opponent[or_][oc]:
+                                    # Skip the captured piece
+                                    if or_ == nr and oc == nc:
+                                        continue
+                                    
+                                    # Check adjacencies for opponent
+                                    for dr2, dc2, _ in dirs:
+                                        nor, noc = or_ + dr2, oc + dc2
+                                        if 0 <= nor < rows and 0 <= noc < cols:
+                                            # Check if destination is 'you' in the NEW state
+                                            # Logic:
+                                            # 1. Is destination the new location of our moved piece?
+                                            if nor == nr and noc == nc:
+                                                opponent_has_move = True
+                                                break
+                                            # 2. Is destination an old location of our piece? (No, it's empty)
+                                            if nor == r and noc == c:
+                                                continue
+                                            # 3. Is destination any other existing you piece?
+                                            if you[nor][noc] == 1:
+                                                opponent_has_move = True
+                                                break
+                                    if opponent_has_move: break
+                            if opponent_has_move: break
+                        
+                        if not opponent_has_move:
+                            return move_str # Instant win!
+
+                        # --- CATEGORIZE MOVE ---
+                        # Check if landing square has target parity
+                        if (nr + nc) % 2 == target_parity:
+                            safe_moves.append(move_str)
+                        else:
+                            other_moves.append(move_str)
+
+    # If no instant win, prefer safe moves
+    if safe_moves:
+        return safe_moves[0]
+    
+    # Fallback to any move
+    if other_moves:
+        return other_moves[0]
+
+    # Should not be reachable given problem constraints
+    return "0,0,R"
+```

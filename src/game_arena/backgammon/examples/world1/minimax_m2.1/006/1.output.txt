@@ -1,0 +1,188 @@
+**Strategy**
+
+The policy works by enumerating every legal move allowed by the current dice roll and the board state, scoring each move with a lightweight heuristic, and finally selecting the move (or pair of moves) with the highest score.  
+
+Key points of the implementation:
+
+* **Legal move generation** – The code respects all backgammon rules:  
+  * Bar checkers must be entered before any other move.  
+  * A move onto a point occupied by two or more opponent checkers is illegal.  
+  * Bearing off is allowed only when all remaining checkers are in the home board (points 0‑5); for a die larger than the distance we require no checkers on higher points (the standard rule).  
+  * When two dice can be used, both must be played; when only one die can be used, the higher die is preferred.
+
+* **Move ordering** – The engine requires the move string to specify whether the higher or lower die is used first (`H` or `L`). The policy tries both orders, keeps every legal two‑die sequence, and picks the one with the best score.
+
+* **Scoring heuristic** – Each individual move receives points for:  
+  * **Bearing off** – +200 (most valuable).  
+  * **Hitting a blot** – +100.  
+  * **Building a point** (ending on a point we already occupy) – +10.  
+  * **Landing in the home board** – +5.  
+  * **Moving a bar checker** – +20.  
+  * **Moving closer to the home board** – +1 per pip moved.  
+
+The total score of a two‑move sequence is the sum of the scores of the two individual moves. If no two‑die sequence is possible, the policy falls back to the best single‑die move (preferring the higher die when both are possible). If no legal move exists at all, it returns the forced pass `H:P,P`.
+
+This approach is lightweight, runs well within the 1‑second time limit, and should consistently produce legal, strong moves.
+<code>
+def policy(state: dict) -> str:
+    """
+    Backgammon policy: enumerate all legal moves, score them, and return the best one.
+    """
+
+    # ------------------------------------------------------------------
+    # Helper functions
+    # ------------------------------------------------------------------
+    def generate_moves(st, die):
+        """
+        Return a list of possible moves for a single die.
+        Each move is a tuple (src, dest) where src is either 'B' (bar) or an
+        integer point index (0‑23). dest is either an integer point index or
+        the string 'off' (bearing off).
+        """
+        moves = []
+        my_bar = st['my_bar']
+        my_pts = st['my_pts']
+        opp_pts = st['opp_pts']
+
+        # If we have checkers on the bar, we must move from the bar.
+        if my_bar > 0:
+            dest = die - 1               # bar enters on points 0‑5
+            if dest >= 0 and opp_pts[dest] <= 1:
+                moves.append(('B', dest))
+        else:
+            for src in range(24):
+                if my_pts[src] == 0:
+                    continue
+                dest = src - die
+                if dest >= 0:
+                    # normal move on the board
+                    if opp_pts[dest] <= 1:
+                        moves.append((src, dest))
+                else:
+                    # bearing off – only allowed from the home board (points 0‑5)
+                    if src <= 5:
+                        distance = src + 1           # pips needed to bear off
+                        if die == distance:
+                            moves.append((src, 'off'))
+                        elif die > distance:
+                            # can only bear off if no checkers on higher points
+                            if sum(my_pts[src + 1:6]) == 0:
+                                moves.append((src, 'off'))
+                        # else die < distance → cannot bear off
+                    # src > 5 cannot bear off
+        return moves
+
+    def apply_move(st, move):
+        """Apply a single move to a copy of the state and return the new state."""
+        src, dest = move
+        new_state = {
+            'my_pts': st['my_pts'][:],
+            'opp_pts': st['opp_pts'][:],
+            'my_bar': st['my_bar'],
+            'opp_bar': st['opp_bar'],
+            'my_off': st['my_off'],
+            'opp_off': st['opp_off'],
+        }
+        if src == 'B':
+            new_state['my_bar'] -= 1
+            dest_int = dest
+            if new_state['opp_pts'][dest_int] == 1:
+                new_state['opp_pts'][dest_int] = 0
+                new_state['opp_bar'] += 1
+            new_state['my_pts'][dest_int] += 1
+        else:
+            src_int = src
+            new_state['my_pts'][src_int] -= 1
+            if dest == 'off':
+                new_state['my_off'] += 1
+            else:
+                dest_int = dest
+                if new_state['opp_pts'][dest_int] == 1:
+                    new_state['opp_pts'][dest_int] = 0
+                    new_state['opp_bar'] += 1
+                new_state['my_pts'][dest_int] += 1
+        return new_state
+
+    def move_score(st_before, move):
+        """Simple heuristic score for a single move."""
+        src, dest = move
+        score = 0
+        # entering from the bar is valuable
+        if src == 'B':
+            score += 20
+        if dest == 'off':
+            score += 200
+        else:
+            dest_int = dest
+            # hitting a blot
+            if st_before['opp_pts'][dest_int] == 1:
+                score += 100
+            # building a point (we already have at least one checker there)
+            if st_before['my_pts'][dest_int] >= 1:
+                score += 10
+            # landing in the home board is generally safe
+            if dest_int <= 5:
+                score += 5
+            # moving closer to home (distance travelled)
+            if src != 'B':
+                score += (src - dest_int)
+        return score
+
+    # ------------------------------------------------------------------
+    # Main logic
+    # ------------------------------------------------------------------
+    dice = state['dice']
+    if not dice:
+        return "H:P,P"
+
+    # ---- Case of a single die ------------------------------------------------
+    if len(dice) == 1:
+        die = dice[0]
+        moves = generate_moves(state, die)
+        if not moves:
+            return "H:P,P"
+        best_move = max(moves, key=lambda m: move_score(state, m))
+        src_str = 'B' if best_move[0] == 'B' else 'A' + str(best_move[0])
+        return "H:" + src_str + ",P"
+
+    # ---- Two dice ------------------------------------------------------------
+    dice_sorted = sorted(dice)
+    low, high = dice_sorted[0], dice_sorted[1]
+
+    best_seq = None          # (order, move1, move2)
+    best_score = -10**9
+
+    # Try both possible orders: 'H' (high first) and 'L' (low first)
+    for order, first_die, second_die in [('H', high, low), ('L', low, high)]:
+        # generate all possible first‑die moves
+        for m1 in generate_moves(state, first_die):
+            state_after1 = apply_move(state, m1)
+            # generate second‑die moves on the resulting board
+            for m2 in generate_moves(state_after1, second_die):
+                # score the two‑move sequence
+                sc = move_score(state, m1) + move_score(state_after1, m2)
+                if sc > best_score:
+                    best_score = sc
+                    best_seq = (order, m1, m2)
+
+    # If we found a legal two‑die move, return it
+    if best_seq is not None:
+        order, m1, m2 = best_seq
+        src1 = 'B' if m1[0] == 'B' else 'A' + str(m1[0])
+        src2 = 'B' if m2[0] == 'B' else 'A' + str(m2[0])
+        return f"{order}:{src1},{src2}"
+
+    # ---- No two‑die move possible – try a single die -----------------------
+    # prefer the higher die if it can be played
+    for die in (high, low):
+        moves = generate_moves(state, die)
+        if moves:
+            best_move = max(moves, key=lambda m: move_score(state, m))
+            src_str = 'B' if best_move[0] == 'B' else 'A' + str(best_move[0])
+            # choose order according to which die we used
+            order = 'H' if die == high else 'L'
+            return f"{order}:{src_str},P"
+
+    # ---- No legal move at all ------------------------------------------------
+    return "H:P,P"
+</code>

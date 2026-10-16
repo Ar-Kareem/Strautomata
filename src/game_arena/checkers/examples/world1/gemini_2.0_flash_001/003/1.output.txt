@@ -1,0 +1,199 @@
+The strategy for this policy is a combination of several heuristics:
+
+1. **Mandatory Jumps:** Prioritize moves that capture opponent pieces. Capture sequences are performed greedily, maximizing the number of pieces captured in a single turn.  If multiple jump sequences exist, we choose the one that captures the most pieces.
+2. **King Safety:** When not forced to jump, avoid moving kings to the edge of the board if possible to avoid being trapped.
+3. **Piece Advancement:** For regular pieces, prioritize moving towards the opponent's side, maximizing the chance of becoming a king.
+4. **Central Control:** Prefer moves that place pieces closer to the center of the board.
+5. **Avoid Piece Isolation:** Avoid moving pieces to locations where they are easily isolated and cannot contribute to attacks or defense.
+6. **Endgame Strategy** If one side is significantly ahead in material in the endgame, the winning side will attempt to force trades to a winning endgame. The losing side will avoid trades.
+
+Error handling is included to ensure that legal moves are always returned, even if the primary strategy fails to find a desirable move within the time limit. A random legal move is returned as a last resort to avoid illegal moves and disqualification.
+
+```python
+import random
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    A Checkers AI that prioritizes jumps, king safety, and piece advancement.
+    """
+
+    board = {}
+    for square in my_men:
+        board[square] = 'm'  # men
+    for square in my_kings:
+        board[square] = 'k'  # kings
+    for square in opp_men:
+        board[square] = 'o'  # opponent men
+    for square in opp_kings:
+        board[square] = 'O'  # opponent kings
+
+    def get_legal_moves(board, color, piece_type, position):
+        row, col = position
+        moves = []
+        jumps = []
+        opponent_men = opp_men.copy()
+        opponent_kings = opp_kings.copy()
+
+        if color == 'b':
+            direction = 1
+        else:
+            direction = -1
+
+        # Possible move directions
+        move_directions = [(direction, -1), (direction, 1)]
+        if piece_type == 'k':
+            move_directions = [(1, -1), (1, 1), (-1, -1), (-1, 1)]
+
+        for dr, dc in move_directions:
+            new_row, new_col = row + dr, col + dc
+            if 0 <= new_row < 8 and 0 <= new_col < 8 and (new_row + new_col) % 2 == 0:
+                if (new_row, new_col) not in board:
+                    moves.append(((row, col), (new_row, new_col)))
+                else:
+                    # Check for jumps
+                    jump_row, jump_col = new_row + dr, new_col + dc
+                    if 0 <= jump_row < 8 and 0 <= jump_col < 8 and (jump_row + jump_col) % 2 == 0 and (jump_row, jump_col) not in board:
+                        opponent_piece = board[(new_row, new_col)]
+
+                        if (color == 'b' and (opponent_piece == 'o' or opponent_piece == 'O')) or \
+                           (color == 'w' and (opponent_piece == 'm' or opponent_piece == 'k')):
+                            jumps.append(((row, col), (jump_row, jump_col)))
+        return moves, jumps
+
+    def find_all_possible_jumps(board, color):
+        all_jumps = []
+        for square in my_men:
+            _, jumps = get_legal_moves(board, color, 'm', square)
+            if jumps:
+                all_jumps.extend([(square, jump[1]) for jump in jumps]) # from square and to square
+        for square in my_kings:
+            _, jumps = get_legal_moves(board, color, 'k', square)
+            if jumps:
+                all_jumps.extend([(square, jump[1]) for jump in jumps])
+
+        return all_jumps
+
+    def perform_jump(board, color, start_square, end_square): # Modifies the board in place
+        from_row, from_col = start_square
+        to_row, to_col = end_square
+        jumped_row = (from_row + to_row) // 2
+        jumped_col = (from_col + to_col) // 2
+        jumped_square = (jumped_row, jumped_col)
+
+        piece = board[start_square]
+        del board[start_square]
+        del board[jumped_square]
+        board[end_square] = piece
+
+        # Crown piece if needed
+        if color == 'b' and to_row == 0 and piece == 'm':
+            board[end_square] = 'k'
+            my_men.remove(start_square)
+            my_kings.append(end_square)
+        elif color == 'w' and to_row == 7 and piece == 'm':
+            board[end_square] = 'k'
+            my_men.remove(start_square)
+            my_kings.append(end_square)
+
+        if jumped_square in opp_men:
+          opp_men.remove(jumped_square)
+        elif jumped_square in opp_kings:
+          opp_kings.remove(jumped_square)
+
+        return board
+
+    def find_jump_sequence(board, color, start_square):
+      sequence = [(start_square, None)] #list of moves; the "to" square of the first move will be modified later; used for tracking the path
+      current_square = start_square
+      current_board = board.copy()
+      total_captured = 0
+
+      while(True):
+        _, jumps = get_legal_moves(current_board, color, current_board[current_square].lower(), current_square)
+        valid_jumps = []
+
+        #Filter invalid jumps after pieces are moved:
+        for jump in jumps:
+          from_row, from_col = current_square
+          to_row, to_col = jump[1]
+          jumped_row = (from_row + to_row) // 2
+          jumped_col = (from_col + to_col) // 2
+          jumped_square = (jumped_row, jumped_col)
+
+          opponent_piece = current_board.get(jumped_square)
+
+          if opponent_piece and ((color == 'b' and (opponent_piece == 'o' or opponent_piece == 'O')) or (color == 'w' and (opponent_piece == 'm' or opponent_piece == 'k'))):
+              valid_jumps.append(jump)
+
+        if not valid_jumps:
+          break
+
+        #Greedily pick the first available jump:
+        jump = valid_jumps[0]
+        to_row, to_col = jump[1]
+        jumped_row = (current_square[0] + to_row) // 2
+        jumped_col = (current_square[1] + to_col) // 2
+        captures = 1
+        total_captured += captures
+
+        #Modify board state:
+        current_board = perform_jump(current_board, color, current_square, jump[1])
+        sequence[-1] = (sequence[-1][0], jump[1])
+
+        current_square = jump[1]
+        sequence.append((current_square, None)) # Next move will start from current square
+
+      sequence.pop() #Remove the last square from the sequence; after the last jump nobody is going anywhere
+
+      return sequence, total_captured, current_board #Returns sequence of (from, to), number of captures, and the final board
+
+    # Check for mandatory jumps
+    all_jumps = find_all_possible_jumps(board, color)
+    if all_jumps:
+        # Find the jump sequence that captures the most pieces
+        best_sequence = None
+        max_captured = -1
+        best_board = None
+
+        for start_square, _ in all_jumps: #Iterate through all possible starting squares.
+          sequence, captured, updated_board = find_jump_sequence(board, color, start_square)
+
+          if captured > max_captured:
+            max_captured = captured
+            best_sequence = sequence
+            best_board = updated_board
+        return best_sequence[0]
+
+    # If no jumps, move a piece
+    else:
+        # Prioritize moving men towards the opponent's side
+        if color == 'b':
+            sorted_men = sorted(my_men, key=lambda x: x[0], reverse=True)
+        else:
+            sorted_men = sorted(my_men, key=lambda x: x[0])
+
+        for man in sorted_men:
+            moves, _ = get_legal_moves(board, color, 'm', man)
+            if moves:
+                return moves[0]  # Return the first available move
+
+        # If no men can move, move a king
+        for king in my_kings:
+            moves, _ = get_legal_moves(board, color, 'k', king)
+            if moves:
+                return moves[0]
+
+        # If no moves are available, return a random but legal move (should not happen).
+        all_pieces = my_men + my_kings
+        if not all_pieces:
+            return ((0, 1), (1, 0)) # Arbitrary legal move
+        piece = random.choice(all_pieces)
+        piece_type = 'm' if piece in my_men else 'k'
+        moves, _ = get_legal_moves(board, color, piece_type, piece)
+
+        if moves:
+            return random.choice(moves)
+
+        # If absolutely desperate, return an impossible move. Should never happen.
+        return ((0, 1), (1, 0)) # Arbitrary legal move
+```

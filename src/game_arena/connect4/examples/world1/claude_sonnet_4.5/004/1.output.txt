@@ -1,0 +1,251 @@
+<thinking>
+I need to implement a Connect 4 AI policy. Let me think about the strategy:
+
+1. **Win immediately**: If I can win on this move, do it.
+2. **Block opponent**: If the opponent can win on their next move, block them.
+3. **Create threats**: Try to create situations where I have multiple ways to win.
+4. **Center preference**: The center columns are generally more valuable.
+5. **Avoid giving opponent wins**: Don't play a move that allows the opponent to win on their next turn.
+
+Let me implement a minimax-like approach with some heuristics:
+
+Key functions needed:
+- Check if a move is valid
+- Make a move (simulate)
+- Check for wins
+- Evaluate board position
+- Find best move
+
+Since we have 1 second, I can do a reasonable depth search. Let me implement:
+1. Immediate win detection
+2. Immediate loss prevention
+3. A simple heuristic evaluation for other cases
+
+For efficiency, I'll:
+- Check winning moves first
+- Check blocking moves second
+- Use heuristics for tie-breaking
+
+Let me code this step by step:
+
+```python
+def policy(board: list[list[int]]) -> int:
+    # Helper functions
+    def is_valid_move(board, col):
+        return board[0][col] == 0
+    
+    def get_valid_moves(board):
+        return [col for col in range(7) if is_valid_move(board, col)]
+    
+    def drop_piece(board, col, player):
+        # Returns the row where piece was dropped, or -1 if invalid
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                board[row][col] = player
+                return row
+        return -1
+    
+    def check_win(board, player):
+        # Check horizontal
+        for row in range(6):
+            for col in range(4):
+                if all(board[row][col+i] == player for i in range(4)):
+                    return True
+        
+        # Check vertical
+        for row in range(3):
+            for col in range(7):
+                if all(board[row+i][col] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (positive slope)
+        for row in range(3, 6):
+            for col in range(4):
+                if all(board[row-i][col+i] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (negative slope)
+        for row in range(3):
+            for col in range(4):
+                if all(board[row+i][col+i] == player for i in range(4)):
+                    return True
+        
+        return False
+    
+    def copy_board(board):
+        return [row[:] for row in board]
+    
+    # Strategy 1: Win immediately if possible
+    for col in get_valid_moves(board):
+        test_board = copy_board(board)
+        drop_piece(test_board, col, 1)
+        if check_win(test_board, 1):
+            return col
+    
+    # Strategy 2: Block opponent's winning move
+    for col in get_valid_moves(board):
+        test_board = copy_board(board)
+        drop_piece(test_board, col, -1)
+        if check_win(test_board, -1):
+            return col
+    
+    # Strategy 3: Don't give opponent a win on next move
+    safe_moves = []
+    for col in get_valid_moves(board):
+        test_board = copy_board(board)
+        row = drop_piece(test_board, col, 1)
+        
+        # Check if this move gives opponent an immediate win
+        gives_win = False
+        if row > 0:  # If there's a row above
+            # Simulate opponent's possible moves
+            for opp_col in get_valid_moves(test_board):
+                opp_board = copy_board(test_board)
+                drop_piece(opp_board, opp_col, -1)
+                if check_win(opp_board, -1):
+                    gives_win = True
+                    break
+        
+        if not gives_win:
+            safe_moves.append(col)
+    
+    # Strategy 4: Prefer center columns and safe moves
+    if safe_moves:
+        # Prioritize center columns
+        preference = [3, 2, 4, 1, 5, 0, 6]
+        for col in preference:
+            if col in safe_moves:
+                return col
+    
+    # Fallback: return any valid move (prefer center)
+    valid_moves = get_valid_moves(board)
+    preference = [3, 2, 4, 1, 5, 0, 6]
+    for col in preference:
+        if col in valid_moves:
+            return col
+    
+    return valid_moves[0] if valid_moves else 3
+```
+
+Wait, I need to be more careful about the "don't give opponent a win" logic. If I place a piece in column X at row Y, the opponent could place a piece in column X at row Y-1. Let me refine this.
+
+Actually, let me simplify and focus on a more robust approach with better heuristics and possibly shallow minimax.
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> int:
+    def is_valid_move(board, col):
+        return board[0][col] == 0
+    
+    def get_valid_moves(board):
+        return [col for col in range(7) if is_valid_move(board, col)]
+    
+    def drop_piece(board, col, player):
+        """Drop a piece and return the row where it landed."""
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                board[row][col] = player
+                return row
+        return -1
+    
+    def check_win(board, player):
+        # Horizontal
+        for row in range(6):
+            for col in range(4):
+                if all(board[row][col+i] == player for i in range(4)):
+                    return True
+        # Vertical
+        for row in range(3):
+            for col in range(7):
+                if all(board[row+i][col] == player for i in range(4)):
+                    return True
+        # Diagonal /
+        for row in range(3, 6):
+            for col in range(4):
+                if all(board[row-i][col+i] == player for i in range(4)):
+                    return True
+        # Diagonal \
+        for row in range(3):
+            for col in range(4):
+                if all(board[row+i][col+i] == player for i in range(4)):
+                    return True
+        return False
+    
+    def copy_board(board):
+        return [row[:] for row in board]
+    
+    def count_threats(board, player):
+        """Count potential 4-in-a-row opportunities."""
+        count = 0
+        # Check all possible 4-in-a-row positions
+        # Horizontal
+        for row in range(6):
+            for col in range(4):
+                window = [board[row][col+i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    count += 1
+        # Vertical
+        for row in range(3):
+            for col in range(7):
+                window = [board[row+i][col] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    count += 1
+        # Diagonals
+        for row in range(3, 6):
+            for col in range(4):
+                window = [board[row-i][col+i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    count += 1
+        for row in range(3):
+            for col in range(4):
+                window = [board[row+i][col+i] for i in range(4)]
+                if window.count(player) == 3 and window.count(0) == 1:
+                    count += 1
+        return count
+    
+    # 1. Win immediately if possible
+    for col in get_valid_moves(board):
+        test_board = copy_board(board)
+        drop_piece(test_board, col, 1)
+        if check_win(test_board, 1):
+            return col
+    
+    # 2. Block opponent's winning move
+    for col in get_valid_moves(board):
+        test_board = copy_board(board)
+        drop_piece(test_board, col, -1)
+        if check_win(test_board, -1):
+            return col
+    
+    # 3. Evaluate moves and avoid giving opponent a win
+    valid_moves = get_valid_moves(board)
+    move_scores = []
+    
+    for col in valid_moves:
+        test_board = copy_board(board)
+        row = drop_piece(test_board, col, 1)
+        
+        # Check if this gives opponent an immediate win opportunity
+        opponent_can_win = False
+        for opp_col in get_valid_moves(test_board):
+            opp_board = copy_board(test_board)
+            drop_piece(opp_board, opp_col, -1)
+            if check_win(opp_board, -1):
+                opponent_can_win = True
+                break
+        
+        if opponent_can_win:
+            score = -1000
+        else:
+            # Evaluate position
+            my_threats = count_threats(test_board, 1)
+            opp_threats = count_threats(test_board, -1)
+            center_bonus = 4 - abs(col - 3)
+            score = my_threats * 10 - opp_threats * 5 + center_bonus
+        
+        move_scores.append((score, col))
+    
+    # Choose best move
+    move_scores.sort(reverse=True)
+    return move_scores[0][1]
+</code>

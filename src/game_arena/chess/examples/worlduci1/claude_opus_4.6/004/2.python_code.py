@@ -1,0 +1,457 @@
+
+import time
+import copy
+
+def policy(pieces, to_play):
+    start_time = time.time()
+    
+    color = 'w' if to_play == 'white' else 'b'
+    opp = 'b' if color == 'w' else 'w'
+    
+    # Board representation: 8x8 array
+    # Convert pieces to board
+    def sq_to_rc(sq):
+        return (int(sq[1]) - 1, ord(sq[0]) - ord('a'))
+    
+    def rc_to_sq(r, c):
+        return chr(c + ord('a')) + str(r + 1)
+    
+    board = [[None]*8 for _ in range(8)]
+    for sq, pc in pieces.items():
+        r, c = sq_to_rc(sq)
+        board[r][c] = pc
+    
+    PIECE_VAL = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    # Piece-square tables (from white's perspective, rank 0 = rank 1)
+    PST = {}
+    PST['P'] = [
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [50, 50, 50, 50, 50, 50, 50, 50],
+        [10, 10, 20, 30, 30, 20, 10, 10],
+        [5,  5, 10, 25, 25, 10,  5,  5],
+        [0,  0,  0, 20, 20,  0,  0,  0],
+        [5, -5,-10,  0,  0,-10, -5,  5],
+        [5, 10, 10,-20,-20, 10, 10,  5],
+        [0,  0,  0,  0,  0,  0,  0,  0],
+    ]
+    PST['N'] = [
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+        [-40,-20,  0,  0,  0,  0,-20,-40],
+        [-30,  0, 10, 15, 15, 10,  0,-30],
+        [-30,  5, 15, 20, 20, 15,  5,-30],
+        [-30,  0, 15, 20, 20, 15,  0,-30],
+        [-30,  5, 10, 15, 15, 10,  5,-30],
+        [-40,-20,  0,  5,  5,  0,-20,-40],
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+    ]
+    PST['B'] = [
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0, 10, 10, 10, 10,  0,-10],
+        [-10,  5,  5, 10, 10,  5,  5,-10],
+        [-10,  0, 10, 10, 10, 10,  0,-10],
+        [-10, 10, 10, 10, 10, 10, 10,-10],
+        [-10,  5,  0,  0,  0,  0,  5,-10],
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+    ]
+    PST['R'] = [
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [5, 10, 10, 10, 10, 10, 10,  5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [0,  0,  0,  5,  5,  0,  0,  0],
+    ]
+    PST['Q'] = [
+        [-20,-10,-10, -5, -5,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5,  5,  5,  5,  0,-10],
+        [-5,  0,  5,  5,  5,  5,  0, -5],
+        [0,  0,  5,  5,  5,  5,  0, -5],
+        [-10,  5,  5,  5,  5,  5,  0,-10],
+        [-10,  0,  5,  0,  0,  0,  0,-10],
+        [-20,-10,-10, -5, -5,-10,-10,-20],
+    ]
+    PST['K'] = [
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-20,-30,-30,-40,-40,-30,-30,-20],
+        [-10,-20,-20,-20,-20,-20,-20,-10],
+        [20, 20,  0,  0,  0,  0, 20, 20],
+        [20, 30, 10,  0,  0, 10, 30, 20],
+    ]
+    
+    def in_bounds(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+    
+    def is_attacked_by(bd, r, c, by_color):
+        """Check if square (r,c) is attacked by any piece of by_color."""
+        # Pawn attacks
+        if by_color == 'w':
+            for dr, dc in [(1, -1), (1, 1)]:
+                nr, nc = r - dr, c - dc  # pawn that attacks (r,c) is at (r-1, c±1) for white
+                if in_bounds(nr, nc) and bd[nr][nc] == 'wP':
+                    return True
+        else:
+            for dr, dc in [(-1, -1), (-1, 1)]:
+                nr, nc = r - dr, c - dc
+                if in_bounds(nr, nc) and bd[nr][nc] == 'bP':
+                    return True
+        
+        # Knight attacks
+        for dr, dc in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+            nr, nc = r+dr, c+dc
+            if in_bounds(nr, nc) and bd[nr][nc] == by_color + 'N':
+                return True
+        
+        # King attacks
+        for dr in [-1,0,1]:
+            for dc in [-1,0,1]:
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r+dr, c+dc
+                if in_bounds(nr, nc) and bd[nr][nc] == by_color + 'K':
+                    return True
+        
+        # Sliding pieces: rook/queen on straights, bishop/queen on diagonals
+        for dr, dc in [(0,1),(0,-1),(1,0),(-1,0)]:
+            nr, nc = r+dr, c+dc
+            while in_bounds(nr, nc):
+                p = bd[nr][nc]
+                if p is not None:
+                    if p[0] == by_color and p[1] in ('R', 'Q'):
+                        return True
+                    break
+                nr, nc = nr+dr, nc+dc
+        
+        for dr, dc in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+            nr, nc = r+dr, c+dc
+            while in_bounds(nr, nc):
+                p = bd[nr][nc]
+                if p is not None:
+                    if p[0] == by_color and p[1] in ('B', 'Q'):
+                        return True
+                    break
+                nr, nc = nr+dr, nc+dc
+        
+        return False
+    
+    def find_king(bd, col):
+        for r in range(8):
+            for c in range(8):
+                if bd[r][c] == col + 'K':
+                    return (r, c)
+        return None
+    
+    def in_check(bd, col):
+        kp = find_king(bd, col)
+        if kp is None:
+            return True
+        opp_col = 'b' if col == 'w' else 'w'
+        return is_attacked_by(bd, kp[0], kp[1], opp_col)
+    
+    def gen_pseudo_moves(bd, col):
+        """Generate pseudo-legal moves (might leave king in check)."""
+        moves = []
+        opp_col = 'b' if col == 'w' else 'w'
+        pawn_dir = 1 if col == 'w' else -1
+        start_rank = 1 if col == 'w' else 6
+        promo_rank = 7 if col == 'w' else 0
+        
+        for r in range(8):
+            for c in range(8):
+                p = bd[r][c]
+                if p is None or p[0] != col:
+                    continue
+                pt = p[1]
+                
+                if pt == 'P':
+                    # Forward
+                    nr = r + pawn_dir
+                    if in_bounds(nr, c) and bd[nr][c] is None:
+                        if nr == promo_rank:
+                            for prom in ['q','r','b','n']:
+                                moves.append((r, c, nr, c, prom))
+                        else:
+                            moves.append((r, c, nr, c, None))
+                        # Double push
+                        if r == start_rank:
+                            nr2 = r + 2 * pawn_dir
+                            if bd[nr2][c] is None:
+                                moves.append((r, c, nr2, c, None))
+                    # Captures
+                    for dc in [-1, 1]:
+                        nc = c + dc
+                        if in_bounds(nr, nc) and bd[nr][nc] is not None and bd[nr][nc][0] == opp_col:
+                            if nr == promo_rank:
+                                for prom in ['q','r','b','n']:
+                                    moves.append((r, c, nr, nc, prom))
+                            else:
+                                moves.append((r, c, nr, nc, None))
+                
+                elif pt == 'N':
+                    for dr, dc in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+                        nr, nc = r+dr, c+dc
+                        if in_bounds(nr, nc) and (bd[nr][nc] is None or bd[nr][nc][0] == opp_col):
+                            moves.append((r, c, nr, nc, None))
+                
+                elif pt == 'K':
+                    for dr in [-1,0,1]:
+                        for dc in [-1,0,1]:
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr, nc = r+dr, c+dc
+                            if in_bounds(nr, nc) and (bd[nr][nc] is None or bd[nr][nc][0] == opp_col):
+                                moves.append((r, c, nr, nc, None))
+                    # Castling
+                    king_start_r = 0 if col == 'w' else 7
+                    if r == king_start_r and c == 4:
+                        # Kingside
+                        if (bd[r][7] == col + 'R' and bd[r][5] is None and bd[r][6] is None
+                            and not is_attacked_by(bd, r, 4, opp_col)
+                            and not is_attacked_by(bd, r, 5, opp_col)
+                            and not is_attacked_by(bd, r, 6, opp_col)):
+                            moves.append((r, 4, r, 6, None))
+                        # Queenside
+                        if (bd[r][0] == col + 'R' and bd[r][1] is None and bd[r][2] is None and bd[r][3] is None
+                            and not is_attacked_by(bd, r, 4, opp_col)
+                            and not is_attacked_by(bd, r, 3, opp_col)
+                            and not is_attacked_by(bd, r, 2, opp_col)):
+                            moves.append((r, 4, r, 2, None))
+                
+                elif pt in ('R', 'Q', 'B'):
+                    dirs = []
+                    if pt in ('R', 'Q'):
+                        dirs += [(0,1),(0,-1),(1,0),(-1,0)]
+                    if pt in ('B', 'Q'):
+                        dirs += [(1,1),(1,-1),(-1,1),(-1,-1)]
+                    for dr, dc in dirs:
+                        nr, nc = r+dr, c+dc
+                        while in_bounds(nr, nc):
+                            if bd[nr][nc] is None:
+                                moves.append((r, c, nr, nc, None))
+                            elif bd[nr][nc][0] == opp_col:
+                                moves.append((r, c, nr, nc, None))
+                                break
+                            else:
+                                break
+                            nr, nc = nr+dr, nc+dc
+        
+        return moves
+    
+    def make_move(bd, mv):
+        """Make move on board, return new board."""
+        r1, c1, r2, c2, prom = mv
+        nbd = [row[:] for row in bd]
+        p = nbd[r1][c1]
+        nbd[r1][c1] = None
+        
+        # Castling - move rook
+        if p and p[1] == 'K' and abs(c2 - c1) == 2:
+            if c2 == 6:  # Kingside
+                nbd[r1][5] = nbd[r1][7]
+                nbd[r1][7] = None
+            elif c2 == 2:  # Queenside
+                nbd[r1][3] = nbd[r1][0]
+                nbd[r1][0] = None
+        
+        if prom:
+            prom_map = {'q': 'Q', 'r': 'R', 'b': 'B', 'n': 'N'}
+            nbd[r2][c2] = p[0] + prom_map[prom]
+        else:
+            nbd[r2][c2] = p
+        
+        return nbd
+    
+    def gen_legal_moves(bd, col):
+        opp_col = 'b' if col == 'w' else 'w'
+        pseudo = gen_pseudo_moves(bd, col)
+        legal = []
+        for mv in pseudo:
+            nbd = make_move(bd, mv)
+            if not in_check(nbd, col):
+                legal.append(mv)
+        return legal
+    
+    def move_to_uci(mv):
+        r1, c1, r2, c2, prom = mv
+        s = rc_to_sq(r1, c1) + rc_to_sq(r2, c2)
+        if prom:
+            s += prom
+        return s
+    
+    def evaluate(bd, col):
+        """Evaluate board from col's perspective."""
+        opp_col = 'b' if col == 'w' else 'w'
+        score = 0
+        for r in range(8):
+            for c in range(8):
+                p = bd[r][c]
+                if p is None:
+                    continue
+                pt = p[1]
+                val = PIECE_VAL[pt]
+                # PST
+                if p[0] == 'w':
+                    pst_r = 7 - r  # PST is indexed from rank 8 to rank 1
+                else:
+                    pst_r = r
+                pst_val = PST.get(pt, [[0]*8]*8)[pst_r][c]
+                
+                if p[0] == col:
+                    score += val + pst_val
+                else:
+                    score -= val + pst_val
+        return score
+    
+    def move_score_heuristic(bd, mv, col):
+        """Quick heuristic for move ordering."""
+        r1, c1, r2, c2, prom = mv
+        score = 0
+        captured = bd[r2][c2]
+        if captured:
+            score += 10 * PIECE_VAL[captured[1]] - PIECE_VAL[bd[r1][c1][1]]
+        if prom:
+            prom_val = {'q': 900, 'r': 500, 'b': 330, 'n': 320}
+            score += prom_val.get(prom, 0)
+        # Move to center
+        center_bonus = [0, 0, 1, 2, 2, 1, 0, 0]
+        score += center_bonus[r2] + center_bonus[c2]
+        return score
+    
+    def alphabeta(bd, col, depth, alpha, beta, maximizing, deadline):
+        if time.time() > deadline:
+            return evaluate(bd, color), None
+        
+        moves = gen_legal_moves(bd, col)
+        
+        if len(moves) == 0:
+            if in_check(bd, col):
+                # Checkmate
+                if maximizing:
+                    return -50000 - depth, None
+                else:
+                    return 50000 + depth, None
+            else:
+                return 0, None  # Stalemate
+        
+        if depth == 0:
+            return quiesce(bd, col, alpha, beta, maximizing, 4, deadline), None
+        
+        # Sort moves
+        moves.sort(key=lambda mv: move_score_heuristic(bd, mv, col), reverse=True)
+        
+        opp_col = 'b' if col == 'w' else 'w'
+        best_move = moves[0]
+        
+        if maximizing:
+            max_eval = -100000
+            for mv in moves:
+                if time.time() > deadline:
+                    break
+                nbd = make_move(bd, mv)
+                ev, _ = alphabeta(nbd, opp_col, depth - 1, alpha, beta, False, deadline)
+                if ev > max_eval:
+                    max_eval = ev
+                    best_move = mv
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = 100000
+            for mv in moves:
+                if time.time() > deadline:
+                    break
+                nbd = make_move(bd, mv)
+                ev, _ = alphabeta(nbd, opp_col, depth - 1, alpha, beta, True, deadline)
+                if ev < min_eval:
+                    min_eval = ev
+                    best_move = mv
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    def quiesce(bd, col, alpha, beta, maximizing, depth, deadline):
+        if time.time() > deadline:
+            return evaluate(bd, color)
+        
+        stand_pat = evaluate(bd, color)
+        
+        if depth == 0:
+            return stand_pat
+        
+        if maximizing:
+            if stand_pat >= beta:
+                return beta
+            if alpha < stand_pat:
+                alpha = stand_pat
+        else:
+            if stand_pat <= alpha:
+                return alpha
+            if beta > stand_pat:
+                beta = stand_pat
+        
+        opp_col = 'b' if col == 'w' else 'w'
+        moves = gen_legal_moves(bd, col)
+        
+        # Only consider captures and promotions
+        captures = [mv for mv in moves if bd[mv[2]][mv[3]] is not None or mv[4] is not None]
+        captures.sort(key=lambda mv: move_score_heuristic(bd, mv, col), reverse=True)
+        
+        if maximizing:
+            for mv in captures:
+                if time.time() > deadline:
+                    break
+                nbd = make_move(bd, mv)
+                ev = quiesce(nbd, opp_col, alpha, beta, False, depth - 1, deadline)
+                if ev > alpha:
+                    alpha = ev
+                if beta <= alpha:
+                    break
+            return alpha
+        else:
+            for mv in captures:
+                if time.time() > deadline:
+                    break
+                nbd = make_move(bd, mv)
+                ev = quiesce(nbd, opp_col, alpha, beta, True, depth - 1, deadline)
+                if ev < beta:
+                    beta = ev
+                if beta <= alpha:
+                    break
+            return beta
+    
+    # Main logic
+    deadline = start_time + 0.85
+    
+    legal_moves = gen_legal_moves(board, color)
+    
+    if not legal_moves:
+        # Shouldn't happen if we're called with legal moves available
+        return "0000"
+    
+    if len(legal_moves) == 1:
+        return move_to_uci(legal_moves[0])
+    
+    best_move = legal_moves[0]
+    best_uci = move_to_uci(best_move)
+    
+    # Iterative deepening
+    for depth in range(1, 20):
+        if time.time() > deadline:
+            break
+        ev, mv = alphabeta(board, color, depth, -100000, 100000, True, deadline)
+        if mv is not None and time.time() < deadline:
+            best_move = mv
+            best_uci = move_to_uci(best_move)
+        if abs(ev) > 40000:  # Found checkmate
+            break
+    
+    return best_uci

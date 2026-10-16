@@ -1,0 +1,166 @@
+My strategy:
+- Simulate all legal (non-suicidal) moves on the 19x19 board, applying captures.
+- Score each legal move by a heuristic that strongly prefers captures, then favors increasing liberties, connecting to friendly stones, and extending toward the board center while penalizing moves that sit next to many enemy stones without capturing.
+- Break ties randomly. If no legal move exists, pass (0, 0).
+
+<code>
+import random
+from collections import deque
+
+BOARD_SIZE = 19
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    """
+    Return a move (row, col) with 1-based indices on a 19x19 board, or (0,0) to pass.
+    """
+
+    N = BOARD_SIZE
+    # 0 empty, 1 my stones, -1 opponent stones
+    board = [[0]*N for _ in range(N)]
+    for (r, c) in me:
+        if 1 <= r <= N and 1 <= c <= N:
+            board[r-1][c-1] = 1
+    for (r, c) in opponent:
+        if 1 <= r <= N and 1 <= c <= N:
+            board[r-1][c-1] = -1
+
+    # neighbor deltas
+    deltas = [(-1,0),(1,0),(0,-1),(0,1)]
+
+    def in_board(r,c):
+        return 0 <= r < N and 0 <= c < N
+
+    def get_group_and_liberties(brd, sr, sc):
+        """Return (set_of_coords, set_of_liberty_coords) for the group at (sr,sc)."""
+        color = brd[sr][sc]
+        if color == 0:
+            return set(), set()
+        visited = set()
+        liberties = set()
+        stack = [(sr,sc)]
+        visited.add((sr,sc))
+        while stack:
+            r,c = stack.pop()
+            for dr,dc in deltas:
+                nr, nc = r+dr, c+dc
+                if not in_board(nr,nc):
+                    continue
+                if brd[nr][nc] == 0:
+                    liberties.add((nr,nc))
+                elif brd[nr][nc] == color and (nr,nc) not in visited:
+                    visited.add((nr,nc))
+                    stack.append((nr,nc))
+        return visited, liberties
+
+    # Precompute opponent groups to quickly detect cheap captures? We'll simulate per move anyway.
+
+    legal_moves = []
+    # Generate list of candidate moves: empty points
+    empties = [(r,c) for r in range(N) for c in range(N) if board[r][c] == 0]
+    if not empties:
+        return (0,0)
+
+    # center for heuristic
+    center_r = (N-1)/2.0
+    center_c = (N-1)/2.0
+
+    best_score = None
+    best_moves = []
+
+    # For deterministic randomness across same board, seed from board occupancy
+    seed = 0
+    for r in range(N):
+        for c in range(N):
+            seed = (seed * 31 + (board[r][c]+2)) & 0xFFFFFFFF
+    rand = random.Random(seed)
+
+    for (r,c) in empties:
+        # simulate placing my stone at (r,c)
+        brd = [row[:] for row in board]
+        brd[r][c] = 1  # my stone
+        captured = 0
+
+        # check adjacent opponent groups for capture
+        opponent_groups_seen = set()
+        for dr,dc in deltas:
+            nr, nc = r+dr, c+dc
+            if not in_board(nr,nc):
+                continue
+            if brd[nr][nc] == -1 and (nr,nc) not in opponent_groups_seen:
+                grp, libs = get_group_and_liberties(brd, nr, nc)
+                opponent_groups_seen.update(grp)
+                if len(libs) == 0:
+                    # capture them
+                    captured += len(grp)
+                    for (gr, gc) in grp:
+                        brd[gr][gc] = 0
+
+        # After captures, check liberties of the placed stone's group
+        my_group, my_libs = get_group_and_liberties(brd, r, c)
+        if len(my_libs) == 0:
+            # suicidal move (illegal under common rules) -> skip
+            continue
+
+        # Heuristic scoring
+        score = 0.0
+        # strong preference for captures
+        score += captured * 1000.0
+
+        # Prefer moves that increase liberties of the placed group
+        score += len(my_libs) * 20.0
+
+        # Prefer connecting to existing friendly stones (adjacent)
+        adj_my = 0
+        adj_opp = 0
+        adj_empty = 0
+        for dr,dc in deltas:
+            nr, nc = r+dr, c+dc
+            if not in_board(nr,nc):
+                continue
+            if board[nr][nc] == 1:
+                adj_my += 1
+            elif board[nr][nc] == -1:
+                adj_opp += 1
+            else:
+                adj_empty += 1
+        score += adj_my * 30.0
+        # penalize moves that are next to many opponent stones if not capturing
+        score -= adj_opp * 50.0
+
+        # prefer central moves moderately
+        dist_center = ((r - center_r)**2 + (c - center_c)**2)**0.5
+        # closer to center increases score
+        score += max(0.0, 10.0 - dist_center*0.3)
+
+        # prefer moves that create liberties for adjacent friendly groups (lookahead)
+        # Sum liberties of adjacent friendly groups after move
+        seen_groups = set()
+        added_libs = 0
+        for dr,dc in deltas:
+            nr, nc = r+dr, c+dc
+            if not in_board(nr,nc):
+                continue
+            if brd[nr][nc] == 1 and (nr,nc) not in seen_groups:
+                grp, libs = get_group_and_liberties(brd, nr, nc)
+                seen_groups.update(grp)
+                added_libs += len(libs)
+        score += added_libs * 5.0
+
+        # small random tie-breaker
+        score += rand.random() * 1e-6
+
+        if best_score is None or score > best_score:
+            best_score = score
+            best_moves = [(r,c)]
+        elif score == best_score:
+            best_moves.append((r,c))
+
+    if not best_moves:
+        # No legal moves found -> pass
+        return (0,0)
+
+    # choose randomly among best moves
+    chosen = rand.choice(best_moves)
+    # convert to 1-based indexing for return
+    return (chosen[0]+1, chosen[1]+1)
+</code>

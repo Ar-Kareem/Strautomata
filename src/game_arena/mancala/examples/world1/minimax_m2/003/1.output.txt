@@ -1,0 +1,162 @@
+<thinking>
+We need to write a complete Python file that implements a move‑selection policy for the game Kalah.  
+The function `policy(you, opponent)` must return a legal house index (0‑5) for the player whose turn it is.  
+
+**Core ideas**
+
+* The board is represented by two length‑7 lists: `[h0 … h5, store]`.  
+* The sowing rule: drop one seed at a time clockwise, skipping the opponent’s store (index 13 in a 14‑slot circular board).  
+* An extra move is granted when the last seed lands in your store.  
+* Capture happens when the last seed lands in an empty house of yours and the opposite opponent house contains seeds – those seeds and the landed seed are moved to your store.  
+
+**Evaluation strategy**
+
+A depth‑limited minimax search gives decent strength while staying well under the 1 s time limit:
+
+1. **Simulation** – `simulate_move` applies the sowing rules, returns the new board and whether an extra move was earned.
+2. **Terminal check** – if one side has no seeds left in its houses, the game ends and the remaining seeds are moved to the stores.  
+3. **Evaluation** – at leaf nodes (depth 0 or terminal) we return the difference between the two stores (positive is good for us).  
+4. **Search** – at each node we generate legal moves, simulate them, and recurse. The “maximising” flag indicates whether the current player is the original player (`you`) or the opponent. Extra moves keep the same flag for the child node.  
+5. **Alpha‑beta pruning** reduces the search space.  
+6. **Policy** – try every legal move, evaluate its outcome with the minimax, and pick the move with the highest score (ties resolved by the smallest index).  
+
+The algorithm explores at most \(6^3 = 216\) nodes for depth 3, each node doing a small sow simulation, which is trivial for a modern CPU.
+
+The code follows the specification precisely and uses only the standard library (with `typing` for clarity). It does not modify the input lists.
+</thinking>
+
+<code>
+from typing import List
+
+def simulate_move(you: List[int], opponent: List[int], move: int) -> (List[int], List[int], bool):
+    """Apply a sowing move from house `move` (0..5) on the given board.
+
+    Returns:
+        new_you      – the board after the move for the player who just moved,
+        new_opp      – the opponent’s board after the move,
+        extra        – True if the last seed landed in the moving player's store.
+    """
+    # Copy the mutable inputs
+    new_you = you[:]       # length 7 list
+    new_opp = opponent[:]  # length 7 list
+
+    seeds = new_you[move]          # number of seeds to distribute
+    new_you[move] = 0              # clear the source house
+    pos = move                     # current position on a 14‑slot circle (0..13)
+
+    # The 14‑slot circle consists of:
+    #   0‑5 : your houses
+    #   6   : your store
+    #   7‑12: opponent houses
+    #   13  : opponent store (always skipped when sowing)
+    while seeds > 0:
+        pos = (pos + 1) % 14
+        if pos == 13:                     # skip opponent's store
+            seeds -= 1
+            continue
+        if pos <= 5:                       # your house
+            new_you[pos] += 1
+        elif pos == 6:                     # your store
+            new_you[6] += 1
+        else:                              # opponent house (7‑12)
+            new_opp[pos - 7] += 1
+        seeds -= 1
+
+    extra_move = (pos == 6)                # last seed fell in your store
+
+    # Capture rule – only the last seed can capture
+    if 0 <= pos <= 5:
+        # Was the house empty before the final seed?
+        if new_you[pos] == 1:
+            opp_house = 5 - pos
+            if new_opp[opp_house] > 0:
+                captured = 1 + new_opp[opp_house]
+                new_you[6] += captured
+                new_you[pos] = 0
+                new_opp[opp_house] = 0
+
+    return new_you, new_opp, extra_move
+
+
+def _terminal_value(you: List[int], opponent: List[int]) -> int:
+    """Return the evaluation when the game has finished.
+    All remaining seeds in houses are moved to their owner's store.
+    """
+    you_total = you[6] + sum(you[:6])
+    opp_total = opponent[6] + sum(opponent[:6])
+    return you_total - opp_total
+
+
+def _minimax(you: List[int], opponent: List[int], depth: int,
+             maximizing: bool,
+             alpha: float = -float('inf'),
+             beta: float = float('inf')) -> int:
+    """Depth‑limited minimax with alpha‑beta pruning.
+
+    `maximizing` is True when the player to move is the original 'you' side,
+    False when it is the opponent side. The returned value is the
+    evaluation from the original player's perspective.
+    """
+    # Terminal position – one side has no seeds in its houses
+    if all(v == 0 for v in you[:6]) or all(v == 0 for v in opponent[:6]):
+        return _terminal_value(you, opponent)
+
+    if depth == 0:
+        return you[6] - opponent[6]
+
+    if maximizing:
+        best = -float('inf')
+        for i in range(6):
+            if you[i] == 0:
+                continue
+            new_you, new_opp, extra = simulate_move(you, opponent, i)
+            # After your move you retain the turn only if an extra move was earned
+            next_max = extra
+            val = _minimax(new_you, new_opp, depth - 1, next_max, alpha, beta)
+            if val > best:
+                best = val
+            if val > alpha:
+                alpha = val
+            if beta <= alpha:          # alpha‑beta cut‑off
+                break
+        return best
+    else:
+        best = float('inf')
+        for i in range(6):
+            if opponent[i] == 0:
+                continue
+            # Simulate opponent's move (they are treated as the "you" side)
+            new_opp_you, new_opp_opp, extra = simulate_move(opponent, you, i)
+            # Opponent keeps the turn only on an extra move
+            next_max = not extra
+            val = _minimax(new_opp_opp, new_opp_you, depth - 1, next_max, alpha, beta)
+            if val < best:
+                best = val
+            if val < beta:
+                beta = val
+            if beta <= alpha:
+                break
+        return best
+
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    """Select a legal move for the current player.
+
+    The policy uses a 3‑ply minimax search with alpha‑beta pruning.
+    Returns an index 0..5 where `you[i] > 0`.
+    """
+    max_depth = 3          # can be increased to 4 if the time budget permits
+    best_move = 0
+    best_score = -float('inf')
+
+    for i in range(6):
+        if you[i] == 0:
+            continue
+        new_you, new_opp, extra = simulate_move(you, opponent, i)
+        # After the move the next player is 'you' only on an extra move
+        score = _minimax(new_you, new_opp, max_depth - 1, extra)
+        if score > best_score:
+            best_score = score
+            best_move = i
+    return best_move
+</code>

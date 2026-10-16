@@ -1,0 +1,115 @@
+
+import random
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    import numpy as np
+    board_array = np.array(board)
+    
+    # Check for winning move
+    move = find_winning_move(board_array, 1)
+    if move:
+        return move
+    
+    # Check for blocking opponent's winning move
+    move = find_winning_move(board_array, -1)
+    if move:
+        return move
+    
+    # Check for fork opportunities
+    move = find_fork_move(board_array, 1)
+    if move:
+        return move
+    
+    # Check for blocking opponent forks
+    move = find_fork_move(board_array, -1)
+    if move:
+        return move
+    
+    # Prefer center positions
+    center_moves = [(1,1), (1,2), (2,1), (2,2)]
+    empty_center_moves = [move for move in center_moves if board[move[0]][move[1]] == 0]
+    if empty_center_moves:
+        return random.choice(empty_center_moves)
+    
+    # Corner preference
+    corner_moves = [(0,0), (0,3), (3,0), (3,3)]
+    empty_corner_moves = [move for move in corner_moves if board[move[0]][move[1]] == 0]
+    if empty_corner_moves:
+        return random.choice(empty_corner_moves)
+    
+    # Any available move
+    empty_moves = [(i, j) for i in range(4) for j in range(4) if board[i][j] == 0]
+    if empty_moves:
+        return random.choice(empty_moves)
+    
+    # Should not happen in a valid game
+    raise Exception("No valid moves available")
+
+def find_winning_move(board, player):
+    """Find a move that results in a win for the given player"""
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:
+                # Try this move
+                board[i][j] = player
+                if check_win(board, player):
+                    board[i][j] = 0  # Reset
+                    return (i, j)
+                board[i][j] = 0  # Reset
+    return None
+
+def find_fork_move(board, player):
+    """Find a move that creates a fork (two winning threats)"""
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:
+                # Try this move
+                board[i][j] = player
+                win_count = count_winning_opportunities(board, player)
+                board[i][j] = 0  # Reset
+                if win_count >= 2:
+                    return (i, j)
+    return None
+
+def count_winning_opportunities(board, player):
+    """Count how many ways player can win from this position"""
+    count = 0
+    # Temporarily mark all empty spaces as player and check for wins
+    temp_board = board.copy()
+    for i in range(4):
+        for j in range(4):
+            if temp_board[i][j] == 0:
+                temp_board[i][j] = player
+                if check_win(temp_board, player):
+                    count += 1
+                temp_board[i][j] = 0
+    return count
+
+def check_win(board, player):
+    """Check if the given player has won on the board"""
+    # Check rows
+    for row in board:
+        if all(cell == player for cell in row):
+            return True
+    
+    # Check columns
+    for col in range(4):
+        if all(board[row][col] == player for row in range(4)):
+            return True
+    
+    # Check diagonals
+    if all(board[i][i] == player for i in range(4)):
+        return True
+    if all(board[i][3-i] == player for i in range(4)):
+        return True
+    
+    # Check 2x2 squares
+    for i in range(3):
+        for j in range(3):
+            if (board[i][j] == player and board[i][j+1] == player and 
+                board[i+1][j] == player and board[i+1][j+1] == player):
+                return True
+    
+    return False

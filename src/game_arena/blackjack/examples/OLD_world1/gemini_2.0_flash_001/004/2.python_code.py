@@ -1,0 +1,44 @@
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    A policy for a simplified Blackjack-like game.
+
+    Args:
+        hand: The list of strings representing the cards the player currently holds.
+        target: The integer target score to approach.
+
+    Returns:
+        "HIT" if the player wants to draw another card, or "STAY" if the player wants to stop.
+    """
+
+    def calculate_hand_value(hand: list[str], target: int) -> int:
+        """Calculates the value of a hand."""
+        ace_count = hand.count("A")
+        total = 0
+        for card in hand:
+            if card.isdigit():
+                total += int(card)
+            elif card in ["J", "Q", "K"]:
+                total += 10
+            elif card == "A":
+                total += 11
+
+        while total > target and ace_count > 0:
+            total -= 10
+            ace_count -= 1
+
+        return total
+
+    hand_value = calculate_hand_value(hand, target)
+
+    if hand_value > target:
+        return "STAY"  # Already busted, but returning STAY is more robust.
+
+    # Implement a simple strategy: HIT if hand value is below a threshold.
+    # This threshold can be adjusted. Play somewhat conservatively to avoid busting
+    # but aggressive enough to compete
+    hit_threshold = target - 4
+    if hand_value < hit_threshold:
+        return "HIT"
+    else:
+        return "STAY"

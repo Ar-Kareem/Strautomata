@@ -1,0 +1,219 @@
+
+import numpy as np
+from collections import deque
+
+def get_neighbors(r, c, size=15):
+    """Get hexagonal neighbors using even-r offset coordinates."""
+    neighbors = []
+    
+    # Vertical neighbors (same column)
+    if r > 0: neighbors.append((r-1, c))
+    if r < size-1: neighbors.append((r+1, c))
+    
+    if r % 2 == 0:  # Even row
+        if c > 0:
+            neighbors.append((r, c-1))
+            if r > 0: neighbors.append((r-1, c-1))
+        if c < size-1:
+            neighbors.append((r, c+1))
+            if r > 0: neighbors.append((r-1, c+1))
+    else:  # Odd row
+        if c > 0:
+            neighbors.append((r, c-1))
+            if r < size-1: neighbors.append((r+1, c-1))
+        if c < size-1:
+            neighbors.append((r, c+1))
+            if r < size-1: neighbors.append((r+1, c+1))
+    
+    return neighbors
+
+def flood_fill(start, stones_set, size):
+    """Find connected component containing start."""
+    if start not in stones_set:
+        return set()
+    visited = set()
+    queue = deque([start])
+    while queue:
+        curr = queue.popleft()
+        if curr in visited: continue
+        visited.add(curr)
+        for n in get_neighbors(curr[0], curr[1], size):
+            if n in stones_set and n not in visited:
+                queue.append(n)
+    return visited
+
+def find_corners_edges(size, valid_mask):
+    """Identify corners (degree 2) and edge cells (degree < 6)."""
+    corners, edges = [], []
+    for r in range(size):
+        for c in range(size):
+            if not valid_mask[r][c]: continue
+            vn = [n for n in get_neighbors(r,c,size) 
+                  if 0<=n[0]<size and 0<=n[1]<size and valid_mask[n[0]][n[1]]]
+            if len(vn) == 2: corners.append((r,c))
+            elif len(vn) < 6: edges.append((r,c))
+    return corners, edges
+
+def check_bridge(stones, corners, size):
+    """Check if stones connect two corners."""
+    stones_set = set(stones)
+    for corner in corners:
+        if corner in stones_set:
+            comp = flood_fill(corner, stones_set, size)
+            if sum(1 for c in corners if c in comp) >= 2:
+                return True
+    return False
+
+def check_fork(stones, edges, size):
+    """Check if stones connect three different edges."""
+    if len(edges) < 3: return False
+    stones_set = set(stones)
+    connected = set()
+    for edge in edges:
+        if edge in stones_set:
+            comp = flood_fill(edge, stones_set, size)
+            for e in edges:
+                if e in comp: connected.add(e)
+    return len(connected) >= 4
+
+def check_ring(stones, size, valid_mask):
+    """Check if stones form a ring enclosing empty cells."""
+    stones_set = set(stones)
+    if len(stones_set) < 6: return False
+    
+    checked = set()
+    for stone in stones_set:
+        for n in get_neighbors(stone[0], stone[1], size):
+            if (n in stones_set or n in checked or 
+                not (0 <= n[0] < size and 0 <= n[1] < size) or
+                not valid_mask[n[0]][n[1]]):
+                continue
+            checked.add(n)
+            
+            visited = set()
+            queue = deque([n])
+            touches_edge = False
+            
+            while queue and not touches_edge:
+                curr = queue.popleft()
+                if curr in visited: continue
+                visited.add(curr)
+                
+                for nn in get_neighbors(curr[0], curr[1], size):
+                    if not (0 <= nn[0] < size and 0 <= nn[1] < size): continue
+                    if not valid_mask[nn[0]][nn[1]]:
+                        touches_edge = True
+                        break
+                    if nn in stones_set: continue
+                    if nn not in visited: queue.append(nn)
+            
+            if not touches_edge and len(visited) > 0:
+                return True
+    return False
+
+def is_winning(move, stones, corners, edges, size, valid_mask):
+    """Check if placing at move would win."""
+    new_stones = stones + [move]
+    return (check_bridge(new_stones, corners, size) or
+            check_fork(new_stones, edges, size) or
+            check_ring(new_stones, size, valid_mask))
+
+def score_move(move, me, opp, corners, edges, size, valid_mask):
+    """Evaluate the strategic value of a move."""
+    me_set, opp_set = set(me), set(opp)
+    r, c = move
+    
+    # Immediate win - highest priority
+    if is_winning(move, me, corners, edges, size, valid_mask):
+        return 10000000
+    
+    # Block opponent's winning move
+    if is_winning(move, opp, corners, edges, size, valid_mask):
+        return 5000000
+    
+    score = 0
+    
+    # Corner value (critical for bridge victory)
+    if move in corners: 
+        score += 2000
+    elif move in edges: 
+        score += 300
+    
+    # Connectivity to existing stones
+    neighbors = get_neighbors(r, c, size)
+    my_neighbors = sum(1 for n in neighbors if n in me_set)
+    opp_neighbors = sum(1 for n in neighbors if n in opp_set)
+    
+    score += my_neighbors * 150
+    score += opp_neighbors * 80  # Blocking value
+    
+    # Bridge progress - how many corners connected
+    new_me_set = set(me + [move])
+    connected_corners = 0
+    for corner in corners:
+        if corner in new_me_set:
+            comp = flood_fill(corner, new_me_set, size)
+            connected_corners = max(connected_corners, 
+                                    sum(1 for c in corners if c in comp))
+    
+    if connected_corners >= 2:
+        score += 3000
+    else:
+        score += connected_corners * 800
+    
+    # Fork progress - how many edges connected
+    connected_edges = 0
+    for edge in edges:
+        if edge in new_me_set:
+            comp = flood_fill(edge, new_me_set, size)
+            connected_edges = max(connected_edges, 
+                                  sum(1 for e in edges if e in comp))
+    score += min(connected_edges, 5) * 100
+    
+    # Center preference early game
+    total_stones = len(me) + len(opp)
+    if total_stones < 15:
+        center = size // 2
+        dist = abs(r - center) + abs(c - center)
+        score += max(0, 50 - dist * 2)
+    
+    # Slight randomness for variety
+    score += hash((r, c, total_stones)) % 10
+    
+    return score
+
+def policy(me, opp, valid_mask):
+    """Main policy function to determine the next move."""
+    size = len(valid_mask)
+    if not isinstance(valid_mask, np.ndarray):
+        valid_mask = np.array(valid_mask)
+    
+    me_set, opp_set = set(me), set(opp)
+    corners, edges = find_corners_edges(size, valid_mask)
+    
+    # Find all valid moves
+    valid_moves = []
+    for r in range(size):
+        for c in range(size):
+            if valid_mask[r][c] and (r,c) not in me_set and (r,c) not in opp_set:
+                valid_moves.append((r,c))
+    
+    if not valid_moves:
+        # Fallback - find any valid cell
+        for r in range(size):
+            for c in range(size):
+                if valid_mask[r][c]:
+                    return (r, c)
+        return (0, 0)
+    
+    # Evaluate and return best move
+    best_move = valid_moves[0]
+    best_score = float('-inf')
+    
+    for move in valid_moves:
+        score = score_move(move, me, opp, corners, edges, size, valid_mask)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

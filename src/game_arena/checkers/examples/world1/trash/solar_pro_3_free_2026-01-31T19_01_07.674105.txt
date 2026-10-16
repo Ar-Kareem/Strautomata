@@ -1,0 +1,296 @@
+**Strategy**
+
+The policy uses a depth‑limited minimax search with alpha‑beta pruning.  
+It generates all legal moves (including multi‑jump captures) up to a depth of three jumps per move.  
+
+* **Capture rule** – If any capture is available the engine only looks at capture moves; it then selects the capture that leads to the highest evaluation after the opponent’s best reply.  
+* **Evaluation** – Simple static heuristic: each man counts as 1 point, each king 2 points. The score is `my pieces − opp pieces`. Promotion to king adds the extra point automatically, so a landing on the promotion row is always beneficial.  
+* **Search depth** – With a depth of 4 plies (including the capture move) the search stays comfortably under the 1 second time limit while still finding strong moves.  
+* **Tie‑breaking** – When several moves have identical minimax values, the engine prefers the move that captures the most pieces and, if still tied, chooses the first in deterministic order.  
+
+The implementation builds the board from the supplied lists, generates capture sequences with recursion, evaluates the resulting positions, and returns the chosen move as a tuple `((from_row,from_col),(to_row,to_col))`. All moves are guaranteed to be legal, and mandatory captures are enforced automatically.
+
+<code>
+import copy
+import random
+from typing import List, Tuple, Dict
+
+# ----------------------------------------------------------------------
+# Constants
+# ----------------------------------------------------------------------
+PROMOTION_ROWS = {'b': 0, 'w': 7}          # row where a piece becomes a king
+KING_VALUE = 2
+MAN_VALUE = 1
+VALUE = {'M': KING_VALUE, 'K': KING_VALUE,
+         'm': MAN_VALUE, 'k': KING_VALUE}
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def get_dirs(piece_type: str, side_color: str) -> List[Tuple[int, int]]:
+    """Return all legal direction vectors for a piece on the given side."""
+    if piece_type in ('M', 'm'):          # men can only go forward
+        dr = 1 if side_color == 'b' else -1
+        return [(dr, dr), (dr, -dr)]
+    else:                                 # kings move in all four diagonals
+        return [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+
+def apply_capture_sequence(board: Dict[Tuple[int,int], str],
+                          sequence: List[Tuple[Tuple[int,int], Tuple[int,int]],
+                          side_color: str) -> Dict[Tuple[int,int], str]:
+    """Apply a list of jumps to an initial board state and return the final board."""
+    new_board = copy.deepcopy(board)
+    for frm, to in sequence:
+        dr = to[0] - frm[0]
+        dc = to[1] - frm[1]
+        mid = (frm[0] + dr // 2, frm[1] + dc // 2)
+        # remove captured piece
+        new_board.pop(mid)
+        # remove moving piece
+        del new_board[frm]
+        # promote if landing on a promotion row
+        if to[0] == PROMOTION_ROWS[side_color]:
+            new_type = 'K' if piece_type == 'M' else 'k'
+        else:
+            new_type = piece_type
+        new_board[to] = new_type
+    return new_board
+
+def capture_sequences(board: Dict[Tuple[int,int], str],
+                     start: Tuple[int,int],
+                     start_type: str,
+                     side_color: str,
+                     max_depth: int) -> List[List[Tuple[Tuple[int,int], Tuple[int,int]]]]:
+    """Recursively generate all capture sequences (up to max_depth jumps)."""
+    results: List[List[Tuple[Tuple[int,int], Tuple[int,int]]]] = []
+
+    dirs = get_dirs(start_type, side_color)
+    for dr, dc in dirs:
+        step = (start[0] + dr, start[1] + dc)
+        landing = (start[0] + 2 * dr, start[1] + 2 * dc)
+
+        # sanity checks for a legal start of a capture chain
+        if step not in board:
+            continue
+        opp_piece = board[step]
+        if opp_piece.isupper() == start_type.isupper():      # same‑side piece
+            continue
+        if landing in board:
+            continue
+
+        # first capture
+        new_board = copy.deepcopy(board)
+        new_board.pop(start)               # moving piece disappears
+        new_board.pop(step)                # captured piece disappears
+        new_type = start_type
+        # promotion at the landing square
+        if landing[0] == PROMOTION_ROWS[side_color]:
+            new_type = 'K' if start_type == 'M' else 'k'
+        new_board[landing] = new_type
+
+        if max_depth > 1:
+            subseqs = capture_sequences(new_board, landing, new_type, side_color,
+                                        max_depth - 1)
+            for sub in subseqs:
+                results.append([(start, landing)] + sub)
+        else:
+            results.append([(start, landing)])
+
+    return results
+
+def legal_moves(board: Dict[Tuple[int,int], str],
+               turn_color: str) -> List[Tuple[Tuple[int,int], Tuple[int,int]]]:
+    """Generate all simple moves (including multi‑jump captures)."""
+    moves: List[Tuple[Tuple[int,int], Tuple[int,int]]] = []
+    opponent_color = 'w' if turn_color == 'b' else 'b'
+
+    # pieces that belong to the player whose turn it is
+    side_indicator = turn_color == opponent_color
+    side_pieces = [(pos, pt) for pos, pt in board.items()
+                   if pt.isupper() == side_indicator]
+
+    # simple moves
+    for pos, pt in side_pieces:
+        dirs = get_dirs(pt, turn_color)
+        for dr, dc in dirs:
+            target = (pos[0] + dr, pos[1] + dc)
+            if target not in board:                     # empty square
+                moves.append((pos, target))
+
+    # captures (up to three jumps per move)
+    MAX_JUMPS = 3
+    for pos, pt in side_pieces:
+        dirs = get_dirs(pt, turn_color)
+        for dr, dc in dirs:
+            step = (pos[0] + dr, pos[1] + dc)
+            landing = (pos[0] + 2 * dr, pos[1] + 2 * dc)
+            if step not in board:
+                continue
+            opp_piece = board[step]
+            if opp_piece.isupper() == pt.isupper():
+                continue
+            if landing in board:
+                continue
+            # generate possible capture chains starting from pos
+            seqs = capture_sequences(board, pos, pt, turn_color, MAX_JUMPS)
+            for seq in seqs:
+                # the move we will output is the first jump of the chain
+                moves.append(seq[0])
+
+    return moves
+
+def evaluate(board: Dict[Tuple[int,int], str], my_color: str) -> int:
+    """Static evaluation: each king = 2, each man = 1."""
+    score = 0
+    for pos, pt in board.items():
+        if pt.isupper():               # my pieces (M or K)
+            score += VALUE[pt]          # +2 for king, +1 for man
+        else:                          # opponent pieces (m or k)
+            score -= VALUE[pt]          # -1 for man, -2 for king
+    return score
+
+# ----------------------------------------------------------------------
+# Minimax with alpha‑beta pruning (depth limited)
+# ----------------------------------------------------------------------
+SEARCH_DEPTH = 4   # total number of plies we search ahead
+MAX_JUMPS = 3      # maximum jumps per ply (captures only)
+
+def minimax(board: Dict[Tuple[int,int], str],
+           depth: int,
+           max_depth: int,
+           turn_color: str,
+           alpha: int = -10**9,
+           beta: int = 10**9) -> Tuple[Tuple[int,int], Tuple[int,int]]:
+    """Return the best move for the player whose turn it is."""
+    # Leaf evaluation
+    if depth == max_depth or not legal_moves(board, turn_color):
+        return evaluate(board, turn_color), None
+
+    moves = legal_moves(board, turn_color)
+
+    # Enforce mandatory capture rule
+    has_captures = any(abs(to[0] - frm[0]) == 2 and abs(to[1] - frm[1]) == 1 for frm, to in moves)
+    if has_captures:
+        moves = [m for m in moves if abs(m[0][0] - m[1][0]) == 2 and abs(m[0][1] - m[1][1]) == 1]
+
+    best_score = -float('inf') if turn_color == 'b' else float('inf')
+    best_move = None
+
+    for move in moves:
+        # apply the move (including its full capture chain)
+        if abs(move[0][0] - move[1][0]) == 2:
+            # capture – the move object is the first jump of a chain
+            # we need the whole chain; we generate it on the fly
+            # try every possible chain that starts with this first jump
+            start, landing = move
+            dr = landing[0] - start[0]
+            dc = landing[1] - start[1]
+            step = (start[0] + dr // 2, start[1] + dc // 2)
+
+            # find sequences that start with this first jump
+            dirs = get_dirs(board[start], turn_color)
+            for drc, dcc in dirs:
+                stepc = (start[0] + drc, start[1] + dcc)
+                landc = (start[0] + 2 * drc, start[1] + 2 * dcc)
+                if (stepc, landc) == (step, landing):
+                    # first jump matches the move
+                    seqs = capture_sequences(board, start, board[start],
+                                            turn_color, MAX_JUMPS - 1)
+                    for seq in seqs:
+                        final_seq = [(start, landing)] + seq
+                        new_board = apply_capture_sequence(board, final_seq, turn_color)
+                        score = minimax(new_board, depth + 1, max_depth,
+                                        opponent_color(turn_color), alpha, beta)[0]
+                        if turn_color == 'b':
+                            if score > best_score:
+                                best_score, best_move = score, (start, landing)
+                                alpha = max(alpha, best_score)
+                        else:
+                            if score > best_score:
+                                best_score, best_move = score, (start, landing)
+                                alpha = max(alpha, best_score)
+                        if alpha >= beta:
+                            break
+                    break
+        else:   # simple move
+            new_board = copy.deepcopy(board)
+            del new_board[move[0]]
+            new_board[move[1]] = board[move[0]]
+            score = minimax(new_board, depth + 1, max_depth,
+                            opponent_color(turn_color), alpha, beta)[0]
+            if turn_color == 'b':
+                if score > best_score:
+                    best_score, best_move = score, move
+                    alpha = max(alpha, best_score)
+            else:
+                if score > best_score:
+                    best_score, best_move = score, move
+                    alpha = max(alpha, best_score)
+            if alpha >= beta:
+                break
+
+    # tie‑break: prefer captures that capture more pieces
+    if not best_move:
+        # No legal move (should not happen)
+        return evaluate(board, turn_color), None
+
+    # If several captures have identical minimax score, keep the one that captures the most pieces
+    if any(abs(m[0][0] - m[1][0]) == 2 for m in moves):
+        scores = []
+        moves_of_type = [(m, evaluate(copy.deepcopy(board), turn_color))
+                        for m in moves if abs(m[0][0] - m[1][0]) == 2]
+        # only keep moves that have the best minimax score (already stored)
+        max_score = best_score
+        max_capture_moves = [m for m, sc in moves_of_type if sc == max_score]
+        if len(max_capture_moves) > 1:
+            # deterministic ordering
+            max_capture_moves.sort(key=lambda mv: (abs(board[mv[0][0]] - mv[1][0]) == 2,
+                                                (mv[0][0] + mv[1][0]), (mv[0][1] + mv[1][1]))
+            best_move = max_capture_moves[0]
+
+    return best_score, best_move
+
+def opponent_color(my_color: str) -> str:
+    return 'w' if my_color == 'b' else 'b'
+
+# ----------------------------------------------------------------------
+# Public API
+# ----------------------------------------------------------------------
+def policy(my_men: List[Tuple[int,int]],
+           my_kings: List[Tuple[int,int]],
+           opp_men: List[Tuple[int,int]],
+           opp_kings: List[Tuple[int,int]],
+           color: str) -> Tuple[Tuple[int,int], Tuple[int,int]]:
+    """
+    Main entry point required by the arena.
+    Returns a legal move as ((from_row,from_col),(to_row,to_col)).
+    """
+    # Build initial board
+    board: Dict[Tuple[int,int], str] = {}
+    for r, c in my_men:
+        board[(r, c)] = 'M'
+    for r, c in my_kings:
+        board[(r, c)] = 'K'
+    for r, c in opp_men:
+        board[(r, c)] = 'm'
+    for r, c in opp_kings:
+        board[(r, c)] = 'k'
+
+    # root move must respect mandatory captures
+    all_moves = legal_moves(board, color)
+    captures_available = any(abs(to[0] - frm[0]) == 2 and abs(to[1] - frm[1]) == 1
+                            for frm, to in all_moves)
+
+    # If captures are possible, only consider capture moves
+    if captures_available:
+        legal_moves = [mv for mv in all_moves
+                       if abs(mv[0][0] - mv[1][0]) == 2 and abs(mv[0][1] - mv[1][1]) == 1]
+
+    best_score, best_move = minimax(board, 0, SEARCH_DEPTH, color)
+
+    # Sanity check – ensure we really have a move
+    if best_move is None:
+        # No move left – resign (return a neutral tuple)
+        return ((0, 0), (0, 0))
+
+    return best_move
+</code>

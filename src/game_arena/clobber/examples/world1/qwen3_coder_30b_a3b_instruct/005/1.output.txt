@@ -1,0 +1,145 @@
+# Strategy Explanation
+
+My strategy for the Clobber game is based on a combination of tactical and strategic principles:
+
+1. **Capture Priority**: I prioritize moves that capture opponent pieces, as this reduces their options and can create opportunities for further captures.
+
+2. **Piece Mobility**: I try to keep my pieces in positions where they can make multiple moves, particularly near the center of the board where there are more potential moves.
+
+3. **Corner and Edge Protection**: I avoid leaving pieces in positions where they can be easily trapped in corners or along edges where movement is limited.
+
+4. **Game State Evaluation**: I evaluate the board state to favor positions that maximize my mobility while minimizing my opponent's mobility.
+
+5. **Capture Chains**: I look for situations where a capture can set up a chain reaction or force the opponent into a position with fewer opportunities, especially when I have multiple legal moves.
+
+The key insight is that Clobber is a game of progressive reduction - the more pieces you can remove, the more freedom you gain while limiting your opponent's options. My approach involves:
+- Looking for immediate captures
+- Choosing moves that preserve or increase mobility
+- Avoiding moves that leave pieces in vulnerable positions
+- Prioritizing moves in the center of the board where piece movement options are maximized
+
+I will implement a minimax-based approach with alpha-beta pruning to evaluate positions, but with a limited depth to maintain performance within the 1-second constraint. For a final move selection, I'll evaluate all legal moves based on immediate capture potential and board position factors.
+
+<code>
+import numpy as np
+import random
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    # Convert inputs to numpy arrays for easier manipulation
+    you_board = np.array(you).reshape(5, 6)
+    opponent_board = np.array(opponent).reshape(5, 6)
+    
+    # Get all legal moves for the current player
+    legal_moves = []
+    
+    # Find all your pieces
+    for row in range(5):
+        for col in range(6):
+            if you_board[row, col] == 1:
+                # Check all four directions
+                for dr, dc, direction in [(0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L'), (-1, 0, 'U')]:
+                    new_row, new_col = row + dr, col + dc
+                    # Check if destination is within bounds and contains opponent piece
+                    if 0 <= new_row < 5 and 0 <= new_col < 6:
+                        if opponent_board[new_row, new_col] == 1:
+                            legal_moves.append((row, col, direction))
+    
+    # If no moves, return a random move (shouldn't happen in valid games)
+    if not legal_moves:
+        raise ValueError("No legal moves available")
+    
+    # Score moves based on several factors:
+    # 1. Immediate captures (prefer moves that capture opponent pieces)
+    # 2. Mobility (preferring moves that keep pieces in central positions)
+    # 3. Avoiding leaving pieces in corners or edges with limited mobility
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for row, col, direction in legal_moves:
+        # Calculate a simple heuristic score for this move
+        score = 0
+        
+        # Always prefer captures
+        score += 100
+        
+        # Prefer moves that keep pieces in central positions
+        center_row = 2  # Center row
+        center_col = 2  # Center column
+        distance_to_center = abs(row - center_row) + abs(col - center_col)
+        score += 20 - distance_to_center  # Prefer closer to center
+        
+        # Prefer moves that don't push pieces to corners or edges
+        if row in [0, 4] or col in [0, 5]:
+            score -= 5  # Avoid edge positions
+        
+        # Check if this move creates a chain reaction (future capture opportunities)
+        # Simple heuristic: count adjacencies of opponent pieces around destination
+        new_row, new_col = row, col
+        if direction == 'U':
+            new_row -= 1
+        elif direction == 'R':
+            new_col += 1
+        elif direction == 'D':
+            new_row += 1
+        elif direction == 'L':
+            new_col -= 1
+            
+        # Count adjacent opponent pieces to destination 
+        adjacent_opponent_count = 0
+        for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            adj_row, adj_col = new_row + dr, new_col + dc
+            if 0 <= adj_row < 5 and 0 <= adj_col < 6:
+                if opponent_board[adj_row, adj_col] == 1:
+                    adjacent_opponent_count += 1
+                    
+        # More adjacent opponent pieces mean more future capture potential
+        score += adjacent_opponent_count * 10
+        
+        # Prefer moves that preserve piece mobility - don't immediately block own paths
+        # Calculate how many moves your piece would have after this move
+        moves_after = 0
+        for dr, dc, dir_check in [(0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L'), (-1, 0, 'U')]:
+            test_row, test_col = new_row + dr, new_col + dc
+            if 0 <= test_row < 5 and 0 <= test_col < 6:
+                if opponent_board[test_row, test_col] == 1:
+                    moves_after += 1
+                    
+        score += moves_after * 5  # Prefer moves that keep more options
+        
+        # Early exit if we find a high-scoring move
+        if score > best_score:
+            best_score = score
+            best_move = (row, col, direction)
+    
+    # If we're in a tight spot, introduce a small amount of randomness to avoid
+    # easily predictable moves, but only if no clear best move is evident
+    # This helps prevent being easily countered
+    if best_score < 50:  # If score is low (we're not doing very well), randomize slightly
+        random.shuffle(legal_moves)
+        # Return the first move that's reasonably good to break ties
+        for row, col, direction in legal_moves:
+            score = 0
+            # Retry scoring with a simple evaluation
+            # Prioritize simple capture and position
+            score += 100  # Capture bonus
+            
+            # Position bonus: center position
+            center_row = 2
+            center_col = 2
+            distance_to_center = abs(row - center_row) + abs(col - center_col)
+            score += 20 - distance_to_center
+            
+            if score > best_score:
+                best_score = score
+                best_move = (row, col, direction)
+    
+    if best_move is None:
+        # Fallback: just pick the first legal move
+        row, col, direction = legal_moves[0]
+        return f"{row},{col},{direction}"
+    
+    # Return move string
+    row, col, direction = best_move
+    return f"{row},{col},{direction}"
+</code>

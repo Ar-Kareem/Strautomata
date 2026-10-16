@@ -1,0 +1,103 @@
+
+import numpy as np
+
+# Positional weights (corners very good, adjacent to corners bad)
+WEIGHTS = np.array([
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120]
+])
+
+DIRS = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+
+def in_bounds(r,c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def get_flips(you, opp, r, c):
+    if you[r,c] or opp[r,c]:
+        return []
+    flips = []
+    for dr,dc in DIRS:
+        rr, cc = r+dr, c+dc
+        line = []
+        while in_bounds(rr,cc) and opp[rr,cc]:
+            line.append((rr,cc))
+            rr += dr; cc += dc
+        if line and in_bounds(rr,cc) and you[rr,cc]:
+            flips.extend(line)
+    return flips
+
+def legal_moves(you, opp):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            flips = get_flips(you, opp, r, c)
+            if flips:
+                moves.append((r,c,flips))
+    return moves
+
+def apply_move(you, opp, move):
+    r,c,flips = move
+    new_you = you.copy()
+    new_opp = opp.copy()
+    new_you[r,c] = 1
+    for rr,cc in flips:
+        new_you[rr,cc] = 1
+        new_opp[rr,cc] = 0
+    return new_you, new_opp
+
+def evaluate(you, opp):
+    pos_score = np.sum(WEIGHTS*you) - np.sum(WEIGHTS*opp)
+    empties = 64 - (you.sum() + opp.sum())
+    # mobility
+    my_moves = len(legal_moves(you, opp))
+    opp_moves = len(legal_moves(opp, you))
+    mobility = (my_moves - opp_moves) * 5
+    # disc diff (more important late)
+    disc_diff = (you.sum() - opp.sum())
+    if empties <= 10:
+        disc_diff *= 10
+    return pos_score + mobility + disc_diff
+
+def negamax(you, opp, depth, alpha, beta):
+    moves = legal_moves(you, opp)
+    if depth == 0 or (not moves and not legal_moves(opp, you)):
+        return evaluate(you, opp)
+    if not moves:
+        return -negamax(opp, you, depth-1, -beta, -alpha)
+    best = -1e9
+    for mv in moves:
+        n_you, n_opp = apply_move(you, opp, mv)
+        val = -negamax(n_opp, n_you, depth-1, -beta, -alpha)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    moves = legal_moves(you, opponent)
+    if not moves:
+        return "pass"
+    best_val = -1e9
+    best_move = moves[0]
+    depth = 3  # search depth
+    alpha = -1e9
+    beta = 1e9
+    for mv in moves:
+        n_you, n_opp = apply_move(you, opponent, mv)
+        val = -negamax(n_opp, n_you, depth-1, -beta, -alpha)
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if val > alpha:
+            alpha = val
+    r,c,_ = best_move
+    return chr(ord('a')+c) + str(r+1)

@@ -1,0 +1,110 @@
+### Strategy
+The policy implements a minimax algorithm with alpha-beta pruning, limited to depth 4 due to the 1-second time constraint on a modern CPU. This allows searching 4 full plies ahead for optimal play while balancing computation time. The evaluation function prioritizes corner control (+200 for each corner owned by the player, -200 for the opponent, as corners are stable and prevent flank attacks), mobility (difference in available moves multiplied by 10, favoring positions with more options), and late-game piece count (used when over 60 discs are on the board, adding 100x the net piece advantage to push for majority). It selects the move maximizing this score. For efficiency, it evaluates all legal moves upfront, handles "pass" only when forced, and uses numpy for fast array copying and operations. This strategy should perform well in the arena by emphasizing positional strength and adaptability.
+
+<code>
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    def get_board(you, opp):
+        board = np.zeros((8, 8), dtype=int)
+        board[you == 1] = 1
+        board[opp == 1] = 2
+        return board
+
+    def is_valid_move(board, r, c, player):
+        if board[r, c] != 0:
+            return False, []
+        opp = 3 - player
+        flips = []
+        directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            temp_flips = []
+            while 0 <= nr < 8 and 0 <= nc < 8 and board[nr, nc] == opp:
+                temp_flips.append((nr, nc))
+                nr += dr
+                nc += dc
+            if temp_flips and 0 <= nr < 8 and 0 <= nc < 8 and board[nr, nc] == player:
+                flips.extend(temp_flips)
+        return len(flips) > 0, flips
+
+    def get_legal_moves(board, player):
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                valid, flips = is_valid_move(board, r, c, player)
+                if valid:
+                    moves.append(((r, c), flips))
+        return moves
+
+    def apply_move(board, r, c, player, flips):
+        new_board = board.copy()
+        new_board[r, c] = player
+        for fr, fc in flips:
+            new_board[fr, fc] = player
+        return new_board
+
+    def evaluate(board):
+        score = 0
+        corners = [(0, 0), (0, 7), (7, 0), (7, 7)]
+        for cr, cc in corners:
+            if board[cr, cc] == 1:
+                score += 200
+            elif board[cr, cc] == 2:
+                score -= 200
+        your_moves = len(get_legal_moves(board, 1))
+        opp_moves = len(get_legal_moves(board, 2))
+        score += (your_moves - opp_moves) * 10
+        your_pieces = np.sum(board == 1)
+        opp_pieces = np.sum(board == 2)
+        total_pieces = your_pieces + opp_pieces
+        if total_pieces > 60:
+            score += (your_pieces - opp_pieces) * 100
+        return score
+
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        if depth == 0:
+            return evaluate(board)
+        player = 1 if maximizing_player else 2
+        moves = get_legal_moves(board, player)
+        if not moves:
+            return minimax(board, depth - 1, alpha, beta, not maximizing_player)
+        if maximizing_player:
+            max_eval = -np.inf
+            for (r, c), flips in moves:
+                new_board = apply_move(board, r, c, player, flips)
+                eval = minimax(new_board, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = np.inf
+            for (r, c), flips in moves:
+                new_board = apply_move(board, r, c, player, flips)
+                eval = minimax(new_board, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    board = get_board(you, opponent)
+    legal_moves = get_legal_moves(board, 1)
+    if not legal_moves:
+        return "pass"
+    depth = 4
+    best_move = None
+    best_value = -np.inf
+    for (r, c), flips in legal_moves:
+        new_board = apply_move(board, r, c, 1, flips)
+        value = minimax(new_board, depth - 1, -np.inf, np.inf, False)
+        if value > best_value:
+            best_value = value
+            best_move = (r, c)
+    cols = 'abcdefgh'
+    rows = '12345678'
+    move_str = cols[best_move[1]] + rows[best_move[0]]
+    return move_str
+</code>

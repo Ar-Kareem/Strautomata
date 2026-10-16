@@ -1,0 +1,403 @@
+To design an effective Battleship agent, I will implement a probabilistic targeting strategy that adapts to the current state of the board.
+
+**Strategy Overview:**
+1.  **Heatmap Generation:** I will maintain a "heatmap" of the opponent's grid. This represents the probability of a ship occupying each cell.
+2.  **Ship Placement Simulation:** To generate the heatmap, I will simulate all possible valid placements for the remaining opponent ships (lengths 5, 4, 3, 3, 2). I will only consider placements that are consistent with the current board state (respecting hits, misses, and avoiding known misses).
+3.  **Target Selection:**
+    *   **Hunt Mode:** If there are no active hits, I will target the cell with the highest heat value (highest probability of a ship). To optimize for the 1-second time limit, I will use a grid-based sampling approach rather than iterating every single placement.
+    *   **Target Mode:** If there are hits on the board, I will prioritize cells immediately adjacent to those hits. This allows me to quickly identify the orientation of a damaged ship and sink it.
+4.  **Decision Logic:**
+    *   Identify all `1` (hits) on the board.
+    *   If hits exist, generate a prioritized list of neighbors to these hits that are valid moves.
+    *   If the prioritized list is empty or we are in Hunt Mode, fallback to the global heatmap maximum.
+5.  **Efficiency:** Since a full permutation check of all ship placements can be computationally expensive (approaching the 1-second limit on a 10x10 grid), I will use a stochastic approach (Monte Carlo) to estimate the heatmap. This involves randomly sampling valid ship configurations (N times) and incrementing the cell counters for occupied cells. This provides a very strong approximation of ship locations instantly.
+
+**Why this works:**
+*   It adapts to the opponent's ship constraints dynamically.
+*   It balances the need to hunt for new ships (using the heatmap) with the urgency to sink damaged ships (Target Mode).
+*   The Monte Carlo approach allows it to run well within the time limits while maintaining high accuracy.
+
+<code>
+import random
+import sys
+
+# Increase recursion depth just in case, though we will use iterative approaches mostly.
+sys.setrecursionlimit(2000)
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship Policy using Monte Carlo Heatmap and Hit Prioritization.
+    
+    1. Identifies active hits and prioritizes adjacent cells to sink ships.
+    2. If no active hits or no adjacent targets, uses a Monte Carlo simulation
+       to generate a heatmap of valid ship placements and selects the highest probability cell.
+    """
+    
+    # Constants
+    BOARD_SIZE = 10
+    # Remaining ships to place (lengths)
+    INITIAL_SHIPS = [5, 4, 3, 3, 2]
+    
+    # Identify board state
+    hits = []
+    misses = set()
+    unknowns = []
+    
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            val = board[r][c]
+            if val == 1:
+                hits.append((r, c))
+            elif val == -1:
+                misses.add((r, c))
+            else:
+                unknowns.append((r, c))
+
+    # --- Helper: Check if a ship placement is valid given the board state ---
+    def is_valid_placement(ship_len, start_r, start_c, orientation):
+        # Check bounds
+        if orientation == 'H':
+            if start_c + ship_len > BOARD_SIZE: return False
+            # Check for collisions with misses or hits that don't match this specific ship part
+            # Actually, we need to check strictly against the board
+            for i in range(ship_len):
+                r, c = start_r, start_c + i
+                val = board[r][c]
+                if val == -1: return False # Can't be a miss
+                # If there is a hit, we must ensure it's part of the connected ship
+                # For simulation of hypothetical ships, we check if the cell blocks placement
+                # In a strict validity check for "Could this ship exist here?", we only fail if
+                # we overlap a miss.
+                # However, for "Is this placement consistent with existing hits?"
+                # We will handle that in the heatmap counting step or filtering.
+                # Let's keep this simple: A placement is valid if it doesn't touch a Miss
+                # AND if there are hits, they are contained within this placement if adjacent.
+                # Actually, to keep it fast, we check:
+                # 1. No Misses in footprint.
+                # 2. If any cell is a Hit, that's fine (it implies a ship is there).
+                # 3. We will filter "inconsistent" ships later or count probability.
+                # Let's stick to: No Misses allowed in footprint.
+                
+                # NOTE: If we have a hit, we strictly want ships that cover that hit.
+                # If we are simulating *potential* ships, we should allow ships that cover hits
+                # and ships that don't, but we weight them by probability.
+                # The strict "No Miss" rule is the main constraint.
+        else: # V
+            if start_r + ship_len > BOARD_SIZE: return False
+            for i in range(ship_len):
+                r, c = start_r + i, start_c
+                val = board[r][c]
+                if val == -1: return False
+
+        # Constraint: Ships cannot touch (usually in standard Battleship, but often relaxed in AI bots).
+        # Here, the prompt says "no overlaps", but doesn't explicitly say "no touching".
+        # However, to be safer, we usually assume they don't touch. 
+        # Let's assume standard rules: No touching is not required (it's often a variant).
+        # Let's stick to just checking the footprint for misses.
+        return True
+
+    # --- Strategy 1: Hit Prioritization (Target Mode) ---
+    if hits:
+        # Get all neighbors of all hits
+        candidates = []
+        seen = set()
+        
+        # Check neighbors of hits
+        for r, c in hits:
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10:
+                    if (nr, nc) not in seen and board[nr][nc] == 0:
+                        candidates.append((nr, nc))
+                        seen.add((nr, nc))
+        
+        if candidates:
+            # Simple prioritization: Pick the one with the highest number of existing adjacent hits
+            # (To follow a line)
+            best_candidate = None
+            max_score = -1
+            
+            for r, c in candidates:
+                score = 0
+                # Check if this cell connects two hits (implies linear ship)
+                # Check orthogonal neighbors for hits
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                        score += 1
+                # Prioritize if it's in line with a single hit
+                if score > max_score:
+                    max_score = score
+                    best_candidate = (r, c)
+            
+            return best_candidate
+
+    # --- Strategy 2: Probability Hunt (Monte Carlo Heatmap) ---
+    # If we are here, we have no active targets or no adjacent moves.
+    # We need to find where the ships are.
+    
+    # We need to find which ship lengths are still "alive" (not sunk).
+    # We infer this from the board.
+    # If we have a cluster of hits (connected orthogonally), we check its size.
+    # If cluster size == ship length, that ship is sunk.
+    
+    def get_connected_component_size(start_r, start_c, visited):
+        q = [(start_r, start_c)]
+        size = 0
+        idx = 0
+        while idx < len(q):
+            r, c = q[idx]
+            idx += 1
+            if (r, c) in visited: continue
+            visited.add((r, c))
+            size += 1
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                    if (nr, nc) not in visited:
+                        q.append((nr, nc))
+        return size
+
+    # Determine sunk ships
+    sunk_clusters = []
+    visited_hits = set()
+    for r, c in hits:
+        if (r, c) not in visited_hits:
+            size = get_connected_component_size(r, c, visited_hits)
+            sunk_clusters.append(size)
+            
+    # Sunk clusters correspond to ships removed from the pool
+    # However, ships can be disjoint if we haven't connected them yet?
+    # In Battleship, ships are connected. So a cluster of size N corresponds to a ship of length N.
+    # We subtract these from the initial pool to get remaining ships.
+    remaining_ships = list(INITIAL_SHIPS)
+    for size in sunk_clusters:
+        if size in remaining_ships:
+            remaining_ships.remove(size)
+        else:
+            # Edge case: We might have a cluster of size 3, but the sunk ship was a 3.
+            # Or we might have multiple 3s. If we sink a 3, we remove one 3.
+            # If we have a cluster that is a subset of a ship (e.g., we only hit 2 cells of a 3),
+            # it won't be in sunk_clusters. Only fully connected hits count.
+            pass
+            
+    # If no remaining ships, we technically won, but let's return a safe move
+    if not remaining_ships:
+        # Find any unknown
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if board[r][c] == 0:
+                    return (r, c)
+        return (0, 0) # Should not happen
+
+    # Monte Carlo Sampling
+    # We want to simulate valid placements of remaining_ships on the board
+    # respecting misses (and implicitly hits, though we treat hits as "must be covered").
+    
+    # Optimization: Instead of full permutations (which is slow), we do independent sampling per cell.
+    # Or we do "random walk" placements.
+    # Given 1 second limit, we can probably do ~500-1000 full valid placements of all ships.
+    # But finding valid placements for multiple ships is a Constraint Satisfaction Problem.
+    
+    # Faster Approximation: 
+    # Sample single ships individually and map their frequency.
+    # We don't need to ensure ships don't overlap with each other for the probability estimate,
+    # because the probability of overlap is low on a sparse board, or if they overlap, it just reinforces
+    # that area is dense.
+    
+    heatmap = [[0 for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
+    iterations = 1500  # Adjusted for 1s limit (Python is slower, 1500 is safe)
+    
+    # We need to prioritize cells that could contain specific unsunk ships.
+    # But we also need to respect hits: if there are hits, any ship placement
+    # must *cover* those hits (if they are part of the remaining ships).
+    
+    # If we have un-sunk hits (meaning hits that are not part of a sunk cluster),
+    # then the remaining ships MUST cover those hits.
+    unprocessed_hits = set(hits) - visited_hits
+    
+    if unprocessed_hits:
+        # Target Mode 2: There are hits, but they don't form a sink.
+        # We must extend them.
+        # We run MC simulation, but only count placements that cover the hits.
+        # Since iterating all placements for remaining ships is expensive,
+        # we will just iterate all single-ship placements for the *smallest ship that could cover the hit*.
+        
+        # Actually, simpler: Identify the "active" hits (not sunk).
+        # Try to extend them in all 4 directions until we hit a miss or bound.
+        # Return the first valid empty cell along the extension.
+        
+        # Let's refine the logic:
+        # If we have active hits, we are usually in Target Mode.
+        # If the simple neighbor check failed (Strategy 1), it means neighbors are blocked or occupied.
+        # We need to search further out.
+        
+        # Let's run the MC simulation restricted to the unprocessed hits.
+        # But to save time, we'll just iterate all possible placements for the smallest remaining ship
+        # that can cover the hits?
+        
+        # Let's stick to the Monte Carlo approach but restricted to cells near hits?
+        # No, let's do global simulation but weighted by "Must Cover Hits".
+        
+        # Actually, if we have hits, we should be hunting.
+        # Let's try a deterministic approach for the "active hit" case first to save time.
+        # Find the longest "chain" of hits. Try to extend it.
+        
+        # Let's just run a quick valid placement check for the hits.
+        # For every cell (r,c) that is empty:
+        # Can a ship of length L (from remaining_ships) be placed such that it covers (r,c) AND all unprocessed hits?
+        # If yes, score++.
+        
+        # This is O(100 * 100 * sum(ships) * directions). Very fast.
+        
+        best_prob = -1
+        best_move = None
+        
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if board[r][c] != 0:
+                    continue
+                
+                score = 0
+                # For this cell (r,c), can it be part of a ship covering the active hits?
+                for ship_len in remaining_ships:
+                    # Check horizontal
+                    # We need to see if there is an offset k such that:
+                    # cell = (r, c) and cell is part of a ship starting at (r, c-k)
+                    # covering all active hits.
+                    
+                    # Let's check if (r,c) can extend a line that includes the hits.
+                    # Iterate over possible placements covering (r,c).
+                    for start_r in range(r - ship_len + 1, r + 1):
+                        for start_c in range(c - ship_len + 1, c + 1):
+                            # Horizontal check
+                            if start_r == r and 0 <= start_c < BOARD_SIZE and start_c + ship_len <= BOARD_SIZE:
+                                valid = True
+                                hits_covered = 0
+                                for i in range(ship_len):
+                                    cr, cc = r, start_c + i
+                                    val = board[cr][cc]
+                                    if val == -1: valid = False
+                                    if val == 1 and (cr, cc) in unprocessed_hits: hits_covered += 1
+                                if valid and hits_covered == len(unprocessed_hits):
+                                    score += 1
+                            
+                            # Vertical check
+                            if start_c == c and 0 <= start_r < BOARD_SIZE and start_r + ship_len <= BOARD_SIZE:
+                                valid = True
+                                hits_covered = 0
+                                for i in range(ship_len):
+                                    cr, cc = start_r + i, c
+                                    val = board[cr][cc]
+                                    if val == -1: valid = False
+                                    if val == 1 and (cr, cc) in unprocessed_hits: hits_covered += 1
+                                if valid and hits_covered == len(unprocessed_hits):
+                                    score += 1
+                
+                if score > best_prob:
+                    best_prob = score
+                    best_move = (r, c)
+        
+        if best_move:
+            return best_move
+
+    # --- Standard Monte Carlo (No active hits or hit logic failed) ---
+    # We generate random valid placements for the remaining ships and increment heatmap.
+    
+    # Helper to check if a placement is valid against misses
+    def check_placement_valid(ships, current_board, placements):
+        # placements is a list of (r, c, orient, len)
+        # Check overlaps
+        occupied = set()
+        for r, c, orient, l in placements:
+            if orient == 'H':
+                for i in range(l):
+                    cr, cc = r, c+i
+                    if (cr, cc) in occupied: return False
+                    occupied.add((cr, cc))
+            else:
+                for i in range(l):
+                    cr, cc = r+i, c
+                    if (cr, cc) in occupied: return False
+                    occupied.add((cr, cc))
+        
+        # Check against board misses
+        for r, c, orient, l in placements:
+            if orient == 'H':
+                for i in range(l):
+                    cr, cc = r, c+i
+                    if current_board[cr][cc] == -1: return False
+            else:
+                for i in range(l):
+                    cr, cc = r+i, c
+                    if current_board[cr][cc] == -1: return False
+                    
+        return True
+
+    # To keep it fast, we use a heuristic: iterate random placements for each ship individually
+    # and add to heatmap.
+    # We will try to generate roughly equal number of placements.
+    
+    # Note: To strictly follow valid configuration, we should pack them.
+    # But valid configuration is expensive (exact cover).
+    # We will just sample single ships. This gives a "Shape Heatmap".
+    
+    for _ in range(iterations):
+        # Shuffle ships to randomize order
+        random.shuffle(remaining_ships)
+        
+        # Try to place them. This is a backtracking, but we can just try random positions.
+        # We will do a greedy random placement for one ship and add to heatmap.
+        
+        # Instead of packing all ships, let's just iterate every ship length
+        # and sample random valid positions for it.
+        # This is much faster than packing all.
+        # We iterate all remaining ships:
+        
+        for ship_len in remaining_ships:
+            # Try random positions
+            for _ in range(20): # 20 attempts per ship per iteration
+                r = random.randint(0, 9)
+                c = random.randint(0, 9)
+                orient = random.choice(['H', 'V'])
+                
+                if is_valid_placement(ship_len, r, c, orient):
+                    # Check overlap with previously placed "virtual" ships in this iteration?
+                    # We will skip that for speed and just count independent probabilities.
+                    # It's an approximation.
+                    
+                    # However, we MUST respect hits.
+                    # If we have hits, valid placements should ideally cover hits.
+                    # But we handled hits in the logic above.
+                    # Here we assume 0 hits or we just want to find new ships.
+                    
+                    # Let's add to heatmap
+                    if orient == 'H':
+                        for i in range(ship_len):
+                            heatmap[r][c+i] += 1
+                    else:
+                        for i in range(ship_len):
+                            heatmap[r+i][c] += 1
+                    break # Only one placement per ship type per loop
+
+    # Find best move
+    max_val = -1
+    best_move = None
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == 0:
+                if heatmap[r][c] > max_val:
+                    max_val = heatmap[r][c]
+                    best_move = (r, c)
+
+    if best_move:
+        return best_move
+
+    # Fallback (should not be reached unless board is full)
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    return (0, 0)
+</code>

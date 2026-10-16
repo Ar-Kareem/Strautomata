@@ -1,0 +1,281 @@
+
+import numpy as np
+import heapq
+from typing import List, Tuple, Optional
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Convert to boolean arrays for easier manipulation
+    my_board = you.astype(bool)
+    opp_board = opponent.astype(bool)
+    empty_board = ~(my_board | opp_board)
+    
+    # Get all legal moves
+    legal_moves = get_all_legal_moves(my_board, opp_board, empty_board)
+    
+    # If no legal moves, pass
+    if len(legal_moves) == 0:
+        return "pass"
+    
+    # Count total discs to determine game phase
+    total_discs = np.sum(my_board) + np.sum(opp_board)
+    is_endgame = total_discs > 56  # 64 - 8, when board is mostly filled
+    
+    # If only one move, take it
+    if len(legal_moves) == 1:
+        return algebraic_notation(legal_moves[0])
+    
+    # Determine search depth based on game phase
+    if is_endgame:
+        depth = 6
+    else:
+        # More aggressive depth when there are fewer moves
+        move_count = len(legal_moves)
+        depth = 5 if move_count > 8 else 6
+    
+    # Use minimax with alpha-beta pruning for move selection
+    best_move = None
+    best_score = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Try each legal move
+    for move in legal_moves:
+        # Make a copy of the board
+        new_my, new_opp = make_move(my_board, opp_board, move)
+        
+        # Evaluate this move using minimax
+        score = minimax(new_opp, new_my, depth - 1, alpha, beta, False, is_endgame)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+        
+        alpha = max(alpha, best_score)
+        if beta <= alpha:
+            break  # Alpha-beta pruning
+    
+    # If for some reason no move was chosen, pick first legal move as fallback
+    if best_move is None:
+        best_move = legal_moves[0]
+    
+    return algebraic_notation(best_move)
+
+def get_all_legal_moves(my_board: np.ndarray, opp_board: np.ndarray, empty_board: np.ndarray) -> List[Tuple[int, int]]:
+    """Return list of (row, col) tuples for all legal moves."""
+    legal_moves = []
+    
+    # Directions: 8 compass directions
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    for r in range(8):
+        for c in range(8):
+            if empty_board[r][c]:  # Empty square
+                for dr, dc in directions:
+                    if can_flip(r, c, dr, dc, my_board, opp_board):
+                        legal_moves.append((r, c))
+                        break  # No need to check other directions for this cell
+    
+    return legal_moves
+
+def can_flip(row: int, col: int, dr: int, dc: int, my_board: np.ndarray, opp_board: np.ndarray) -> bool:
+    """Check if placing at (row, col) in direction (dr, dc) flips any opponent discs."""
+    r, c = row + dr, col + dc
+    opponent_flipped = False
+    
+    # Continue in direction until we hit boundary or our own disc
+    while 0 <= r < 8 and 0 <= c < 8:
+        if opp_board[r][c]:
+            opponent_flipped = True
+            r += dr
+            c += dc
+        elif my_board[r][c]:
+            return opponent_flipped  # We found our disc after opponent discs
+        else:
+            break  # Empty square, can't flip
+    
+    return False
+
+def make_move(my_board: np.ndarray, opp_board: np.ndarray, move: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]:
+    """Make a move and return new boards after flipping opponents."""
+    r, c = move
+    new_my = my_board.copy()
+    new_opp = opp_board.copy()
+    
+    # Place our disc
+    new_my[r][c] = True
+    new_opp[r][c] = False
+    
+    # Directions: 8 compass directions
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    for dr, dc in directions:
+        r2, c2 = r + dr, c + dc
+        flip_list = []
+        
+        # Collect opponent discs in this direction
+        while 0 <= r2 < 8 and 0 <= c2 < 8:
+            if new_opp[r2][c2]:
+                flip_list.append((r2, c2))
+                r2 += dr
+                c2 += dc
+            elif new_my[r2][c2]:
+                # We found our own disc, flip all collected opponent discs
+                for fr, fc in flip_list:
+                    new_my[fr][fc] = True
+                    new_opp[fr][fc] = False
+                break
+            else:
+                break  # Empty space, can't flip
+    
+    return new_my, new_opp
+
+def minimax(my_board: np.ndarray, opp_board: np.ndarray, depth: int, alpha: float, beta: float, is_maximizing: bool, is_endgame: bool) -> float:
+    """Minimax algorithm with alpha-beta pruning."""
+    if depth == 0:
+        return evaluate_board(my_board, opp_board, is_endgame)
+    
+    empty_board = ~(my_board | opp_board)
+    legal_moves = get_all_legal_moves(my_board, opp_board, empty_board)
+    
+    if len(legal_moves) == 0:
+        # If no moves, check if opponent has moves
+        opp_legal_moves = get_all_legal_moves(opp_board, my_board, empty_board)
+        if len(opp_legal_moves) == 0:
+            # Game over
+            my_discs = np.sum(my_board)
+            opp_discs = np.sum(opp_board)
+            return my_discs - opp_discs
+        else:
+            # Skip turn
+            return minimax(opp_board, my_board, depth, alpha, beta, not is_maximizing, is_endgame)
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for move in legal_moves:
+            new_my, new_opp = make_move(my_board, opp_board, move)
+            eval_score = minimax(new_my, new_opp, depth - 1, alpha, beta, False, is_endgame)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            new_my, new_opp = make_move(my_board, opp_board, move)
+            eval_score = minimax(new_my, new_opp, depth - 1, alpha, beta, True, is_endgame)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate_board(my_board: np.ndarray, opp_board: np.ndarray, is_endgame: bool) -> float:
+    """Evaluate board position with a sophisticated heuristic."""
+    my_count = np.sum(my_board)
+    opp_count = np.sum(opp_board)
+    
+    # Disc difference (basic score)
+    disc_score = my_count - opp_count
+    
+    # Corner evaluation (extremely valuable)
+    corners = [(0,0), (0,7), (7,0), (7,7)]
+    my_corners = sum(1 for r, c in corners if my_board[r][c])
+    opp_corners = sum(1 for r, c in corners if opp_board[r][c])
+    
+    corner_score = 15 * (my_corners - opp_corners)
+    
+    # Edge evaluation (but avoid C-squares)
+    edge_squares = []
+    for i in range(1, 7):
+        edge_squares.extend([(0, i), (7, i), (i, 0), (i, 7)])
+    
+    # C-squares (adjacent to corners - dangerous)
+    c_squares = [(0,1), (1,0), (1,1), (0,6), (1,7), (1,6), (6,0), (7,1), (6,1), (6,7), (7,6), (6,6)]
+    my_c_squares = sum(1 for r, c in c_squares if my_board[r][c])
+    opp_c_squares = sum(1 for r, c in c_squares if opp_board[r][c])
+    
+    # X-squares (diagonally adjacent to corners - avoid these)
+    x_squares = [(1,1), (1,6), (6,1), (6,6)]
+    my_x_squares = sum(1 for r, c in x_squares if my_board[r][c])
+    opp_x_squares = sum(1 for r, c in x_squares if opp_board[r][c])
+    
+    edge_score = 0
+    for r, c in edge_squares:
+        if (r, c) not in c_squares and (r, c) not in x_squares:
+            edge_score += 5 if my_board[r][c] else -5 if opp_board[r][c] else 0
+    
+    # Mobility (number of legal moves)
+    empty_board = ~(my_board | opp_board)
+    my_mobility = len(get_all_legal_moves(my_board, opp_board, empty_board))
+    opp_mobility = len(get_all_legal_moves(opp_board, my_board, empty_board))
+    
+    mobility_score = 10 * (my_mobility - opp_mobility)
+    
+    # Stability (discs that cannot be flipped)
+    my_stability = count_stable_discs(my_board, opp_board)
+    opp_stability = count_stable_discs(opp_board, my_board)
+    stability_score = 10 * (my_stability - opp_stability)
+    
+    # In endgame, prioritize disc count heavily
+    if is_endgame:
+        return disc_score * 100 + corner_score + edge_score + mobility_score + stability_score
+    else:
+        # Prioritize corners and mobility in early/mid game
+        return (corner_score * 5 + edge_score * 2 + mobility_score + stability_score + disc_score)
+
+def count_stable_discs(board: np.ndarray, opp_board: np.ndarray) -> int:
+    """Count the number of stable discs for a player."""
+    stable = np.zeros((8, 8), dtype=bool)
+    directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    # Mark corners as stable if occupied
+    corners = [(0,0), (0,7), (7,0), (7,7)]
+    for r, c in corners:
+        if board[r][c]:
+            stable[r][c] = True
+    
+    # Iteratively mark stable discs
+    changed = True
+    while changed:
+        changed = False
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] and not stable[r][c]:
+                    # Check if this disc is stable by being connected to a corner
+                    # or having a stable disc in every direction
+                    is_stable = False
+                    
+                    # Check if adjacent to corner
+                    for dr, dc in directions:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            if stable[nr][nc]:
+                                # Check all 8 directions if at least one has our disc or edge
+                                total_neighbors = 0
+                                opp_neighbors = 0
+                                for ddr, ddc in directions:
+                                    nr2, nc2 = r + ddr, c + ddc
+                                    if 0 <= nr2 < 8 and 0 <= nc2 < 8:
+                                        if board[nr2][nc2] or (nr2, nc2) in corners:
+                                            total_neighbors += 1
+                                        elif opp_board[nr2][nc2]:
+                                            opp_neighbors += 1
+                                
+                                # If disc is on edge and surrounded by our disc/edge in all directions
+                                if total_neighbors == 8 or (r in [0,7] or c in [0,7]) and total_neighbors - opp_neighbors == 8 - (total_neighbors - opp_neighbors):
+                                    is_stable = True
+                                    break
+                    
+                    if is_stable:
+                        stable[r][c] = True
+                        changed = True
+    
+    return int(np.sum(stable))
+
+def algebraic_notation(move: Tuple[int, int]) -> str:
+    """Convert (row, col) to algebraic notation like 'd3'"""
+    r, c = move
+    file = chr(ord('a') + c)
+    rank = str(r + 1)
+    return file + rank

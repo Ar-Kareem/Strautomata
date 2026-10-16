@@ -1,0 +1,218 @@
+
+import copy
+import random
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    # Convert to_play to color code
+    color = 'w' if to_play == 'white' else 'b'
+
+    # Convert pieces to a board dictionary
+    board = {sq: pc for sq, pc in pieces.items()}
+
+    # Generate legal moves
+    legal_moves = generate_legal_moves(board, color)
+
+    # If no legal moves available (shouldn't happen normally), return a default
+    if not legal_moves:
+        return random.choice(list(pieces.keys()))  # Fallback, but legal_moves should not be empty
+
+    # Evaluate moves and choose the best one
+    best_moves = []
+    best_score = -float('inf')
+    for move in legal_moves:
+        score = evaluate_move(board, move, color)
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+
+    # Randomly select among best moves to avoid predictability
+    return random.choice(best_moves)
+
+def generate_legal_moves(board: dict[str, str], color: str) -> list[str]:
+    opponent = 'b' if color == 'w' else 'w'
+    legal_moves = []
+
+    for square, piece in board.items():
+        if piece[0] != color:
+            continue
+
+        pseudo_moves = generate_pseudo_legal_moves(board, square, piece, color)
+        for dest_sq in pseudo_moves:
+            move_str = square + dest_sq
+            promo = handle_promotion(board, color, move_str)
+            if promo:
+                move_str += 'q'  # Always promote to queen
+
+            new_board = apply_move(board, square, dest_sq, promo)
+            if not is_king_in_check(new_board, color):
+                legal_moves.append(move_str)
+
+    return legal_moves
+
+def handle_promotion(board: dict[str, str], color: str, move: str) -> bool:
+    from_sq, to_sq = move[:2], move[2:]
+    piece = board.get(from_sq, '')
+    if piece[1] != 'P':
+        return False
+    rank = int(to_sq[1])
+    return (color == 'w' and rank == 8) or (color == 'b' and rank == 1)
+
+def apply_move(board: dict[str, str], from_sq: str, to_sq: str, promotion: bool) -> dict[str, str]:
+    new_board = copy.copy(board)
+    piece = new_board.pop(from_sq)
+    if promotion:
+        piece = piece[0] + 'Q'  # Promote to queen
+    new_board[to_sq] = piece
+    return new_board
+
+def is_king_in_check(board: dict[str, str], color: str) -> bool:
+    king_sq = None
+    opponent = 'b' if color == 'w' else 'w'
+
+    # Find the king's position
+    for sq, pc in board.items():
+        if pc == color + 'K':
+            king_sq = sq
+            break
+    if not king_sq:
+        return False
+
+    # Check knight attacks
+    knight_moves = [(2,1), (1,2), (-1,2), (-2,1), (-2,-1), (-1,-2), (1,-2), (2,-1)]
+    for dx, dy in knight_moves:
+        x = chr(ord(king_sq[0]) + dx)
+        y = int(king_sq[1]) + dy
+        if 'a' <= x <= 'h' and 1 <= y <= 8:
+            sq = x + str(y)
+            if board.get(sq, '') == opponent + 'N':
+                return True
+
+    # Check pawn attacks
+    pawn_dir = 1 if color == 'b' else -1  # Opponent pawns move toward the king
+    for dx in (-1, 1):
+        x = chr(ord(king_sq[0]) + dx)
+        y = int(king_sq[1]) + pawn_dir
+        if 'a' <= x <= 'h' and 1 <= y <= 8:
+            sq = x + str(y)
+            if board.get(sq, '') == opponent + 'P':
+                return True
+
+    # Check line attacks (rook/queen/bishop)
+    directions = [
+        (1,0), (0,1), (-1,0), (0,-1),  # Rook directions
+        (1,1), (1,-1), (-1,1), (-1,-1)  # Bishop directions
+    ]
+    for dx, dy in directions:
+        x, y = ord(king_sq[0]) - ord('a'), int(king_sq[1]) - 1
+        for step in range(1, 8):
+            nx = x + dx * step
+            ny = y + dy * step
+            if not (0 <= nx < 8 and 0 <= ny < 8):
+                break
+            sq = chr(ord('a') + nx) + str(ny + 1)
+            piece = board.get(sq, '')
+            if not piece:
+                continue
+            if piece[0] == color:
+                break
+            if step == 1 and piece[1] == 'K':
+                return True  # King adjacent case
+            if piece[1] in ['R', 'Q'] and (dx == 0 or dy == 0):  # Rook/Queen on straight line
+                return True
+            if piece[1] in ['B', 'Q'] and (dx != 0 and dy != 0):  # Bishop/Queen on diagonal
+                return True
+            break  # Blocked by enemy piece
+
+    return False
+
+def generate_pseudo_legal_moves(board: dict[str, str], sq: str, piece: str, color: str) -> list[str]:
+    moves = []
+    x, y = ord(sq[0]) - ord('a'), int(sq[1]) - 1
+    opponent = 'b' if color == 'w' else 'w'
+
+    if piece[1] == 'P':
+        # Pawn moves
+        dir = 1 if color == 'w' else -1
+        start_rank = 1 if color == 'b' else 6
+
+        # Forward move
+        if 0 <= y + dir < 8:
+            new_sq = chr(ord(sq[0])) + str(y + dir + 1)
+            if new_sq not in board:
+                moves.append(new_sq)
+                # Initial two-step move
+                if y == start_rank:
+                    new_sq2 = chr(ord(sq[0])) + str(y + 2*dir + 1)
+                    if new_sq2 not in board:
+                        moves.append(new_sq2)
+
+        # Captures
+        for dx in (-1, 1):
+            nx = x + dx
+            if 0 <= nx < 8:
+                new_sq = chr(ord('a') + nx) + str(y + dir + 1)
+                if new_sq in board and board[new_sq][0] == opponent:
+                    moves.append(new_sq)
+
+    elif piece[1] == 'N':
+        # Knight moves
+        knight_moves = [(2,1), (1,2), (-1,2), (-2,1), (-2,-1), (-1,-2), (1,-2), (2,-1)]
+        for dx, dy in knight_moves:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < 8 and 0 <= ny < 8:
+                new_sq = chr(ord('a') + nx) + str(ny + 1)
+                if new_sq not in board or board[new_sq][0] != color:
+                    moves.append(new_sq)
+
+    elif piece[1] in ['B', 'R', 'Q']:
+        # Bishop/Rook/Queen moves
+        directions = []
+        if piece[1] in ['B', 'Q']:
+            directions.extend([(1,1), (-1,1), (1,-1), (-1,-1)])
+        if piece[1] in ['R', 'Q']:
+            directions.extend([(1,0), (-1,0), (0,1), (0,-1)])
+
+        for dx, dy in directions:
+            nx, ny = x, y
+            for step in range(1, 8):
+                nx += dx
+                ny += dy
+                if not (0 <= nx < 8 and 0 <= ny < 8):
+                    break
+                new_sq = chr(ord('a') + nx) + str(ny + 1)
+                if new_sq in board:
+                    if board[new_sq][0] == opponent:
+                        moves.append(new_sq)
+                    break
+                moves.append(new_sq)
+
+    elif piece[1] == 'K':
+        # King moves (limited to 1 square)
+        directions = [(0,1), (1,1), (1,0), (1,-1), (0,-1), (-1,-1), (-1,0), (-1,1)]
+        for dx, dy in directions:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < 8 and 0 <= ny < 8:
+                new_sq = chr(ord('a') + nx) + str(ny + 1)
+                if new_sq not in board or board[new_sq][0] != color:
+                    moves.append(new_sq)
+
+    return moves
+
+def evaluate_move(board: dict[str, str], move: str, color: str) -> int:
+    piece_values = {'K': 0, 'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+    from_sq, to_sq = move[:2], move[2:4]
+    
+    # Basic material capture
+    captured_value = 0
+    if to_sq in board:
+        captured_piece = board[to_sq]
+        captured_value = piece_values.get(captured_piece[1], 0)
+        
+    # Promotion value gain (if any)
+    promotion_value = 0
+    if len(move) == 5:  # Promotion move 'a7a8q'
+        promotion_value = 9 - 1  # Pawn promoted to queen
+        
+    return captured_value * 100 + promotion_value

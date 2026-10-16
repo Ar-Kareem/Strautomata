@@ -1,0 +1,225 @@
+
+import random
+
+# Piece values
+PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+
+# Position bonus tables (simplified)
+PAWN_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    5,  5, 10, 25, 25, 10,  5,  5,
+    0,  0,  0, 20, 20,  0,  0,  0,
+    5, -5,-10,  0,  0,-10, -5,  5,
+    5, 10, 10,-20,-20, 10, 10,  5,
+    0,  0,  0,  0,  0,  0,  0,  0
+]
+
+def sq_to_idx(sq):
+    return (ord(sq[0]) - ord('a'), int(sq[1]) - 1)
+
+def idx_to_sq(f, r):
+    return chr(ord('a') + f) + str(r + 1)
+
+def generate_moves(pieces, color):
+    moves = []
+    my_color = 'w' if color == 'white' else 'b'
+    opp_color = 'b' if my_color == 'w' else 'w'
+    
+    for sq, piece in pieces.items():
+        if piece[0] != my_color:
+            continue
+        ptype = piece[1]
+        f, r = sq_to_idx(sq)
+        
+        if ptype == 'P':
+            direction = 1 if my_color == 'w' else -1
+            start_rank = 1 if my_color == 'w' else 6
+            promo_rank = 7 if my_color == 'w' else 0
+            
+            # Forward move
+            nr = r + direction
+            if 0 <= nr <= 7:
+                nsq = idx_to_sq(f, nr)
+                if nsq not in pieces:
+                    if nr == promo_rank:
+                        for p in ['q', 'r', 'b', 'n']:
+                            moves.append(sq + nsq + p)
+                    else:
+                        moves.append(sq + nsq)
+                        # Double move
+                        if r == start_rank:
+                            nr2 = r + 2 * direction
+                            nsq2 = idx_to_sq(f, nr2)
+                            if nsq2 not in pieces:
+                                moves.append(sq + nsq2)
+            # Captures
+            for df in [-1, 1]:
+                nf = f + df
+                nr = r + direction
+                if 0 <= nf <= 7 and 0 <= nr <= 7:
+                    nsq = idx_to_sq(nf, nr)
+                    if nsq in pieces and pieces[nsq][0] == opp_color:
+                        if nr == promo_rank:
+                            for p in ['q', 'r', 'b', 'n']:
+                                moves.append(sq + nsq + p)
+                        else:
+                            moves.append(sq + nsq)
+        
+        elif ptype == 'N':
+            for df, dr in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+                nf, nr = f + df, r + dr
+                if 0 <= nf <= 7 and 0 <= nr <= 7:
+                    nsq = idx_to_sq(nf, nr)
+                    if nsq not in pieces or pieces[nsq][0] == opp_color:
+                        moves.append(sq + nsq)
+        
+        elif ptype == 'B':
+            for df, dr in [(-1,-1),(-1,1),(1,-1),(1,1)]:
+                for i in range(1, 8):
+                    nf, nr = f + df*i, r + dr*i
+                    if not (0 <= nf <= 7 and 0 <= nr <= 7):
+                        break
+                    nsq = idx_to_sq(nf, nr)
+                    if nsq not in pieces:
+                        moves.append(sq + nsq)
+                    elif pieces[nsq][0] == opp_color:
+                        moves.append(sq + nsq)
+                        break
+                    else:
+                        break
+        
+        elif ptype == 'R':
+            for df, dr in [(-1,0),(1,0),(0,-1),(0,1)]:
+                for i in range(1, 8):
+                    nf, nr = f + df*i, r + dr*i
+                    if not (0 <= nf <= 7 and 0 <= nr <= 7):
+                        break
+                    nsq = idx_to_sq(nf, nr)
+                    if nsq not in pieces:
+                        moves.append(sq + nsq)
+                    elif pieces[nsq][0] == opp_color:
+                        moves.append(sq + nsq)
+                        break
+                    else:
+                        break
+        
+        elif ptype == 'Q':
+            for df, dr in [(-1,-1),(-1,1),(1,-1),(1,1),(-1,0),(1,0),(0,-1),(0,1)]:
+                for i in range(1, 8):
+                    nf, nr = f + df*i, r + dr*i
+                    if not (0 <= nf <= 7 and 0 <= nr <= 7):
+                        break
+                    nsq = idx_to_sq(nf, nr)
+                    if nsq not in pieces:
+                        moves.append(sq + nsq)
+                    elif pieces[nsq][0] == opp_color:
+                        moves.append(sq + nsq)
+                        break
+                    else:
+                        break
+        
+        elif ptype == 'K':
+            for df in [-1, 0, 1]:
+                for dr in [-1, 0, 1]:
+                    if df == 0 and dr == 0:
+                        continue
+                    nf, nr = f + df, r + dr
+                    if 0 <= nf <= 7 and 0 <= nr <= 7:
+                        nsq = idx_to_sq(nf, nr)
+                        if nsq not in pieces or pieces[nsq][0] == opp_color:
+                            moves.append(sq + nsq)
+    
+    return moves
+
+def apply_move(pieces, move):
+    new_pieces = dict(pieces)
+    from_sq = move[:2]
+    to_sq = move[2:4]
+    piece = new_pieces.pop(from_sq)
+    
+    if len(move) == 5:  # Promotion
+        piece = piece[0] + move[4].upper()
+    
+    new_pieces[to_sq] = piece
+    return new_pieces
+
+def evaluate(pieces, color):
+    my_color = 'w' if color == 'white' else 'b'
+    score = 0
+    
+    for sq, piece in pieces.items():
+        val = PIECE_VALUES.get(piece[1], 0)
+        f, r = sq_to_idx(sq)
+        
+        # Position bonus for pawns
+        if piece[1] == 'P':
+            idx = r * 8 + f if piece[0] == 'w' else (7 - r) * 8 + f
+            val += PAWN_TABLE[idx] // 2
+        
+        if piece[0] == my_color:
+            score += val
+        else:
+            score -= val
+    
+    return score
+
+def minimax(pieces, color, depth, alpha, beta, maximizing):
+    if depth == 0:
+        return evaluate(pieces, color), None
+    
+    current_color = color if maximizing else ('black' if color == 'white' else 'white')
+    moves = generate_moves(pieces, current_color)
+    
+    if not moves:
+        return (-10000 if maximizing else 10000), None
+    
+    best_move = moves[0]
+    
+    if maximizing:
+        max_eval = -100000
+        for move in moves:
+            new_pieces = apply_move(pieces, move)
+            eval_score, _ = minimax(new_pieces, color, depth - 1, alpha, beta, False)
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = 100000
+        for move in moves:
+            new_pieces = apply_move(pieces, move)
+            eval_score, _ = minimax(new_pieces, color, depth - 1, alpha, beta, True)
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    moves = generate_moves(pieces, to_play)
+    
+    if not moves:
+        return ""
+    
+    # Order moves: captures first
+    def move_order(m):
+        to_sq = m[2:4]
+        if to_sq in pieces:
+            return -PIECE_VALUES.get(pieces[to_sq][1], 0)
+        return 0
+    
+    moves.sort(key=move_order)
+    
+    _, best_move = minimax(pieces, to_play, 3, -100000, 100000, True)
+    
+    if best_move and best_move in moves:
+        return best_move
+    
+    return moves[0]

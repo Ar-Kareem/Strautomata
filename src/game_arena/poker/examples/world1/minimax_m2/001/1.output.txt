@@ -1,0 +1,98 @@
+### Strategy for the Poker Policy
+
+The goal of this policy is to make intelligent decisions in a simplified two-player poker game where each player has one hole card and community cards are revealed over betting rounds. The policy evaluates hand strength based solely on the hole card rank, assuming that the public cards do not affect the probability of winning against a random opponent. The decision-making is based on pot odds and hand strength thresholds to maximize expected value.
+
+- **Hand Strength Calculation**: Hand strength (hs) is computed as the probability that the hole card rank is higher than a random opponent's hole card rank. Assuming ranks from 1 (lowest) to 13 (highest), hs = (h_rank - 1) / 13.0.
+- **Action Decision**:
+  - When facing a bet (to_call > 0), compare hs to a threshold derived from pot odds (pot / to_call). The threshold for calling is 1 / (1 + pot_odds). Raise if hs exceeds this threshold by 0.2, and all-in if hs > 0.9.
+  - When no bet is faced (to_call = 0), bet (raise) if hs > 0.8, check (call) if hs > 0.5, and otherwise check.
+- **Legal Actions**: Always return an action from `allowed_actions`, prioritizing actions based on hand strength and pot odds. If an ideal action is not allowed, fallback to the next best option.
+
+This approach balances aggressive betting with strong hands and conservative play with weak hands, while respecting pot odds to avoid unprofitable calls or bets.
+
+<code>
+def policy(state):
+    # Extract hole card rank
+    hole_card = state['private_cards'][0]
+    h_rank = hole_card['rank']
+    # Calculate hand strength as probability of winning against a random opponent
+    hs = (h_rank - 1) / 13.0
+    # Ensure hs is within bounds [0, 1]
+    hs = max(0.0, min(1.0, hs))
+
+    pot = state['pot']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+
+    if to_call > 0:
+        # Calculate pot odds and call threshold
+        pot_odds = pot / to_call
+        call_threshold = 1 / (1 + pot_odds)
+        raise_threshold = call_threshold + 0.2
+        allin_threshold = 0.9
+
+        if hs > allin_threshold:
+            if 'all-in' in allowed_actions:
+                return 'all-in'
+            elif 'raise' in allowed_actions:
+                return 'raise'
+            elif 'call' in allowed_actions:
+                return 'call'
+            else:
+                return 'fold'
+        elif hs > raise_threshold:
+            if 'raise' in allowed_actions:
+                return 'raise'
+            elif 'all-in' in allowed_actions:
+                return 'all-in'
+            elif 'call' in allowed_actions:
+                return 'call'
+            else:
+                return 'fold'
+        elif hs > call_threshold:
+            if 'call' in allowed_actions:
+                return 'call'
+            elif 'fold' in allowed_actions:
+                return 'fold'
+            else:
+                # Fallback if call not allowed but other actions are
+                if 'raise' in allowed_actions:
+                    return 'raise'
+                elif 'all-in' in allowed_actions:
+                    return 'all-in'
+                elif 'fold' in allowed_actions:
+                    return 'fold'
+                else:
+                    return 'call'  # Should not reach here if actions exist
+        else:
+            if 'fold' in allowed_actions:
+                return 'fold'
+            elif 'call' in allowed_actions:
+                return 'call'
+            else:
+                return 'raise'
+    else:  # to_call == 0
+        if hs > 0.8:
+            if 'raise' in allowed_actions:
+                return 'raise'
+            elif 'all-in' in allowed_actions:
+                return 'all-in'
+            elif 'call' in allowed_actions:
+                return 'call'
+            else:
+                return 'fold'
+        elif hs > 0.5:
+            if 'call' in allowed_actions:
+                return 'call'
+            elif 'fold' in allowed_actions:
+                return 'fold'
+            else:
+                return 'raise'
+        else:
+            if 'call' in allowed_actions:
+                return 'call'
+            elif 'fold' in allowed_actions:
+                return 'fold'
+            else:
+                return 'raise'
+</code>

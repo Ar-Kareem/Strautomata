@@ -1,0 +1,382 @@
+## Strategy
+
+This policy implements a Lines of Action AI using Minimax with Alpha-Beta pruning and a custom evaluation function designed to prioritize connectivity and mobility. The key strategic elements are:
+
+1. **Connectivity Focus**: The evaluation function heavily rewards pieces that are connected to other friendly pieces, as the ultimate goal is to connect all pieces into a single contiguous group.
+
+2. **Mobility Analysis**: The policy evaluates how many legal moves each piece has, prioritizing positions that maintain or increase mobility while blocking opponent mobility.
+
+3. **Piece Count Advantage**: Maintains a piece count advantage by capturing opponent pieces when beneficial, but avoids unnecessary captures that might reduce connectivity.
+
+4. **Threat Assessment**: Identifies if the opponent is close to connecting all their pieces and prioritizes blocking moves in such cases.
+
+5. **Depth-Limited Search**: Uses a depth-2 search to balance computational efficiency with lookahead capability, allowing the AI to consider both its moves and opponent responses.
+
+The policy employs a custom move generation system that correctly implements the Lines of Action movement rules, ensuring all generated moves are legal according to the game mechanics.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(board) -> str:
+    """
+    Main policy function that returns the best move for the current player.
+    
+    Args:
+        board: 8x8 numpy array with 1 for current player, -1 for opponent, 0 for empty
+        
+    Returns:
+        String in format "from_row,from_col:to_row,to_col"
+    """
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Find current player (always 1 in this context)
+    current_player = 1
+    
+    # Get all legal moves
+    legal_moves = get_all_legal_moves(board_array, current_player)
+    
+    if not legal_moves:
+        # If no legal moves, return a dummy move (shouldn't happen in practice)
+        return "0,0:0,0"
+    
+    # Use minimax to find best move
+    best_move = None
+    best_value = float('-inf')
+    
+    # Sort moves to try captures and connectivity moves first (optimization)
+    sorted_moves = sort_moves_by_priority(board_array, legal_moves, current_player)
+    
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    for move in sorted_moves:
+        # Make the move
+        new_board = make_move(board_array.copy(), move, current_player)
+        
+        # Evaluate the position
+        value = minimax(new_board, 1, False, alpha, beta, current_player)
+        
+        # Update best move
+        if value > best_value:
+            best_value = value
+            best_move = move
+            
+        alpha = max(alpha, best_value)
+        
+        # Alpha-beta pruning
+        if alpha >= beta:
+            break
+    
+    if best_move is None:
+        best_move = legal_moves[0]  # Fallback to first legal move
+    
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"
+
+
+def get_all_legal_moves(board: np.ndarray, player: int) -> List[Tuple[int, int, int, int]]:
+    """Get all legal moves for the current player."""
+    moves = []
+    
+    for row in range(8):
+        for col in range(8):
+            if board[row, col] == player:
+                moves.extend(get_moves_for_piece(board, row, col, player))
+    
+    return moves
+
+
+def get_moves_for_piece(board: np.ndarray, row: int, col: int, player: int) -> List[Tuple[int, int, int, int]]:
+    """Get all legal moves for a specific piece."""
+    moves = []
+    directions = [
+        (-1, -1), (-1, 0), (-1, 1),  # Up-left, up, up-right
+        (0, -1),           (0, 1),   # Left, right
+        (1, -1),  (1, 0),  (1, 1)    # Down-left, down, down-right
+    ]
+    
+    # Count total pieces in lines of movement
+    for dr, dc in directions:
+        # Count pieces in this direction
+        count = 0
+        r, c = row + dr, col + dc
+        
+        while 0 <= r < 8 and 0 <= c < 8:
+            if board[r, c] != 0:
+                count += 1
+            r += dr
+            c += dc
+        
+        # Movement distance is the count of pieces
+        if count == 0:
+            continue
+            
+        # Try to move in this direction
+        new_row = row + dr * count
+        new_col = col + dc * count
+        
+        # Check if destination is valid
+        if (0 <= new_row < 8 and 0 <= new_col < 8 and 
+            (board[new_row, new_col] == 0 or board[new_row, new_col] == -player)):
+            
+            # Check path is clear (except for friendly pieces)
+            path_clear = True
+            r, c = row + dr, col + dc
+            
+            for _ in range(count - 1):  # Don't check the final square
+                if 0 <= r < 8 and 0 <= c < 8:
+                    if board[r, c] == -player:  # Enemy piece blocks path
+                        path_clear = False
+                        break
+                else:
+                    path_clear = False
+                    break
+                r += dr
+                c += dc
+            
+            if path_clear:
+                moves.append((row, col, new_row, new_col))
+    
+    return moves
+
+
+def make_move(board: np.ndarray, move: Tuple[int, int, int, int], player: int) -> np.ndarray:
+    """Make a move on the board and return the new board state."""
+    from_row, from_col, to_row, to_col = move
+    
+    # Create a copy to avoid modifying the original
+    new_board = board.copy()
+    
+    # Move the piece
+    new_board[to_row, to_col] = player
+    new_board[from_row, from_col] = 0
+    
+    # Capture opponent piece if present
+    if new_board[to_row, to_col] == -player:
+        new_board[to_row, to_col] = player
+    
+    return new_board
+
+
+def minimax(board: np.ndarray, depth: int, is_maximizing: bool, alpha: float, beta: float, player: int) -> float:
+    """Minimax algorithm with alpha-beta pruning."""
+    opponent = -player
+    
+    # Check for terminal states
+    if depth == 0 or is_game_over(board, player):
+        return evaluate_board(board, player)
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        moves = get_all_legal_moves(board, player)
+        
+        if not moves:
+            return evaluate_board(board, player)
+        
+        for move in moves:
+            new_board = make_move(board.copy(), move, player)
+            eval_score = minimax(new_board, depth - 1, False, alpha, beta, player)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            
+            if alpha >= beta:
+                break
+                
+        return max_eval
+    else:
+        min_eval = float('inf')
+        moves = get_all_legal_moves(board, opponent)
+        
+        if not moves:
+            return evaluate_board(board, player)
+        
+        for move in moves:
+            new_board = make_move(board.copy(), move, opponent)
+            eval_score = minimax(new_board, depth - 1, True, alpha, beta, player)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            
+            if alpha >= beta:
+                break
+                
+        return min_eval
+
+
+def is_game_over(board: np.ndarray, player: int) -> bool:
+    """Check if the game is over (either player has won)."""
+    return has_won(board, player) or has_won(board, -player)
+
+
+def has_won(board: np.ndarray, player: int) -> bool:
+    """Check if the player has won by connecting all their pieces."""
+    # Find all pieces for the player
+    pieces = []
+    for row in range(8):
+        for col in range(8):
+            if board[row, col] == player:
+                pieces.append((row, col))
+    
+    if len(pieces) == 0:
+        return False
+    
+    # Use flood fill to check connectivity
+    visited = set()
+    stack = [pieces[0]]
+    visited.add(pieces[0])
+    
+    while stack:
+        row, col = stack.pop()
+        
+        # Check all 8 neighbors
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                
+                nr, nc = row + dr, col + dc
+                if (0 <= nr < 8 and 0 <= nc < 8 and 
+                    board[nr, nc] == player and (nr, nc) not in visited):
+                    visited.add((nr, nc))
+                    stack.append((nr, nc))
+    
+    # If all pieces are connected, return True
+    return len(visited) == len(pieces)
+
+
+def evaluate_board(board: np.ndarray, player: int) -> float:
+    """Evaluate the board state from the perspective of the player."""
+    opponent = -player
+    
+    # Check if someone has won
+    if has_won(board, player):
+        return 1000.0
+    if has_won(board, opponent):
+        return -1000.0
+    
+    score = 0.0
+    
+    # Piece count advantage
+    player_pieces = np.sum(board == player)
+    opponent_pieces = np.sum(board == opponent)
+    score += (player_pieces - opponent_pieces) * 10
+    
+    # Connectivity bonus
+    score += evaluate_connectivity(board, player) * 5
+    score -= evaluate_connectivity(board, opponent) * 5
+    
+    # Mobility bonus
+    player_moves = len(get_all_legal_moves(board, player))
+    opponent_moves = len(get_all_legal_moves(board, opponent))
+    score += (player_moves - opponent_moves) * 0.5
+    
+    # Threat assessment - check if opponent is close to connecting
+    if is_near_connecting(board, opponent):
+        score -= 20
+    
+    return score
+
+
+def evaluate_connectivity(board: np.ndarray, player: int) -> float:
+    """Evaluate how well the player's pieces are connected."""
+    pieces = []
+    for row in range(8):
+        for col in range(8):
+            if board[row, col] == player:
+                pieces.append((row, col))
+    
+    if len(pieces) <= 1:
+        return len(pieces)
+    
+    # Count connected components
+    visited = set()
+    components = 0
+    
+    for piece in pieces:
+        if piece not in visited:
+            components += 1
+            # Flood fill
+            stack = [piece]
+            visited.add(piece)
+            
+            while stack:
+                row, col = stack.pop()
+                
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        
+                        nr, nc = row + dr, col + dc
+                        neighbor = (nr, nc)
+                        if (0 <= nr < 8 and 0 <= nc < 8 and 
+                            board[nr, nc] == player and neighbor not in visited):
+                            visited.add(neighbor)
+                            stack.append(neighbor)
+    
+    # Return inverse of components (more connected = higher score)
+    return len(pieces) / components if components > 0 else 0
+
+
+def is_near_connecting(board: np.ndarray, player: int) -> bool:
+    """Check if the player is one move away from connecting all pieces."""
+    # This is a simplified check - in practice, this would need more sophisticated analysis
+    pieces = []
+    for row in range(8):
+        for col in range(8):
+            if board[row, col] == player:
+                pieces.append((row, col))
+    
+    if len(pieces) < 2:
+        return False
+    
+    # Check if there are any pairs of pieces that could be connected with one move
+    for i in range(len(pieces)):
+        for j in range(i + 1, len(pieces)):
+            r1, c1 = pieces[i]
+            r2, c2 = pieces[j]
+            
+            # Check if they're in same row, col, or diagonal
+            if (r1 == r2 or c1 == c2 or abs(r1 - r2) == abs(c1 - c2)):
+                # Check distance
+                if r1 == r2:
+                    dist = abs(c1 - c2)
+                elif c1 == c2:
+                    dist = abs(r1 - r2)
+                else:
+                    dist = abs(r1 - r2)
+                
+                # If distance matches piece count in line, might be connectable
+                if dist > 0 and dist <= 8:  # Reasonable distance
+                    return True
+    
+    return False
+
+
+def sort_moves_by_priority(board: np.ndarray, moves: List[Tuple[int, int, int, int]], player: int) -> List[Tuple[int, int, int, int]]:
+    """Sort moves by priority to improve alpha-beta pruning efficiency."""
+    def move_priority(move):
+        from_row, from_col, to_row, to_col = move
+        priority = 0
+        
+        # Capture bonus
+        if board[to_row, to_col] == -player:
+            priority += 10
+        
+        # Connectivity bonus - prefer moves that connect to friendly pieces
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = to_row + dr, to_col + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and board[nr, nc] == player:
+                    priority += 1
+        
+        # Central control bonus
+        center_dist = abs(to_row - 3.5) + abs(to_col - 3.5)
+        priority -= center_dist * 0.1
+        
+        return priority
+    
+    return sorted(moves, key=move_priority, reverse=True)
+</code>

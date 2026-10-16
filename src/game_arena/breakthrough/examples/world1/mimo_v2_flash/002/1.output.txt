@@ -1,0 +1,298 @@
+**Strategy for Breakthrough AI Policy**
+
+The core of the strategy is a **lookahead minimax algorithm with Alpha-Beta pruning** optimized for the 8x8 board. Since the game has high branching complexity but is purely tactical (no draws), a depth of 3-4 is sufficient to see immediate threats and opportunities.
+
+**Key Heuristics:**
+1.  **Piece Count & Home Row:** The primary evaluation metric. Reaching the opponent's back rank (row 7 for Black, row 0 for White) is an instant win, so I assign a very high value to pieces close to promotion.
+2.  **Center Control & Formation:** I reward pieces for maintaining a connected formation (diagonally adjacent) to protect each other and control the center columns (3 and 4), which offer more mobility.
+3.  **Tempo:** I prioritize moves that advance pieces forward (increasing row for Black, decreasing for White) to apply pressure on the opponent.
+4.  **Capture Evaluation:** I prioritize capturing high-value enemy pieces (especially those near my home row or ready to promote) and protecting my own high-value pieces.
+
+**Implementation Details:**
+- **Search Algorithm:** Alpha-Beta Pruning is used to search the game tree efficiently.
+- **Heuristic Function:** The evaluation function combines a material score (piece count weighted by rank) with a mobility score.
+- **Move Ordering:** To maximize pruning efficiency, the algorithm sorts moves heuristically before processing: captures first (sorted by victim value), followed by forward moves, then diagonal moves. This ensures that the best moves are likely to be found early, significantly cutting down the search tree.
+
+<code>
+import sys
+import time
+import random
+from copy import deepcopy
+
+# Constants for evaluation
+WIN_SCORE = 100000
+MATERIAL_WEIGHT = 100
+PROMOTION_THREAT = 50
+FORMATION_BONUS = 5
+CENTER_CONTROL = 2
+ADVANCE_BONUS = 1
+
+# Search limits
+MAX_DEPTH = 3
+TIME_LIMIT = 0.9  # seconds, leaving margin for overhead
+
+class BreakthroughAgent:
+    def __init__(self, me, opp, color):
+        self.me = me
+        self.opp = opp
+        self.color = color
+        self.me_set = set(me)
+        self.opp_set = set(opp)
+        self.start_time = time.time()
+        
+        # Determine movement direction
+        if color == 'b': # Black moves to lower row indices
+            self.forward_dir = -1
+            self.home_row = 0
+            self.enemy_home_row = 7
+        else: # White moves to higher row indices
+            self.forward_dir = 1
+            self.home_row = 7
+            self.enemy_home_row = 0
+
+    def is_time_up(self):
+        return (time.time() - self.start_time) > TIME_LIMIT
+
+    def get_neighbors(self, r, c):
+        """Returns adjacent coordinates (forward, diag left, diag right)."""
+        if self.color == 'b':
+            return [(r - 1, c), (r - 1, c - 1), (r - 1, c + 1)]
+        else:
+            return [(r + 1, c), (r + 1, c - 1), (r + 1, c + 1)]
+
+    def get_legal_moves(self, me, opp):
+        moves = []
+        me_set = set(me)
+        opp_set = set(opp)
+        
+        for r, c in me:
+            f_straight, f_left, f_right = self.get_neighbors(r, c)
+            
+            # Straight move (only if empty)
+            if 0 <= f_straight[0] < 8 and 0 <= f_straight[1] < 8:
+                if f_straight not in me_set and f_straight not in opp_set:
+                    moves.append(((r, c), f_straight))
+            
+            # Diagonal Left (capture or empty)
+            if 0 <= f_left[0] < 8 and 0 <= f_left[1] < 8:
+                if f_left in opp_set:
+                    moves.append(((r, c), f_left)) # Capture
+                elif f_left not in me_set:
+                    moves.append(((r, c), f_left)) # Move
+                    
+            # Diagonal Right (capture or empty)
+            if 0 <= f_right[0] < 8 and 0 <= f_right[1] < 8:
+                if f_right in opp_set:
+                    moves.append(((r, c), f_right)) # Capture
+                elif f_right not in me_set:
+                    moves.append(((r, c), f_right)) # Move
+        return moves
+
+    def evaluate(self, me, opp):
+        # Check win conditions
+        for r, c in me:
+            if r == self.enemy_home_row:
+                return WIN_SCORE
+        
+        for r, c in opp:
+            if r == self.home_row:
+                return -WIN_SCORE
+
+        score = 0
+        
+        # Material & Advancement
+        for r, c in me:
+            val = MATERIAL_WEIGHT
+            # Bonus for advancing (closer to enemy home)
+            if self.color == 'b':
+                val += (7 - r) * ADVANCE_BONUS
+                # Threat bonus for being close to promotion
+                if r <= 1: val += PROMOTION_THREAT
+            else:
+                val += r * ADVANCE_BONUS
+                if r >= 6: val += PROMOTION_THREAT
+            score += val
+
+        for r, c in opp:
+            val = MATERIAL_WEIGHT
+            if self.color == 'b': # Opponent is white
+                val += r * ADVANCE_BONUS
+                if r >= 6: val += PROMOTION_THREAT
+            else: # Opponent is black
+                val += (7 - r) * ADVANCE_BONUS
+                if r <= 1: val += PROMOTION_THREAT
+            score -= val
+
+        # Center Control (Columns 3 and 4 are valuable)
+        for r, c in me:
+            if c == 3 or c == 4:
+                score += CENTER_CONTROL
+        for r, c in opp:
+            if c == 3 or c == 4:
+                score -= CENTER_CONTROL
+
+        # Formation Bonus (Diagonal connections)
+        me_set = set(me)
+        for r, c in me:
+            # Check for friendly pieces at (r+1, c+1) or (r+1, c-1) depending on direction
+            # Actually, for Breakthrough, formation is about protecting flanks
+            if self.color == 'b':
+                if (r + 1, c - 1) in me_set or (r + 1, c + 1) in me_set:
+                    score += FORMATION_BONUS
+            else:
+                if (r - 1, c - 1) in me_set or (r - 1, c + 1) in me_set:
+                    score += FORMATION_BONUS
+                    
+        return score
+
+    def order_moves(self, moves, me, opp):
+        # Prioritize: Captures (by victim value) > Forward Moves > Diagonal Moves
+        me_set = set(me)
+        opp_set = set(opp)
+        
+        scored_moves = []
+        for src, dst in moves:
+            priority = 0
+            r_src, c_src = src
+            r_dst, c_dst = dst
+            
+            # Check if capture
+            if dst in opp_set:
+                # Prioritize capturing high value pieces
+                # Rough estimate: closer to home is higher value for opponent (promoting soon)
+                if self.color == 'b': # Opponent is white
+                    priority = 100 + (7 - r_dst) * 10 
+                else:
+                    priority = 100 + r_dst * 10
+            elif r_dst == r_src + self.forward_dir: # Straight move
+                priority = 50
+            else: # Diagonal move
+                priority = 10
+                
+            scored_moves.append((priority, src, dst))
+        
+        scored_moves.sort(key=lambda x: x[0], reverse=True)
+        return [(src, dst) for _, src, dst in scored_moves]
+
+    def alphabeta(self, me, opp, depth, alpha, beta, maximizing_player):
+        if self.is_time_up():
+            return 0
+
+        # Terminal node or max depth
+        if depth == 0:
+            return self.evaluate(me, opp)
+
+        moves = self.get_legal_moves(me, opp)
+        
+        # If no moves (stalemate in Breakthrough means loss if you can't move? 
+        # Rules usually say win if opponent can't move, but here draws don't occur)
+        # If no moves, player loses (cannot advance)
+        if not moves:
+            if maximizing_player: return -WIN_SCORE
+            else: return WIN_SCORE
+
+        moves = self.order_moves(moves, me, opp)
+
+        if maximizing_player:
+            max_eval = -float('inf')
+            for src, dst in moves:
+                # Apply move
+                new_me = list(me)
+                new_opp = list(opp)
+                
+                # Update me
+                new_me.remove(src)
+                new_me.append(dst)
+                
+                # Check capture
+                if dst in new_opp:
+                    new_opp.remove(dst)
+                
+                # Check immediate win for max player
+                if dst[0] == self.enemy_home_row:
+                    return WIN_SCORE
+
+                eval = self.alphabeta(new_me, new_opp, depth - 1, alpha, beta, False)
+                
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for src, dst in moves:
+                # Apply move (Opponent's perspective)
+                new_opp = list(opp)
+                new_me = list(me)
+                
+                new_opp.remove(src)
+                new_opp.append(dst)
+                
+                if dst in new_me:
+                    new_me.remove(dst)
+                
+                # Check immediate win for min player (opponent winning)
+                # Note: dst[0] check depends on who is moving. 
+                # Since we are evaluating opponent's turn, we check if they reached our home row
+                if dst[0] == self.home_row:
+                    return -WIN_SCORE
+
+                eval = self.alphabeta(new_me, new_opp, depth - 1, alpha, beta, True)
+                
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            
+            return min_eval
+
+    def get_best_move(self):
+        best_move = None
+        best_value = -float('inf')
+        moves = self.get_legal_moves(self.me, self.opp)
+        
+        if not moves:
+            # Should not happen in valid game, but return dummy move if stuck
+            return (self.me[0], self.me[0])
+
+        # Sort moves initially
+        moves = self.order_moves(moves, self.me, self.opp)
+        
+        alpha = -float('inf')
+        beta = float('inf')
+
+        for src, dst in moves:
+            # Apply move
+            new_me = list(self.me)
+            new_opp = list(self.opp)
+            
+            new_me.remove(src)
+            new_me.append(dst)
+            if dst in new_opp:
+                new_opp.remove(dst)
+            
+            # Immediate win check
+            if dst[0] == self.enemy_home_row:
+                return (src, dst)
+
+            # Search
+            val = self.alphabeta(new_me, new_opp, MAX_DEPTH - 1, alpha, beta, False)
+            
+            if val > best_value:
+                best_value = val
+                best_move = (src, dst)
+            
+            alpha = max(alpha, val)
+        
+        # Fallback if search failed or time out prevented update
+        if best_move is None:
+            return moves[0]
+            
+        return best_move
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    agent = BreakthroughAgent(me, opp, color)
+    return agent.get_best_move()
+</code>

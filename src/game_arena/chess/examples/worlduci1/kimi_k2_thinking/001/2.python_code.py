@@ -1,0 +1,128 @@
+
+import numpy as np
+from typing import Dict, List, Optional, Tuple
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str]) -> str:
+    """
+    Chess policy that selects the best move based on material evaluation
+    and simple positional heuristics. Prioritizes winning captures and
+    avoids obvious blunders.
+    """
+    # Guard against empty move list
+    if not legal_moves:
+        return ""
+    
+    # Single move: no choice
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Setup
+    board = pieces.copy()
+    player_color = 'w' if to_play == 'white' else 'b'
+    
+    # Piece values (in centipawns)
+    PIECE_VALUES = {
+        'P': 100, 'N': 320, 'B': 330, 
+        'R': 500, 'Q': 900, 'K': 20000
+    }
+    
+    # Helper functions
+    def get_piece_value(piece: Optional[str]) -> int:
+        """Get material value of a piece."""
+        if not piece or len(piece) != 2:
+            return 0
+        return PIECE_VALUES.get(piece[1], 0)
+    
+    def apply_move(board_dict: Dict[str, str], move: str, color: str) -> Tuple[Dict[str, str], Optional[str]]:
+        """Apply a UCI move to board and return new board and captured piece."""
+        new_board = board_dict.copy()
+        from_sq = move[:2]
+        to_sq = move[2:4]
+        promotion = move[4] if len(move) > 4 else None
+        
+        piece = new_board.get(from_sq)
+        if not piece:
+            return new_board, None
+        
+        captured_piece = new_board.get(to_sq)
+        
+        # Handle promotion
+        if promotion:
+            new_piece = color + promotion.upper()
+            new_board[to_sq] = new_piece
+        else:
+            new_board[to_sq] = piece
+        
+        del new_board[from_sq]
+        
+        # Handle castling
+        if piece[1] == 'K' and abs(ord(to_sq[0]) - ord(from_sq[0])) == 2:
+            rank = from_sq[1]
+            is_kingside = to_sq[0] == 'g'
+            
+            rook_from = f'h{rank}' if is_kingside else f'a{rank}'
+            rook_to = f'f{rank}' if is_kingside else f'd{rank}'
+            
+            if rook_from in new_board:
+                new_board[rook_to] = new_board[rook_from]
+                del new_board[rook_from]
+        
+        return new_board, captured_piece
+    
+    def evaluate_material(board_dict: Dict[str, str]) -> int:
+        """Evaluate material balance."""
+        score = 0
+        for piece in board_dict.values():
+            if not piece:
+                continue
+            value = get_piece_value(piece)
+            if piece[0] == player_color:
+                score += value
+            else:
+                score -= value
+        return score
+    
+    # Evaluate each move
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        try:
+            # Apply move
+            new_board, captured = apply_move(board, move, player_color)
+            
+            # Base evaluation
+            material_score = evaluate_material(new_board)
+            
+            # Score improvement over current position
+            current_score = evaluate_material(board)
+            improvement = material_score - current_score
+            
+            # Bonus for captures (winning material)
+            if captured:
+                captured_val = get_piece_value(captured)
+                improvement += captured_val * 0.5
+            
+            # Promotion preference
+            if len(move) > 4:
+                promo = move[4].upper()
+                if promo == 'Q':
+                    improvement += 400
+                elif promo in ['R', 'B', 'N']:
+                    improvement += 100
+            
+            # King safety: avoid unnecessary king moves
+            from_piece = board.get(move[:2], '')
+            if from_piece[1] == 'K' and not captured:
+                improvement -= 10
+            
+            # Select best
+            if improvement > best_score:
+                best_score = improvement
+                best_move = move
+                
+        except Exception:
+            # On any error, still consider the move valid with neutral score
+            continue
+    
+    return best_move

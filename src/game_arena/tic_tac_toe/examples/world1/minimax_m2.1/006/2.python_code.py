@@ -1,0 +1,107 @@
+
+import random
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Returns the best move (row, col) for the current player (represented by 1).
+    Uses a full minimax search to guarantee optimal play.
+    """
+    # Helper: return list of empty cells
+    def empty_cells(b: List[List[int]]) -> List[Tuple[int, int]]:
+        cells = []
+        for i in range(3):
+            for j in range(3):
+                if b[i][j] == 0:
+                    cells.append((i, j))
+        return cells
+
+    # Helper: check winner, returns 1 if player 1 wins, -1 if opponent wins,
+    # 0 if draw, None if game not finished
+    def winner(b: List[List[int]]) -> Optional[int]:
+        # rows and columns
+        for i in range(3):
+            if b[i][0] == b[i][1] == b[i][2] != 0:
+                return b[i][0]
+            if b[0][i] == b[1][i] == b[2][i] != 0:
+                return b[0][i]
+        # diagonals
+        if b[0][0] == b[1][1] == b[2][2] != 0:
+            return b[0][0]
+        if b[0][2] == b[1][1] == b[2][0] != 0:
+            return b[0][2]
+        # check for any empty cell
+        for i in range(3):
+            for j in range(3):
+                if b[i][j] == 0:
+                    return None
+        # no empty cells and no winner -> draw
+        return 0
+
+    # Minimax: returns score from perspective of player 1 (+1 win, -1 loss, 0 draw)
+    def minimax(b: List[List[int]], is_maximizing: bool) -> int:
+        win = winner(b)
+        if win is not None:
+            return win  # 1, -1, or 0
+
+        if is_maximizing:
+            best = -2
+            for r, c in empty_cells(b):
+                b[r][c] = 1
+                score = minimax(b, False)
+                b[r][c] = 0
+                if score > best:
+                    best = score
+                if best == 1:  # cannot improve beyond a guaranteed win
+                    break
+            return best
+        else:
+            best = 2
+            for r, c in empty_cells(b):
+                b[r][c] = -1
+                score = minimax(b, True)
+                b[r][c] = 0
+                if score < best:
+                    best = score
+                if best == -1:  # opponent can force a win
+                    break
+            return best
+
+    # Determine whose turn it is (player 1 moves when counts are equal)
+    # The API guarantees we are called only on our turn.
+    # Still, we compute the set of empty cells to choose a move.
+    empties = empty_cells(board)
+    if not empties:
+        # Board full – should not happen, but return a dummy.
+        return (0, 0)
+
+    # If there is an immediate winning move, take it.
+    for r, c in empties:
+        board[r][c] = 1
+        if winner(board) == 1:
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+
+    # If the opponent can win next, block them.
+    for r, c in empties:
+        board[r][c] = -1
+        if winner(board) == -1:
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+
+    # Otherwise use full minimax to pick the best move.
+    best_score = -2
+    best_move = empties[0]  # fallback
+    for r, c in empties:
+        board[r][c] = 1
+        score = minimax(board, False)
+        board[r][c] = 0
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            if best_score == 1:  # guaranteed win
+                break
+
+    return best_move

@@ -1,0 +1,207 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    import random
+    
+    if not legal_moves:
+        return ""
+    
+    # Piece values
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    # Center squares bonus
+    center_squares = {'e4', 'd4', 'e5', 'd5'}
+    extended_center = {'c3', 'c4', 'c5', 'c6', 'd3', 'd6', 'e3', 'e6', 'f3', 'f4', 'f5', 'f6'}
+    
+    def parse_move(move_str):
+        """Extract information from move string"""
+        info = {
+            'is_capture': 'x' in move_str,
+            'is_check': '+' in move_str or '#' in move_str,
+            'is_checkmate': '#' in move_str,
+            'is_castle': move_str in ['O-O', 'O-O-O'],
+            'is_promotion': '=' in move_str,
+            'move': move_str
+        }
+        return info
+    
+    def get_piece_at(square):
+        return pieces.get(square, '')
+    
+    def get_destination(move_str):
+        """Extract destination square from move string"""
+        if move_str in ['O-O', 'O-O-O']:
+            return None
+        
+        # Remove check/checkmate symbols
+        move_str = move_str.replace('+', '').replace('#', '')
+        
+        # Remove promotion
+        if '=' in move_str:
+            move_str = move_str.split('=')[0]
+        
+        # Extract destination (last 2 characters should be the square)
+        if len(move_str) >= 2:
+            dest = move_str[-2:]
+            if dest[0] in 'abcdefgh' and dest[1] in '12345678':
+                return dest
+        
+        return None
+    
+    def evaluate_position(current_pieces, color):
+        """Evaluate position from perspective of color"""
+        score = 0
+        our_color = 'w' if color == 'white' else 'b'
+        opp_color = 'b' if color == 'white' else 'w'
+        
+        for square, piece in current_pieces.items():
+            if not piece:
+                continue
+                
+            piece_color = piece[0]
+            piece_type = piece[1]
+            value = piece_values.get(piece_type, 0)
+            
+            # Material
+            if piece_color == our_color:
+                score += value
+            else:
+                score -= value
+            
+            # Positional bonuses
+            if piece_color == our_color:
+                # Center control
+                if square in center_squares and piece_type in ['N', 'B', 'P']:
+                    score += 0.5
+                elif square in extended_center and piece_type in ['N', 'B']:
+                    score += 0.3
+                
+                # Development bonus for pieces not on back rank
+                if piece_type in ['N', 'B']:
+                    rank = square[1]
+                    if (our_color == 'w' and rank != '1') or (our_color == 'b' and rank != '8'):
+                        score += 0.3
+                
+                # King safety - penalize exposed king in middle game
+                if piece_type == 'K':
+                    file = square[0]
+                    rank = square[1]
+                    # Reward castled position
+                    if (our_color == 'w' and rank == '1' and file in ['g', 'c']) or \
+                       (our_color == 'b' and rank == '8' and file in ['g', 'c']):
+                        score += 0.5
+        
+        return score
+    
+    def simulate_move(move_str, current_pieces):
+        """Simulate a move and return new board state"""
+        new_pieces = current_pieces.copy()
+        
+        # Handle castling
+        if move_str == 'O-O':  # Kingside
+            if to_play == 'white':
+                new_pieces['g1'] = 'wK'
+                new_pieces['f1'] = 'wR'
+                new_pieces.pop('e1', None)
+                new_pieces.pop('h1', None)
+            else:
+                new_pieces['g8'] = 'bK'
+                new_pieces['f8'] = 'bR'
+                new_pieces.pop('e8', None)
+                new_pieces.pop('h8', None)
+            return new_pieces
+        
+        if move_str == 'O-O-O':  # Queenside
+            if to_play == 'white':
+                new_pieces['c1'] = 'wK'
+                new_pieces['d1'] = 'wR'
+                new_pieces.pop('e1', None)
+                new_pieces.pop('a1', None)
+            else:
+                new_pieces['c8'] = 'bK'
+                new_pieces['d8'] = 'bR'
+                new_pieces.pop('e8', None)
+                new_pieces.pop('a8', None)
+            return new_pieces
+        
+        # Find source and destination
+        dest = get_destination(move_str)
+        if not dest:
+            return new_pieces
+        
+        # Find the piece that's moving
+        color_prefix = 'w' if to_play == 'white' else 'b'
+        move_clean = move_str.replace('+', '').replace('#', '').replace('x', '')
+        
+        # Determine piece type
+        if move_clean[0].isupper():
+            piece_type = move_clean[0]
+        else:
+            piece_type = 'P'  # Pawn move
+        
+        # Find source square
+        source = None
+        for sq, pc in current_pieces.items():
+            if pc == color_prefix + piece_type:
+                # Simple heuristic: piece could reach destination
+                source = sq
+                break
+        
+        if source:
+            # Move piece
+            piece = new_pieces.pop(source, '')
+            
+            # Handle promotion
+            if '=' in move_str:
+                promo_piece = move_str.split('=')[1][0]
+                piece = color_prefix + promo_piece
+            
+            new_pieces[dest] = piece
+        
+        return new_pieces
+    
+    # Evaluate all moves
+    move_scores = []
+    
+    for move in legal_moves:
+        info = parse_move(move)
+        score = 0
+        
+        # Checkmate is best
+        if info['is_checkmate']:
+            return move
+        
+        # Checks are good
+        if info['is_check']:
+            score += 5
+        
+        # Promotions to Queen are great
+        if info['is_promotion'] and '=Q' in move:
+            score += 8
+        
+        # Captures are good
+        if info['is_capture']:
+            dest = get_destination(move)
+            if dest:
+                captured = get_piece_at(dest)
+                if captured:
+                    score += piece_values.get(captured[1], 0)
+        
+        # Castling is good early
+        if info['is_castle']:
+            score += 1
+        
+        # Evaluate resulting position
+        new_pieces = simulate_move(move, pieces)
+        position_score = evaluate_position(new_pieces, to_play)
+        score += position_score
+        
+        move_scores.append((move, score))
+    
+    # Sort by score and pick best
+    move_scores.sort(key=lambda x: x[1], reverse=True)
+    
+    # Add some randomness among top moves to avoid predictability
+    top_score = move_scores[0][1]
+    top_moves = [m for m, s in move_scores if s >= top_score - 0.5]
+    
+    return random.choice(top_moves) if top_moves else move_scores[0][0]

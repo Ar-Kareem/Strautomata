@@ -1,0 +1,155 @@
+To solve the problem of playing Go on a 19x19 board, we need a strategy that not only selects a legal move but also evaluates and prioritizes moves based on strategic importance. A legal move must be played on an empty cell and must not result in suicide (a group of stones with no liberties). The goal is to create a policy that makes strategic moves to outmaneuver the opponent.
+
+---
+
+### 🎯 Policy Strategy Overview
+
+The policy we implement combines two key strategic principles in Go:
+
+1. **Prioritizing high-value moves near corners** – Corners are the most valuable positions in Go due to their potential for creating large territories.
+2. **Maximizing influence and potential captures** – Moves that are adjacent to opponent's stones or create pressure on their groups are highly valuable.
+
+The policy evaluates each candidate move based on a scoring system derived from:
+
+- **Cornears proximity**: Closer to a corner increases the score.
+- **Adjacency to opponent stones**: More opponent stones nearby suggests potential for capturing.
+- **Adjacency to our own stones**: This helps in grouping and strengthening our current position.
+
+---
+
+### 🧠 Implementation Strategy
+
+1. **Identify Legal Moves**:
+   - Iterate over all empty cells.
+   - For each, simulate placing the stone and check if it's not a suicide move using BFS to find the group of connected stones and count its liberties.
+
+2. **Score Legal Moves**:
+   - Each move is scored based on:
+     - Distance from the nearest corner (favoring corners).
+     - Number of opponent stones adjacent to the move.
+     - Number of own stones adjacent to the move (to connect groups).
+
+3. **Select the Best Move**:
+   - Move with the highest score is selected.
+
+---
+
+### 🧾 Python Implementation
+
+```python
+from collections import deque
+
+def move_legal(r, c, me, opponent):
+    """Check if placing a stone at (r, c) is legal."""
+    existing = set(me) | set(opponent)
+    if (r, c) in existing:
+        return False
+
+    # Create temporary sets for evaluation
+    temp_me = set(me)
+    temp_me.add((r, c))
+    temp_existing = temp_me.union(set(opponent))
+
+    # Find the group connected to (r, c)
+    visited = set()
+    queue = deque([(r, c)])
+    visited.add((r, c))
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx, ny = x + dx, y + dy
+            if 1 <= nx <= 19 and 1 <= ny <= 19:
+                if (nx, ny) in temp_me and (nx, ny) not in visited:
+                    visited.add((nx, ny))
+                    queue.append((nx, ny))
+
+    # Check for liberties of the group
+    liberties = 0
+    for x, y in visited:
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx, ny = x + dx, y + dy
+            if 1 <= nx <= 19 and 1 <= ny <= 19:
+                if (nx, ny) not in temp_existing:
+                    liberties += 1
+                    if liberties > 0:
+                        break
+        if liberties > 0:
+            break
+
+    return liberties > 0
+
+
+def policy(me, opponent):
+    # Generate all possible positions and collect legal ones
+    existing = set(me) | set(opponent)
+    empty_cells = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            cell = (r, c)
+            if cell not in existing and move_legal(r, c, me, opponent):
+                empty_cells.append(cell)
+
+    if not empty_cells:
+        return (0, 0)  # No legal moves, must pass
+
+    # Evaluate each legal move and pick the best one
+    best_move = None
+    best_score = -float('inf')
+
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    for move in empty_cells:
+        rx, cx = move
+        min_corner_dist = min(
+            abs(rx - 1) + abs(cx - 1),
+            abs(rx - 1) + abs(19 - cx),
+            abs(19 - rx) + abs(cx - 1),
+            abs(19 - rx) + abs(19 - cx)
+        )
+        corner_score = 50.0 / (min_corner_dist + 1)  # Prioritize corners
+
+        # Count adjacent opponent's stones
+        adj_opponent = 0
+        for dx, dy in directions:
+            nr, nc = rx + dx, cx + dy
+            if (nr, nc) in opponent:
+                adj_opponent += 1
+
+        # Count adjacency to our own stones
+        own_count = 0
+        for dx, dy in directions:
+            nr, nc = rx + dx, cx + dy
+            if (nr, nc) in me:
+                own_count += 1
+
+        # Combine the scores
+        adj_score = adj_opponent * 5
+        move_score = adj_score + corner_score + own_count * 2
+
+        if move_score > best_score or (move_score == best_score and best_move is None):
+            best_score = move_score
+            best_move = move
+
+    return best_move
+```
+
+---
+
+### 🧾 Strategy Summary
+
+- **Corners First**: The move is scored more favorably if it's close to a corner, with higher priority given to moves nearest to unseen corners.
+- **Capturing Potential**: A move adjacent to more opponent stones is considered more aggressive and strategic.
+- **Own Influence**: Moves that extend or strengthen existing groups are also prioritized, though not as heavily as capturing moves.
+- **Legal Check**: Ensures that no suicidal moves are allowed by BFS-based liberty checking.
+
+---
+
+### ✅ Summary
+
+This policy provides a simple yet effective heuristic-based move selection strategy that prioritizes:
+
+- Corner control
+- Aggressive plays near the opponent
+- Defensive group expansion
+
+While not perfect for all scenarios, it provides a solid baseline for an AI Go player that can outperform random play and simple deterministic policies. It also ensures strict adherence to legal move constraints, avoiding disqualification.

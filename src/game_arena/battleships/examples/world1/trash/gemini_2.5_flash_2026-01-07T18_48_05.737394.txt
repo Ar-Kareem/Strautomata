@@ -1,0 +1,622 @@
+<thinking>
+The user wants a Python function `policy(board)` that determines the next target cell (row, col) in a 10x10 Battleship game.
+
+Here's my thought process for developing a strategy:
+
+1.  **Understand the Input and Output:**
+    *   `board`: `list[list[int]]` representing the 10x10 grid.
+        *   `0`: Unknown (never fired) - *These are the valid targets.*
+        *   `-1`: Miss
+        *   `1`: Hit
+    *   Return: `tuple[int, int]` (row, col) - Must be a cell `(r, c)` where `board[r][c] == 0`.
+
+2.  **Overall Strategy - Two Phases:**
+    Battleship policies typically involve two main phases:
+    *   **Hunt Phase:** Systematically search for a ship when no ship segments are currently hit and unsunk.
+    *   **Target Phase (or Destroy/Sink Phase):** Once a ship segment is hit, focus fire around that hit to determine the ship's orientation and sink it.
+
+3.  **Phase 1: Hunt Strategy**
+    *   **Goal:** Find a ship efficiently.
+    *   **Checkerboard Pattern:** A common and effective hunting strategy is to fire at cells in a checkerboard pattern (e.g., all `(r, c)` where `r+c` is even). This is because the smallest ship is 2 units long, so firing at every other cell guarantees you'll hit any ship eventually. It's more efficient than random or just scanning row by row.
+    *   **Prioritization:** Within the checkerboard, how to prioritize?
+        *   Just sequential scanning (0,0), (0,2), (0,4)... is fine.
+        *   Alternatively, could randomize within the checkerboard cells to be less predictable, but for AI vs. AI, systematic is perfectly acceptable.
+
+4.  **Phase 2: Target/Sink Strategy**
+    *   **Goal:** Sink a ship quickly once hit.
+    *   **Identify Hit Cells:** Find all `(r, c)` where `board[r][c] == 1`.
+    *   **Maintain State (between calls):** This is the tricky part. The `policy` function is stateless by itself. To implement a proper target phase, I need to know:
+        *   Are there active hits?
+        *   If so, where are they?
+        *   What is the most promising direction to shoot around a hit?
+        *   Have I determined the ship's orientation?
+    *   **Self-Modifying/Persistent State:** Since the function is called repeatedly with the updated board, I can *infer* state from the board itself.
+        *   **`hit_cells`:** A list of `(r, c)` where `board[r][c] == 1`.
+        *   **`potential_ship_cells`:** For each `hit_cell`, its un-shot neighbors are potential next targets.
+    *   **Logic for Target Phase:**
+        1.  If there are `hit_cells`:
+            *   **Single Hit:** If only one `hit_cell` (or disconnected hits from different ships), try shooting in adjacent directions (up, down, left, right) in a systematic order.
+            *   **Multiple Connected Hits:** If multiple `hit_cells` form a line, the ship's orientation is known. Extend the line in both directions until a miss or board edge is reached.
+            *   **Prioritize:** Always make sure the target cell is `0` (unknown).
+        2.  **How to handle multiple hits on different ships?** This strategy needs to be robust. If I hit two ships at once, I need to pick one to pursue.
+            *   A simple greedy approach: just pick the "first" hit cell found and try to extend it. This might not be optimal but is usually good enough.
+    *   **Refined Target Phase Logic:**
+        1.  Gather all `(r, c)` where `board[r][c] == 1`. Let's call this `active_hits`.
+        2.  If `active_hits` is empty, go to Hunt Phase.
+        3.  If `active_hits` is not empty:
+            *   **Find initial target:** Pick any `active_hit`. Let's say `(hr, hc)`.
+            *   **Check neighbors:** For `(hr, hc)`, check its 4 orthogonal neighbors.
+                *   If any neighbor `(nr, nc)` is `1`, it means we have identified an orientation.
+                    *   Calculate the direction vector `(dr, dc) = (nr - hr, nc - hc)`.
+                    *   Extend *forward*: Keep adding `(dr, dc)` to `(nr, nc)` until we find a `0` cell or hit board edge/miss. This is our target!
+                    *   Extend *backward*: If `(nr, nc)` is not `0`, try `(hr - dr, hc - dc)`.
+                *   If no neighbor is `1`, it's an isolated hit. Try to fire in one of the 4 directions. A good order might be `(hr-1,hc)`, `(hr+1,hc)`, `(hr,hc-1)`, `(hr,hc+1)`. Pick the first valid `0` cell.
+            *   **What if there are multiple ships hit?** The current strategy will just pick the first `1` it finds and try to resolve it. This is generally okay. We'll iterate through `active_hits` and try to make a move.
+
+5.  **Data Structures and Helper Functions:**
+    *   `is_valid(r, c)`: Checks if `(r, c)` is within the 10x10 grid.
+    *   `get_neighbors(r, c)`: Returns valid 4-directional neighbors.
+
+6.  **Detailed Plan Implementation:**
+
+    ```python
+    import random
+
+    GRID_SIZE = 10
+
+    def policy(board: list[list[int]]) -> tuple[int, int]:
+        potential_targets = find_potential_targets(board)
+
+        if potential_targets:
+            # We have active hits, prioritize sinking
+            # The find_potential_targets function will return the most promising one
+            return potential_targets[0]
+
+        # No active hits or no clear targets from hits, go into hunt phase
+        return hunt_for_ship(board)
+
+    def is_valid(r, c):
+        return 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE
+
+    def find_potential_targets(board: list[list[int]]) -> list[tuple[int, int]]:
+        active_hits = []
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                if board[r][c] == 1:
+                    active_hits.append((r, c))
+
+        if not active_hits:
+            return []
+
+        # Prioritize extending known segments
+        for hr, hc in active_hits:
+            # Check for horizontal extension
+            if is_valid(hr, hc - 1) and board[hr][hc - 1] == 1: # Left is hit
+                # Try extending right
+                for c_ext in range(hc + 1, GRID_SIZE):
+                    if board[hr][c_ext] == 0:
+                        return [(hr, c_ext)]
+                    if board[hr][c_ext] == -1: # Hit water, ship ends here
+                        break
+                # If cannot extend right, try extending left
+                for c_ext in range(hc - 2, -1, -1):
+                    if board[hr][c_ext] == 0:
+                        return [(hr, c_ext)]
+                    if board[hr][c_ext] == -1:
+                        break
+
+            if is_valid(hr, hc + 1) and board[hr][hc + 1] == 1: # Right is hit
+                # Try extending left
+                for c_ext in range(hc - 1, -1, -1):
+                    if board[hr][c_ext] == 0:
+                        return [(hr, c_ext)]
+                    if board[hr][c_ext] == -1:
+                        break
+                # If cannot extend left, try extending right (already covered by initial right extension)
+                for c_ext in range(hc + 2, GRID_SIZE):
+                    if board[hr][c_ext] == 0:
+                        return [(hr, c_ext)]
+                    if board[hr][c_ext] == -1:
+                        break
+
+            # Check for vertical extension
+            if is_valid(hr - 1, hc) and board[hr - 1][hc] == 1: # Up is hit
+                # Try extending down
+                for r_ext in range(hr + 1, GRID_SIZE):
+                    if board[r_ext][hc] == 0:
+                        return [(r_ext, hc)]
+                    if board[r_ext][hc] == -1:
+                        break
+                # If cannot extend down, try extending up
+                for r_ext in range(hr - 2, -1, -1):
+                    if board[r_ext][hc] == 0:
+                        return [(r_ext, hc)]
+                    if board[r_ext][hc] == -1:
+                        break
+
+            if is_valid(hr + 1, hc) and board[hr + 1][hc] == 1: # Down is hit
+                # Try extending up
+                for r_ext in range(hr - 1, -1, -1):
+                    if board[r_ext][hc] == 0:
+                        return [(r_ext, hc)]
+                    if board[r_ext][hc] == -1:
+                        break
+                # If cannot extend up, try extending down
+                for r_ext in range(hr + 2, GRID_SIZE):
+                    if board[r_ext][hc] == 0:
+                        return [(r_ext, hc)]
+                    if board[r_ext][hc] == -1:
+                        break
+
+        # If no clear extension from a line, try adjacent cells to the first isolated hit
+        # This will be for isolated hits or edges of ships that haven't been fully explored
+        for hr, hc in active_hits: # Iterate again, but this time for single hits
+            # Directions: up, down, left, right
+            neighbors_to_check = [
+                (hr - 1, hc), (hr + 1, hc), (hr, hc - 1), (hr, hc + 1)
+            ]
+            # Try to hit a new cell around the *first* hit found
+            for nr, nc in neighbors_to_check:
+                if is_valid(nr, nc) and board[nr][nc] == 0:
+                    return [(nr, nc)]
+
+        # This should ideally not be reached if there are active hits,
+        # unless all周围 cells are already -1 or 1 and we're missing some
+        # logic for 'sunk' ships.
+        # But since we don't know when a ship is sunk, we keep firing around it.
+        # However, a more sophisticated approach would be to detect sunk ships
+        # by checking if all possible cells for a ship of known length are accounted for.
+        # This is a bit complex for a one-off policy, and the current logic
+        # should eventually clear out the area with -1s.
+        return [] # Fallback, should trigger hunt phase
+
+    # Hunt phase using a checkerboard pattern
+    def hunt_for_ship(board: list[list[int]]) -> tuple[int, int]:
+        untried_cells = []
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                # Checkerboard pattern for minimum ship length 2
+                # Target cells where (r + c) % 2 == 0
+                # Could also do (r % 2 == 0 and c % 2 == 0) or (r % 2 == 1 and c % 2 == 1)
+                # Let's stick with (r + c) % 2 for simplicity and coverage.
+                # However, a better checkerboard pattern for minimum length 2 might be targeting only cells
+                # where r % 4 == c % 4 == 0 or r % 4 ==c % 4 == 1
+                # or simplified to r % 2 == 0 and c % 2 == 0, then r % 2 == 0 and c % 2==1.
+                # The minimum ship length is 2. So, a simple checkerboard (r+c)%2 should be fine.
+                # Or, even better, a "stride" pattern.
+                # For example, only fire on cells (r, c) where r is even and c is even
+                # Or where (r % 4 == 0 or r % 4 == 1) and (c % 4 == 0 or c % 4 == 1)
+                # To guarantee hitting a 2-length ship, we need to cover at least one cell every 2x1 or 1x2 area.
+                # The (r+c)%2 checkerboard does this.
+                if (r + c) % 2 == 0 and board[r][c] == 0: # Only cells we haven't fired at
+                    untried_cells.append((r, c))
+
+        if untried_cells:
+            return random.choice(untried_cells) # Randomize within checkerboard for less predictable hunting
+
+        # If all checkerboard cells are tried, try remaining unknown cells (fallback, should not happen often)
+        # This occurs if we missed a ship on the checkerboard due to specific placement/sunk logic.
+        all_untried_cells = []
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                if board[r][c] == 0:
+                    all_untried_cells.append((r, c))
+
+        if all_untried_cells:
+            return random.choice(all_untried_cells)
+
+        # Should theoretically not happen unless game is over and all cells are hit/missed
+        return (0, 0) # Default, but indicates an issue if reached during active game.
+    ```
+
+7.  **Refinement and Edge Cases for Target Phase:**
+    *   The `find_potential_targets` logic is a bit complex for line extension. Let's simplify.
+    *   When we have multiple `1`s, we want to figure out the orientation.
+    *   Let's keep track of `confirmed_segments`.
+    *   Consider a hit `(hr, hc)`.
+        *   If `(hr-1, hc)` is `1` AND `(hr+1, hc)` is `1`, we know it's vertical. Try `(hr-2, hc)` or `(hr+2, hc)`.
+        *   If `(hr, hc-1)` is `1` AND `(hr, hc+1)` is `1`, we know it's horizontal. Try `(hr, hc-2)` or `(hr, hc+2)`.
+        *   If only one neighbor is `1` (e.g., `(hr-1, hc)` is `1`), then try `(hr+1, hc)` first, then maybe `(hr-2, hc)`.
+    *   This logic can get messy. A simpler approach for target phase:
+        1.  Collect all `active_hits` (cells with `1`).
+        2.  For *each* `active_hit`, consider its 4 neighbors. Add any `0` neighbor to a `target_candidates` list.
+        3.  If `target_candidates` is not empty, pick one (e.g., the first or random). This is naive but robust.
+        4.  A *better* approach:
+            *   If there are *any* `active_hits`:
+                *   Create a list of cells `(r, c)` adjacent to an `active_hit` where `board[r][c] == 0`.
+                *   Prioritize these.
+                *   To prioritize smarter:
+                    *   Find a connected component of `1`s.
+                    *   If a component has length >= 2, determine its orientation. Try to shoot at both ends of the line.
+                    *   If a component has length 1 (isolated hit), shoot in all 4 directions.
+            *   Let's try to implement the "extend known segment" more cleanly.
+
+    **Revised Target Phase Logic (more robust):**
+
+    ```python
+    def find_target_from_hits(board: list[list[int]]) -> tuple[int, int] | None:
+        active_hits = []
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                if board[r][c] == 1:
+                    active_hits.append((r, c))
+
+        if not active_hits:
+            return None
+
+        # Prioritize extending known lines
+        for r_hit, c_hit in active_hits:
+            # Check horizontal extension
+            if (is_valid(r_hit, c_hit - 1) and board[r_hit][c_hit - 1] == 1) or \
+               (is_valid(r_hit, c_hit + 1) and board[r_hit][c_hit + 1] == 1):
+                # Found a horizontal segment. Try to extend.
+                # Search left
+                for c_scan in range(c_hit - 1, -1, -1):
+                    if board[r_hit][c_scan] == 0:
+                        return (r_hit, c_scan)
+                    if board[r_hit][c_scan] == -1:
+                        break
+                # Search right
+                for c_scan in range(c_hit + 1, GRID_SIZE):
+                    if board[r_hit][c_scan] == 0:
+                        return (r_hit, c_scan)
+                    if board[r_hit][c_scan] == -1:
+                        break
+
+            # Check vertical extension
+            if (is_valid(r_hit - 1, c_hit) and board[r_hit - 1][c_hit] == 1) or \
+               (is_valid(r_hit + 1, c_hit) and board[r_hit + 1][c_hit] == 1):
+                # Found a vertical segment. Try to extend.
+                # Search up
+                for r_scan in range(r_hit - 1, -1, -1):
+                    if board[r_scan][c_hit] == 0:
+                        return (r_scan, c_hit)
+                    if board[r_scan][c_hit] == -1:
+                        break
+                # Search down
+                for r_scan in range(r_hit + 1, GRID_SIZE):
+                    if board[r_scan][c_hit] == 0:
+                        return (r_scan, c_hit)
+                    if board[r_scan][c_hit] == -1:
+                        break
+
+        # If no clear line extension, target adjacent cells of any hit
+        # This handles isolated hits or the case where a line's ends are blocked and we need to explore
+        # (e.g., ship hits other ship, but that's not allowed in this game).
+        # We might have hits that are part of a sunk ship, but we don't know it's sunk.
+        # We need to exhaust the area around them.
+        candidates_around_hits = []
+        for r_hit, c_hit in active_hits:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r_hit + dr, c_hit + dc
+                if is_valid(nr, nc) and board[nr][nc] == 0:
+                    candidates_around_hits.append((nr, nc))
+
+        if candidates_around_hits:
+            # We can randomize these or pick the first one. Random might be slightly better against AI.
+            return random.choice(candidates_around_hits)
+
+        # Fallback for when there are hits but no valid adjacent 0 cells to fire at.
+        # This might mean a ship is 'sunk' but we don't know it, or it's fully surrounded by -1s and 1s.
+        # In a real game, if no valid targets are found from hits, and we still have hits, it implies
+        # we've somehow exhausted possibilities around those hits. This shouldn't typically happen
+        # if the ships are still in play and there are contiguous unknown cells.
+        # If it does, we just return to hunting.
+        return None
+    ```
+
+    Now, combine this into `policy`:
+
+    ```python
+    def policy(board: list[list[int]]) -> tuple[int, int]:
+        target_from_hits = find_target_from_hits(board)
+        if target_from_hits:
+            return target_from_hits
+        return hunt_for_ship(board)
+    ```
+
+8.  **Checkerboard Pattern for `hunt_for_ship`:**
+    *   A simple `(r+c)%2 == 0` checkerboard is good.
+    *   For a ship of smallest length 2, this guarantees a hit.
+    *   To be slightly more optimal (hitting a 5-length ship quicker), one might want to use a pattern that spaces out shots more, e.g., `(r%4==0 and c%4==0) or (r%4==1 and c%4==1)`. But this is probably overengineering. `(r+c)%2` is simple and effective.
+    *   Let's ensure the `hunt_for_ship` also picks a random one from the valid checkerboard cells.
+
+9.  **Final Review:**
+    *   **Returns `(row, col)` from `0-9`?** Yes.
+    *   **Only fires at `0` cells?** Yes, both `find_target_from_hits` and `hunt_for_ship` explicitly check `board[r][c] == 0`.
+    *   **Covers all scenarios?**
+        *   If hits exist -> target phase.
+        *   If no hits or target phase exhausted -> hunt phase.
+        *   Hunt phase: prioritizes checkerboard, falls back to any `0` if checkerboard exhausted.
+    *   **Imports:** `random` is sufficient. `numpy` is not strictly necessary for a 10x10 grid with this logic.
+    *   **Performance:** Lookup and iteration are over a 10x10 grid, which is very fast. O(GRID_SIZE^2). Logic within loops is constant time or proportional to GRID_SIZE, so it's efficient.
+
+One small optimization for `find_target_from_hits`:
+Instead of iterating through `active_hits` twice (once for line extension, once for adjacent), we can do it in one pass, prioritizing line extensions found first. The current implementation already has this prioritization by returning immediately.
+
+What if two ships are hit simultaneously?
+The current `find_target_from_hits` will pick the first `active_hit` encountered in the board scan, and then if it leads to a line extension, that's done. If not, it will then gather *all* adjacent 0s from *all* active hits and pick one randomly. This prioritizes "knowing the direction" over "just hitting a neighbor". This seems like a reasonable greedy heuristic.
+
+Consider the smallest ship (length 2).
+If ` (r,c) ` is hit, the `find_target_from_hits` will add `(r-1,c)`, `(r+1,c)`, `(r,c-1)`, `(r,c+1)` (if valid and 0) to `candidates_around_hits` and pick one. This works.
+If `(r,c)` and `(r,c+1)` are hit, it's a horizontal 2-long ship. The "check horizontal extension" block will correctly identify this and try `(r,c-1)` then `(r,c+2)` (or vice-versa depending on the internal scan order within the `active_hits` loop and the `r_hit, c_hit` chosen).
+
+Final check on `hunt_for_ship`'s fallback.
+If all `(r+c)%2==0` cells are exhausted, it will then scan *all* `0` cells. This seems fine, as it ensures we eventually fire everywhere if necessary. It's only a fallback for very unusual board states or end-game cleanup.
+
+One last micro-optimization thought: the `is_valid` check is repeated a lot. It's fine for 10x10, but in larger grids, one might pre-compute neighbor lists or use `numpy` for more compact bounds checking. Not needed here.
+The code looks solid.
+```python
+import random
+
+GRID_SIZE = 10
+
+def is_valid(r: int, c: int) -> bool:
+    """Checks if a given coordinate (r, c) is within the grid boundaries."""
+    return 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE
+
+def find_target_from_hits(board: list[list[int]]) -> tuple[int, int] | None:
+    """
+    Looks for active hits on the board and tries to extend them to sink ships.
+    Prioritizes extending known ship segments over exploring around isolated hits.
+    """
+    active_hits = []
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            if board[r][c] == 1:
+                active_hits.append((r, c))
+
+    if not active_hits:
+        return None
+
+    # First, prioritize extending known lines (segments of two or more '1's)
+    # We iterate through active_hits. If any hit is part of a line, we try to extend it.
+    for r_hit, c_hit in active_hits:
+        # Check for horizontal line extension
+        is_horizontal_segment = \
+            (is_valid(r_hit, c_hit - 1) and board[r_hit][c_hit - 1] == 1) or \
+            (is_valid(r_hit, c_hit + 1) and board[r_hit][c_hit + 1] == 1)
+
+        if is_horizontal_segment:
+            # Try to extend along the line in both directions
+            # Search to the left
+            for c_scan in range(c_hit - 1, -1, -1):
+                if board[r_hit][c_scan] == 0:
+                    return (r_hit, c_scan)
+                if board[r_hit][c_scan] == -1: # Hit water, this end of the ship is closed off
+                    break
+            # Search to the right
+            for c_scan in range(c_hit + 1, GRID_SIZE):
+                if board[r_hit][c_scan] == 0:
+                    return (r_hit, c_scan)
+                if board[r_hit][c_scan] == -1: # Hit water, this end of the ship is closed off
+                    break
+
+        # Check for vertical line extension
+        is_vertical_segment = \
+            (is_valid(r_hit - 1, c_hit) and board[r_hit - 1][c_hit] == 1) or \
+            (is_valid(r_hit + 1, c_hit) and board[r_hit + 1][c_hit] == 1)
+
+        if is_vertical_segment:
+            # Try to extend along the line in both directions
+            # Search upwards
+            for r_scan in range(r_hit - 1, -1, -1):
+                if board[r_scan][c_hit] == 0:
+                    return (r_scan, c_hit)
+                if board[r_scan][c_hit] == -1: # Hit water, this end of the ship is closed off
+                    break
+            # Search downwards
+            for r_scan in range(r_hit + 1, GRID_SIZE):
+                if board[r_scan][c_hit] == 0:
+                    return (r_scan, c_hit)
+                if board[r_scan][c_hit] == -1: # Hit water, this end of the ship is closed off
+                    break
+
+    # If no clear line extension, consider all adjacent unknown cells around any hit.
+    # This handles isolated hits or cases where a line's ends are blocked (not happening by game rules)
+    # or fully explored to the extent of hits/misses.
+    candidates_around_hits = []
+    for r_hit, c_hit in active_hits:
+        # Explore 4 orthogonal neighbors
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r_hit + dr, c_hit + dc
+            if is_valid(nr, nc) and board[nr][nc] == 0:
+                candidates_around_hits.append((nr, nc))
+
+    if candidates_around_hits:
+        # Randomly choose one of the potential targets around hits
+        return random.choice(candidates_around_hits)
+
+    # If active_hits exist but no valid '0' target (e.g., ship is effectively sunk, or surrounded by misses),
+    # then return None, signaling to switch to hunt phase.
+    return None
+
+def hunt_for_ship(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Hunts for ships using a checkerboard pattern to efficiently cover the board.
+    Randomizes choice among valid checkerboard cells.
+    """
+    untried_checkerboard_cells = []
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            # Use a checkerboard pattern (r + c) % 2 == 0
+            # This ensures that any ship of length 2 or more will eventually be hit.
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                untried_checkerboard_cells.append((r, c))
+
+    if untried_checkerboard_cells:
+        # Choose a random cell from the available checkerboard cells
+        return random.choice(untried_checkerboard_cells)
+
+    # Fallback: If all checkerboard cells are tried (e.g., end of game, or unusually placed ships),
+    # try any remaining unknown cell. This should rarely be needed.
+    all_untried_cells = []
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            if board[r][c] == 0:
+                all_untried_cells.append((r, c))
+
+    if all_untried_cells:
+        return random.choice(all_untried_cells)
+
+    # This case should ideally only be reached when the game is over
+    # and all cells have been either hit or missed.
+    # If it's reached during an active game, it indicates an issue or a very full board.
+    # Return a default to prevent error, though it shouldn't be executed in practical play.
+    return (0, 0) # Harmless default, should not be hit in a valid game state.
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next shot (row, col) in a Battleship game.
+    It prioritizes sinking active ships (target phase) and falls back to
+    hunting for new ships using a checkerboard pattern.
+    """
+    # Attempt to sink a ship if there are active hits
+    target_from_hits = find_target_from_hits(board)
+    if target_from_hits:
+        return target_from_hits
+
+    # If no active hits or no clear targets from hits, hunt for a new ship
+    return hunt_for_ship(board)
+
+```</thinking>
+```python
+import random
+
+GRID_SIZE = 10
+
+def is_valid(r: int, c: int) -> bool:
+    """Checks if a given coordinate (r, c) is within the grid boundaries."""
+    return 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE
+
+def find_target_from_hits(board: list[list[int]]) -> tuple[int, int] | None:
+    """
+    Looks for active hits on the board and tries to extend them to sink ships.
+    Prioritizes extending known ship segments over exploring around isolated hits.
+    """
+    active_hits = []
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            if board[r][c] == 1:
+                active_hits.append((r, c))
+
+    if not active_hits:
+        return None
+
+    # First, prioritize extending known lines (segments of two or more '1's)
+    # We iterate through active_hits. If any hit is part of a line, we try to extend it.
+    for r_hit, c_hit in active_hits:
+        # Check for horizontal line existence (at least two '1's horizontally adjacent)
+        is_horizontal_segment = \
+            (is_valid(r_hit, c_hit - 1) and board[r_hit][c_hit - 1] == 1) or \
+            (is_valid(r_hit, c_hit + 1) and board[r_hit][c_hit + 1] == 1)
+
+        if is_horizontal_segment:
+            # Try to extend along the line in both directions
+            # Search to the left
+            for c_scan in range(c_hit - 1, -1, -1):
+                if board[r_hit][c_scan] == 0:
+                    return (r_hit, c_scan)
+                if board[r_hit][c_scan] == -1: # Hit water, this end of the ship is closed off
+                    break
+            # Search to the right
+            for c_scan in range(c_hit + 1, GRID_SIZE):
+                if board[r_hit][c_scan] == 0:
+                    return (r_hit, c_scan)
+                if board[r_hit][c_scan] == -1: # Hit water, this end of the ship is closed off
+                    break
+
+        # Check for vertical line existence (at least two '1's vertically adjacent)
+        is_vertical_segment = \
+            (is_valid(r_hit - 1, c_hit) and board[r_hit - 1][c_hit] == 1) or \
+            (is_valid(r_hit + 1, c_hit) and board[r_hit + 1][c_hit] == 1)
+
+        if is_vertical_segment:
+            # Try to extend along the line in both directions
+            # Search upwards
+            for r_scan in range(r_hit - 1, -1, -1):
+                if board[r_scan][c_hit] == 0:
+                    return (r_scan, c_hit)
+                if board[r_scan][c_hit] == -1: # Hit water, this end of the ship is closed off
+                    break
+            # Search downwards
+            for r_scan in range(r_hit + 1, GRID_SIZE):
+                if board[r_scan][c_hit] == 0:
+                    return (r_scan, c_hit)
+                if board[r_scan][c_hit] == -1: # Hit water, this end of the ship is closed off
+                    break
+
+    # If no clear line extension from *any* hit, it means all '1's are either isolated
+    # or their direct extensions are already -1 (miss) or 1 (part of the same ship).
+    # In this case, we look for any unknown cell adjacent to *any* hit.
+    candidates_around_hits = []
+    for r_hit, c_hit in active_hits:
+        # Explore 4 orthogonal neighbors
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r_hit + dr, c_hit + dc
+            if is_valid(nr, nc) and board[nr][nc] == 0:
+                candidates_around_hits.append((nr, nc))
+
+    if candidates_around_hits:
+        # Randomly choose one of the potential targets around hits
+        return random.choice(candidates_around_hits)
+
+    # If active_hits exist but no valid '0' target could be found (e.g., ship is effectively sunk,
+    # or completely surrounded by misses), then return None, signaling to switch to hunt phase.
+    return None
+
+def hunt_for_ship(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Hunts for ships using a checkerboard pattern to efficiently cover the board.
+    Randomizes choice among valid checkerboard cells.
+    """
+    untried_checkerboard_cells = []
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            # Use a checkerboard pattern (r + c) % 2 == 0
+            # This ensures that any ship of length 2 or more will eventually be hit.
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                untried_checkerboard_cells.append((r, c))
+
+    if untried_checkerboard_cells:
+        # Choose a random cell from the available checkerboard cells
+        return random.choice(untried_checkerboard_cells)
+
+    # Fallback: If all checkerboard cells are tried (e.g., end of game, or unusually placed ships),
+    # try any remaining unknown cell. This should rarely be needed.
+    all_untried_cells = []
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            if board[r][c] == 0:
+                all_untried_cells.append((r, c))
+
+    if all_untried_cells:
+        return random.choice(all_untried_cells)
+
+    # This case should ideally only be reached when the game is over
+    # and all cells have been either hit or missed.
+    # If it's reached during an active game, it indicates an issue or a very full board.
+    # Return a default to prevent error, though it shouldn't be executed in practical play.
+    return (0, 0) # Harmless default.
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next shot (row, col) in a Battleship game.
+
+    It implements a two-phase strategy:
+    1. Target Phase: If there are any active hits ('1's) on the board, it tries to
+       sink the ship by extending known segments or exploring adjacent cells around hits.
+    2. Hunt Phase: If no active hits, or if the target phase cannot find a valid
+       cell to shoot, it switches to hunting for new ships using a checkerboard
+       pattern.
+    """
+    # Attempt to sink a ship if there are active hits
+    target_from_hits = find_target_from_hits(board)
+    if target_from_hits:
+        return target_from_hits
+
+    # If no active hits or no clear targets from hits, hunt for a new ship
+    return hunt_for_ship(board)
+
+```

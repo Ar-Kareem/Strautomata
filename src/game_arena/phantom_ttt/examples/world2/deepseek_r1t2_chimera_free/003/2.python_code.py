@@ -1,0 +1,63 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Collect all legal moves (cells not confirmed as ours)
+    legal_moves = [(r, c) for r in range(3) for c in range(3) if board[r][c] != 1]
+    
+    # Check for immediate winning move in any line
+    def is_winning(r, c):
+        # Check row
+        if sum(board[r]) == 2:
+            return True
+        # Check column
+        if sum(board[i][c] for i in range(3)) == 2:
+            return True
+        # Check diagonals
+        if r == c and sum(board[i][i] for i in range(3)) == 2:
+            return True
+        if r + c == 2 and sum(board[i][2-i] for i in range(3)) == 2:
+            return True
+        return False
+    
+    for r, c in legal_moves:
+        if is_winning(r, c):
+            return (r, c)
+    
+    # Score moves based on positional value and line potential
+    def score_move(r, c):
+        # Base positional scores
+        if (r, c) == (1, 1):
+            base = 100  # Highest priority for center
+        elif (r in (0, 2) and c in (0, 2)):
+            base = 20   # Corners
+        else:
+            base = 10   # Edges
+        
+        # Count potential in each line containing (r, c)
+        line_score = 0
+        
+        # Row potential
+        row = board[r]
+        if sum(row) == 1:  # One existing marker to extend
+            line_score += 1
+        
+        # Column potential
+        col = [board[i][c] for i in range(3)]
+        if sum(col) == 1:
+            line_score += 1
+        
+        # Diagonal potentials
+        if r == c:
+            diag = [board[i][i] for i in range(3)]
+            if sum(diag) == 1:
+                line_score += 1
+        if r + c == 2:
+            diag = [board[i][2-i] for i in range(3)]
+            if sum(diag) == 1:
+                line_score += 1
+                
+        return base + line_score
+    
+    # Select move with highest score
+    scored_moves = [(score_move(r, c), (r, c)) for r, c in legal_moves]
+    scored_moves.sort(key=lambda x: -x[0])
+    return scored_moves[0][1]

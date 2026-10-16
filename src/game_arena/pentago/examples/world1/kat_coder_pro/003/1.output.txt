@@ -1,0 +1,237 @@
+# Strategy
+
+The strategy for this policy is to maximize the probability of winning in the next move. Since Pentago is a game where the objective is to get 5 marbles in a row, I will implement a policy that:
+
+1. Evaluates all possible moves, considering both placement and rotation.
+2. Calculates a score for each move based on:
+   - Immediate win conditions (if the move results in a 5-in-a-row).
+   - Blocking opponent's potential wins.
+   - Creating multiple potential winning lines for the next move.
+   - Favoring center positions and symmetry.
+3. Selects the move with the highest score.
+
+The key to this strategy is the evaluation function, which will consider:
+- How many potential winning lines each player has.
+- Whether the move blocks the opponent's potential wins.
+- Whether the move creates new winning opportunities.
+- The value of different board positions (center is more valuable).
+
+This policy will be deterministic and will always return a legal move, ensuring it is not disqualified.
+
+<code>
+import numpy as np
+from typing import Tuple, List
+
+def policy(you, opponent) -> str:
+    """
+    Pentago policy that evaluates all possible moves and selects the best one.
+    
+    Args:
+        you: 6x6 array of 0/1 integers representing your marbles
+        opponent: 6x6 array of 0/1 integers representing opponent's marbles
+        
+    Returns:
+        A string move formatted as "row,col,quad,dir"
+    """
+    
+    # Convert inputs to numpy arrays if they aren't already
+    you_board = np.array(you)
+    opponent_board = np.array(opponent)
+    
+    # Find all empty positions
+    empty_positions = []
+    for r in range(6):
+        for c in range(6):
+            if you_board[r][c] == 0 and opponent_board[r][c] == 0:
+                empty_positions.append((r + 1, c + 1))  # 1-indexed
+    
+    # Get all possible moves
+    moves = []
+    for r, c in empty_positions:
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                moves.append(f"{r},{c},{quad},{dir}")
+    
+    # Evaluate each move and return the best one
+    best_score = -float('inf')
+    best_move = moves[0]  # fallback to first move
+    
+    for move in moves:
+        score = evaluate_move(move, you_board, opponent_board)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def evaluate_move(move_str: str, you_board: np.ndarray, opponent_board: np.ndarray) -> float:
+    """Evaluate a move by simulating it and calculating a score."""
+    
+    # Parse the move
+    r, c, quad, dir = parse_move(move_str)
+    
+    # Simulate the move
+    new_you, new_opponent = simulate_move(r, c, quad, dir, you_board, opponent_board)
+    
+    # Check if we won
+    if has_won(new_you):
+        return 1000.0
+    
+    # Check if opponent won (bad move)
+    if has_won(new_opponent):
+        return -1000.0
+    
+    # Calculate score based on potential winning lines
+    my_potential = count_potential_lines(new_you, new_opponent)
+    opponent_potential = count_potential_lines(new_opponent, new_you)
+    
+    # Calculate blocking score (how many opponent lines we blocked)
+    original_opponent_potential = count_potential_lines(opponent_board, you_board)
+    blocking_score = original_opponent_potential - opponent_potential
+    
+    # Position value (center positions are better)
+    center_score = position_value(r, c)
+    
+    # Combine scores
+    total_score = my_potential * 10 + blocking_score * 20 + center_score * 5
+    
+    return total_score
+
+def parse_move(move_str: str) -> Tuple[int, int, int, str]:
+    """Parse a move string into row, col, quad, and dir."""
+    parts = move_str.split(',')
+    return int(parts[0]), int(parts[1]), int(parts[2]), parts[3]
+
+def simulate_move(r: int, c: int, quad: int, dir: str, you_board: np.ndarray, opponent_board: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Simulate a move and return the resulting boards."""
+    
+    # Create copies
+    new_you = you_board.copy()
+    new_opponent = opponent_board.copy()
+    
+    # Place marble (convert to 0-indexed)
+    new_you[r-1][c-1] = 1
+    
+    # Rotate quadrant
+    new_you, new_opponent = rotate_quadrant(new_you, new_opponent, quad, dir)
+    
+    return new_you, new_opponent
+
+def rotate_quadrant(you_board: np.ndarray, opponent_board: np.ndarray, quad: int, dir: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Rotate a quadrant 90 degrees and return the new boards."""
+    
+    # Determine the slice for this quadrant
+    if quad == 0:  # top-left
+        slice_r = slice(0, 3)
+        slice_c = slice(0, 3)
+    elif quad == 1:  # top-right
+        slice_r = slice(0, 3)
+        slice_c = slice(3, 6)
+    elif quad == 2:  # bottom-left
+        slice_r = slice(3, 6)
+        slice_c = slice(0, 3)
+    else:  # bottom-right
+        slice_r = slice(3, 6)
+        slice_c = slice(3, 6)
+    
+    # Rotate the slices
+    if dir == 'L':  # 90 degrees anticlockwise
+        you_slice = np.rot90(you_board[slice_r, slice_c], k=1)
+        opponent_slice = np.rot90(opponent_board[slice_r, slice_c], k=1)
+    else:  # 90 degrees clockwise
+        you_slice = np.rot90(you_board[slice_r, slice_c], k=3)
+        opponent_slice = np.rot90(opponent_board[slice_r, slice_c], k=3)
+    
+    # Update the boards
+    new_you = you_board.copy()
+    new_opponent = opponent_board.copy()
+    new_you[slice_r, slice_c] = you_slice
+    new_opponent[slice_r, slice_c] = opponent_slice
+    
+    return new_you, new_opponent
+
+def has_won(board: np.ndarray) -> bool:
+    """Check if the player has won (5 in a row)."""
+    
+    # Check horizontal lines
+    for r in range(6):
+        for c in range(2):  # 0..1 (can have 5 in a row starting at columns 0 or 1)
+            if all(board[r][c+i] == 1 for i in range(5)):
+                return True
+    
+    # Check vertical lines
+    for c in range(6):
+        for r in range(2):  # 0..1 (can have 5 in a row starting at rows 0 or 1)
+            if all(board[r+i][c] == 1 for i in range(5)):
+                return True
+    
+    # Check diagonal lines (top-left to bottom-right)
+    for r in range(2):
+        for c in range(2):
+            if all(board[r+i][c+i] == 1 for i in range(5)):
+                return True
+    
+    # Check diagonal lines (top-right to bottom-left)
+    for r in range(2):
+        for c in range(4, 6):  # 4..5
+            if all(board[r+i][c-i] == 1 for i in range(5)):
+                return True
+    
+    return False
+
+def count_potential_lines(board: np.ndarray, opponent_board: np.ndarray) -> int:
+    """Count the number of potential winning lines."""
+    
+    count = 0
+    
+    # Check horizontal lines
+    for r in range(6):
+        for c in range(2):
+            # Check if we have 4 marbles and 1 empty, and opponent doesn't block
+            marbles = sum(board[r][c+i] for i in range(5))
+            empty = sum(1 for i in range(5) if board[r][c+i] == 0 and opponent_board[r][c+i] == 0)
+            if marbles == 4 and empty == 1:
+                count += 1
+    
+    # Check vertical lines
+    for c in range(6):
+        for r in range(2):
+            marbles = sum(board[r+i][c] for i in range(5))
+            empty = sum(1 for i in range(5) if board[r+i][c] == 0 and opponent_board[r+i][c] == 0)
+            if marbles == 4 and empty == 1:
+                count += 1
+    
+    # Check diagonal lines (top-left to bottom-right)
+    for r in range(2):
+        for c in range(2):
+            marbles = sum(board[r+i][c+i] for i in range(5))
+            empty = sum(1 for i in range(5) if board[r+i][c+i] == 0 and opponent_board[r+i][c+i] == 0)
+            if marbles == 4 and empty == 1:
+                count += 1
+    
+    # Check diagonal lines (top-right to bottom-left)
+    for r in range(2):
+        for c in range(4, 6):
+            marbles = sum(board[r+i][c-i] for i in range(5))
+            empty = sum(1 for i in range(5) if board[r+i][c-i] == 0 and opponent_board[r+i][c-i] == 0)
+            if marbles == 4 and empty == 1:
+                count += 1
+    
+    return count
+
+def position_value(r: int, c: int) -> float:
+    """Return the value of a position (center is better)."""
+    
+    # Convert to 0-indexed
+    r -= 1
+    c -= 1
+    
+    # Center positions have higher value
+    center_distances = [
+        abs(r - 2.5),  # distance to center row
+        abs(c - 2.5)   # distance to center column
+    ]
+    
+    # Lower distance to center = higher value
+    return 5.0 - max(center_distances)
+</code>

@@ -1,0 +1,151 @@
+The strategy for this policy is to play a strong, fast minimax search (depth 3 with alpha–beta pruning) using a board evaluation that values material, forward advancement, and imminent promotion threats. Captures and winning moves are prioritized to ensure legality and tactical strength. The agent always returns a legal move.
+
+<code>
+from typing import List, Tuple
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Move:
+    # Convert to absolute white/black sets
+    if color == 'w':
+        white = set(me)
+        black = set(opp)
+    else:
+        white = set(opp)
+        black = set(me)
+
+    root_color = color
+    max_depth = 3
+
+    def goal_row(col: str) -> int:
+        return 7 if col == 'w' else 0
+
+    def is_win(white_set, black_set):
+        if any(r == 7 for r, _ in white_set) or len(black_set) == 0:
+            return 'w'
+        if any(r == 0 for r, _ in black_set) or len(white_set) == 0:
+            return 'b'
+        return None
+
+    def gen_moves(white_set, black_set, col: str) -> List[Move]:
+        pieces = white_set if col == 'w' else black_set
+        opp_set = black_set if col == 'w' else white_set
+        occ = white_set | black_set
+        dir_ = 1 if col == 'w' else -1
+        moves = []
+        captures = []
+
+        for (r, c) in pieces:
+            nr = r + dir_
+            if 0 <= nr <= 7:
+                # forward
+                if (nr, c) not in occ:
+                    moves.append(((r, c), (nr, c)))
+                # diag left
+                if c - 1 >= 0:
+                    to = (nr, c - 1)
+                    if to not in pieces:
+                        if to in opp_set:
+                            captures.append(((r, c), to))
+                        else:
+                            moves.append(((r, c), to))
+                # diag right
+                if c + 1 <= 7:
+                    to = (nr, c + 1)
+                    if to not in pieces:
+                        if to in opp_set:
+                            captures.append(((r, c), to))
+                        else:
+                            moves.append(((r, c), to))
+        # prioritize captures
+        return captures + moves
+
+    def apply_move(white_set, black_set, col: str, move: Move):
+        (fr, fc), (tr, tc) = move
+        new_white = set(white_set)
+        new_black = set(black_set)
+        if col == 'w':
+            new_white.remove((fr, fc))
+            new_white.add((tr, tc))
+            if (tr, tc) in new_black:
+                new_black.remove((tr, tc))
+        else:
+            new_black.remove((fr, fc))
+            new_black.add((tr, tc))
+            if (tr, tc) in new_white:
+                new_white.remove((tr, tc))
+        return new_white, new_black
+
+    def evaluate(white_set, black_set) -> int:
+        winner = is_win(white_set, black_set)
+        if winner:
+            if winner == root_color:
+                return 100000
+            else:
+                return -100000
+        if root_color == 'w':
+            my_set, opp_set = white_set, black_set
+        else:
+            my_set, opp_set = black_set, white_set
+
+        material = (len(my_set) - len(opp_set)) * 100
+        if root_color == 'w':
+            adv_my = sum(r for r, _ in my_set)
+            adv_opp = sum(r for r, _ in opp_set)
+            threat_my = sum(1 for r, _ in my_set if r == 6)
+            threat_opp = sum(1 for r, _ in opp_set if r == 1)
+        else:
+            adv_my = sum(7 - r for r, _ in my_set)
+            adv_opp = sum(7 - r for r, _ in opp_set)
+            threat_my = sum(1 for r, _ in my_set if r == 1)
+            threat_opp = sum(1 for r, _ in opp_set if r == 6)
+
+        advancement = (adv_my - adv_opp) * 10
+        threats = (threat_my - threat_opp) * 50
+        return material + advancement + threats
+
+    def search(white_set, black_set, col: str, depth: int, alpha: int, beta: int) -> int:
+        winner = is_win(white_set, black_set)
+        if depth == 0 or winner:
+            return evaluate(white_set, black_set)
+
+        moves = gen_moves(white_set, black_set, col)
+        if not moves:
+            return evaluate(white_set, black_set)
+
+        if col == root_color:
+            value = -10**9
+            for m in moves:
+                nw, nb = apply_move(white_set, black_set, col, m)
+                value = max(value, search(nw, nb, 'b' if col == 'w' else 'w', depth - 1, alpha, beta))
+                alpha = max(alpha, value)
+                if beta <= alpha:
+                    break
+            return value
+        else:
+            value = 10**9
+            for m in moves:
+                nw, nb = apply_move(white_set, black_set, col, m)
+                value = min(value, search(nw, nb, 'b' if col == 'w' else 'w', depth - 1, alpha, beta))
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break
+            return value
+
+    # Root move selection
+    possible = gen_moves(white, black, color)
+    if not possible:
+        # fallback: should not happen; return any legal-ish move
+        return ((me[0][0], me[0][1]), (me[0][0], me[0][1]))
+
+    best_move = possible[0]
+    best_val = -10**9
+    for m in possible:
+        nw, nb = apply_move(white, black, color, m)
+        val = search(nw, nb, 'b' if color == 'w' else 'w', max_depth - 1, -10**9, 10**9)
+        if val > best_val:
+            best_val = val
+            best_move = m
+
+    return best_move
+</code>

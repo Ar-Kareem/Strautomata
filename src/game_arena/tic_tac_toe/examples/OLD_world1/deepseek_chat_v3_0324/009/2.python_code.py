@@ -1,0 +1,125 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """Determine the optimal move for the AI player in Tic Tac Toe.
+    
+    Args:
+        board: 3x3 list of lists with 0 (empty), 1 (AI), -1 (opponent)
+    
+    Returns:
+        Tuple of (row, column) for the best move (0-2, 0-2)
+    """
+    
+    def evaluate(b):
+        """Evaluate the current board state."""
+        # Check rows
+        for row in range(3):
+            if b[row][0] == b[row][1] == b[row][2]:
+                if b[row][0] == 1:
+                    return 10
+                elif b[row][0] == -1:
+                    return -10
+        # Check columns
+        for col in range(3):
+            if b[0][col] == b[1][col] == b[2][col]:
+                if b[0][col] == 1:
+                    return 10
+                elif b[0][col] == -1:
+                    return -10
+        # Check diagonals
+        if b[0][0] == b[1][1] == b[2][2]:
+            if b[0][0] == 1:
+                return 10
+            elif b[0][0] == -1:
+                return -10
+        if b[0][2] == b[1][1] == b[2][0]:
+            if b[0][2] == 1:
+                return 10
+            elif b[0][2] == -1:
+                return -10
+        return 0  # No winner yet
+    
+    def is_moves_left(b):
+        """Check if there are moves left on the board."""
+        for row in b:
+            for cell in row:
+                if cell == 0:
+                    return True
+        return False
+    
+    def minimax(b, depth, is_max, alpha, beta):
+        """Minimax algorithm with alpha-beta pruning."""
+        score = evaluate(b)
+        
+        # If AI wins
+        if score == 10:
+            return score - depth
+        
+        # If opponent wins
+        if score == -10:
+            return score + depth
+        
+        # If no moves left (tie)
+        if not is_moves_left(b):
+            return 0
+        
+        if is_max:
+            best = -float('inf')
+            for i in range(3):
+                for j in range(3):
+                    if b[i][j] == 0:
+                        b[i][j] = 1  # AI move
+                        best = max(best, minimax(b, depth + 1, False, alpha, beta))
+                        b[i][j] = 0  # Undo move
+                        alpha = max(alpha, best)
+                        if beta <= alpha:
+                            break
+            return best
+        else:
+            best = float('inf')
+            for i in range(3):
+                for j in range(3):
+                    if b[i][j] == 0:
+                        b[i][j] = -1  # Opponent move
+                        best = min(best, minimax(b, depth + 1, True, alpha, beta))
+                        b[i][j] = 0  # Undo move
+                        beta = min(beta, best)
+                        if beta <= alpha:
+                            break
+            return best
+    
+    # First check if we can win in the next move
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = 1
+                if evaluate(board) == 10:
+                    board[i][j] = 0
+                    return (i, j)
+                board[i][j] = 0
+    
+    # Next check if opponent can win in next move to block them
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = -1
+                if evaluate(board) == -10:
+                    board[i][j] = 0
+                    return (i, j)
+                board[i][j] = 0
+    
+    # If no immediate win/loss, use minimax to find best move
+    best_val = -float('inf')
+    best_move = (-1, -1)
+    
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = 1
+                move_val = minimax(board, 0, False, -float('inf'), float('inf'))
+                board[i][j] = 0
+                
+                if move_val > best_val:
+                    best_move = (i, j)
+                    best_val = move_val
+    
+    return best_move

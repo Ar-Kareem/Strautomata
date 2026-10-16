@@ -1,0 +1,143 @@
+```python
+from typing import List, Tuple, Optional
+from functools import lru_cache
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the next move for player 1 on a 4x4 Tic Tac Toe board.
+    board is a 4x4 list of lists with values: 0 empty, 1 (us), -1 (opponent).
+    Returns (row, col) with 0-based indices.
+    """
+    SIDE = 4
+
+    # Precompute winning lines as lists of (r,c)
+    LINES = []
+    # rows and columns
+    for r in range(SIDE):
+        LINES.append(tuple((r, c) for c in range(SIDE)))
+    for c in range(SIDE):
+        LINES.append(tuple((r, c) for r in range(SIDE)))
+    # diagonals
+    LINES.append(tuple((i, i) for i in range(SIDE)))
+    LINES.append(tuple((i, SIDE - 1 - i) for i in range(SIDE)))
+
+    def winner(bd: Tuple[int, ...]) -> int:
+        """
+        bd is flattened tuple of length 16.
+        Return 1 if player 1 wins, -1 if opponent wins, 0 otherwise.
+        """
+        # convert access helper
+        for line in LINES:
+            s = 0
+            for (r, c) in line:
+                s += bd[r * SIDE + c]
+            if s == SIDE:
+                return 1
+            if s == -SIDE:
+                return -1
+        return 0
+
+    def flatten(bd2d: List[List[int]]) -> Tuple[int, ...]:
+        return tuple(x for row in bd2d for x in row)
+
+    start_flat = flatten(board)
+
+    # If board is already terminal or full, return any valid move (first empty) or (0,0)
+    cur_w = winner(start_flat)
+    empties = [i for i, v in enumerate(start_flat) if v == 0]
+    if not empties:
+        # no move possible
+        return (0, 0)
+    if cur_w != 0:
+        # game already decided; pick first empty
+        idx = empties[0]
+        return (idx // SIDE, idx % SIDE)
+
+    # We'll run full minimax with alpha-beta. Use transposition cache.
+    # Score convention: positive good for player 1.
+    # Use depth to prefer faster wins: base win score 100, subtract depth.
+    from functools import lru_cache
+
+    @lru_cache(maxsize=None)
+    def minimax(flat_bd: Tuple[int, ...], player: int, depth: int, alpha: int, beta: int) -> int:
+        """
+        Return best score for the current player to move (player is 1 or -1).
+        player==1 means maximizing for us. player==-1 minimizing.
+        """
+        w = winner(flat_bd)
+        if w != 0:
+            # somebody already won
+            return (100 - depth) if w == 1 else (-100 + depth)
+        # check draw
+        if all(x != 0 for x in flat_bd):
+            return 0
+
+        # generate moves (indices)
+        moves = [i for i, v in enumerate(flat_bd) if v == 0]
+
+        # Move ordering: if any move is immediate win for current player, take it quickly.
+        # Check immediate win candidates first.
+        for m in moves:
+            # make move
+            new = list(flat_bd)
+            new[m] = player
+            if winner(tuple(new)) == player:
+                # immediate win found
+                score = (100 - (depth + 1)) if player == 1 else (-100 + (depth + 1))
+                return score
+
+        if player == 1:
+            # maximize
+            best = -10**9
+            for m in moves:
+                new = list(flat_bd)
+                new[m] = 1
+                val = minimax(tuple(new), -1, depth + 1, alpha, beta)
+                if val > best:
+                    best = val
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta:
+                    break
+            return best
+        else:
+            # minimize
+            best = 10**9
+            for m in moves:
+                new = list(flat_bd)
+                new[m] = -1
+                val = minimax(tuple(new), 1, depth + 1, alpha, beta)
+                if val < best:
+                    best = val
+                if best < beta:
+                    beta = best
+                if alpha >= beta:
+                    break
+            return best
+
+    # At root, choose the move that maximizes our minimax value.
+    best_score = -10**9
+    best_move: Optional[int] = None
+    # Prefer center-ish moves: ordering heuristic by simple preference to center then corners then edges
+    # For 4x4 we define a preference list:
+    pref_order = sorted(empties, key=lambda idx: (
+        # distance to center (1.5,1.5)
+        abs((idx // SIDE) - 1.5) + abs((idx % SIDE) - 1.5)
+    ))
+    for idx in pref_order:
+        new = list(start_flat)
+        new[idx] = 1
+        score = minimax(tuple(new), -1, 1, -10**9, 10**9)
+        if score > best_score:
+            best_score = score
+            best_move = idx
+        # immediate win short-circuit
+        if best_score >= 100 - 1:
+            break
+
+    if best_move is None:
+        # fallback to first empty
+        best_move = empties[0]
+
+    return (best_move // SIDE, best_move % SIDE)
+```

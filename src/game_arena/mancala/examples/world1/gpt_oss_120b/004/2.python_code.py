@@ -1,0 +1,150 @@
+
+import sys
+from functools import lru_cache
+
+# ------------------------------------------------------------
+# Helper functions that implement the Kalah rules
+# ------------------------------------------------------------
+
+def legal_moves(side):
+    """Return list of house indices (0..5) that contain at least one seed."""
+    return [i for i in range(6) if side[i] > 0]
+
+def game_over(you, opp):
+    """Check if the game is finished and collect remaining seeds."""
+    if all(s == 0 for s in you[:6]) or all(s == 0 for s in opp[:6]):
+        # collect remaining seeds
+        you = list(you)
+        opp = list(opp)
+        you[6] += sum(you[:6])
+        opp[6] += sum(opp[:6])
+        for i in range(6):
+            you[i] = 0
+            opp[i] = 0
+        return True, tuple(you), tuple(opp)
+    return False, tuple(you), tuple(opp)
+
+def apply_move(you, opp, house):
+    """
+    Perform a move for the player whose houses are in `you`.
+    Returns (new_you, new_opp, extra_turn_flag).
+    """
+    seeds = you[house]
+    you = list(you)
+    opp = list(opp)
+    you[house] = 0
+
+    # linear board: 0..5 you houses, 6 you store,
+    # 7..12 opponent houses (opp[0] .. opp[5])
+    pos = house
+    while seeds:
+        pos = (pos + 1) % 13
+        if pos <= 5:            # you house
+            you[pos] += 1
+        elif pos == 6:          # your store
+            you[6] += 1
+        else:                   # opponent house
+            opp[pos - 7] += 1
+        seeds -= 1
+
+    extra_turn = (pos == 6)
+
+    # capture rule
+    if 0 <= pos <= 5 and you[pos] == 1:           # landed on empty yours
+        opp_idx = 5 - pos
+        if opp[opp_idx] > 0:
+            you[6] += you[pos] + opp[opp_idx]
+            you[pos] = 0
+            opp[opp_idx] = 0
+
+    # check for end of game
+    over, you, opp = game_over(tuple(you), tuple(opp))
+    return you, opp, extra_turn, over
+
+def apply_move_opponent(you, opp, house):
+    """
+    Perform a move for the opponent. Internally we swap the roles,
+    reuse `apply_move`, then swap back.
+    """
+    new_opp, new_you, extra, over = apply_move(opp, you, house)
+    return new_you, new_opp, extra, over
+
+# ------------------------------------------------------------
+# Evaluation & minimax
+# ------------------------------------------------------------
+
+def heuristic(you, opp):
+    """Simple evaluation when depth limit is reached."""
+    return (you[6] - opp[6]) + 0.1 * (sum(you[:6]) - sum(opp[:6]))
+
+INF = float('inf')
+
+@lru_cache(maxsize=None)
+def minimax(you, opp, turn, depth, alpha, beta):
+    """
+    Minimax with alpha‑beta pruning.
+    `turn` = 0 -> our turn (maximising), 1 -> opponent turn (minimising)
+    Returns (value, best_move) where best_move is meaningful only at the root.
+    """
+    # terminal check
+    over, you_end, opp_end = game_over(you, opp)
+    if over:
+        return (you_end[6] - opp_end[6]), None
+    if depth == 0:
+        return heuristic(you, opp), None
+
+    if turn == 0:          # our move – maximise
+        best_val = -INF
+        best_move = None
+        for mv in legal_moves(you):
+            ny, no, extra, _ = apply_move(you, opp, mv)
+            if extra:
+                val, _ = minimax(ny, no, 0, depth - 1, alpha, beta)
+            else:
+                val, _ = minimax(ny, no, 1, depth - 1, alpha, beta)
+            if val > best_val:
+                best_val = val
+                best_move = mv
+            alpha = max(alpha, best_val)
+            if beta <= alpha:
+                break
+        return best_val, best_move
+    else:                 # opponent move – minimise
+        best_val = INF
+        best_move = None
+        for mv in legal_moves(opp):
+            ny, no, extra, _ = apply_move_opponent(you, opp, mv)
+            if extra:
+                val, _ = minimax(ny, no, 1, depth - 1, alpha, beta)
+            else:
+                val, _ = minimax(ny, no, 0, depth - 1, alpha, beta)
+            if val < best_val:
+                best_val = val
+                best_move = mv
+            beta = min(beta, best_val)
+            if beta <= alpha:
+                break
+        return best_val, best_move
+
+# ------------------------------------------------------------
+# Public API
+# ------------------------------------------------------------
+
+def policy(you, opponent):
+    """
+    Return the index (0..5) of the house to play.
+    This function is called only when at least one legal move exists.
+    """
+    # Convert lists to tuples for caching
+    you_t = tuple(you)
+    opp_t = tuple(opponent)
+
+    # Depth 8 is a good trade‑off for speed / quality on a 6‑hole board.
+    _, best_move = minimax(you_t, opp_t, 0, 8, -INF, INF)
+
+    # Fallback – should never be needed
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    return best_move

@@ -1,0 +1,141 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def get_empty_cells(b):
+        cells = []
+        for i in range(4):
+            for j in range(4):
+                if b[i][j] == 0:
+                    cells.append((i, j))
+        return cells
+    
+    def check_win(b, player):
+        # Check rows
+        for i in range(4):
+            if all(b[i][j] == player for j in range(4)):
+                return True
+        # Check columns
+        for j in range(4):
+            if all(b[i][j] == player for i in range(4)):
+                return True
+        # Check diagonals
+        if all(b[i][i] == player for i in range(4)):
+            return True
+        if all(b[i][3-i] == player for i in range(4)):
+            return True
+        return False
+    
+    def evaluate_line(line):
+        my_count = line.count(1)
+        opp_count = line.count(-1)
+        if opp_count == 0:
+            if my_count == 4:
+                return 1000
+            elif my_count == 3:
+                return 100
+            elif my_count == 2:
+                return 10
+            elif my_count == 1:
+                return 1
+        if my_count == 0:
+            if opp_count == 4:
+                return -1000
+            elif opp_count == 3:
+                return -100
+            elif opp_count == 2:
+                return -10
+            elif opp_count == 1:
+                return -1
+        return 0
+    
+    def evaluate(b):
+        score = 0
+        # Rows
+        for i in range(4):
+            score += evaluate_line(b[i])
+        # Columns
+        for j in range(4):
+            col = [b[i][j] for i in range(4)]
+            score += evaluate_line(col)
+        # Diagonals
+        diag1 = [b[i][i] for i in range(4)]
+        diag2 = [b[i][3-i] for i in range(4)]
+        score += evaluate_line(diag1)
+        score += evaluate_line(diag2)
+        return score
+    
+    def minimax(b, depth, alpha, beta, is_maximizing):
+        if check_win(b, 1):
+            return 10000
+        if check_win(b, -1):
+            return -10000
+        
+        moves = get_empty_cells(b)
+        if not moves or depth == 0:
+            return evaluate(b)
+        
+        if is_maximizing:
+            max_eval = float('-inf')
+            for r, c in moves:
+                b[r][c] = 1
+                eval = minimax(b, depth - 1, alpha, beta, False)
+                b[r][c] = 0
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for r, c in moves:
+                b[r][c] = -1
+                eval = minimax(b, depth - 1, alpha, beta, True)
+                b[r][c] = 0
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Get available moves
+    moves = get_empty_cells(board)
+    if not moves:
+        return (0, 0)
+    
+    # Check for immediate win
+    for r, c in moves:
+        board[r][c] = 1
+        if check_win(board, 1):
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+    
+    # Check for immediate block
+    for r, c in moves:
+        board[r][c] = -1
+        if check_win(board, -1):
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+    
+    # If only one move, take it
+    if len(moves) == 1:
+        return moves[0]
+    
+    # Use minimax to find best move (depth 4 for 4x4 is efficient)
+    best_move = moves[0]
+    best_value = float('-inf')
+    
+    # Prioritize center moves for better alpha-beta pruning
+    center_moves = [(r, c) for r, c in moves if r in [1, 2] and c in [1, 2]]
+    edge_moves = [(r, c) for r, c in moves if (r, c) not in center_moves]
+    ordered_moves = center_moves + edge_moves
+    
+    for r, c in ordered_moves:
+        board[r][c] = 1
+        value = minimax(board, 4, float('-inf'), float('inf'), False)
+        board[r][c] = 0
+        if value > best_value:
+            best_value = value
+            best_move = (r, c)
+    
+    return best_move

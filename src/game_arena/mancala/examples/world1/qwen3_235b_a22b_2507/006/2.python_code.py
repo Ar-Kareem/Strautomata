@@ -1,0 +1,115 @@
+
+import numpy as np
+from typing import Tuple
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Convert to numpy for faster manipulation
+    you_arr = np.array(you, dtype=np.int32)
+    opp_arr = np.array(opponent, dtype=np.int32)
+    
+    # Evaluate board heuristic
+    def evaluate(you_b, opp_b):
+        score = (you_b[6] - opp_b[6]) * 10  # store weight
+        score += (sum(you_b[:6]) - sum(opp_b[:6])) * 1  # board seeds
+        # Bonus for extra move opportunities
+        for i in range(6):
+            if you_b[i] > 0 and (you_b[i] + i) % 13 == 6:
+                score += 3
+        # Mobility (number of non-empty houses)
+        score += np.count_nonzero(you_b[:6]) * 2
+        score -= np.count_nonzero(opp_b[:6]) * 2
+        return score
+
+    # Simulate move and return (new_you, new_opp, extra_move)
+    def make_move(you_b, opp_b, move):
+        if you_b[move] == 0:
+            return None
+        board = np.concatenate([you_b[:6], [you_b[6]], opp_b[:6], [opp_b[6]]])
+        seeds = you_b[move]
+        board[move] = 0
+        pos = move
+        for _ in range(seeds):
+            pos = (pos + 1) % 14
+            if pos == 13:  # skip opponent's store
+                pos = 0
+            board[pos] += 1
+        # Extract new state
+        ny = board[0:7]
+        no = np.concatenate([board[8:14], [board[7]]])  # fix indexing
+        no = np.roll(no, -1)  # align back
+
+        extra_move = (pos == 6)
+        capture = False
+        if 0 <= pos <= 5:  # ended in your house
+            if ny[pos] == 1:  # was empty before
+                opp_pos = 5 - pos
+                if no[opp_pos] > 0:
+                    capture = True
+                    ny[6] += 1 + no[opp_pos]
+                    ny[pos] = 0
+                    no[opp_pos] = 0
+        
+        return (ny, no, extra_move, capture)
+
+    # Minimax with alpha-beta pruning
+    def minimax(you_b, opp_b, depth, alpha, beta, maximizing):
+        if depth == 0 or (np.all(you_b[:6] == 0) or np.all(opp_b[:6] == 0)):
+            return evaluate(you_b, opp_b)
+        
+        if maximizing:
+            max_eval = -np.inf
+            moves = [i for i in range(6) if you_b[i] > 0]
+            for move in moves:
+                result = make_move(you_b, opp_b, move)
+                if result is None:
+                    continue
+                ny, no, extra, cap = result
+                if extra:
+                    eval_score = minimax(ny, no, depth, alpha, beta, True)
+                else:
+                    eval_score = minimax(no, ny, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = np.inf
+            moves = [i for i in range(6) if opp_b[i] > 0]
+            for move in moves:
+                result = make_move(opp_b, you_b, move)
+                if result is None:
+                    continue
+                no, ny, extra, cap = result
+                if extra:
+                    eval_score = minimax(opp_b, you_b, depth, alpha, beta, False)
+                else:
+                    eval_score = minimax(ny, no, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # Try different depths within time limit
+    best_move = np.random.choice([i for i in range(6) if you_arr[i] > 0])
+    moves = [i for i in range(6) if you_arr[i] > 0]
+    if len(moves) == 1:
+        return moves[0]
+
+    # Try depth 5 for good balance
+    best_score = -np.inf
+    for move in moves:
+        result = make_move(you_arr, opp_arr, move)
+        if result is None:
+            continue
+        ny, no, extra, cap = result
+        if extra:
+            score = minimax(ny, no, 5, -np.inf, np.inf, True)
+        else:
+            score = minimax(no, ny, 4, -np.inf, np.inf, False)
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move

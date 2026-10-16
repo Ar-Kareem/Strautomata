@@ -1,0 +1,147 @@
+
+def policy(board: list[list[int]]) -> int:
+    import random
+    
+    rows, cols = 6, 7
+    
+    def is_valid_move(board, col):
+        return board[0][col] == 0
+    
+    def get_valid_moves(board):
+        return [col for col in range(cols) if is_valid_move(board, col)]
+    
+    def drop_piece(board, col, player):
+        new_board = [row[:] for row in board]
+        for row in range(rows - 1, -1, -1):
+            if new_board[row][col] == 0:
+                new_board[row][col] = player
+                return new_board, row
+        return None, -1
+    
+    def check_winner(board):
+        # Check horizontal
+        for row in range(rows):
+            for col in range(cols - 3):
+                if (board[row][col] != 0 and 
+                    board[row][col] == board[row][col+1] == 
+                    board[row][col+2] == board[row][col+3]):
+                    return board[row][col]
+        
+        # Check vertical
+        for row in range(rows - 3):
+            for col in range(cols):
+                if (board[row][col] != 0 and 
+                    board[row][col] == board[row+1][col] == 
+                    board[row+2][col] == board[row+3][col]):
+                    return board[row][col]
+        
+        # Check diagonal (top-left to bottom-right)
+        for row in range(rows - 3):
+            for col in range(cols - 3):
+                if (board[row][col] != 0 and 
+                    board[row][col] == board[row+1][col+1] == 
+                    board[row+2][col+2] == board[row+3][col+3]):
+                    return board[row][col]
+        
+        # Check diagonal (top-right to bottom-left)
+        for row in range(rows - 3):
+            for col in range(3, cols):
+                if (board[row][col] != 0 and 
+                    board[row][col] == board[row+1][col-1] == 
+                    board[row+2][col-2] == board[row+3][col-3]):
+                    return board[row][col]
+        
+        return 0
+    
+    def count_line_potential(board, player, row, col, dr, dc):
+        count = 0
+        empty_spaces = 0
+        
+        # Check 4 positions in the direction
+        for i in range(4):
+            r, c = row + i * dr, col + i * dc
+            if 0 <= r < rows and 0 <= c < cols:
+                if board[r][c] == player:
+                    count += 1
+                elif board[r][c] == 0:
+                    empty_spaces += 1
+                else:
+                    return 0  # Blocked by opponent
+            else:
+                return 0  # Out of bounds
+        
+        # Only return count if we can still make a line of 4
+        return count if count + empty_spaces == 4 else 0
+    
+    def evaluate_position(board, player):
+        score = 0
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]  # horizontal, vertical, diagonal
+        
+        for row in range(rows):
+            for col in range(cols):
+                for dr, dc in directions:
+                    potential = count_line_potential(board, player, row, col, dr, dc)
+                    if potential == 1:
+                        score += 1
+                    elif potential == 2:
+                        score += 10
+                    elif potential == 3:
+                        score += 100
+        
+        return score
+    
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        winner = check_winner(board)
+        if winner == 1:
+            return 1000
+        elif winner == -1:
+            return -1000
+        elif depth == 0 or len(get_valid_moves(board)) == 0:
+            return evaluate_position(board, 1) - evaluate_position(board, -1)
+        
+        if maximizing_player:
+            max_eval = float('-inf')
+            for col in get_valid_moves(board):
+                new_board, _ = drop_piece(board, col, 1)
+                eval_score = minimax(new_board, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in get_valid_moves(board):
+                new_board, _ = drop_piece(board, col, -1)
+                eval_score = minimax(new_board, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Check for immediate win
+    for col in get_valid_moves(board):
+        new_board, _ = drop_piece(board, col, 1)
+        if check_winner(new_board) == 1:
+            return col
+    
+    # Check for immediate block
+    for col in get_valid_moves(board):
+        new_board, _ = drop_piece(board, col, -1)
+        if check_winner(new_board) == -1:
+            return col
+    
+    # Use minimax with alpha-beta pruning
+    valid_moves = get_valid_moves(board)
+    best_move = random.choice(valid_moves)
+    best_score = float('-inf')
+    
+    for col in valid_moves:
+        new_board, _ = drop_piece(board, col, 1)
+        score = minimax(new_board, 4, float('-inf'), float('inf'), False)
+        if score > best_score:
+            best_score = score
+            best_move = col
+    
+    return best_move

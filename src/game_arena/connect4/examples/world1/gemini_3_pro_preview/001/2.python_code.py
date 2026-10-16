@@ -1,0 +1,253 @@
+
+import time
+
+# Transposition Table to cache search results
+# Stores: key -> (depth, flag, score)
+# Global variable to persist across multiple calls if the environment allows,
+# ensuring better performance in subsequent turns.
+TT = {}
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Connect 4 targeting policy.
+    Uses Iterative Deepening Negamax with Alpha-Beta pruning and Bitboards.
+    """
+    global TT
+    
+    # -------------------------------------------------------------------------
+    # Configuration & Constants
+    # -------------------------------------------------------------------------
+    TIME_LIMIT = 0.95  # Seconds (Safe buffer within 1.0s)
+    start_time = time.time()
+    
+    # Manage Transposition Table size to prevent excessive memory usage
+    if len(TT) > 200_000:
+        TT.clear()
+
+    # Column Weights for Heuristic (Center columns are strategically better)
+    # Col indices: 0, 1, 2, 3, 4, 5, 6
+    COL_WEIGHTS = [1, 2, 4, 6, 4, 2, 1]
+    
+    # Move ordering: explore center columns first
+    MOVE_ORDER = [3, 2, 4, 1, 5, 0, 6]
+
+    # -------------------------------------------------------------------------
+    # Bitboard Helpers
+    # -------------------------------------------------------------------------
+    # We map the 6x7 grid to bitboards.
+    # Each column has 7 bits: 6 row bits + 1 buffer bit (always 0).
+    # Row 0 (bottom) maps to bit 0, Row 5 (top) maps to bit 5. Bit 6 is buffer.
+    # Col 0: bits 0-6, Col 1: bits 7-13, ...
+    
+    # Precompute masks for each column (bits 0-5 set for each col)
+    COL_MASKS = []
+    for c in range(7):
+        m = 0
+        for r in range(6):
+            m |= (1 << (c * 7 + r))
+        COL_MASKS.append(m)
+
+    def connected_four(pos: int) -> bool:
+        """Returns True if 'pos' contains 4 connected bits."""
+        # Horizontal (shift 7)
+        m = pos & (pos >> 7)
+        if m & (m >> 14): return True
+        # Diagonal \ (shift 6)
+        m = pos & (pos >> 6)
+        if m & (m >> 12): return True
+        # Diagonal / (shift 8)
+        m = pos & (pos >> 8)
+        if m & (m >> 16): return True
+        # Vertical (shift 1)
+        m = pos & (pos >> 1)
+        if m & (m >> 2): return True
+        return False
+
+    def evaluate(pos: int, msk: int) -> int:
+        """
+        Static evaluation of the position from the perspective of 'pos' owner.
+        Higher is better. Based on piece weighted positions.
+        """
+        score = 0
+        for c in range(7):
+            p = pos & COL_MASKS[c]
+            if p:
+                # Count set bits efficiently using python's bin()
+                score += bin(p).count('1') * COL_WEIGHTS[c]
+        return score
+
+    # -------------------------------------------------------------------------
+    # Search Algorithm (Negamax)
+    # -------------------------------------------------------------------------
+    node_count = 0
+
+    def negamax(pos: int, msk: int, alpha: int, beta: int, depth: int) -> int:
+        nonlocal node_count
+        node_count += 1
+        
+        # Check time every 1024 nodes to reduce valid clock overhead
+        if (node_count & 1023) == 0:
+            if time.time() - start_time > TIME_LIMIT:
+                raise TimeoutError
+
+        state_key = (pos, msk)
+        
+        # 1. Transposition Table Lookup
+        if state_key in TT:
+            d_tt, flag_tt, score_tt = TT[state_key]
+            if d_tt >= depth:
+                if flag_tt == 0:   # Exact
+                    return score_tt
+                elif flag_tt == 1: # Lower Bound (Alpha)
+                    alpha = max(alpha, score_tt)
+                elif flag_tt == 2: # Upper Bound (Beta)
+                    beta = min(beta, score_tt)
+                
+                if alpha >= beta:
+                    return score_tt
+
+        # 2. Check for Draw (Board full)
+        # 6*7 = 42 bits.
+        if bin(msk).count('1') == 42:
+            return 0
+
+        # 3. Base Case: Leaf Node
+        if depth == 0:
+            # Score = My Heuristic - Opponent Heuristic
+            # The current 'pos' belongs to the player who just moved (in parent).
+            # Wait, negamax logic: We evaluate for the player to move at THIS node.
+            # So 'pos' is US.
+            opp_pos = msk ^ pos
+            return evaluate(pos, msk) - evaluate(opp_pos, msk)
+
+        # 4. Recursive Step
+        best_val = -float('inf')
+        flag = 2 # Default Upper Bound
+        
+        moves_found = False
+        
+        # Try moves in prioritized order
+        for c in MOVE_ORDER:
+            # Check if column 'c' is valid (top bit is 0)
+            # Top bit of col c is at index: c*7 + 5
+            if (msk & (1 << (c * 7 + 5))) == 0:
+                moves_found = True
+                
+                # Bit manipulation to get the bit index of the new move
+                # (msk + (1<<base)) carries 1s up to the first 0
+                # XOR/AND logic isolates that bit
+                move_bit = (msk + (1 << (c * 7))) & ~msk
+                
+                new_pos = pos | move_bit
+                new_msk = msk | move_bit
+                
+                # Check for immediate win
+                if connected_four(new_pos):
+                    # Favor faster wins
+                    val = 100000 + depth
+                else:
+                    # Negamax recursion
+                    # Swap perspective: 'pos' becomes opponent bits
+                    # Opponent bits = new_msk ^ new_pos
+                    val = -negamax(new_msk ^ new_pos, new_msk, -beta, -alpha, depth - 1)
+                
+                if val > best_val:
+                    best_val = val
+                
+                # Alpha-Beta pruning
+                if best_val > alpha:
+                    alpha = best_val
+                    flag = 0 # Exact
+                if alpha >= beta:
+                    flag = 1 # Lower Bound (Cutoff)
+                    break
+        
+        if not moves_found:
+            return 0 
+
+        # Store in TT
+        TT[state_key] = (depth, flag, best_val)
+        return best_val
+
+    # -------------------------------------------------------------------------
+    # Parse Board
+    # -------------------------------------------------------------------------
+    # Input: board[row][col]. row 0=top, 5=bottom.
+    # Bitboard: row 0=bottom.
+    position = 0 # My bits
+    mask = 0     # All bits
+    
+    for r in range(6):
+        for c in range(7):
+            val = board[r][c]
+            if val != 0:
+                # Convert coordinates to bit index
+                idx = c * 7 + (5 - r)
+                mask |= (1 << idx)
+                if val == 1:
+                    position |= (1 << idx)
+    
+    # -------------------------------------------------------------------------
+    # Iterative Deepening Loop
+    # -------------------------------------------------------------------------
+    
+    # Identify valid columns
+    valid_cols = []
+    for c in MOVE_ORDER:
+        if (mask & (1 << (c * 7 + 5))) == 0:
+            valid_cols.append(c)
+            
+    if not valid_cols:
+        return 0 # No moves available
+    
+    best_move = valid_cols[0]
+    
+    try:
+        # Step 0: Check immediate wins (Depth 1 equivalent, fast path)
+        for c in valid_cols:
+            move_bit = (mask + (1 << (c * 7))) & ~mask
+            if connected_four(position | move_bit):
+                return c # Win immediately
+
+        # Step 1: Deep Search
+        # Depth ranges from 1 to max 42
+        for d in range(1, 43):
+            alpha = -float('inf')
+            beta = float('inf')
+            
+            # Root Search specific logic to track Best Move
+            current_depth_best_val = -float('inf')
+            current_depth_best_move = best_move
+            
+            # Try previous best move first
+            root_moves = [best_move] + [c for c in valid_cols if c != best_move]
+            
+            for c in root_moves:
+                move_bit = (mask + (1 << (c * 7))) & ~mask
+                new_pos = position | move_bit
+                new_msk = mask | move_bit
+                
+                if connected_four(new_pos):
+                    return c # Should be caught above, but safety first
+                
+                # Call search for children
+                val = -negamax(new_msk ^ new_pos, new_msk, -beta, -alpha, d)
+                
+                if val > current_depth_best_val:
+                    current_depth_best_val = val
+                    current_depth_best_move = c
+                
+                alpha = max(alpha, val)
+            
+            # Update global best move after completing a full depth
+            best_move = current_depth_best_move
+            
+            # If we found a winning sequence, break early
+            if current_depth_best_val > 90000:
+                break
+                
+    except TimeoutError:
+        # Time limit exceeded, return the best move found in the last completed depth
+        pass
+        
+    return best_move
