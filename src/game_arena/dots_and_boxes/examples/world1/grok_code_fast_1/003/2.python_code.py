@@ -1,0 +1,56 @@
+
+import numpy as np
+
+def check_captures_and_threat(horiz, vert, capt):
+    """
+    Given temp arrays, return number of captures and whether the board is threatening.
+    Threat: any box has exactly 3 sides filled and is unclaimed.
+    """
+    captures = 0
+    threatening = False
+    for i in range(4):
+        for j in range(4):
+            edges = [horiz[i, j], horiz[i+1, j], vert[i, j], vert[i, j+1]]
+            filled = sum(1 for e in edges if e != 0)
+            if filled == 4 and capt[i, j] == 0:
+                captures += 1
+            elif filled == 3 and capt[i, j] == 0:
+                threatening = True
+    return captures, threatening
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    possible_moves = []
+    for r in range(5):
+        for c in range(5):
+            if horizontal[r, c] == 0:
+                # Simulate H move
+                h_temp = horizontal.copy()
+                v_temp = vertical.copy()
+                h_temp[r, c] = 1
+                caps, threat = check_captures_and_threat(h_temp, v_temp, capture)
+                possible_moves.append((f"{r},{c},H", caps, threat))
+            if vertical[r, c] == 0:
+                # Simulate V move
+                h_temp = horizontal.copy()
+                v_temp = vertical.copy()
+                v_temp[r, c] = 1
+                caps, threat = check_captures_and_threat(h_temp, v_temp, capture)
+                possible_moves.append((f"{r},{c},V", caps, threat))
+    
+    # Separate moves
+    capturing = [(m, caps) for m, caps, _ in possible_moves if caps > 0]
+    safe = [m for m, caps, threat in possible_moves if caps == 0 and not threat]
+    threatening = [m for m, caps, threat in possible_moves if caps == 0 and threat]
+    
+    if capturing:
+        # Choose the capturing move with max captures, then lex min
+        capturing.sort(key=lambda x: (-x[1], x[0]))
+        return capturing[0][0]
+    elif safe:
+        # Choose lex min safe move
+        safe.sort()
+        return safe[0]
+    else:
+        # Choose lex min threatening move
+        threatening.sort()
+        return threatening[0]

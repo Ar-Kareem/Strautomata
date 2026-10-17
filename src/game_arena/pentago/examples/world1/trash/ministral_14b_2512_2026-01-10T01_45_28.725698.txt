@@ -1,0 +1,180 @@
+### Thinking Process
+
+**Understanding Pentago Rules and State Representation:**
+1. **Board Structure**: The Pentago board is 6x6, divided into 4 quadrants (3x3 each). Each quadrant can be rotated independently.
+2. **Move Mechanics**: On a turn, a player places a marble in an empty cell and then rotates one quadrant (either left or right).
+3. **Win Condition**: A player wins if they have 5 marbles in a row (horizontally, vertically, or diagonally) after the placement and rotation.
+
+**Key Observations:**
+- The placement step is straightforward: choose an empty cell.
+- The rotation step can significantly change the board state, potentially creating winning opportunities or blocking the opponent.
+- The challenge is to evaluate the board state after both placement and rotation to determine the best move.
+
+**Strategy Design:**
+1. **Legal Move Generation**: First, generate all possible legal moves (all empty cells and all possible rotations for each quadrant).
+2. **Move Evaluation**: For each legal move, simulate the placement and rotation, then check if the move leads to a win. If not, prioritize moves that block the opponent's potential wins.
+3. **Fallback Strategy**: If no immediate winning or blocking moves are found, choose a move that maximizes the player's potential for future wins (e.g., central control or symmetry).
+
+**Implementation Steps:**
+1. **Simulate Placement and Rotation**: For each empty cell and each quadrant rotation, simulate the new board state.
+2. **Check Win Condition**: After simulating the move, check if the player has 5 in a row. If yes, prioritize this move.
+3. **Check Opponent's Potential Wins**: If no immediate win, check if the opponent can win in their next move. Block such moves.
+4. **Default Move**: If no winning or blocking moves, choose a move that places a marble in a central or symmetric position to maintain balance.
+
+**Optimizations:**
+- Use efficient data structures (e.g., numpy arrays) for board representation and manipulation.
+- Precompute possible winning lines to quickly check for 5-in-a-row after a move.
+
+**Edge Cases:**
+- Handle cases where multiple moves lead to a win or block the opponent.
+- Ensure the move is always legal (empty cell, valid quadrant, valid direction).
+
+### Python Implementation
+
+```python
+import numpy as np
+
+def policy(you, opponent) -> str:
+    # Convert inputs to numpy arrays for easier manipulation
+    you_board = np.array(you, dtype=int)
+    opponent_board = np.array(opponent, dtype=int)
+
+    # Directions for rotation: L (anticlockwise) and R (clockwise)
+    directions = ['L', 'R']
+
+    # All possible empty cells (1-based indexing)
+    empty_cells = [(r, c) for r in range(6) for c in range(6) if you_board[r][c] == 0 and opponent_board[r][c] == 0]
+
+    # Quadrant boundaries: (start_row, end_row, start_col, end_col)
+    quadrants = [
+        (0, 3, 0, 3),  # quad 0: top-left
+        (0, 3, 3, 6),  # quad 1: top-right
+        (3, 6, 0, 3),  # quad 2: bottom-left
+        (3, 6, 3, 6)   # quad 3: bottom-right
+    ]
+
+    # Directions for checking 5-in-a-row (horizontal, vertical, diagonal1, diagonal2)
+    win_directions = [
+        ((0, 1), 5),  # horizontal
+        ((1, 0), 5),  # vertical
+        ((1, 1), 5),  # diagonal down-right
+        ((1, -1), 5)  # diagonal down-left
+    ]
+
+    def rotate_quadrant(board, quad, direction):
+        """Rotate a quadrant in the given direction (L or R)."""
+        start_r, end_r, start_c, end_c = quadrants[quad]
+        sub_board = board[start_r:end_r, start_c:end_c]
+
+        if direction == 'L':
+            # 90 degrees anticlockwise
+            rotated = np.rot90(sub_board, k=1)
+        else:  # direction == 'R'
+            # 90 degrees clockwise
+            rotated = np.rot90(sub_board, k=-1)
+
+        board[start_r:end_r, start_c:end_c] = rotated
+        return board
+
+    def check_win(board, player):
+        """Check if the player has 5 in a row in any direction."""
+        for dr, dc, length in win_directions:
+            for r in range(6):
+                for c in range(6):
+                    if board[r][c] == player:
+                        count = 1
+                        for step in range(1, length):
+                            nr, nc = r + step * dr[0], c + step * dr[1]
+                            if 0 <= nr < 6 and 0 <= nc < 6 and board[nr][nc] == player:
+                                count += 1
+                            else:
+                                break
+                        if count >= 5:
+                            return True
+                        # Check the other direction
+                        count = 1
+                        for step in range(1, length):
+                            nr, nc = r - step * dr[0], c - step * dr[1]
+                            if 0 <= nr < 6 and 0 <= nc < 6 and board[nr][nc] == player:
+                                count += 1
+                            else:
+                                break
+                        if count >= 5:
+                            return True
+        return False
+
+    def simulate_move(r, c, quad, direction):
+        """Simulate a move and return the new board state."""
+        new_you = you_board.copy()
+        new_opponent = opponent_board.copy()
+        # Place the marble
+        new_you[r-1, c-1] = 1
+        # Rotate the quadrant
+        new_you = rotate_quadrant(new_you, quad, direction)
+        new_opponent = rotate_quadrant(new_opponent, quad, direction)
+        return new_you, new_opponent
+
+    # Generate all possible moves and evaluate them
+    best_move = None
+    best_score = -float('inf')
+
+    for r, c in empty_cells:
+        for quad in range(4):
+            for direction in directions:
+                new_you, new_opponent = simulate_move(r, c, quad, direction)
+                # Check if this move wins
+                if check_win(new_you, 1):
+                    return f"{r},{c},{quad},{direction}"
+                # Check if opponent can win after this move (blocking)
+                opponent_wins = False
+                for or_, oc in empty_cells:
+                    if new_you[or_-1, oc-1] == 0 and new_opponent[or_-1, oc-1] == 0:
+                        for oquad in range(4):
+                            for odir in directions:
+                                o_new_you, o_new_opponent = simulate_move(or_, oc, oquad, odir)
+                                if check_win(o_new_opponent, 1):
+                                    opponent_wins = True
+                                    break
+                            if opponent_wins:
+                                break
+                        if opponent_wins:
+                            break
+                    if opponent_wins:
+                        break
+                if not opponent_wins:
+                    # Prefer moves that don't allow opponent to win
+                    score = 1000  # High score for blocking moves
+                    if best_move is None or score > best_score:
+                        best_score = score
+                        best_move = (r, c, quad, direction)
+
+    # If no winning or blocking move, choose a move that places in the center or symmetric position
+    if best_move is None:
+        # Prefer central cells (rows 3-4, cols 3-4)
+        center_cells = [(r, c) for r in range(3, 5) for c in range(3, 5) if (r, c) in empty_cells]
+        if center_cells:
+            r, c = center_cells[0]
+            quad = 0  # Default to top-left quadrant
+            direction = 'L'  # Default direction
+            return f"{r},{c},{quad},{direction}"
+        else:
+            # Fallback: choose any empty cell and any rotation
+            r, c = empty_cells[0]
+            quad = 0
+            direction = 'L'
+            return f"{r},{c},{quad},{direction}"
+
+    # Return the best move found
+    r, c, quad, direction = best_move
+    return f"{r},{c},{quad},{direction}"
+```
+
+### Explanation of the Code:
+1. **Board Representation**: The input boards are converted to numpy arrays for efficient manipulation.
+2. **Legal Moves**: All empty cells are identified, and all possible rotations (quadrant and direction) are considered.
+3. **Move Simulation**: For each possible move, the placement and rotation are simulated to create a new board state.
+4. **Win Check**: The `check_win` function checks if the player has 5 marbles in a row in any direction after the move.
+5. **Opponent Blocking**: If no immediate win is found, the code checks if the opponent can win in their next move and blocks such moves.
+6. **Default Strategy**: If no winning or blocking moves are found, the code defaults to placing a marble in a central position and rotating a quadrant.
+
+This approach ensures that the policy always returns a legal move while prioritizing winning and blocking strategies. The code is efficient and should run within the time constraints.

@@ -1,0 +1,143 @@
+The following implementation uses a **Probability Density Function (PDF)** approach to solve the Battleship targeting problem.
+
+### Strategy Breakdown
+1. **Probability Map**: We construct a 10x10 grid where each cell's value represents the likelihood of containing a ship.
+2. **Simulation**: We iterate through every remaining ship type (lengths 5, 4, 3, 3, 2) and every possible position on the board.
+   - If a ship placement overlaps a **Miss (-1)**, it is discarded.
+   - If a ship placement overlaps **Hits (1)**, it is given a massively boosted "Target" weight, proportional to the number of hits it explains. This naturally handles "Target Mode" by prioritizing the extension of existing hit chains.
+   - If a ship placement is in open water, it adds a small "Hunt" weight.
+3. **No "Sunk" Information**: Since the game does not announce when a ship is sunk, the algorithm relies on the fact that fully enclosed lines of hits (e.g., `Miss, Hit, Hit, Hit, Miss`) will typically allow *no* valid placements of larger ships overlaying them, naturally dropping the probability of their neighbors to zero (or low background levels). This avoids wasting shots on destroyed ships.
+4. **Checkerboard Parity**: When in "Hunt Mode" (no active targets), the algorithm filters targets using a checkerboard pattern. Since the smallest ship is size 2, searching only half the squares (where `row + col` is even) guarantees finding every ship while halving the number of search turns.
+
+```python
+import random
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next target given the current board state.
+    board: 10x10 list of lists.
+           0  -> Unknown
+           -1 -> Miss
+           1  -> Hit
+    Returns: (row, col)
+    """
+    
+    # Convert to numpy array for easier slicing and masking
+    grid = np.array(board)
+    rows, cols = grid.shape
+    
+    # Ship inventory: 1x5, 1x4, 2x3, 1x2
+    # We treat all ships as potentially present to build a probability density map.
+    ships = [5, 4, 3, 3, 2]
+    
+    # Masks for cell states
+    misses = (grid == -1)
+    hits = (grid == 1)
+    unknowns = (grid == 0)
+    
+    # Initialize probability map
+    # We will accumulate 'likelihood' scores for every cell
+    prob_map = np.zeros((rows, cols), dtype=float)
+    
+    # Constants for weighting
+    HUNT_WEIGHT = 1.0
+    # Bonus for overlapping existing hits. 
+    # Must be high enough to dominate hunt mode probabilities.
+    TARGET_BONUS_BASE = 1000.0 
+    TARGET_BONUS_PER_HIT = 100.0
+
+    # compute probability density
+    for ship_len in ships:
+        # Check Horizontal Placements
+        for r in range(rows):
+            for c in range(cols - ship_len + 1):
+                # Slice of the board for this ship placement
+                segment = grid[r, c : c + ship_len]
+                miss_segment = misses[r, c : c + ship_len]
+                
+                # If placement overlaps a known miss, it's invalid
+                if np.any(miss_segment):
+                    continue
+                
+                # Count hits covered by this placement
+                hit_segment = hits[r, c : c + ship_len]
+                hit_count = np.sum(hit_segment)
+                
+                # Determine weight for this placement
+                weight = HUNT_WEIGHT
+                if hit_count > 0:
+                    # In Target Mode (explaining hits)
+                    # We scale by hit_count to prioritize extending lines of hits
+                    # over single isolated hits.
+                    weight = TARGET_BONUS_BASE + (TARGET_BONUS_PER_HIT * hit_count)
+                
+                # Add weight to all UNKNOWN cells in this placement
+                # (We don't target known hits or misses)
+                # We update the prob_map slice using the unknown mask
+                prob_slice = prob_map[r, c : c + ship_len]
+                unknown_slice = unknowns[r, c : c + ship_len]
+                prob_slice[unknown_slice] += weight
+                
+        # Check Vertical Placements
+        for c in range(cols):
+            for r in range(rows - ship_len + 1):
+                segment = grid[r : r + ship_len, c]
+                miss_segment = misses[r : r + ship_len, c]
+                
+                if np.any(miss_segment):
+                    continue
+                    
+                hit_segment = hits[r : r + ship_len, c]
+                hit_count = np.sum(hit_segment)
+                
+                weight = HUNT_WEIGHT
+                if hit_count > 0:
+                    weight = TARGET_BONUS_BASE + (TARGET_BONUS_PER_HIT * hit_count)
+                
+                prob_slice = prob_map[r : r + ship_len, c]
+                unknown_slice = unknowns[r : r + ship_len, c]
+                prob_slice[unknown_slice] += weight
+
+    # Force probability of already fired cells to 0
+    prob_map[~unknowns] = 0.0
+    
+    # Find the best score
+    max_score = np.max(prob_map)
+    
+    # Fallback for empty map (e.g., if no valid placement exists, highly unlikely)
+    if max_score == 0.0:
+        candidates = np.argwhere(unknowns)
+        if len(candidates) > 0:
+            idx = random.randrange(len(candidates))
+            return tuple(candidates[idx])
+        else:
+            return (0, 0) # Should not happen in valid game loop
+
+    # Strategy Selection: Hunt vs Target
+    # If max_score indicates a Target probability (>= TARGET_BONUS_BASE), we strictly target.
+    # Otherwise, we use parity (checkerboard) filtering to optimize Hunt efficiency.
+    
+    if max_score >= TARGET_BONUS_BASE:
+        # Target Mode: Pick any cell with max_score
+        candidates = np.argwhere(prob_map == max_score)
+    else:
+        # Hunt Mode: Apply checkerboard mask
+        # Since smallest ship is 2, a checkerboard pattern ensures we hit every ship.
+        # Parity: (row + col) % 2 == 0
+        checkerboard_mask = (np.indices((rows, cols)).sum(axis=0) % 2) == 0
+        masked_prob_map = prob_map * checkerboard_mask
+        
+        masked_max = np.max(masked_prob_map)
+        
+        if masked_max > 0:
+            candidates = np.argwhere(masked_prob_map == masked_max)
+        else:
+            # If checkerboard yields no targets (e.g. only odd cells remain),
+            # fall back to the unmasked map.
+            candidates = np.argwhere(prob_map == max_score)
+            
+    # Select random candidate to break ties non-deterministically
+    choice_idx = random.randrange(len(candidates))
+    return tuple(candidates[choice_idx])
+```

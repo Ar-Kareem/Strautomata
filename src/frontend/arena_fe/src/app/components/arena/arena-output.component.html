@@ -1,0 +1,212 @@
+<div
+  #outputPanel
+  class="panel panel-secondary arena-output-panel"
+  [style.--arena-output-max-width.px]="panelMaxWidth"
+  [class.is-resizing]="isResizingPanel"
+>
+  <div class="panel-head">
+    <div class="arena-output-title-row">
+      <button
+        class="ghost-button arena-icon-button arena-reload-button"
+        type="button"
+        (click)="restartSeries()"
+        [disabled]="!canControlMatch"
+        aria-label="Restart series"
+        title="Restart series"
+      >
+        <i class="fa-solid fa-arrow-rotate-right" aria-hidden="true"></i>
+      </button>
+    </div>
+    <div class="panel-actions">
+      @if (isAiVsAi) {
+        <button
+          class="ghost-button"
+          [class.arena-play-button]="!state().match.isPlaying"
+          [class.arena-pause-button]="state().match.isPlaying"
+          type="button"
+          (click)="togglePlay()"
+          [disabled]="!canControlMatch"
+          [attr.aria-label]="state().match.isPlaying ? 'Pause' : 'Play'"
+        >
+          @if (state().match.isPlaying) {
+            <i class="fa-solid fa-pause" aria-hidden="true"></i>
+          } @else {
+            <i class="fa-solid fa-play" aria-hidden="true"></i>
+          }
+        </button>
+      }
+      @if (showNextRoundButton) {
+        <button
+          class="ghost-button arena-next-round-button"
+          type="button"
+          (click)="startNextRound()"
+          [disabled]="!canControlMatch"
+          aria-label="Next Round"
+        >
+          <span>Next Round</span>
+          <i class="fa-solid fa-angles-right" aria-hidden="true"></i>
+        </button>
+      } @else if (isAiVsAi) {
+        <button
+          class="ghost-button arena-step-button"
+          [class.is-busy]="isAiStepBusy"
+          type="button"
+          (click)="onAiStepBusyClick()"
+          [disabled]="!canControlMatch"
+          aria-live="polite"
+          aria-label="Step"
+        >
+          @if (isAiStepBusy) {
+            <span class="arena-step-activity" aria-hidden="true"></span>
+            Busy
+          } @else {
+            Step
+          }
+        </button>
+      } @else if (isHumanVsAi) {
+        <span
+          class="ghost-button arena-step-button arena-step-status"
+          [class.is-busy]="state().match.stepInFlight"
+          aria-live="polite"
+        >
+          @if (state().match.stepInFlight) {
+            <span class="arena-step-activity" aria-hidden="true"></span>
+            Busy
+          } @else {
+            Idle
+          }
+        </span>
+      }
+    </div>
+  </div>
+  @if (isAiVsAi) {
+    <div class="control-row">
+      <label for="speedRange">Speed</label>
+      <input
+        id="speedRange"
+        type="range"
+        min="1"
+        [max]="state().match.maxMoveSpeed"
+        step="1"
+        [value]="state().match.moveSpeed"
+        (input)="onSpeedChange($event)"
+      >
+      <span class="speed-value">{{ state().match.moveSpeed >= state().match.maxMoveSpeed ? 'Max (no wait)' : state().match.moveSpeed + ' moves/s' }}</span>
+    </div>
+  }
+  <div class="scoreboard">
+    <div class="score-card">
+      <span
+        class="score-label"
+        [pTooltip]="resolveBotLabel(state().catalog.bots, state().selection.botAId, 'Automaton A')"
+        tooltipPosition="top"
+      >
+        {{ resolveBotLabel(state().catalog.bots, state().selection.botAId, 'Automaton A') }}
+      </span>
+      <span class="score-value">{{ state().match.scoreboard.botAWins }}</span>
+    </div>
+    <div class="score-card">
+      <span
+        class="score-label"
+        [pTooltip]="resolveBotLabel(state().catalog.bots, state().selection.botBId, 'Automaton B')"
+        tooltipPosition="top"
+      >
+        {{ resolveBotLabel(state().catalog.bots, state().selection.botBId, 'Automaton B') }}
+      </span>
+      <span class="score-value">{{ state().match.scoreboard.botBWins }}</span>
+    </div>
+    <div class="score-card">
+      <span class="score-label">Draws</span>
+      <span class="score-value">{{ state().match.scoreboard.draws }}</span>
+    </div>
+    <div class="score-card">
+      <span class="score-label">Games</span>
+      <span class="score-value">{{ state().match.scoreboard.games }}</span>
+    </div>
+  </div>
+  @if (activeGui) {
+    <section class="game-gui arena-game-gui">
+      <div class="arena-board-overlays">
+        <!-- an error shown by the game GUI takes this spot over the board -->
+        <arena-gui-alert
+          class="arena-move-warning"
+          [message]="state().status.tone === 'error' ? null : state().match.moveWarning"
+        ></arena-gui-alert>
+      </div>
+      <ng-container
+        [ngComponentOutlet]="activeGui"
+        [ngComponentOutletInputs]="guiInputs"
+      ></ng-container>
+      @if (state().match.hungAutomaton; as hung) {
+        <div class="arena-hung-backdrop">
+          <div class="arena-hung-prompt" role="alertdialog" aria-labelledby="arenaHungTitle">
+            <span class="arena-hung-spinner" aria-hidden="true"></span>
+            <p id="arenaHungTitle" class="arena-hung-title">
+              {{ resolveBotLabel(state().catalog.bots, hung.botId, 'The automaton') }} is not responding
+            </p>
+            <div class="arena-hung-actions">
+              <button class="ghost-button" type="button" (click)="chooseHung('wait')">Wait</button>
+              @if (hung.canResume) {
+                <button class="ghost-button" type="button" (click)="chooseHung('random')">Play random</button>
+              }
+              <button class="ghost-button arena-hung-kill" type="button" (click)="chooseHung('kill')">Kill</button>
+            </div>
+          </div>
+        </div>
+      }
+    </section>
+  }
+  <div class="console-widget" [class.is-collapsed]="isConsoleCollapsed">
+    <button
+      class="console-toggle"
+      type="button"
+      [attr.aria-expanded]="!isConsoleCollapsed"
+      [attr.aria-label]="isConsoleCollapsed ? 'Show console' : 'Hide console'"
+      aria-controls="arenaConsole"
+      (click)="toggleConsole()"
+    >
+      <span class="console-toggle-title">Console output</span>
+      <span class="console-toggle-meta">{{ isConsoleCollapsed ? 'Show console' : 'Hide console' }}</span>
+    </button>
+    @if (!isConsoleCollapsed) {
+      <div id="arenaConsole" class="console" aria-live="polite">
+        @if (state().openSpiel.tone !== 'idle') {
+          <div class="console-status" [attr.data-tone]="state().openSpiel.tone">
+            OpenSpiel: {{ state().openSpiel.message }}
+          </div>
+        }
+        @if (state().openSpiel.errorLines.length > 0) {
+          <div class="console-lines">
+            @for (line of state().openSpiel.errorLines; track $index) {
+              <div class="console-line">{{ line }}</div>
+            }
+          </div>
+        }
+        @if (!state().match.isPlaying && state().match.stepInFlight) {
+          <div class="console-status">...</div>
+        } @else if (state().match.isPlaying) {
+          <div class="console-status">Running match... stand by.</div>
+        } @else if (state().match.matchReady) {
+          <div class="console-status">Paused. Press play to continue.</div>
+        }
+        @if (state().match.outputLines.length > 0) {
+          <div class="console-lines">
+            @for (line of state().match.outputLines; track $index) {
+              <div class="console-line">{{ line }}</div>
+            }
+          </div>
+        } @else {
+          <div class="console-placeholder">
+            Select automata to auto-run the match. Output will appear here as plain text.
+          </div>
+        }
+      </div>
+    }
+  </div>
+  <button
+    class="arena-panel-resize-handle"
+    type="button"
+    (pointerdown)="onPanelResizeStart($event)"
+    aria-label="Resize output panel width"
+  ></button>
+</div>

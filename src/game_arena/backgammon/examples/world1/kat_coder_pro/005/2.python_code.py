@@ -1,0 +1,171 @@
+
+import numpy as np
+from itertools import combinations
+
+def policy(state: dict) -> str:
+    # Extract state information
+    my_pts = np.array(state['my_pts'])
+    opp_pts = np.array(state['opp_pts'])
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = sorted(state['dice'], reverse=True)
+    
+    # If no dice, return pass
+    if not dice:
+        return "H:P,P"
+    
+    # Determine legal moves
+    legal_moves = get_legal_moves(state, dice)
+    
+    # If no legal moves, return pass
+    if not legal_moves:
+        return "H:P,P"
+    
+    # Evaluate each legal move and select the best one
+    best_move = None
+    best_score = float('inf')
+    
+    for move in legal_moves:
+        score = evaluate_move(state, move, dice)
+        if score < best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move
+
+def get_legal_moves(state: dict, dice):
+    """Get all legal moves for the current state and dice"""
+    legal_moves = []
+    my_pts = np.array(state['my_pts'])
+    opp_pts = np.array(state['opp_pts'])
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    
+    # Check if we have checkers on the bar
+    if my_bar > 0:
+        # Must re-enter from bar
+        for die in dice:
+            target = 24 - die  # Target point index from bar
+            if target >= 0 and target < 24 and opp_pts[target] < 2:
+                # This die can be used to re-enter
+                remaining_dice = dice.copy()
+                remaining_dice.remove(die)
+                
+                # If there are remaining dice, find moves for them
+                if remaining_dice:
+                    sub_moves = find_moves_from_point(state, remaining_dice, target)
+                    for sub_move in sub_moves:
+                        legal_moves.append(f"H:{point_to_str('B')},{point_to_str(sub_move[0])}")
+                        legal_moves.append(f"L:{point_to_str('B')},{point_to_str(sub_move[0])}")
+                else:
+                    legal_moves.append(f"H:{point_to_str('B')},P")
+                    legal_moves.append(f"L:{point_to_str('B')},P")
+    else:
+        # No checkers on bar, find all possible moves
+        for point in range(24):
+            if my_pts[point] > 0:
+                # Try to move a checker from this point
+                for i, die in enumerate(dice):
+                    target = (point - die) % 24
+                    if opp_pts[target] < 2:
+                        remaining_dice = dice.copy()
+                        remaining_dice.remove(die)
+                        
+                        if remaining_dice:
+                            sub_moves = find_moves_from_point(state, remaining_dice, target)
+                            for sub_move in sub_moves:
+                                legal_moves.append(f"H:{point_to_str(point)},{point_to_str(sub_move[0])}")
+                                legal_moves.append(f"L:{point_to_str(point)},{point_to_str(sub_move[0])}")
+                        else:
+                            legal_moves.append(f"H:{point_to_str(point)},P")
+                            legal_moves.append(f"L:{point_to_str(point)},P")
+    
+    # Filter duplicate moves
+    legal_moves = list(set(legal_moves))
+    
+    return legal_moves
+
+def find_moves_from_point(state, dice, start_point):
+    """Find all possible moves from a given point"""
+    my_pts = np.array(state['my_pts'])
+    opp_pts = np.array(state['opp_pts'])
+    moves = []
+    
+    for die in dice:
+        target = (start_point - die) % 24
+        if opp_pts[target] < 2:
+            moves.append((target,))
+            
+    return moves
+
+def point_to_str(point):
+    """Convert point index to string format"""
+    if point == 'B':
+        return 'B'
+    elif point == 'P':
+        return 'P'
+    else:
+        return f'A{point}'
+
+def evaluate_move(state: dict, move: str, dice):
+    """Evaluate a move based on strategic factors"""
+    my_pts = np.array(state['my_pts'])
+    opp_pts = np.array(state['opp_pts'])
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    
+    # Parse the move
+    parts = move.split(':')
+    order = parts[0]
+    from_points = parts[1].split(',')
+    
+    # Calculate pip count for my checkers
+    my_pip_count = sum(i * my_pts[i] for i in range(24))
+    
+    # Calculate opponent's pip count
+    opp_pip_count = sum(i * opp_pts[i] for i in range(24))
+    
+    # Score components
+    score = 0
+    
+    # 1. Minimize pip count
+    score += my_pip_count * 0.1
+    
+    # 2. Maximize opponent's pip count
+    score -= opp_pip_count * 0.05
+    
+    # 3. Penalize having checkers on the bar
+    score += my_bar * 10
+    
+    # 4. Reward getting opponent's checkers on the bar
+    score -= opp_bar * 5
+    
+    # 5. Reward bearing off
+    score -= my_off * 5
+    
+    # 6. Penalize opponent bearing off
+    score += opp_off * 3
+    
+    # 7. Reward creating blocked points (2+ checkers)
+    blocked_points = sum(1 for i in range(24) if my_pts[i] >= 2)
+    score -= blocked_points * 2
+    
+    # 8. Penalize opponent's blocked points
+    opp_blocked_points = sum(1 for i in range(24) if opp_pts[i] >= 2)
+    score += opp_blocked_points * 1
+    
+    # 9. Reward moving checkers from opponent's home board
+    opp_home_checkers = sum(my_pts[i] for i in range(18, 24))
+    score -= opp_home_checkers * 0.5
+    
+    # 10. Penalize leaving blots (single checkers)
+    blots = sum(1 for i in range(24) if my_pts[i] == 1)
+    score += blots * 3
+    
+    return score

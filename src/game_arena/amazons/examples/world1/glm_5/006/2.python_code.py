@@ -1,0 +1,212 @@
+
+import numpy as np
+import time
+
+# Global constants
+DIRECTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+BOARD_SIZE = 6
+TIME_LIMIT = 0.9 # Seconds
+
+class TimeoutException(Exception):
+    pass
+
+def get_valid_squares(board, r, c):
+    """Returns a list of (row, col) squares reachable from (r, c) by a queen move."""
+    valid = []
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+            if board[nr, nc] == 0:
+                valid.append((nr, nc))
+                nr += dr
+                nc += dc
+            else:
+                break
+    return valid
+
+def get_all_actions(board, player):
+    """Generates all legal actions for the player."""
+    actions = []
+    pieces = np.argwhere(board == player)
+    
+    for p in pieces:
+        r, c = int(p[0]), int(p[1])
+        # Get valid moves for the piece
+        # We temporarily vacate the spot to allow passing through it if needed?
+        # No, standard queen move doesn't pass through others. 
+        # But the piece itself is at (r,c). We need empty squares.
+        
+        # Optimization: We can calculate valid moves for the piece first
+        to_squares = get_valid_squares(board, r, c)
+        
+        for tr, tc in to_squares:
+            # Simulate the move to calculate arrow shots
+            # The square (r,c) becomes empty, (tr,tc) becomes occupied
+            board[r, c] = 0
+            board[tr, tc] = player
+            
+            arrow_squares = get_valid_squares(board, tr, tc)
+            
+            for ar, ac in arrow_squares:
+                actions.append(((r, c), (tr, tc), (ar, ac)))
+            
+            # Undo move simulation
+            board[tr, tc] = 0
+            board[r, c] = player
+            
+    return actions
+
+def evaluate_board(board):
+    """
+    Evaluates the board state.
+    Positive score favors Player 1 (us), negative favors Player 2.
+    Metric: Difference in total available moves (mobility).
+    """
+    # Mobility for Player 1
+    p1_pieces = np.argwhere(board == 1)
+    p1_mobility = 0
+    for p in p1_pieces:
+        p1_mobility += len(get_valid_squares(board, int(p[0]), int(p[1])))
+        
+    # Mobility for Player 2
+    p2_pieces = np.argwhere(board == 2)
+    p2_mobility = 0
+    for p in p2_pieces:
+        p2_mobility += len(get_valid_squares(board, int(p[0]), int(p[1])))
+        
+    # Basic terminal check
+    # If current player has 0 mobility, they lose. 
+    # But since evaluation is static, we just return extreme values if one side is stuck.
+    if p1_mobility == 0:
+        return -100000
+    if p2_mobility == 0:
+        return 100000
+        
+    return p1_mobility - p2_mobility
+
+def minimax(board, depth, alpha, beta, maximizing_player, start_time):
+    """Minimax with Alpha-Beta pruning."""
+    
+    # Time check
+    if time.time() - start_time > TIME_LIMIT:
+        raise TimeoutException()
+
+    # Generate actions for the current player
+    player = 1 if maximizing_player else 2
+    actions = get_all_actions(board, player)
+    
+    # Terminal condition: no moves left
+    if not actions:
+        return (100000 if not maximizing_player else -100000), None
+        
+    if depth == 0:
+        return evaluate_board(board), None
+
+    # Move Ordering: Heuristic based on mobility after move
+    # We can sort actions based on a quick heuristic to improve pruning
+    # For simplicity and speed, we might skip complex sorting, or just sort by:
+    # "Number of moves available to the moved piece at its new position"
+    # Let's try a simple sort.
+    def move_score(action):
+        fr, to, ar = action
+        # Temporarily apply move to evaluate mobility of that specific piece?
+        # Too slow. Just use distance to center or simple heuristic?
+        # Let's try: arrow distance to center? No.
+        # Let's trust the search depth and keep it simple.
+        return 0
+    
+    # We can't easily score without applying. Let's proceed.
+    # Random or natural order often okay for shallow depths.
+    
+    best_move = None
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        for action in actions:
+            fr, to, ar = action
+            
+            # Apply move
+            board[fr[0], fr[1]] = 0
+            board[to[0], to[1]] = 1
+            board[ar[0], ar[1]] = -1
+            
+            eval_score, _ = minimax(board, depth - 1, alpha, beta, False, start_time)
+            
+            # Undo move
+            board[ar[0], ar[1]] = 0
+            board[to[0], to[1]] = 0
+            board[fr[0], fr[1]] = 1
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = action
+                
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+                
+        return max_eval, best_move
+        
+    else:
+        min_eval = float('inf')
+        for action in actions:
+            fr, to, ar = action
+            
+            # Apply move (Player 2)
+            board[fr[0], fr[1]] = 0
+            board[to[0], to[1]] = 2
+            board[ar[0], ar[1]] = -1
+            
+            eval_score, _ = minimax(board, depth - 1, alpha, beta, True, start_time)
+            
+            # Undo move
+            board[ar[0], ar[1]] = 0
+            board[to[0], to[1]] = 0
+            board[fr[0], fr[1]] = 2
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = action
+                
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+                
+        return min_eval, best_move
+
+def policy(board):
+    board = np.array(board, dtype=int)
+    
+    # Check if we have any moves at all (sanity check)
+    my_actions = get_all_actions(board, 1)
+    if not my_actions:
+        return "" # Should not happen per prompt
+    
+    start_time = time.time()
+    best_move = my_actions[0] # Default fallback
+    
+    # Iterative Deepening
+    try:
+        for depth in range(1, 10): # Search up to depth 9
+            # Order moves: simple heuristic to try promising ones first
+            # For the root, we can apply a simple sort: prefer moves that maximize our mobility?
+            # Let's just run minimax.
+            
+            # We need to handle the case where minimax returns a move, but time ran out inside.
+            # The TimeoutException will break the loop.
+            
+            score, move = minimax(board, depth, -float('inf'), float('inf'), True, start_time)
+            
+            if move:
+                best_move = move
+                
+            # If we found a winning move, stop
+            if score >= 50000:
+                break
+                
+    except TimeoutException:
+        pass # Just return the best move found so far
+        
+    # Format move
+    fr, to, ar = best_move
+    return f"{fr[0]},{fr[1]}:{to[0]},{to[1]}:{ar[0]},{ar[1]}"

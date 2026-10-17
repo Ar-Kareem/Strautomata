@@ -1,0 +1,347 @@
+Here's a Python implementation for a 3D Tic Tac Toe (3x3x3) policy function that uses a simple heuristic-based approach to determine the next move. This solution prioritizes winning moves, then blocks opponent's winning moves, then looks for moves that complete a line (potential future wins), and finally chooses a random empty cell if no strategic move is available.
+
+```python
+import numpy as np
+import random
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next move for a 3D Tic Tac Toe game using a heuristic-based approach.
+
+    Args:
+        board: A 3x3x3 board represented as a list of lists of lists.
+               0 = empty, 1 = player, -1 = opponent.
+
+    Returns:
+        A tuple (x, y, z) representing the coordinates of the next move.
+    """
+    # Convert to numpy array for easier manipulation
+    np_board = np.array(board)
+
+    # Check for winning moves (player's perspective)
+    winning_move = find_winning_move(np_board, 1)
+    if winning_move is not None:
+        return winning_move
+
+    # Check for opponent's winning moves (block them)
+    blocking_move = find_winning_move(np_board, -1)
+    if blocking_move is not None:
+        return blocking_move
+
+    # Look for moves that complete a line (potential future wins)
+    potential_wins = find_potential_wins(np_board, 1)
+    if potential_wins:
+        return random.choice(potential_wins)
+
+    # Look for moves that complete a line for opponent (avoid giving them potential wins)
+    opponent_potential_wins = find_potential_wins(np_board, -1)
+    if opponent_potential_wins:
+        # Choose the move that blocks the most potential wins for opponent
+        # Here we just pick one randomly to keep it simple
+        return random.choice(opponent_potential_wins)
+
+    # Prefer center if available (general strategy)
+    if np_board[1, 1, 1] == 0:
+        return (1, 1, 1)
+
+    # Prefer corners if available (general strategy)
+    corners = [(0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+              (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)]
+    available_corners = [c for c in corners if np_board[c] == 0]
+    if available_corners:
+        return random.choice(available_corners)
+
+    # Otherwise choose any random empty cell
+    empty_cells = [(x, y, z) for x in range(3) for y in range(3) for z in range(3) if np_board[x, y, z] == 0]
+    if empty_cells:
+        return random.choice(empty_cells)
+
+    # No moves available (shouldn't happen in normal game)
+    return (0, 0, 0)
+
+def find_winning_move(board: np.ndarray, player: int) -> tuple[int, int, int]:
+    """
+    Finds a winning move for the given player.
+
+    Args:
+        board: The current board state.
+        player: The player to check for (1 or -1).
+
+    Returns:
+        A tuple (x, y, z) representing the winning move if found, None otherwise.
+    """
+    # Check all possible lines (rows, columns, diagonals in all 3 layers and 3 dimensions)
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x, y, z] == 0:
+                    # Check if placing player here would win
+                    board[x, y, z] = player
+                    if check_win(board, player):
+                        board[x, y, z] = 0  # Undo the move
+                        return (x, y, z)
+                    board[x, y, z] = 0  # Undo the move
+
+    return None
+
+def find_potential_wins(board: np.ndarray, player: int) -> list[tuple[int, int, int]]:
+    """
+    Finds all potential winning moves (moves that complete a line for the player).
+
+    Args:
+        board: The current board state.
+        player: The player to check for (1 or -1).
+
+    Returns:
+        A list of tuples (x, y, z) representing potential winning moves.
+    """
+    potential_moves = []
+
+    # Check all possible lines (rows, columns, diagonals in all 3 layers and 3 dimensions)
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x, y, z] == 0:
+                    # Check if placing player here would complete a line
+                    board[x, y, z] = player
+                    if check_line(board, player, x, y, z):
+                        potential_moves.append((x, y, z))
+                    board[x, y, z] = 0  # Undo the move
+
+    return potential_moves
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """
+    Checks if the given player has won the game.
+
+    Args:
+        board: The current board state.
+        player: The player to check for (1 or -1).
+
+    Returns:
+        True if player has won, False otherwise.
+    """
+    # Check all rows in all layers (x and y fixed, z varies)
+    for x in range(3):
+        for y in range(3):
+            if check_line(board, player, x, y, 0):
+                return True
+
+    # Check all columns in all layers (x and y fixed, z varies)
+    for x in range(3):
+        for z in range(3):
+            if check_line(board, player, x, 0, z):
+                return True
+
+    # Check all diagonals in all layers (x and y fixed, z varies)
+    for x in range(3):
+        for y in range(3):
+            if x == y:
+                if check_line(board, player, x, 0, 0):
+                    return True
+                if check_line(board, player, x, 1, 1):
+                    return True
+                if check_line(board, player, x, 2, 2):
+                    return True
+            if x + y == 2:
+                if check_line(board, player, x, 0, 2):
+                    return True
+                if check_line(board, player, x, 1, 1):
+                    return True
+                if check_line(board, player, x, 2, 0):
+                    return True
+
+    # Check all rows in all layers (y and z fixed, x varies)
+    for y in range(3):
+        for z in range(3):
+            if check_line(board, player, 0, y, z):
+                return True
+
+    # Check all columns in all layers (y and z fixed, x varies)
+    for y in range(3):
+        for z in range(3):
+            if check_line(board, player, 0, y, z):
+                return True
+
+    # Check all diagonals in all layers (y and z fixed, x varies)
+    for y in range(3):
+        for z in range(3):
+            if y == z:
+                if check_line(board, player, 0, y, 0):
+                    return True
+                if check_line(board, player, 0, y, 1):
+                    return True
+                if check_line(board, player, 0, y, 2):
+                    return True
+            if y + z == 2:
+                if check_line(board, player, 0, y, 0):
+                    return True
+                if check_line(board, player, 0, y, 1):
+                    return True
+                if check_line(board, player, 0, y, 2):
+                    return True
+
+    # Check all rows in all layers (x and z fixed, y varies)
+    for x in range(3):
+        for z in range(3):
+            if check_line(board, player, x, 0, z):
+                return True
+
+    # Check all columns in all layers (x and z fixed, y varies)
+    for x in range(3):
+        for z in range(3):
+            if check_line(board, player, x, 0, z):
+                return True
+
+    # Check all diagonals in all layers (x and z fixed, y varies)
+    for x in range(3):
+        for z in range(3):
+            if x == z:
+                if check_line(board, player, x, 0, x):
+                    return True
+                if check_line(board, player, x, 1, x):
+                    return True
+                if check_line(board, player, x, 2, x):
+                    return True
+            if x + z == 2:
+                if check_line(board, player, x, 0, x):
+                    return True
+                if check_line(board, player, x, 1, x):
+                    return True
+                if check_line(board, player, x, 2, x):
+                    return True
+
+    # Check all layers (3x3 boards)
+    for layer in range(3):
+        if check_layer(board, player, layer):
+            return True
+
+    return False
+
+def check_line(board: np.ndarray, player: int, x: int, y: int, z: int) -> bool:
+    """
+    Checks if a line (row, column, or diagonal) through the given coordinates is complete.
+
+    Args:
+        board: The current board state.
+        player: The player to check for (1 or -1).
+        x, y, z: The coordinates to check the line through.
+
+    Returns:
+        True if the line is complete, False otherwise.
+    """
+    # Check row (fixed x, y, z varies)
+    if board[x, y, 0] == board[x, y, 1] == board[x, y, 2] == player:
+        return True
+
+    # Check column (fixed x, y varies, z fixed)
+    if board[x, 0, z] == board[x, 1, z] == board[x, 2, z] == player:
+        return True
+
+    # Check diagonal (fixed x, y == z)
+    if x == 0 or x == 2:
+        if y == z:
+            if board[x, y, z] == player and board[x, y, z] == board[x, 1, 1] == board[x, 2 - y, 2 - z] == player:
+                return True
+
+    # Check diagonal (fixed x, y + z == 2)
+    if x == 0 or x == 2:
+        if y + z == 2:
+            if board[x, y, z] == player and board[x, y, z] == board[x, 1, 1] == board[x, 2 - y, 2 - z] == player:
+                return True
+
+    # Check row (fixed y, z, x varies)
+    if board[0, y, z] == board[1, y, z] == board[2, y, z] == player:
+        return True
+
+    # Check column (fixed y, x varies, z fixed)
+    if board[0, y, z] == board[1, y, z] == board[2, y, z] == player:
+        return True
+
+    # Check diagonal (fixed y, x == z)
+    if y == 0 or y == 2:
+        if x == z:
+            if board[x, y, z] == player and board[x, y, z] == board[1, y, 1] == board[2 - x, y, 2 - x] == player:
+                return True
+
+    # Check diagonal (fixed y, x + z == 2)
+    if y == 0 or y == 2:
+        if x + z == 2:
+            if board[x, y, z] == player and board[x, y, z] == board[1, y, 1] == board[2 - x, y, 2 - x] == player:
+                return True
+
+    # Check row (fixed z, x, y varies)
+    if board[0, 0, z] == board[1, 1, z] == board[2, 2, z] == player:
+        return True
+    if board[0, 2, z] == board[1, 1, z] == board[2, 0, z] == player:
+        return True
+
+    # Check column (fixed z, y, x varies)
+    if board[0, 0, z] == board[1, 1, z] == board[2, 2, z] == player:
+        return True
+    if board[0, 2, z] == board[1, 1, z] == board[2, 0, z] == player:
+        return True
+
+    return False
+
+def check_layer(board: np.ndarray, player: int, layer: int) -> bool:
+    """
+    Checks if the given player has won in a specific layer (2D board).
+
+    Args:
+        board: The current board state.
+        player: The player to check for (1 or -1).
+        layer: The layer to check (0, 1, or 2).
+
+    Returns:
+        True if player has won in the layer, False otherwise.
+    """
+    # Check rows
+    for x in range(3):
+        if board[x, 0, layer] == board[x, 1, layer] == board[x, 2, layer] == player:
+            return True
+
+    # Check columns
+    for y in range(3):
+        if board[0, y, layer] == board[1, y, layer] == board[2, y, layer] == player:
+            return True
+
+    # Check diagonals
+    if board[0, 0, layer] == board[1, 1, layer] == board[2, 2, layer] == player:
+        return True
+    if board[0, 2, layer] == board[1, 1, layer] == board[2, 0, layer] == player:
+        return True
+
+    return False
+```
+
+### Explanation:
+1. **`policy` function**:
+   - Converts the input board to a numpy array for easier manipulation.
+   - Checks for immediate winning moves for the player (`1`). If found, returns that move.
+   - Blocks opponent's winning moves (`-1`). If found, returns that move.
+   - Looks for potential winning moves (moves that complete a line for the player).
+   - Avoids giving opponent potential winning moves (blocks their potential lines).
+   - Prefers the center if available, then corners, and finally any random empty cell.
+
+2. **`find_winning_move` function**:
+   - Simulates placing the player in every empty cell and checks if it results in a win.
+   - Returns the first winning move found or `None` if no winning move exists.
+
+3. **`find_potential_wins` function**:
+   - Simulates placing the player in every empty cell and checks if it completes a line (row, column, or diagonal).
+   - Returns a list of all such potential moves.
+
+4. **`check_win` function**:
+   - Checks all possible lines (rows, columns, diagonals) in all 3 layers and 3 dimensions.
+   - Returns `True` if the player has won.
+
+5. **`check_line` function**:
+   - Checks if a specific line (row, column, or diagonal) through given coordinates is complete.
+   - Returns `True` if the line is complete.
+
+6. **`check_layer` function**:
+   - Checks if the player has won in a specific 2D layer (0, 1, or 2).
+   - Returns `True` if the player has won in that layer.
+
+This implementation prioritizes strategic moves while maintaining simplicity. For a more competitive AI, you could

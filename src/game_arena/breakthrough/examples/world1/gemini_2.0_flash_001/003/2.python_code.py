@@ -1,0 +1,97 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    A policy for playing Breakthrough.
+
+    Args:
+        me: A list of (row, col) tuples containing your pieces.
+        opp: A list of (row, col) tuples containing the opponent's pieces.
+        color: 'b' for player 0 and 'w' for player 1.
+
+    Returns:
+        A move as a tuple: ((from_row, from_col), (to_row, to_col)).
+    """
+
+    board_size = 8
+    board = [[0 for _ in range(board_size)] for _ in range(board_size)]
+
+    for r, c in me:
+        board[r][c] = 1 # My pieces
+    for r, c in opp:
+        board[r][c] = -1 # Opponent's pieces
+
+    def get_legal_moves(piece: tuple[int, int]) -> list[tuple[int, int]]:
+        """Returns a list of legal moves for the given piece."""
+        r, c = piece
+        moves = []
+
+        forward = 1 if color == 'w' else -1
+
+        # Move forward
+        if 0 <= r + forward < board_size and board[r + forward][c] == 0:
+            moves.append((r + forward, c))
+
+        # Move diagonally forward and capture
+        if 0 <= r + forward < board_size and 0 <= c + 1 < board_size and board[r + forward][c + 1] == -1:
+            moves.append((r + forward, c + 1))
+        if 0 <= r + forward < board_size and 0 <= c - 1 < board_size and board[r + forward][c - 1] == -1:
+            moves.append((r + forward, c - 1))
+
+        # Move diagonally forward without capture if space is empty
+        if 0 <= r + forward < board_size and 0 <= c + 1 < board_size and board[r + forward][c + 1] == 0:
+            moves.append((r + forward, c + 1))
+        if 0 <= r + forward < board_size and 0 <= c - 1 < board_size and board[r + forward][c - 1] == 0:
+            moves.append((r + forward, c - 1))
+
+        return moves
+    
+    # Check for winning moves first
+    for piece in me:
+        r, c = piece
+        legal_moves = get_legal_moves(piece)
+        for move in legal_moves:
+            if move[0] == (board_size - 1 if color == 'w' else 0):
+                return (piece, move)
+            
+    # Prioritize captures
+    for piece in me:
+        r, c = piece
+        legal_moves = get_legal_moves(piece)
+        for move in legal_moves:
+            new_r, new_c = move
+            if board[new_r][new_c] == -1:
+                return (piece, move)
+
+    # Prioritize moving the pieces closest to the opponent's home row
+    if color == 'w':
+        sorted_pieces = sorted(me, key=lambda p: -p[0]) # Sort by row descending
+    else:
+        sorted_pieces = sorted(me, key=lambda p: p[0]) # Sort by row ascending
+
+    for piece in sorted_pieces:
+        r, c = piece
+        legal_moves = get_legal_moves(piece)
+        if legal_moves:
+            return (piece, random.choice(legal_moves))
+
+    # If no move is found, return a random legal move (should not happen often)
+    for piece in me:
+        r, c = piece
+        legal_moves = get_legal_moves(piece)
+        if legal_moves:
+            return (piece, random.choice(legal_moves))
+    
+    # If all else fails, which indicates the policy can find no legal moves. Try more brute force to return any legal moves from the board for each piece.
+
+    for r in range(board_size):
+      for c in range(board_size):
+        if board[r][c] == 1:
+          piece = (r,c)
+          legal_moves = get_legal_moves(piece)
+          if legal_moves:
+              return (piece, random.choice(legal_moves))
+    
+    # Even after all this, it is possible there can still be no legal move. Return a placeholder move. An illegal move can result in immediate disqualification.
+    return ((0,0), (0,0))

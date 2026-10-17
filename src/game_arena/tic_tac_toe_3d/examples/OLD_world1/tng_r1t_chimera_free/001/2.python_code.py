@@ -1,0 +1,72 @@
+
+import itertools
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Generate all possible winning lines
+    lines = []
+    
+    # Layer lines (z fixed)
+    for z in range(3):
+        # Rows (y fixed)
+        for y in range(3):
+            lines.append([(x, y, z) for x in range(3)])
+        # Columns (x fixed)
+        for x in range(3):
+            lines.append([(x, y, z) for y in range(3)])
+        # Diagonals in layer
+        lines.append([(0, 0, z), (1, 1, z), (2, 2, z)])
+        lines.append([(0, 2, z), (1, 1, z), (2, 0, z)])
+    
+    # Vertical lines (x, y fixed)
+    for x in range(3):
+        for y in range(3):
+            lines.append([(x, y, z) for z in range(3)])
+    
+    # Space diagonals
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    lines.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+    
+    # Check for immediate win (two 1's)
+    for line in lines:
+        total = 0
+        empty_pos = None
+        for x, y, z in line:
+            val = board[z][y][x]
+            total += val
+            if val == 0:
+                empty_pos = (x, y, z)
+        if total == 2 and empty_pos:
+            return empty_pos
+    
+    # Check for opponent block (two -1's)
+    for line in lines:
+        total = 0
+        empty_pos = None
+        for x, y, z in line:
+            val = board[z][y][x]
+            total += val
+            if val == 0:
+                empty_pos = (x, y, z)
+        if total == -2 and empty_pos:
+            return empty_pos
+    
+    # Prioritize center
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+    
+    # Then check corners
+    corners = [(0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+               (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)]
+    for x, y, z in corners:
+        if board[z][y][x] == 0:
+            return (x, y, z)
+    
+    # Finally, any empty cell
+    for x, y, z in itertools.product(range(3), repeat=3):
+        if board[z][y][x] == 0:
+            return (x, y, z)
+    
+    # Fallback (shouldn't occur in valid game states)
+    return (0, 0, 0)

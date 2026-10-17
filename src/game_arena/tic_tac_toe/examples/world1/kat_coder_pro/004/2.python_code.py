@@ -1,0 +1,124 @@
+
+import numpy as np
+from typing import Tuple, List, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Smart Tic Tac Toe policy using minimax algorithm.
+    
+    Args:
+        board: 3x3 list of lists where 0=empty, 1=player, -1=opponent
+        
+    Returns:
+        Tuple (row, col) representing the optimal move
+    """
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Get all empty positions
+    empty_positions = []
+    for i in range(3):
+        for j in range(3):
+            if board_array[i][j] == 0:
+                empty_positions.append((i, j))
+    
+    # If no empty positions, something is wrong (shouldn't happen in valid game)
+    if not empty_positions:
+        return (0, 0)
+    
+    # If only one empty position, take it
+    if len(empty_positions) == 1:
+        return empty_positions[0]
+    
+    # Use minimax to find best move
+    best_score = float('-inf')
+    best_move = empty_positions[0]  # Default to first empty position
+    
+    for move in empty_positions:
+        # Try this move
+        board_array[move[0]][move[1]] = 1
+        
+        # Calculate score for this move using minimax
+        score = minimax(board_array, 0, False)
+        
+        # Undo the move
+        board_array[move[0]][move[1]] = 0
+        
+        # Update best move if this score is better
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def minimax(board: np.ndarray, depth: int, is_maximizing: bool) -> int:
+    """
+    Minimax algorithm to evaluate board state.
+    
+    Args:
+        board: Current game board
+        depth: Current depth in search tree
+        is_maximizing: True if maximizing player (us), False if minimizing (opponent)
+        
+    Returns:
+        Score of the board state
+    """
+    # Check for terminal states
+    result = check_winner(board)
+    if result == 1:  # Player wins
+        return 10 - depth
+    elif result == -1:  # Opponent wins
+        return depth - 10
+    elif result == 0:  # Draw
+        return 0
+    
+    if is_maximizing:
+        best_score = float('-inf')
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = 1  # Make move
+                    score = minimax(board, depth + 1, False)
+                    board[i][j] = 0  # Undo move
+                    best_score = max(score, best_score)
+        return best_score
+    else:
+        best_score = float('inf')
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = -1  # Make move
+                    score = minimax(board, depth + 1, True)
+                    board[i][j] = 0  # Undo move
+                    best_score = min(score, best_score)
+        return best_score
+
+def check_winner(board: np.ndarray) -> int:
+    """
+    Check if there's a winner or draw.
+    
+    Returns:
+        1 if player wins, -1 if opponent wins, 0 if draw, None if game continues
+    """
+    # Check rows
+    for i in range(3):
+        if board[i][0] == board[i][1] == board[i][2] != 0:
+            return board[i][0]
+    
+    # Check columns
+    for j in range(3):
+        if board[0][j] == board[1][j] == board[2][j] != 0:
+            return board[0][j]
+    
+    # Check diagonals
+    if board[0][0] == board[1][1] == board[2][2] != 0:
+        return board[0][0]
+    if board[0][2] == board[1][1] == board[2][0] != 0:
+        return board[0][2]
+    
+    # Check for draw (no empty spaces)
+    if 0 not in board:
+        return 0
+    
+    # Game continues
+    return None

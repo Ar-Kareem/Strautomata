@@ -1,0 +1,269 @@
+
+import math
+from typing import Dict, List, Tuple
+
+FILES = "abcdefgh"
+
+PIECE_VALUES = {
+    'P': 1.0,
+    'N': 3.0,
+    'B': 3.25,
+    'R': 5.0,
+    'Q': 9.0,
+    'K': 0.0
+}
+
+CENTRAL_SQUARES = {"d4", "e4", "d5", "e5"}
+
+def sq_to_xy(sq: str):
+    return FILES.index(sq[0]), int(sq[1])
+
+def xy_to_sq(x: int, y: int):
+    return FILES[x] + str(y)
+
+def strip_suffix(move: str):
+    check = False
+    mate = False
+    while move and move[-1] in "+#":
+        if move[-1] == '+':
+            check = True
+        elif move[-1] == '#':
+            mate = True
+        move = move[:-1]
+    return move, check, mate
+
+def parse_move(move: str):
+    m, check, mate = strip_suffix(move)
+    # castling
+    if m.startswith("O-O-O"):
+        return {"castle": "O-O-O", "check": check, "mate": mate}
+    if m.startswith("O-O"):
+        return {"castle": "O-O", "check": check, "mate": mate}
+    promo = None
+    if '=' in m:
+        m, promo = m.split('=')
+    capture = 'x' in m
+    if m and m[0] in "KQRBN":
+        piece = m[0]
+        rest = m[1:]
+    else:
+        piece = 'P'
+        rest = m
+    if capture:
+        pre, post = rest.split('x')
+        dest = post[-2:]
+        disambig = pre
+    else:
+        dest = rest[-2:]
+        disambig = rest[:-2]
+    return {
+        "piece": piece,
+        "dest": dest,
+        "capture": capture,
+        "disambig": disambig,
+        "promo": promo,
+        "check": check,
+        "mate": mate,
+        "castle": None
+    }
+
+def is_path_clear(pieces: Dict[str, str], from_sq: str, to_sq: str):
+    fx, fy = sq_to_xy(from_sq)
+    tx, ty = sq_to_xy(to_sq)
+    dx = tx - fx
+    dy = ty - fy
+    step_x = 0 if dx == 0 else (1 if dx > 0 else -1)
+    step_y = 0 if dy == 0 else (1 if dy > 0 else -1)
+    x, y = fx + step_x, fy + step_y
+    while (x, y) != (tx, ty):
+        sq = xy_to_sq(x, y)
+        if sq in pieces:
+            return False
+        x += step_x
+        y += step_y
+    return True
+
+def can_move(piece: str, from_sq: str, to_sq: str, pieces: Dict[str, str], color: str, capture: bool):
+    if from_sq == to_sq:
+        return False
+    dest_piece = pieces.get(to_sq)
+    if dest_piece and dest_piece[0] == color:
+        return False
+    if capture and dest_piece is None:
+        return False
+    if (not capture) and dest_piece is not None:
+        return False
+
+    fx, fy = sq_to_xy(from_sq)
+    tx, ty = sq_to_xy(to_sq)
+    dx = tx - fx
+    dy = ty - fy
+    adx, ady = abs(dx), abs(dy)
+
+    if piece == 'N':
+        return (adx, ady) in [(1, 2), (2, 1)]
+    elif piece == 'B':
+        return adx == ady and is_path_clear(pieces, from_sq, to_sq)
+    elif piece == 'R':
+        return (dx == 0 or dy == 0) and is_path_clear(pieces, from_sq, to_sq)
+    elif piece == 'Q':
+        return ((adx == ady) or (dx == 0 or dy == 0)) and is_path_clear(pieces, from_sq, to_sq)
+    elif piece == 'K':
+        return max(adx, ady) == 1
+    return False
+
+def find_origin(pieces: Dict[str, str], color: str, piece: str, dest: str, disambig: str, capture: bool):
+    if piece == 'P':
+        dfile, drank = dest[0], int(dest[1])
+        if capture:
+            origin_file = disambig[0] if disambig else dfile
+            if color == 'w':
+                origin_rank = drank - 1
+            else:
+                origin_rank = drank + 1
+            origin = origin_file + str(origin_rank)
+            if pieces.get(origin) == color + 'P':
+                return origin
+            return None
+        else:
+            # single or double advance
+            origin_rank = drank - 1 if color == 'w' else drank + 1
+            origin = dfile + str(origin_rank)
+            if pieces.get(origin) == color + 'P':
+                return origin
+            # double push
+            origin_rank = drank - 2 if color == 'w' else drank + 2
+            origin = dfile + str(origin_rank)
+            if pieces.get(origin) == color + 'P':
+                return origin
+            return None
+    candidates = []
+    for sq, p in pieces.items():
+        if p == color + piece and can_move(piece, sq, dest, pieces, color, capture):
+            candidates.append(sq)
+    if disambig:
+        if len(disambig) == 1:
+            ch = disambig
+            if ch in FILES:
+                candidates = [sq for sq in candidates if sq[0] == ch]
+            else:
+                candidates = [sq for sq in candidates if sq[1] == ch]
+        elif len(disambig) == 2:
+            candidates = [sq for sq in candidates if sq[0] == disambig[0] and sq[1] == disambig[1]]
+    return candidates[0] if candidates else None
+
+def apply_move(pieces: Dict[str, str], color: str, move: str):
+    info = parse_move(move)
+    new_pieces = dict(pieces)
+    if info.get("castle"):
+        if color == 'w':
+            if info["castle"] == "O-O":
+                k_from, k_to = "e1", "g1"
+                r_from, r_to = "h1", "f1"
+            else:
+                k_from, k_to = "e1", "c1"
+                r_from, r_to = "a1", "d1"
+        else:
+            if info["castle"] == "O-O":
+                k_from, k_to = "e8", "g8"
+                r_from, r_to = "h8", "f8"
+            else:
+                k_from, k_to = "e8", "c8"
+                r_from, r_to = "a8", "d8"
+        if k_from in new_pieces:
+            new_pieces.pop(k_from)
+        if r_from in new_pieces:
+            new_pieces.pop(r_from)
+        new_pieces[k_to] = color + "K"
+        new_pieces[r_to] = color + "R"
+        return new_pieces
+
+    dest = info["dest"]
+    piece = info["piece"]
+    origin = find_origin(new_pieces, color, piece, dest, info["disambig"], info["capture"])
+    if origin is None:
+        return new_pieces
+    moving_piece = new_pieces.pop(origin)
+
+    # captures
+    if info["capture"]:
+        if piece == 'P' and dest not in new_pieces:
+            # en passant
+            dfile, drank = dest[0], int(dest[1])
+            cap_rank = drank - 1 if color == 'w' else drank + 1
+            cap_sq = dfile + str(cap_rank)
+            if cap_sq in new_pieces and new_pieces[cap_sq][0] != color:
+                new_pieces.pop(cap_sq)
+        else:
+            if dest in new_pieces and new_pieces[dest][0] != color:
+                new_pieces.pop(dest)
+
+    # promotion
+    if info.get("promo") and piece == 'P':
+        moving_piece = color + info["promo"]
+
+    new_pieces[dest] = moving_piece
+    return new_pieces
+
+def material_score(pieces: Dict[str, str], color: str):
+    total = 0.0
+    for p in pieces.values():
+        val = PIECE_VALUES[p[1]]
+        total += val if p[0] == color else -val
+    return total
+
+def positional_bonus(piece: str, dest: str, color: str):
+    bonus = 0.0
+    if dest in CENTRAL_SQUARES:
+        bonus += 0.2
+    if piece == 'P':
+        rank = int(dest[1])
+        if color == 'w':
+            bonus += 0.05 * (rank - 2)
+        else:
+            bonus += 0.05 * (7 - rank)
+    if piece in ['N', 'B']:
+        if (color == 'w' and dest[1] != '1') or (color == 'b' and dest[1] != '8'):
+            bonus += 0.05
+    return bonus
+
+def evaluate_move(move: str, pieces: Dict[str, str], color: str):
+    try:
+        info = parse_move(move)
+        if info.get("mate"):
+            return 1e9
+        new_pieces = apply_move(pieces, color, move)
+        score = material_score(new_pieces, color)
+        if info.get("check"):
+            score += 0.5
+        if info.get("capture"):
+            score += 0.1
+        if info.get("castle"):
+            score += 0.4
+            # castling destination
+            dest = "g1" if (color == 'w' and info["castle"] == "O-O") else \
+                   "c1" if (color == 'w') else \
+                   "g8" if info["castle"] == "O-O" else "c8"
+            score += positional_bonus('K', dest, color)
+        else:
+            dest = info.get("dest")
+            if dest:
+                score += positional_bonus(info.get("piece", 'P'), dest, color)
+            if info.get("piece") == 'K':
+                score -= 0.3
+        return score
+    except Exception:
+        return 0.0
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str], memory: Dict) -> Tuple[str, Dict]:
+    if not legal_moves:
+        return "", memory
+    color = 'w' if to_play == 'white' else 'b'
+    best_move = legal_moves[0]
+    best_score = -1e18
+    for move in legal_moves:
+        score = evaluate_move(move, pieces, color)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    return best_move, memory

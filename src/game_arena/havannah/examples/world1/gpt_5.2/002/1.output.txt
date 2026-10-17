@@ -1,0 +1,529 @@
+The strategy for this policy is:
+- **Never blunder tactically**: first look for an immediate winning move (bridge/fork/ring), otherwise **block any immediate opponent win**.
+- **Play connection-building Havannah**: prefer moves that (a) connect/merge our groups, (b) increase the number of distinct **edges/corners** our connected component touches (fork/bridge potential), and (c) create a **cycle** in our stone graph (a reliable proxy for ring potential).
+- **Stay locally relevant and central**: mostly consider empty cells adjacent to existing stones plus a few central “probe” cells, keeping the search fast and robust.
+- Always return a **legal** move (fallback to the most central legal cell if needed).
+
+<code>
+# Havannah 15x15 policy (works for any N with a provided valid_mask)
+# API:
+#   def policy(me: list[tuple[int,int]], opp: list[tuple[int,int]], valid_mask) -> tuple[int,int]
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Tuple, Dict, Optional, Iterable
+import math
+
+
+# ----------------------------
+# Board cache (built once)
+# ----------------------------
+
+@dataclass
+class BoardCache:
+    N: int
+    valid_cells: List[Tuple[int, int]]
+    id_of: Dict[Tuple[int, int], int]
+    neighbors: List[List[int]]          # neighbors by id
+    cube: List[Tuple[int, int, int]]    # cube coords (x,y,z) by id (even-q conversion)
+    corner_bit: List[int]               # bitmask (1<<corner_index) or 0
+    edge_bit: List[int]                 # bitmask (1<<edge_index) or 0 (corners excluded)
+    corners: List[int]                  # ids of 6 corners
+    center_id: int                      # id of a central valid cell
+    central_rank: List[float]           # higher is better (more central) by id
+
+
+_CACHE: Optional[BoardCache] = None
+
+
+def _neighbors_offset(r: int, c: int) -> List[Tuple[int, int]]:
+    """
+    Hex neighbors in an even-q vertical layout.
+    Matches the prompt's example (parity-based adjacency).
+    """
+    if c & 1:  # odd column
+        return [
+            (r - 1, c), (r + 1, c),
+            (r - 1, c - 1), (r, c - 1),
+            (r - 1, c + 1), (r, c + 1),
+        ]
+    else:      # even column
+        return [
+            (r - 1, c), (r + 1, c),
+            (r, c - 1), (r + 1, c - 1),
+            (r, c + 1), (r + 1, c + 1),
+        ]
+
+
+def _cube_from_evenq(r: int, c: int) -> Tuple[int, int, int]:
+    """
+    Standard even-q vertical layout conversion:
+      x = q = c
+      z = r - floor(q/2)
+      y = -x - z
+    """
+    x = c
+    z = r - (c // 2)
+    y = -x - z
+    return (x, y, z)
+
+
+def _build_cache(valid_mask) -> BoardCache:
+    N = int(valid_mask.shape[0])
+    valid_cells: List[Tuple[int, int]] = [(r, c) for r in range(N) for c in range(N) if bool(valid_mask[r][c])]
+    id_of: Dict[Tuple[int, int], int] = {rc: i for i, rc in enumerate(valid_cells)}
+
+    # neighbors by id
+    neighbors: List[List[int]] = [[] for _ in range(len(valid_cells))]
+    for i, (r, c) in enumerate(valid_cells):
+        for (rr, cc) in _neighbors_offset(r, c):
+            if (rr, cc) in id_of:
+                neighbors[i].append(id_of[(rr, cc)])
+
+    cube: List[Tuple[int, int, int]] = [_cube_from_evenq(r, c) for (r, c) in valid_cells]
+    xs = [p[0] for p in cube]
+    ys = [p[1] for p in cube]
+    zs = [p[2] for p in cube]
+    xmin, xmax = min(xs), max(xs)
+    ymin, ymax = min(ys), max(ys)
+    zmin, zmax = min(zs), max(zs)
+
+    # corners = cells that hit at least two extremes
+    corner_ids: List[int] = []
+    for i, (x, y, z) in enumerate(cube):
+        cnt = 0
+        if x == xmin or x == xmax:
+            cnt += 1
+        if y == ymin or y == ymax:
+            cnt += 1
+        if z == zmin or z == zmax:
+            cnt += 1
+        if cnt >= 2:
+            corner_ids.append(i)
+
+    # Ensure exactly 6 corners; if mask is well-formed this will be 6
+    # If more due to degenerate masks, reduce by neighbor-degree heuristic (corners have 3 neighbors).
+    if len(corner_ids) != 6:
+        corner_ids.sort(key=lambda i: (len(neighbors[i]), cube[i][0], cube[i][1], cube[i][2]))
+        corner_ids = corner_ids[:6]
+
+    # Stable corner ordering: sort by angle around center (using x,z plane)
+    # (Any consistent ordering is fine; only bit-counts matter.)
+    cx = (xmin + xmax) / 2.0
+    cz = (zmin + zmax) / 2.0
+    corner_ids.sort(key=lambda i: math.atan2(cube[i][2] - cz, cube[i][0] - cx))
+
+    corner_index_of = {cid: k for k, cid in enumerate(corner_ids)}
+    corner_bit = [0] * len(valid_cells)
+    for cid, k in corner_index_of.items():
+        corner_bit[cid] = 1 << k
+
+    # edges by cube extremes (excluding corners)
+    # edge indices: 0:xmin, 1:xmax, 2:ymin, 3:ymax, 4:zmin, 5:zmax
+    edge_bit = [0] * len(valid_cells)
+    corner_set = set(corner_ids)
+    for i, (x, y, z) in enumerate(cube):
+        if i in corner_set:
+            continue
+        b = 0
+        if x == xmin:
+            b |= 1 << 0
+        if x == xmax:
+            b |= 1 << 1
+        if y == ymin:
+            b |= 1 << 2
+        if y == ymax:
+            b |= 1 << 3
+        if z == zmin:
+            b |= 1 << 4
+        if z == zmax:
+            b |= 1 << 5
+        # For non-corner boundary cells, this should be exactly one edge.
+        # If mask oddities yield multiple, keep them all (fork potential still OK).
+        edge_bit[i] = b
+
+    # choose a "center" cell: minimize max(|x-x0|,|y-y0|,|z-z0|) to the geometric center
+    # compute a continuous center in cube coords
+    x0 = (xmin + xmax) / 2.0
+    y0 = (ymin + ymax) / 2.0
+    z0 = (zmin + zmax) / 2.0
+
+    def center_score(i: int) -> float:
+        x, y, z = cube[i]
+        # smaller is better
+        return max(abs(x - x0), abs(y - y0), abs(z - z0))
+
+    center_id = min(range(len(valid_cells)), key=center_score)
+
+    # Precompute a centrality rank: higher is better
+    # Use negative of the above plus a slight preference for non-edge cells.
+    central_rank = [0.0] * len(valid_cells)
+    for i in range(len(valid_cells)):
+        base = -center_score(i)
+        # discourage early corner grabs a bit
+        base -= 0.5 * (1 if corner_bit[i] else 0)
+        base -= 0.1 * (1 if edge_bit[i] else 0)
+        central_rank[i] = base
+
+    return BoardCache(
+        N=N,
+        valid_cells=valid_cells,
+        id_of=id_of,
+        neighbors=neighbors,
+        cube=cube,
+        corner_bit=corner_bit,
+        edge_bit=edge_bit,
+        corners=corner_ids,
+        center_id=center_id,
+        central_rank=central_rank,
+    )
+
+
+# ----------------------------
+# DSU with component metadata
+# ----------------------------
+
+class DSU:
+    __slots__ = ("parent", "size", "edge_count", "corner_mask", "edge_mask", "active")
+
+    def __init__(self, m: int):
+        self.parent = [-1] * m
+        self.size = [0] * m
+        self.edge_count = [0] * m          # number of internal adjacency edges (counted once)
+        self.corner_mask = [0] * m
+        self.edge_mask = [0] * m
+        self.active = [False] * m
+
+    def find(self, a: int) -> int:
+        p = self.parent[a]
+        while p != a:
+            self.parent[a] = self.parent[p]
+            a = self.parent[a]
+            p = self.parent[a]
+        return a
+
+    def union(self, a: int, b: int) -> int:
+        ra = self.find(a)
+        rb = self.find(b)
+        if ra == rb:
+            return ra
+        if self.size[ra] < self.size[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        self.size[ra] += self.size[rb]
+        # merge metadata
+        self.edge_count[ra] += self.edge_count[rb]
+        self.corner_mask[ra] |= self.corner_mask[rb]
+        self.edge_mask[ra] |= self.edge_mask[rb]
+        return ra
+
+
+def _build_dsu_for(stones: set, cache: BoardCache) -> DSU:
+    m = len(cache.valid_cells)
+    dsu = DSU(m)
+    # activate nodes
+    for (r, c) in stones:
+        idx = cache.id_of.get((r, c))
+        if idx is None:
+            continue
+        dsu.active[idx] = True
+        dsu.parent[idx] = idx
+        dsu.size[idx] = 1
+        dsu.corner_mask[idx] = cache.corner_bit[idx]
+        dsu.edge_mask[idx] = cache.edge_bit[idx]
+
+    # unions
+    for i in range(m):
+        if not dsu.active[i]:
+            continue
+        for j in cache.neighbors[i]:
+            if j > i and dsu.active[j]:
+                dsu.union(i, j)
+
+    # compress + accumulate corner/edge masks at roots (unions already merged; but path compression may lag)
+    # easiest: re-OR from nodes to root
+    for i in range(m):
+        if not dsu.active[i]:
+            continue
+        r = dsu.find(i)
+        if r != i:
+            # metadata already merged in union; nothing required
+            pass
+
+    # edge counts: count each adjacency edge once (i<j)
+    for i in range(m):
+        if not dsu.active[i]:
+            continue
+        ri = dsu.find(i)
+        for j in cache.neighbors[i]:
+            if j > i and dsu.active[j]:
+                # both in same component after unions
+                # in rare cases, find(j) could differ if union not compressed; compare roots
+                if ri == dsu.find(j):
+                    dsu.edge_count[ri] += 1
+
+    return dsu
+
+
+def _popcount(x: int) -> int:
+    return int(x.bit_count())
+
+
+def _would_win_with_move(
+    move_id: int,
+    stones_set: set,
+    dsu: DSU,
+    cache: BoardCache,
+) -> bool:
+    """
+    Check Havannah win (bridge/fork/ring proxy) for 'stones_set U {move}'.
+    Only component containing move can create a new win, so compute merged component stats.
+    Ring proxy: component has a cycle iff E >= V (in a connected undirected graph).
+    """
+    if cache.valid_cells[move_id] in stones_set:
+        return False  # occupied by same player
+
+    adj_roots = set()
+    adj_edges = 0
+    for nb in cache.neighbors[move_id]:
+        (rr, cc) = cache.valid_cells[nb]
+        if (rr, cc) in stones_set:
+            adj_edges += 1
+            adj_roots.add(dsu.find(nb))
+
+    nodes = 1
+    edges = adj_edges
+    corner_mask = cache.corner_bit[move_id]
+    edge_mask = cache.edge_bit[move_id]
+
+    for r in adj_roots:
+        nodes += dsu.size[r]
+        edges += dsu.edge_count[r]
+        corner_mask |= dsu.corner_mask[r]
+        edge_mask |= dsu.edge_mask[r]
+
+    # Bridge: connect 2 corners
+    if _popcount(corner_mask) >= 2:
+        return True
+
+    # Fork: connect 3 edges (corners not counted as edges by our edge_bit)
+    if _popcount(edge_mask) >= 3:
+        return True
+
+    # Ring: cycle exists (proxy). Require at least 6 stones in component for safety.
+    if nodes >= 6 and edges >= nodes:
+        return True
+
+    return False
+
+
+def _heuristic_score_move(
+    move_id: int,
+    me_set: set,
+    opp_set: set,
+    me_dsu: DSU,
+    cache: BoardCache,
+) -> float:
+    """
+    Fast positional heuristic:
+    - prefer adjacency to our stones and merging components
+    - prefer touching more distinct edges/corners
+    - prefer cycle creation (ring potential)
+    - slight centrality preference
+    - some blocking value for adjacency to opponent
+    """
+    (r, c) = cache.valid_cells[move_id]
+
+    adj_me_edges = 0
+    adj_opp_edges = 0
+    adj_roots = set()
+    for nb in cache.neighbors[move_id]:
+        rr, cc = cache.valid_cells[nb]
+        if (rr, cc) in me_set:
+            adj_me_edges += 1
+            adj_roots.add(me_dsu.find(nb))
+        elif (rr, cc) in opp_set:
+            adj_opp_edges += 1
+
+    nodes = 1
+    edges = adj_me_edges
+    corner_mask = cache.corner_bit[move_id]
+    edge_mask = cache.edge_bit[move_id]
+
+    for rt in adj_roots:
+        nodes += me_dsu.size[rt]
+        edges += me_dsu.edge_count[rt]
+        corner_mask |= me_dsu.corner_mask[rt]
+        edge_mask |= me_dsu.edge_mask[rt]
+
+    touches_corners = _popcount(corner_mask)
+    touches_edges = _popcount(edge_mask)
+
+    cycle = (nodes >= 6 and edges >= nodes)
+
+    # Merge bonus: connecting separate components
+    merge_bonus = max(0, len(adj_roots) - 1)
+
+    # Mild discouragement: isolated moves with lots of opp adjacency and no own adjacency
+    isolation_penalty = 0.0
+    if adj_me_edges == 0 and adj_opp_edges >= 2:
+        isolation_penalty = 3.0
+
+    score = 0.0
+    score += 10.0 * adj_me_edges
+    score += 6.0 * merge_bonus
+    score += 14.0 * touches_edges
+    score += 22.0 * touches_corners
+    score += 18.0 * adj_opp_edges
+    score += 35.0 if cycle else 0.0
+    score += 4.0 * cache.central_rank[move_id]
+    score -= isolation_penalty
+
+    return score
+
+
+def _legal_moves(cache: BoardCache, occ: set) -> List[int]:
+    res = []
+    for i, (r, c) in enumerate(cache.valid_cells):
+        if (r, c) not in occ:
+            res.append(i)
+    return res
+
+
+def _candidate_moves(cache: BoardCache, me_set: set, opp_set: set, occ: set, limit_probe: int = 30) -> List[int]:
+    """
+    Candidate set: all empty neighbors of any stone + a few central probes.
+    """
+    cand = set()
+
+    # neighbors of stones
+    for (r, c) in list(me_set) + list(opp_set):
+        idx = cache.id_of.get((r, c))
+        if idx is None:
+            continue
+        for nb in cache.neighbors[idx]:
+            rc = cache.valid_cells[nb]
+            if rc not in occ:
+                cand.add(nb)
+
+    # if board is empty or very sparse, add central probes
+    # take top `limit_probe` most central empty cells
+    empties = []
+    for i, rc in enumerate(cache.valid_cells):
+        if rc in occ:
+            continue
+        empties.append(i)
+    empties.sort(key=lambda i: cache.central_rank[i], reverse=True)
+    for i in empties[:limit_probe]:
+        cand.add(i)
+
+    return list(cand)
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    global _CACHE
+    if _CACHE is None or _CACHE.N != int(valid_mask.shape[0]):
+        _CACHE = _build_cache(valid_mask)
+    cache = _CACHE
+
+    me_set = set(me)
+    opp_set = set(opp)
+    occ = me_set | opp_set
+
+    # Fast fallback: choose the most central legal move
+    def fallback_move() -> Tuple[int, int]:
+        legal = _legal_moves(cache, occ)
+        if not legal:
+            # Should not happen in normal play; but must return something legal.
+            # Return first valid cell (even if occupied) would be illegal, so guard:
+            for (r, c) in cache.valid_cells:
+                if (r, c) not in occ:
+                    return (r, c)
+            # If truly full, return (0,0) (will likely be rejected upstream, but no legal exists).
+            return (0, 0)
+        best = max(legal, key=lambda i: cache.central_rank[i])
+        return cache.valid_cells[best]
+
+    # If no stones yet, play center (if legal)
+    if not me_set and not opp_set:
+        (r, c) = cache.valid_cells[cache.center_id]
+        if (r, c) not in occ and bool(valid_mask[r][c]):
+            return (r, c)
+        return fallback_move()
+
+    # Build DSUs
+    me_dsu = _build_dsu_for(me_set, cache)
+    opp_dsu = _build_dsu_for(opp_set, cache)
+
+    # Candidate generation
+    cand = _candidate_moves(cache, me_set, opp_set, occ, limit_probe=36)
+    if not cand:
+        return fallback_move()
+
+    # 1) Win immediately if possible
+    for mid in cand:
+        rc = cache.valid_cells[mid]
+        if rc in occ:
+            continue
+        if _would_win_with_move(mid, me_set, me_dsu, cache):
+            return rc
+
+    # 2) Block opponent immediate win if exists
+    # Consider opponent candidates: their neighbor empties + all empty corners/edges (safety)
+    cand_opp = set()
+    for (r, c) in opp_set:
+        idx = cache.id_of.get((r, c))
+        if idx is None:
+            continue
+        for nb in cache.neighbors[idx]:
+            if cache.valid_cells[nb] not in occ:
+                cand_opp.add(nb)
+    for cid in cache.corners:
+        if cache.valid_cells[cid] not in occ:
+            cand_opp.add(cid)
+    # Add all boundary edge cells sparsely via edge_bit presence
+    for i in range(len(cache.valid_cells)):
+        if cache.edge_bit[i] and cache.valid_cells[i] not in occ:
+            cand_opp.add(i)
+
+    opp_winning_moves = []
+    for mid in cand_opp:
+        if cache.valid_cells[mid] in occ:
+            continue
+        if _would_win_with_move(mid, opp_set, opp_dsu, cache):
+            opp_winning_moves.append(mid)
+
+    if opp_winning_moves:
+        # pick the block that also scores best for us
+        best = None
+        best_score = -1e18
+        for mid in opp_winning_moves:
+            sc = _heuristic_score_move(mid, me_set, opp_set, me_dsu, cache)
+            if sc > best_score:
+                best_score = sc
+                best = mid
+        if best is not None and cache.valid_cells[best] not in occ:
+            return cache.valid_cells[best]
+        # if something odd happens, still block with any
+        for mid in opp_winning_moves:
+            if cache.valid_cells[mid] not in occ:
+                return cache.valid_cells[mid]
+
+    # 3) Otherwise pick best heuristic candidate
+    best = None
+    best_score = -1e18
+    for mid in cand:
+        rc = cache.valid_cells[mid]
+        if rc in occ:
+            continue
+        sc = _heuristic_score_move(mid, me_set, opp_set, me_dsu, cache)
+        if sc > best_score:
+            best_score = sc
+            best = mid
+
+    if best is not None and cache.valid_cells[best] not in occ:
+        return cache.valid_cells[best]
+
+    return fallback_move()
+</code>

@@ -1,0 +1,132 @@
+### Strategy
+The strategy for this policy is a weighted heuristic evaluation of legal moves. It prioritizes the following principles:
+1.  **Legality First**: It identifies all possible legal moves based on the dice roll and current board state.
+2.  **State Evaluation**: For each legal move, it simulates the resulting board state.
+3.  **Heuristic Scoring**:
+    *   **Hitting**: Strongly prioritizes hitting opponent blots (single checkers).
+    *   **Safety**: Penalizes leaving your own checkers as "blots" (unprotected single checkers) that the opponent can hit.
+    *   **Bearing Off**: High priority given to bearing checkers off the board.
+    *   **Anchoring/Making Points**: Values having 2 or more checkers on a point to block the opponent.
+    *   **Connectivity**: Rewards moving checkers closer to the home board (point 0).
+4.  **Optimal Choice**: Returns the move string `ORDER:FROM1,FROM2` that results in the highest heuristic score.
+
+<code>
+import random
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    dice = sorted(state['dice'], reverse=True)
+    
+    if not dice:
+        return "H:P,P"
+
+    def get_legal_moves():
+        # Simplification: we generate combinations of moves for the two dice.
+        # Format: (order_char, from1, from2)
+        legals = []
+        d1, d2 = (dice[0], dice[1]) if len(dice) == 2 else (dice[0], 0)
+        
+        orders = ['H', 'L'] if d1 != d2 else ['H']
+        
+        for order in orders:
+            curr_d1 = d1 if order == 'H' else d2
+            curr_d2 = d2 if order == 'H' else d1
+            
+            # Try all possible starting points for first move
+            starts1 = (['B'] if my_bar > 0 else [f"A{i}" for i in range(24)])
+            for s1 in starts1:
+                if not is_legal_single(s1, curr_d1, my_pts, opp_pts, my_bar):
+                    continue
+                
+                # Simulate first move
+                m_pts, o_pts, m_bar, _ = simulate_move(s1, curr_d1, my_pts, opp_pts, my_bar)
+                
+                # Second move
+                if curr_d2 > 0:
+                    starts2 = (['B'] if m_bar > 0 else [f"A{i}" for i in range(24)])
+                    found_second = False
+                    for s2 in starts2:
+                        if is_legal_single(s2, curr_d2, m_pts, o_pts, m_bar):
+                            legals.append((order, s1, s2))
+                            found_second = True
+                    if not found_second:
+                        legals.append((order, s1, "P"))
+                else:
+                    legals.append((order, s1, "P"))
+                    
+        return legals if legals else [("H", "P", "P")]
+
+    def is_legal_single(start, die, m_pts, o_pts, m_bar):
+        if start == "P": return False
+        if start == "B":
+            idx = 24 - die
+            return o_pts[idx] < 2
+        
+        idx = int(start[1:])
+        if m_pts[idx] == 0: return False
+        
+        dest = idx - die
+        if dest < 0:
+            # Bearing off logic
+            if any(m_pts[i] > 0 for i in range(6, 24)) or m_bar > 0:
+                return False
+            # Can bear off if exactly matches or if it's the furthest checker
+            if dest == -1: return True
+            furthest = max((i for i, count in enumerate(m_pts) if count > 0), default=-1)
+            return idx == furthest
+        
+        return o_pts[dest] < 2
+
+    def simulate_move(start, die, m_pts, o_pts, m_bar):
+        m_pts, o_pts = list(m_pts), list(o_pts)
+        if start == "B":
+            m_bar -= 1
+            dest = 24 - die
+        else:
+            idx = int(start[1:])
+            m_pts[idx] -= 1
+            dest = idx - die
+        
+        hit = False
+        if dest >= 0:
+            if o_pts[dest] == 1:
+                o_pts[dest] = 0
+                hit = True
+            m_pts[dest] += 1
+        return m_pts, o_pts, m_bar, hit
+
+    def evaluate(order, s1, s2):
+        d1 = dice[0] if order == 'H' else dice[1] if len(dice) > 1 else 0
+        d2 = dice[1] if order == 'H' else dice[0] if len(dice) > 1 else 0
+        
+        score = 0
+        # Simulation
+        curr_m, curr_o, curr_b = my_pts, opp_pts, my_bar
+        for s, d in [(s1, d1), (s2, d2)]:
+            if s != "P" and d > 0:
+                curr_m, curr_o, curr_b, hit = simulate_move(s, d, curr_m, curr_o, curr_b)
+                if hit: score += 15
+        
+        # Scoring board state
+        for i in range(24):
+            if curr_m[i] == 1: score -= 5 # Blot penalty
+            if curr_m[i] >= 2: score += 2 # Point bonus
+            if i < 6 and curr_m[i] > 0: score += 1 # Home board progress
+            
+        score += state['my_off'] * 20 # Bearing off is good
+        return score
+
+    all_moves = get_legal_moves()
+    best_move = all_moves[0]
+    best_score = -999
+    
+    for m in all_moves:
+        s = evaluate(*m)
+        if s > best_score:
+            best_score = s
+            best_move = m
+            
+    return f"{best_move[0]}:{best_move[1]},{best_move[2]}"
+</code>

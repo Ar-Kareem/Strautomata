@@ -1,0 +1,908 @@
+<thinking>
+The user wants a Python function `policy(board)` that determines the next move in a 3x3 Tic Tac Toe game.
+The function should return a tuple `(row, col)` representing the chosen cell.
+The `board` is represented as a list of lists, where:
+- `0` means empty
+- `1` means our player
+- `-1` means the opponent
+
+I need to implement a strategy for choosing the best move. A common approach for Tic Tac Toe is a minimax algorithm, or a simplified version focusing on winning, blocking, and then strategic placement.
+
+Here's a breakdown of the strategy:
+1.  **Check for a winning move:** If I can win in the next turn, take that move.
+2.  **Block opponent's winning move:** If the opponent can win in the next turn, block them.
+3.  **Take the center:** If the center is available, take it. It's generally the best strategic position.
+4.  **Take a corner:** If corners are available, take one.
+5.  **Take an edge:** If no other moves are available, take any remaining edge.
+
+Let's define helper functions for each of these steps.
+
+**Helper function: `check_win(board, player)`**
+This function will check if placing `player`'s mark in any empty cell leads to a win. It should iterate through all empty cells, temporarily place the mark, check for a win, and then revert the board. If a winning move is found, it returns the `(row, col)`. Otherwise, it returns `None`.
+
+**Helper function: `check_line_win(board, player, row, col)`**
+This is a more efficient way to check for a win after a move has been made at `(row, col)`. It checks the row, column, and both diagonals passing through `(row, col)`.
+
+**Main `policy` function logic:**
+
+1.  **Iterate through empty cells:** Find all `(row, col)` where `board[row][col] == 0`.
+2.  **Check for winning move (for player 1):** For each empty cell, tentatively place `1` there. Check if this leads to a win using `check_line_win`. If yes, return that `(row, col)`. Revert the board.
+3.  **Check for blocking move (for player -1):** For each empty cell, tentatively place `-1` there. Check if this leads to a win for the opponent. If yes, return that `(row, col)`. Revert the board.
+4.  **Take center:** If `board[1][1] == 0`, return `(1, 1)`.
+5.  **Take corner:** Check the corners `(0,0), (0,2), (2,0), (2,2)`. If any are empty, return the first one found.
+6.  **Take edge:** Check the edges `(0,1), (1,0), (1,2), (2,1)`. If any are empty, return the first one found.
+
+This strategy is greedy and should perform well in Tic Tac Toe, as the game is simple enough that these priority-based moves are sufficient.
+
+Let's refine the win-checking. Instead of a separate `check_win` function that iterates and tests, we can directly check winning conditions for the current and opponent player.
+
+**Revised strategy:**
+
+1.  **Find all empty cells.**
+2.  **Check for my winning move:** Iterate through empty cells. For each `(r, c)`, simulate placing `1`. Check if this creates three in a row. If so, return `(r, c)`.
+3.  **Check for opponent's winning move:** Iterate through empty cells. For each `(r, c)`, simulate placing `-1`. Check if this creates three in a row. If so, return `(r, c)`.
+4.  **Take center:** If `board[1][1] == 0`, return `(1, 1)`.
+5.  **Take corner:** Check if any corners `(0,0), (0,2), (2,0), (2,2)` are empty. If so, return the first one.
+6.  **Take edge:** Check if any edges `(0,1), (1,0), (1,2), (2,1)` are empty. If so, return the first one.
+
+This looks like a solid plan. I'll need to implement a helper to check if a board state is a win for a given player.
+
+**Helper `is_winner(board, player)`:**
+
+*   Check rows: `for r in range(3): if all(board[r][c] == player for c in range(3)): return True`
+*   Check columns: `for c in range(3): if all(board[r][c] == player for r in range(3)): return True`
+*   Check diagonals:
+    *   `if all(board[i][i] == player for i in range(3)): return True`
+    *   `if all(board[i][2-i] == player for i in range(3)): return True`
+*   Return `False` if no win is found.
+
+Now, let's integrate this into the `policy` function.
+
+Let's get all empty cells first.
+```python
+empty_cells = []
+for r in range(3):
+    for c in range(3):
+        if board[r][c] == 0:
+            empty_cells.append((r, c))
+```
+
+**Step 2 & 3 (Combined logic refinement):**
+We can iterate through `empty_cells` and for each `(r, c)`:
+*   Temporarily set `board[r][c] = 1`. Call `is_winner(board, 1)`. If true, return `(r, c)`. Revert `board[r][c] = 0`.
+*   Temporarily set `board[r][c] = -1`. Call `is_winner(board, -1)`. If true, return `(r, c)`. Revert `board[r][c] = 0`.
+
+This combined loop handles both winning and blocking efficiently.
+
+**Step 4: Center**
+If no immediate win or block is found, check for the center.
+
+**Step 5 & 6: Corners and Edges**
+If center is taken or not empty, move on to corners and then edges. The order can be predefined.
+
+Let's list the preferred moves:
+Center: `(1, 1)`
+Corners: `(0, 0), (0, 2), (2, 0), (2, 2)`
+Edges: `(0, 1), (1, 0), (1, 2), (2, 1)`
+
+We can create lists of these preferred positions and iterate through them if higher priority moves are not available.
+
+```python
+def is_winner(board, player):
+    # Check rows
+    for r in range(3):
+        if all(board[r][c] == player for c in range(3)):
+            return True
+    # Check columns
+    for c in range(3):
+        if all(board[r][c] == player for r in range(3)):
+            return True
+    # Check diagonals
+    if all(board[i][i] == player for i in range(3)):
+        return True
+    if all(board[i][2 - i] == player for i in range(3)):
+        return True
+    return False
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    # 1. Check for winning move
+    for r, c in empty_cells:
+        board[r][c] = 1  # Tentatively place my mark
+        if is_winner(board, 1):
+            board[r][c] = 0  # Revert the board
+            return (r, c)
+        board[r][c] = 0  # Revert the board
+
+    # 2. Check for blocking opponent's winning move
+    for r, c in empty_cells:
+        board[r][c] = -1  # Tentatively place opponent's mark
+        if is_winner(board, -1):
+            board[r][c] = 0  # Revert the board
+            return (r, c)
+        board[r][c] = 0  # Revert the board
+
+    # 3. Take the center if available
+    if board[1][1] == 0:
+        return (1, 1)
+
+    # 4. Take a corner if available
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # 5. Take an edge if available
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in edges:
+        if board[r][c] == 0:
+            return (r, c)
+            
+    # This part should theoretically not be reached in a valid game state
+    # as there should always be an empty cell if the game is not over.
+    # If it's reached, it implies the board is full or there's an issue.
+    # For robustness, we can return any empty cell if we somehow miss one.
+    # However, the logic above covers all cases for finding an empty cell.
+    # Let's ensure we have a fallback which is already handled by iterating empty_cells.
+    # The final 'return (r,c)' in the 'edges' loop covers this.
+```
+
+Consider edge cases:
+*   What if the board is already full? The `empty_cells` list will be empty, and the code would proceed. The current code would still try to access `board[1][1]`, etc. This might lead to an error if `empty_cells` is empty and we don't have a default return. However, the prompt implies a valid game state where a move is possible. If `empty_cells` is empty, it means the game is over, and no move is needed. The current structure finds `empty_cells` first. If `empty_cells` is empty, the loops for winning/blocking won't run. Then it checks `board[1][1]`. If the board is full, `board[1][1]` will not be `0`. Same for corners and edges. This means if `empty_cells` is empty, it will fall through all checks. The function *must* return a tuple. In a real game, if `empty_cells` is empty, the function wouldn't be called. But for robustness, it's good to have a fallback.
+
+Let's test the logic with an example:
+`board = [[1, 0, -1], [0, 1, 0], [0, 0, -1]]`
+`empty_cells = [(0,1), (1,0), (1,2), (2,0), (2,1), (2,2)]`
+
+1.  **Winning move:**
+    *   Try `(0,1)`: `board = [[1, 1, -1], [0, 1, 0], [0, 0, -1]]`. `is_winner(board, 1)` -> True (top row). So, return `(0,1)`.
+
+Example 2:
+`board = [[1, 0, 0], [0, -1, 0], [0, 0, 1]]`
+`empty_cells = [(0,1), (0,2), (1,0), (1,2), (2,0), (2,1)]`
+
+1.  **Winning move:** None for player 1.
+2.  **Blocking move:**
+    *   Try `(0,1)`: `board = [[1, -1, 0], [0, -1, 0], [0, 0, 1]]`. `is_winner(board, -1)` -> False.
+    *   Try `(1,0)`: `board = [[1, 0, 0], [-1, -1, 0], [0, 0, 1]]`. `is_winner(board, -1)` -> False.
+    *   Try `(1,2)`: `board = [[1, 0, 0], [0, -1, -1], [0, 0, 1]]`. `is_winner(board, -1)` -> False.
+    *   Try `(2,1)`: `board = [[1, 0, 0], [0, -1, 0], [0, -1, 1]]`. `is_winner(board, -1)` -> True (middle column blocked. Oh, actually, the middle column has -1, 0, -1. If we place -1 at (2,1), it becomes 0, -1, -1. This doesn't create a win. My manual check was faulty. Let's recheck for player -1.
+        Current board: `[[1, 0, 0], [0, -1, 0], [0, 0, 1]]`
+        Empty cells: `(0,1), (0,2), (1,0), (1,2), (2,0), (2,1)`
+        Check if opponent can win in one move:
+        *   Try `(0,1)` for `-1`: `[[1, -1, 0], [0, -1, 0], [0, 0, 1]]` -> No three in a row for `-1`.
+        *   Try `(0,2)` for `-1`: `[[1, 0, -1], [0, -1, 0], [0, 0, 1]]` -> No three in a row for `-1`.
+        *   Try `(1,0)` for `-1`: `[[1, 0, 0], [-1, -1, 0], [0, 0, 1]]` -> No three in a row for `-1`.
+        *   Try `(1,2)` for `-1`: `[[1, 0, 0], [0, -1, -1], [0, 0, 1]]` -> No three in a row for `-1`.
+        *   Try `(2,0)` for `-1`: `[[1, 0, 0], [0, -1, 0], [-1, 0, 1]]` -> No three in a row for `-1`.
+        *   Try `(2,1)` for `-1`: `[[1, 0, 0], [0, -1, 0], [0, -1, 1]]` -> No three in a row for `-1`.
+
+    My mistake was in how I was checking win condition manually. The `is_winner` function is robust.
+    Let's re-evaluate Example 2:
+    `board = [[1, 0, 0], [0, -1, 0], [0, 0, 1]]`
+    Empty cells: `(0,1), (0,2), (1,0), (1,2), (2,0), (2,1)`
+
+    1.  **My winning move:** Check for `1`. No immediate win for `1`.
+    2.  **Opponent's blocking move:** Check for `-1`.
+        *   If `-1` plays at `(0,1)`: `[[1, -1, 0], [0, -1, 0], [0, 0, 1]]`. No win.
+        *   If `-1` plays at `(1,0)`: `[[1, 0, 0], [-1, -1, 0], [0, 0, 1]]`. No win.
+        *   If `-1` plays at `(1,2)`: `[[1, 0, 0], [0, -1, -1], [0, 0, 1]]`. No win.
+        *   If `-1` plays at `(2,1)`: `[[1, 0, 0], [0, -1, 0], [0, -1, 1]]`. No win.
+        Wait, is there a winning move for `-1` in this board?
+        `[[1, 0, 0],`
+         `[0, -1, 0],`
+         `[0, 0, 1]]`
+        Opponent needs two in a row to block.
+        The opponent has `-1` at `(1,1)`.
+        If opponent plays at `(0,1)`: `[[1, -1, 0], [0, -1, 0], [0, 0, 1]]` -> no win
+        If opponent plays at `(1,0)`: `[[1, 0, 0], [-1, -1, 0], [0, 0, 1]]` -> no win
+        If opponent plays at `(1,2)`: `[[1, 0, 0], [0, -1, -1], [0, 0, 1]]` -> no win
+        If opponent plays at `(2,1)`: `[[1, 0, 0], [0, -1, 0], [0, -1, 1]]` -> no win
+
+        Actually, the opponent needs one more `-1` to complete a line.
+        Let's look at lines where `-1` could win:
+        *   Row 1: Needs two more `-1`s (unlikely to be a single move block)
+        *   Col 1: Needs two more `-1`s
+        *   Diagonal `(0,0)` to `(2,2)`: `1, -1, 1`. Needs two more `-1`s.
+        *   Diagonal `(0,2)` to `(2,0)`: `0, -1, 0`. Needs two more `-1`s.
+        There is no immediate winning move for player -1 in this state.
+
+3.  **Take Center:** `board[1][1]` is `-1`. Not available.
+4.  **Take Corner:**
+    *   `(0,0)` is `1`. Not available.
+    *   `(0,2)` is `0`. Available. Return `(0,2)`.
+
+This seems correct. The logic is good.
+
+Let's think about the `is_winner` function. It's called many times.
+The board size is fixed at 3x3, so `is_winner` is constant time (O(1)).
+The `policy` function:
+- Finding empty cells: O(9) = O(1)
+- Checking for winning/blocking moves: Iterates through `empty_cells` (max 9). For each, calls `is_winner`. So, O(9 * 1) = O(1).
+- Checking center, corners, edges: O(1).
+
+The overall complexity is O(1), which is well within the time limit.
+
+Could there be an efficiency improvement by not recreating `empty_cells` or by not calling `is_winner` fully each time?
+For winning/blocking moves, we only need to check lines that *contain* the cell being placed.
+If we place a mark at `(r, c)`, we only need to check:
+- Row `r`
+- Column `c`
+- Diagonal if `r == c`
+- Anti-diagonal if `r + c == 2`
+
+This is a minor optimization for `is_winner` if we already know the cell where the mark was placed.
+However, the current `is_winner` is simple and clear. For a 3x3 board, the performance difference is negligible.
+Let's stick with the current `is_winner` for clarity.
+
+The code looks good. I will add the docstring and ensure it matches the requested format.
+The problem specifies using `list[list[int]]` for the board, and returning `tuple[int, int]`. My implementation adheres to this.
+No external libraries are strictly necessary, standard Python is fine. `numpy` is allowed but not used here.
+
+Final check of the `policy` function structure:
+- Define `is_winner` helper.
+- Define `policy` function.
+- Inside `policy`:
+    - Get all empty cells.
+    - Loop through empty cells for immediate win (player 1).
+    - Loop through empty cells for opponent block (player -1).
+    - Check center.
+    - Check corners.
+    - Check edges.
+    - A fallback return statement is not strictly needed if we assume a valid game state where a move is *always* possible when `policy` is called. The last `if board[r][c] == 0: return (r,c)` in the edge check guarantees a return if any edge is empty. Since the board is 3x3, at least one of center, corner, or edge must be empty if `empty_cells` is not empty. If `empty_cells` *is* empty, the function should not be called.
+
+Let's consider the possibility of the game ending.
+If `empty_cells` is empty, the `policy` function should ideally not be called.
+However, if it *is* called on a full board, the current logic would skip all `if` and `for` loops and reach the end. A function *must* return a value.
+Python would raise an implicit `None` return, which is not `tuple[int, int]`.
+To be perfectly safe, I should add a final `return (0,0)` or something similar, which will only be reached if `empty_cells` is empty and no moves are possible.
+
+A common way to handle this is to return *any* empty cell if all higher priorities fail. This is implicitly done by the last edge check. If no empty cell is found at all, then the original `empty_cells` list was empty.
+
+Let's refine the end of the `policy` function:
+```python
+    # If no strategic move, take any available spot
+    # This loop should always find an empty cell if empty_cells was not empty
+    # but the previous steps didn't return.
+    # This also acts as a fallback if there are no winning/blocking/strategic moves.
+    for r, c in empty_cells:
+        return (r, c)
+
+    # This line should theoretically never be reached if policy is called on a non-full board.
+    # If it is reached, it means empty_cells was empty.
+    # To satisfy the return type hint, we can return an arbitrary valid move (0,0),
+    # though it might be invalid if the board is full.
+    # For a competitive AI, it's best to assume it's called only when a move is possible.
+    # If we want to be super robust for a pure function, we could raise an error.
+    # But returning an arbitrary (0,0) is typical in these contexts.
+    return (0, 0) # Fallback for complete board or error state.
+```
+Wait, the problem states `board: list[list[int]]`. It does not explicitly state that the game is guaranteed to be not over when `policy` is called. If `empty_cells` is empty, then it is over. Returning `(0,0)` would be an invalid move on a full board.
+The most correct approach if `empty_cells` is empty is that the game is over and no move can be made. However, the function *must* return `tuple[int, int]`.
+
+The phrasing "provides the next move" implies a move is possible.
+Let's consider the available positions defined:
+`corners = [(0, 0), (0, 2), (2, 0), (2, 2)]`
+`edges = [(0, 1), (1, 0), (1, 2), (2, 1)]`
+
+If center is not chosen, and no corners are chosen, it means they are all occupied by `1` or `-1`.
+If there are still empty cells left, the last loop `for r, c in empty_cells:` will pick one.
+This means the `return (0,0)` at the very end is truly unreachable *if* `empty_cells` is not empty.
+If `empty_cells` *is* empty, then that final `return (0,0)` is the only path.
+
+Let's consider the game state where all cells are filled or it's a draw. If `policy` is called in such a state, it means the game state isn't necessarily 'next move possible'.
+However, in the context of competitive AI, it's generally understood that the AI will be called when it's their turn and a move *can* be made.
+I will keep the structure as is, assuming `policy` is called only when there's at least one empty cell. The last `for r, c in empty_cells:` would cover this.
+
+Let's double check the `is_winner` function for any off-by-one or logic errors.
+It checks all three rows, all three columns, and both diagonals. The indexing seems correct (`i` from 0 to 2).
+`board[i][i]` for the main diagonal.
+`board[i][2-i]` for the anti-diagonal (e.g., `(0,2), (1,1), (2,0)`). This is correct.
+
+What if the game is already won by either player *before* the AI makes its move?
+The current code prioritizes blocking an opponent's win. If the opponent has already won, then `is_winner(board, -1)` would return `True` for specific moves, and the AI would block it correctly. The problem implies the game is ongoing and it's the AI's turn.
+
+The problem states "provides the next move". This implies a move is possible.
+Therefore, `empty_cells` will not be empty when `policy` is called.
+So, the explicit `return (0,0)` as a final fallback is not strictly necessary under the assumption that `policy` is always called when a move is valid. The structure `for r, c in empty_cells: return (r,c)` implicitly handles any remaining empty spots.
+
+One final check on potential issues:
+- Integer overflow: Not relevant for Tic Tac Toe.
+- Floating point precision: Not relevant.
+- Recursion depth: Minimax is not used here; it's a greedy strategy.
+- Mutating global state: The board is passed by reference, but we revert changes after testing. This is good.
+
+The code will be:
+```python
+def is_winner(board, player):
+    # Check rows
+    for r in range(3):
+        if all(board[r][c] == player for c in range(3)):
+            return True
+    # Check columns
+    for c in range(3):
+        if all(board[r][c] == player for r in range(3)):
+            return True
+    # Check diagonals
+    if all(board[i][i] == player for i in range(3)):
+        return True
+    if all(board[i][2 - i] == player for i in range(3)):
+        return True
+    return False
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    # 1. Check for winning move
+    for r, c in empty_cells:
+        board[r][c] = 1  # Tentatively place my mark
+        if is_winner(board, 1):
+            board[r][c] = 0  # Revert the board BEFORE returning
+            return (r, c)
+        board[r][c] = 0  # Revert the board
+
+    # 2. Check for blocking opponent's winning move
+    for r, c in empty_cells:
+        board[r][c] = -1  # Tentatively place opponent's mark
+        if is_winner(board, -1):
+            board[r][c] = 0  # Revert the board BEFORE returning
+            return (r, c)
+        board[r][c] = 0  # Revert the board
+
+    # 3. Take the center if available
+    if board[1][1] == 0:
+        return (1, 1)
+
+    # 4. Take a corner if available
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # 5. Take an edge if available
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in edges:
+        if board[r][c] == 0:
+            return (r, c)
+            
+    # Fallback: If for some reason none of the above returned (e.g., board full),
+    # return the first available empty cell. This part should be unreachable if
+    # policy is called when a move is guaranteed.
+    # In a real game, policy wouldn't be called on a full board.
+    # If empty_cells is not empty, one of the earlier loops will return.
+    # If empty_cells IS empty, then we fall out.
+    # The prompt implies we MUST return a tuple.
+    # If the board is full, returning (0,0) is arbitrary but satisfies type.
+    # If the problem guarantees a move is possible, this is moot.
+    # Let's simplify: assume a move is possible. The above loops cover all cases.
+```
+The structure is solid without the very last fallback return `(0,0)`. The iteration through `empty_cells` guarantees a return if `empty_cells` is not empty.
+
+One minor point: should the `is_winner` function be inside `policy` or outside?
+Defining it outside makes it a standalone helper, which is generally better for modularity and testing. I'll keep it outside.
+
+The prompt is about writing a *complete Python file*. So, the `def is_winner(...)` should be in the same file.
+
+```python
+# Helper function to check if a player has won
+def is_winner(board, player):
+    # Check rows
+    for r in range(3):
+        if all(board[r][c] == player for c in range(3)):
+            return True
+    # Check columns
+    for c in range(3):
+        if all(board[r][c] == player for r in range(3)):
+            return True
+    # Check diagonals
+    if all(board[i][i] == player for i in range(3)):
+        return True
+    if all(board[i][2 - i] == player for i in range(3)):
+        return True
+    return False
+
+# The main policy function to determine the next move
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 3x3 Tic Tac Toe game.
+
+    Args:
+        board: A 3x3 list of lists representing the game board.
+               0 = empty, 1 = you, -1 = opponent.
+
+    Returns:
+        A tuple (row, col) indicating the chosen move (0-2, 0-2).
+    """
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    # Priority 1: Check if we can win in the next move
+    for r, c in empty_cells:
+        board[r][c] = 1  # Tentatively make the move
+        if is_winner(board, 1):
+            board[r][c] = 0  # Revert the board
+            return (r, c)
+        board[r][c] = 0  # Revert the board
+
+    # Priority 2: Check if opponent can win and block them
+    for r, c in empty_cells:
+        board[r][c] = -1  # Tentatively make opponent's move
+        if is_winner(board, -1):
+            board[r][c] = 0  # Revert the board
+            return (r, c)
+        board[r][c] = 0  # Revert the board
+
+    # Priority 3: Take the center position if available
+    if board[1][1] == 0:
+        return (1, 1)
+
+    # Priority 4: Take any available corner position
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # Priority 5: Take any available edge position
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in edges:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # This part should ideally not be reached if the policy is called when a move is possible.
+    # If empty_cells was empty, all loops would be skipped.
+    # The problem statement implies a move is possible, so empty_cells will not be empty.
+    # If it somehow is, the function needs to return something.
+    # Returning an arbitrary valid coordinate (0,0) satisfies the type hint,
+    # though it would be an invalid move on a full board.
+    # For robustness within the problem constraints, this line acts as a safety net.
+    return (0, 0)
+```
+The docstring is helpful. The logic covers the standard Tic Tac Toe unbeatable strategy. The time complexity is O(1).
+
+Let's confirm the problem constraints again.
+"Output your thinking surrounded by <thinking>...</thinking> tags." - Done.
+"Output the Python source code for your policy surrounded by <code>...</code> tags." - Done.
+The function definition `policy(board: list[list[int]]) -> tuple[int, int]` is correct.
+`board` is `0`, `1`, `-1`. Correct.
+Return `(0-2, 0-2)`. Correct.
+Any standard Python imports: Only standard features used.
+1 second execution time: O(1) is extremely fast.
+
+Seems complete and correct.
+
+```python
+# Helper function to check if a player has won
+def is_winner(board, player):
+    # Check rows
+    for r in range(3):
+        if all(board[r][c] == player for c in range(3)):
+            return True
+    # Check columns
+    for c in range(3):
+        if all(board[r][c] == player for r in range(3)):
+            return True
+    # Check diagonals
+    if all(board[i][i] == player for i in range(3)):
+        return True
+    if all(board[i][2 - i] == player for i in range(3)):
+        return True
+    return False
+
+# The main policy function to determine the next move
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 3x3 Tic Tac Toe game.
+
+    Implements a greedy strategy:
+    1. Win if possible.
+    2. Block opponent's win if possible.
+    3. Take the center.
+    4. Take a corner.
+    5. Take an edge.
+
+    Args:
+        board: A 3x3 list of lists representing the game board.
+               0 = empty, 1 = you (the AI), -1 = opponent.
+
+    Returns:
+        A tuple (row, col) indicating the chosen move (0-2, 0-2).
+        If the board is full when called (which implies game end),
+        it will return (0,0) as a fallback without making an invalid move.
+    """
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    # If there are no empty cells, the game is over, no move can be made.
+    # This scenario should ideally not happen if policy is called correctly.
+    if not empty_cells:
+        return (0, 0) # Return an arbitrary move as a fallback to satisfy type hint.
+
+    # Priority 1: Check if we can win in the next move
+    for r, c in empty_cells:
+        board[r][c] = 1  # Tentatively make the move
+        if is_winner(board, 1):
+            board[r][c] = 0  # Revert the board state
+            return (r, c)
+        board[r][c] = 0  # Revert the board state
+
+    # Priority 2: Check if opponent can win and block them
+    for r, c in empty_cells:
+        board[r][c] = -1  # Tentatively make opponent's move
+        if is_winner(board, -1):
+            board[r][c] = 0  # Revert the board state
+            return (r, c)
+        board[r][c] = 0  # Revert the board state
+
+    # Priority 3: Take the center position if available
+    if board[1][1] == 0:
+        return (1, 1)
+
+    # Priority 4: Take any available corner position
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # Priority 5: Take any available edge position
+    # This loop will find an empty cell if any are left and none of the above priorities applied.
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in edges:
+        if board[r][c] == 0:
+            return (r, c)
+            
+    # This final return is a safeguard. If empty_cells was not empty,
+    # one of the previous statements MUST have returned.
+    # This line should technically be unreachable given the structure.
+    # However, if for some unexpected reason it's reached, we return (0,0).
+    return (0, 0)
+
+```
+I've added an explicit check `if not empty_cells: return (0,0)` at the beginning. This is more robust and clearly handles the case where the board is full, preventing potential issues if `policy` is called inappropriately. The rest of the logic remains the same. This looks completely finished.
+The docstring is also finalized.
+
+One last thought: the prompt asks for a "complete Python file". This means I should just output the code block.
+
+The helper `is_winner` should be included as part of the same file.
+
+Self-reflection on the strategy:
+This is a standard optimal strategy for Tic Tac Toe. For any state, it prioritizes:
+1.  Winning: Taking an immediate win is always optimal if available.
+2.  Blocking: Preventing the opponent from winning is critical.
+3.  Center: The center offers the most attacking and defensive opportunities.
+4.  Corners: Corners are generally better than edges as they participate in more winning lines (2 lines).
+5.  Edges: The least strategically valuable but still necessary to fill the board.
+
+This strategy guarantees that the AI will never lose if it starts, and will win if possible. It is also deterministic.
+
+Consider the case where `empty_cells` is populated, and the last `for r, c in edges:` loop iterates through all its options and none are `0`. This cannot happen if `empty_cells` was not empty originally. If `empty_cells` had elements, and none of them were assigned to `(r, c)` in the `edges` loop, it implies that all remaining `empty_cells` were not edges. This points to a logical inconsistency.
+
+Actually, the `edges` loop *must* return if `empty_cells` is not empty and previous steps didn't return. Here's why:
+- We find all `empty_cells`.
+- If `empty_cells` is not empty:
+    - The win/block loops will attempt to use these `empty_cells`. If not returned, it means no win/block possible using current `empty_cells`.
+    - Then, we check the center. If `board[1][1] == 0`, it's returned. If so, `empty_cells` might still contain `(1,1)`. This isn't problematic.
+    - Then we check corners. If one is `0`, it's returned.
+    - Then we check edges. If one is `0`, it's returned.
+    - If *none* of the above returned: it implies all `empty_cells` are NOT winning moves, NOT blocking moves, the center is NOT empty, NO corners are empty, and NO edges are empty. This implies that `empty_cells` must be empty if all these strategic spots are taken.
+    - But wait, `empty_cells` is generated _before_ any of these checks. If `empty_cells` is NOT empty, then there IS at least one `0` on the board.
+    - If center is taken (not 0), corners are taken (not 0), edges are taken (not 0), then `empty_cells` *must* have been empty from the start.
+    - The only way `empty_cells` is not empty AND we don't return is if one of the specific strategic spots `(1,1)`, corners, or edges contains a `0`.
+    - So, the `for r, c in edges:` loop *will* find an `(r, c)` such that `board[r][c] == 0` if `empty_cells` was not empty and none of the above returned. No, this reasoning is flawed. The `empty_cells` list is static once created. The later strategic checks (center, corners, edges) look at their fixed positions and check if they are 0 *on the current board*. They do NOT filter based on the `empty_cells` list itself, except implicitly.
+
+Better to iterate through `empty_cells` *at the end* if none of the strategic spots are prioritized.
+
+Corrected logic for priorities after win/block:
+Instead of checking `board[1][1] == 0`, `if board[r][c] == 0` for corners/edges, we should iterate through `empty_cells` and prioritize them.
+
+Revised strategy for steps 3, 4, 5:
+After checking win/block, iterate through `empty_cells`:
+1.  If `(1,1)` is in `empty_cells`, take it.
+2.  Then, iterate through corners if `(1,1)` wasn't taken. If a corner is in `empty_cells`, take it.
+3.  Then, iterate through edges if neither center nor corner were taken. If an edge is in `empty_cells`, take it.
+
+This ensures we use an available empty cell that matches our priority.
+
+```python
+# Helper function to check if a player has won
+def is_winner(board, player):
+    # Check rows
+    for r in range(3):
+        if all(board[r][c] == player for c in range(3)):
+            return True
+    # Check columns
+    for c in range(3):
+        if all(board[r][c] == player for r in range(3)):
+            return True
+    # Check diagonals
+    if all(board[i][i] == player for i in range(3)):
+        return True
+    if all(board[i][2 - i] == player for i in range(3)):
+        return True
+    return False
+
+# The main policy function to determine the next move
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 3x3 Tic Tac Toe game.
+
+    Implements a greedy strategy:
+    1. Win if possible.
+    2. Block opponent's win if possible.
+    3. Take the center.
+    4. Take a corner.
+    5. Take an edge.
+
+    Args:
+        board: A 3x3 list of lists representing the game board.
+               0 = empty, 1 = you (the AI), -1 = opponent.
+
+    Returns:
+        A tuple (row, col) indicating the chosen move (0-2, 0-2).
+        If the board is full when called, it returns (0,0) as a fallback.
+    """
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    # If there are no empty cells, the game is over. Return a default.
+    if not empty_cells:
+        return (0, 0)
+
+    # Priority 1: Check for winning move
+    for r, c in empty_cells:
+        board[r][c] = 1  # Tentatively make the move
+        if is_winner(board, 1):
+            board[r][c] = 0  # Revert the board state
+            return (r, c)
+        board[r][c] = 0  # Revert the board state
+
+    # Priority 2: Check for blocking opponent's winning move
+    for r, c in empty_cells:
+        board[r][c] = -1  # Tentatively make opponent's move
+        if is_winner(board, -1):
+            board[r][c] = 0  # Revert the board state
+            return (r, c)
+        board[r][c] = 0  # Revert the board state
+
+    # --- Strategic moves ---
+    # We now need to pick from the available empty_cells based on priority.
+    # The previous strategy checked fixed positions like board[1][1].
+    # This is better: pick from empty_cells according to priority.
+
+    # Define preferred order for strategic moves from empty_cells
+    preferred_order = []
+    
+    # Add center first if it's an empty cell
+    if (1, 1) in empty_cells:
+        preferred_order.append((1, 1))
+        
+    # Add corners next if they are empty cells, in a fixed order
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if (r, c) in empty_cells:
+            preferred_order.append((r, c))
+            
+    # Add edges last if they are empty cells, in a fixed order
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in edges:
+        if (r, c) in empty_cells:
+            preferred_order.append((r, c))
+
+    # If preferred_order is empty, it means empty_cells was empty initially,
+    # but we already handled that. If empty_cells had items, preferred_order
+    # will get populated with those items in the desired sequence.
+    # So we just take the first item from the constructed preferred_order.
+    if preferred_order:
+        return preferred_order[0]
+        
+    # This should theoretically be unreachable if empty_cells is not empty.
+    # It means empty_cells has items, but none of them were found in corners, center, or edges.
+    # This is impossible for a 3x3 board.
+    return (0, 0) # Final fallback.
+```
+
+This revised strategic move selection is much cleaner. It checks the `empty_cells` list to ensure the prioritized position is actually available. This is the most robust way.
+The `preferred_order` list will contain all available `empty_cells` sorted by priority (center, then corners, then edges). Taking the first element of this list is the correct action.
+
+Final check on this logic.
+`empty_cells` contains all `(r,c)` where `board[r][c] == 0`.
+If `(1,1)` is in `empty_cells`, it's added first.
+If `(0,0)` is in `empty_cells` (and not `(1,1)` if `(1,1)` wasn't available but `(0,0)` is), it's added.
+This priority list generation works. And `preferred_order[0]` will always be a valid pick from `empty_cells`.
+
+This is the definitive correct implementation.<thinking>
+The user wants a Python function `policy(board)` for a 3x3 Tic Tac Toe game.
+The function should return the AI's next move as a tuple `(row, col)`.
+The board is represented by a `list[list[int]]` where `0` is empty, `1` is the AI, and `-1` is the opponent.
+
+I need to implement a strategy that plays optimally or near-optimally. A common and effective strategy for Tic Tac Toe involves a prioritized list of moves:
+1.  **Check for a winning move:** If the AI can place its mark to win the game, it should do so immediately.
+2.  **Block opponent's winning move:** If the opponent can win on their next turn, the AI must block that move.
+3.  **Take the center:** The center square `(1, 1)` is strategically the most valuable as it participates in the most winning lines (4).
+4.  **Take a corner:** Corners are the next most valuable squares, participating in 3 winning lines.
+5.  **Take an edge:** Edge squares participate in only 2 winning lines and are generally the least valuable.
+
+I will implement this strategy using a helper function `is_winner` to check for win conditions.
+
+**Detailed Plan:**
+
+1.  **`is_winner(board, player)` helper function:**
+    *   This function will take the `board` and a `player`'s ID (`1` or `-1`).
+    *   It will iterate through all rows, columns, and diagonals to check if the given `player` has three marks in a line.
+    *   It will return `True` if the player has won, `False` otherwise.
+
+2.  **`policy(board)` function:**
+    *   **Find empty cells:** First, iterate through the `board` to find all available empty cells `(row, col)` and store them in a list, say `empty_cells`.
+    *   **Handle game over:** If `empty_cells` is empty, it means the board is full and no move can be made. The function must return a tuple, so `(0,0)` can be a safe fallback (though it implies an invalid call to `policy` in a real game loop).
+    *   **Check for winning move (AI player 1):**
+        *   Iterate through `empty_cells`.
+        *   For each `(r, c)`, temporarily place `1` on the `board` at `(r, c)`.
+        *   Call `is_winner(board, 1)`. If it returns `True`, then this is a winning move. Revert the `board` change `board[r][c] = 0` and return `(r, c)`.
+        *   If `is_winner` returned `False`, revert `board[r][c] = 0`.
+    *   **Check for opponent's winning move (Block opponent -1):**
+        *   Iterate through `empty_cells` again.
+        *   For each `(r, c)`, temporarily place `-1` on the `board` at `(r, c)`.
+        *   Call `is_winner(board, -1)`. If it returns `True`, then the opponent can win here. Revert `board[r][c] = 0` and return `(r, c)` to block them.
+        *   If `is_winner` returned `False`, revert `board[r][c] = 0`.
+    *   **Strategic moves (Center, Corner, Edge):**
+        *   If no immediate win or block is found, choose a move based on strategic priority from the available `empty_cells`.
+        *   Define a prioritized list of move positions: `center = (1, 1)`, `corners = [(0, 0), (0, 2), (2, 0), (2, 2)]`, `edges = [(0, 1), (1, 0), (1, 2), (2, 1)]`.
+        *   Create a new list, `preferred_order`, that contains elements from `empty_cells` in the priority order (center, then corners, then edges).
+        *   Start with the center: If `(1, 1)` is in `empty_cells`, add it to `preferred_order`.
+        *   Add corners: Iterate through `corners`. If a corner `(r, c)` is in `empty_cells`, add it to `preferred_order`.
+        *   Add edges: Iterate through `edges`. If an edge `(r, c)` is in `empty_cells`, add it to `preferred_order`.
+        *   The `preferred_order` list now contains all available empty cells, sorted by strategic value. The first element `preferred_order[0]` is the best strategic move. Return this element.
+    *   **Final fallback:** The logic dictates that if `empty_cells` is not empty, `preferred_order` will also not be empty. However, as a safeguard, a final `return (0,0)` can be included.
+
+**Code Structure:**
+```python
+# Helper function first
+def is_winner(board, player):
+    # ... implementation ...
+
+# Main policy function
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # ... find empty_cells ...
+    # ... check for win and block ...
+    # ... build preferred_order from empty_cells based on priority ...
+    # ... return preferred_order[0] ...
+    # ... fallback return ...
+```
+
+Let's refine the strategic move selection. Instead of checking fixed positions and seeing if they are `0`, it's better to iterate through `empty_cells` and pick the first one that matches the highest priority available.
+
+Revised Strategic Moves step:
+After checking for win/block:
+1.  Create a list `strategic_choices`.
+2.  If `(1, 1)` is in `empty_cells`, add `(1, 1)` to `strategic_choices`.
+3.  Iterate through `corners`. For each corner `(r, c)`, if it's in `empty_cells`, add it to `strategic_choices`.
+4.  Iterate through `edges`. For each edge `(r, c)`, if it's in `empty_cells`, add it to `strategic_choices`.
+5.  If `strategic_choices` is not empty, return its first element `strategic_choices[0]`. This element will be the highest priority available move from the center, then corners, then edges.
+
+This approach ensures we always pick from the available empty cells according to priority.
+The provided example structure in the previous thought block implements this revised strategy correctly.
+</thinking>
+<code>
+```python
+# Helper function to check if a player has won
+def is_winner(board, player):
+    """
+    Checks if a given player has won the 3x3 Tic Tac Toe game.
+
+    Args:
+        board: The current 3x3 game board.
+        player: The player ID (1 for AI, -1 for opponent).
+
+    Returns:
+        True if the player has won, False otherwise.
+    """
+    # Check rows
+    for r in range(3):
+        if all(board[r][c] == player for c in range(3)):
+            return True
+    # Check columns
+    for c in range(3):
+        if all(board[r][c] == player for r in range(3)):
+            return True
+    # Check diagonals
+    if all(board[i][i] == player for i in range(3)):
+        return True
+    if all(board[i][2 - i] == player for i in range(3)):
+        return True
+    return False
+
+# The main policy function to determine the next move
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 3x3 Tic Tac Toe game using a greedy strategy.
+
+    The strategy prioritizes moves as follows:
+    1. Winning move: If the AI can win in one turn, take that move.
+    2. Blocking move: If the opponent can win in one turn, block that move.
+    3. Strategic move: Take the center, then a corner, then an edge.
+
+    Args:
+        board: A 3x3 list of lists representing the game board.
+               0 = empty, 1 = you (the AI), -1 = opponent.
+
+    Returns:
+        A tuple (row, col) indicating the chosen move (0-2, 0-2).
+        If the board is full when called (implying the game is over),
+        it returns (0,0) as a fallback to satisfy the return type.
+    """
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    # If there are no empty cells, the game is over. Return a default move.
+    if not empty_cells:
+        return (0, 0)
+
+    # Priority 1: Check for a winning move for the AI (player 1)
+    for r, c in empty_cells:
+        board[r][c] = 1  # Tentatively make the move
+        if is_winner(board, 1):
+            board[r][c] = 0  # Revert the board state before returning
+            return (r, c)
+        board[r][c] = 0  # Revert the board state if it wasn't a winning move
+
+    # Priority 2: Check for an opponent's winning move and block it
+    for r, c in empty_cells:
+        board[r][c] = -1  # Tentatively make opponent's move
+        if is_winner(board, -1):
+            board[r][c] = 0  # Revert the board state before returning
+            return (r, c)
+        board[r][c] = 0  # Revert the board state if it wasn't an opponent's winning move
+
+    # Priority 3, 4, 5: Strategic moves ordered by preference
+    # We construct a list of available empty cells in the desired priority order.
+    strategic_choices = []
+
+    # Add center first if it's an empty cell
+    if (1, 1) in empty_cells:
+        strategic_choices.append((1, 1))
+        
+    # Add corners next if they are available empty cells
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if (r, c) in empty_cells:
+            strategic_choices.append((r, c))
+            
+    # Add edges last if they are available empty cells
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in edges:
+        if (r, c) in empty_cells:
+            strategic_choices.append((r, c))
+
+    # If strategic_choices has any moves, the first one is the highest priority available.
+    # This list will be populated with available empty cells sorted by priority.
+    # Thus, strategic_choices[0] is the best available strategic move.
+    if strategic_choices:
+        return strategic_choices[0]
+        
+    # Fallback: This part should theoretically be unreachable if `empty_cells` was not empty
+    # at the start because `strategic_choices` would contain at least one of the empty cells.
+    # Returning (0,0) satisfies the type hint in case of an unexpected scenario.
+    return (0, 0)
+
+```
+</code>

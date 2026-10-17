@@ -1,0 +1,104 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Get all legal moves
+    legal_moves = []
+
+    # Horizontal edges: 5 rows, 4 cols
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+
+    # Vertical edges: 4 rows, 5 cols
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+
+    if not legal_moves:
+        # Should not happen, but fallback
+        return "0,0,H"
+
+    best_score = -np.inf
+    best_move = legal_moves[0]
+
+    for move in legal_moves:
+        score = evaluate_move(move, horizontal.copy(), vertical.copy(), capture.copy())
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+
+def evaluate_move(move, h, v, cap):
+    r, c, d = move
+    score = 0.0
+
+    # Simulate the move
+    if d == 'H':
+        h[r, c] = 1
+    else:
+        v[r, c] = 1
+
+    # Count new boxes captured
+    boxes_captured = 0
+
+    if d == 'H':
+        # Check box above the horizontal edge (row-1, col)
+        if r > 0:
+            if h[r-1, c] != 0 and v[r-1, c] != 0 and v[r-1, c+1] != 0:
+                if cap[r-1, c] == 0:
+                    boxes_captured += 1
+                    cap[r-1, c] = 1
+        # Check box below the horizontal edge (row, col)
+        if r < 4:
+            if h[r+1, c] != 0 and v[r, c] != 0 and v[r, c+1] != 0:
+                if cap[r, c] == 0:
+                    boxes_captured += 1
+                    cap[r, c] = 1
+    else:  # d == 'V'
+        # Check box to the left of the vertical edge (row, col-1)
+        if c > 0:
+            if v[r, c-1] != 0 and h[r, c-1] != 0 and h[r+1, c-1] != 0:
+                if cap[r, c-1] == 0:
+                    boxes_captured += 1
+                    cap[r, c-1] = 1
+        # Check box to the right of the vertical edge (row, col)
+        if c < 4:
+            if v[r, c+1] != 0 and h[r, c] != 0 and h[r+1, c] != 0:
+                if cap[r, c] == 0:
+                    boxes_captured += 1
+                    cap[r, c] = 1
+
+    # Reward for capturing boxes (extra turn, so highly valuable)
+    score += boxes_captured * 10
+
+    # If we captured boxes, we get another turn, so we don't need to worry about opponent's next move as much
+    if boxes_captured == 0:
+        # No extra turn: evaluate danger of leaving 3-sided boxes for opponent
+        danger_penalty = 0
+
+        # Scan all boxes for those with 3 edges filled (and unclaimed)
+        for i in range(4):
+            for j in range(4):
+                if cap[i, j] != 0:
+                    continue
+                edges = [
+                    h[i, j],     # top
+                    h[i+1, j],   # bottom
+                    v[i, j],     # left
+                    v[i, j+1]    # right
+                ]
+                filled_edges = sum(1 for e in edges if e != 0)
+                if filled_edges == 3:
+                    danger_penalty += 1
+
+        score -= danger_penalty * 5
+
+        # Bonus for central control (slight)
+        if (d == 'H' and 1 <= r <= 3 and 1 <= c <= 2) or (d == 'V' and 1 <= r <= 2 and 1 <= c <= 3):
+            score += 0.1
+
+    return score

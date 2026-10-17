@@ -1,0 +1,309 @@
+The strategy for this policy is:
+1. **Never miss tactics**: play an immediate winning move if available; otherwise **block** the opponent’s immediate win.
+2. **Search deeper than greedy**: use **iterative-deepening alpha–beta negamax** with a **transposition table** (caching) and strong **move ordering** to fit in the 1-second limit.
+3. **Evaluate positions by winning-line pressure**: score every one of the 49 possible winning lines by whether it’s still “open” (not containing both players) and weight lines with 2-in-a-row much higher than 1-in-a-row; add a small positional bias (center > corners > edges).
+
+<code>
+import time
+from typing import List, Tuple, Optional, Dict, Any
+
+# --- Precompute all winning lines (49) in 3x3x3 ---
+
+def _idx(i: int, j: int, k: int) -> int:
+    return i * 9 + j * 3 + k
+
+def _generate_lines() -> List[List[int]]:
+    lines: List[List[int]] = []
+
+    # Straight lines along i, j, k
+    for j in range(3):
+        for k in range(3):
+            lines.append([_idx(i, j, k) for i in range(3)])  # along i
+    for i in range(3):
+        for k in range(3):
+            lines.append([_idx(i, j, k) for j in range(3)])  # along j
+    for i in range(3):
+        for j in range(3):
+            lines.append([_idx(i, j, k) for k in range(3)])  # along k
+
+    # Plane diagonals
+    # Fix i (j-k plane)
+    for i in range(3):
+        lines.append([_idx(i, 0, 0), _idx(i, 1, 1), _idx(i, 2, 2)])
+        lines.append([_idx(i, 0, 2), _idx(i, 1, 1), _idx(i, 2, 0)])
+    # Fix j (i-k plane)
+    for j in range(3):
+        lines.append([_idx(0, j, 0), _idx(1, j, 1), _idx(2, j, 2)])
+        lines.append([_idx(0, j, 2), _idx(1, j, 1), _idx(2, j, 0)])
+    # Fix k (i-j plane)
+    for k in range(3):
+        lines.append([_idx(0, 0, k), _idx(1, 1, k), _idx(2, 2, k)])
+        lines.append([_idx(0, 2, k), _idx(1, 1, k), _idx(2, 0, k)])
+
+    # Space diagonals (4)
+    lines.append([_idx(0, 0, 0), _idx(1, 1, 1), _idx(2, 2, 2)])
+    lines.append([_idx(0, 0, 2), _idx(1, 1, 1), _idx(2, 2, 0)])
+    lines.append([_idx(0, 2, 0), _idx(1, 1, 1), _idx(2, 0, 2)])
+    lines.append([_idx(0, 2, 2), _idx(1, 1, 1), _idx(2, 0, 0)])
+
+    return lines
+
+LINES = _generate_lines()
+
+# Positional bias: center > corners > edges
+POS_BIAS = [0] * 27
+for i in range(3):
+    for j in range(3):
+        for k in range(3):
+            idx = _idx(i, j, k)
+            # center
+            if (i, j, k) == (1, 1, 1):
+                POS_BIAS[idx] = 6
+            # corners (0/2 in all coords)
+            elif i in (0, 2) and j in (0, 2) and k in (0, 2):
+                POS_BIAS[idx] = 3
+            # face-centers / edges
+            elif (i, j, k).count(1) == 2:
+                POS_BIAS[idx] = 2
+            else:
+                POS_BIAS[idx] = 1
+
+# Heuristic weights for "open" lines with n marks
+LINE_W = {0: 0, 1: 2, 2: 25, 3: 100000}
+
+INF = 10**9
+
+
+def _flatten(board: List[List[List[int]]]) -> List[int]:
+    flat = [0] * 27
+    t = 0
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                flat[t] = board[i][j][k]
+                t += 1
+    return flat
+
+
+def _check_winner(state: List[int]) -> int:
+    # returns 1 if we (player to be considered as +1 in state) won, -1 if opponent won, else 0
+    for line in LINES:
+        s = state[line[0]] + state[line[1]] + state[line[2]]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+
+def _legal_moves(state: List[int]) -> List[int]:
+    return [i for i, v in enumerate(state) if v == 0]
+
+
+def _find_immediate(state: List[int], player: int) -> Optional[int]:
+    # Find move that makes player win immediately, else None.
+    for m in _legal_moves(state):
+        state[m] = player
+        w = _check_winner(state)
+        state[m] = 0
+        if w == player:
+            return m
+    return None
+
+
+def _heuristic(state: List[int]) -> int:
+    # Terminal checks
+    w = _check_winner(state)
+    if w == 1:
+        return 200000
+    if w == -1:
+        return -200000
+
+    score = 0
+
+    # Line-based evaluation
+    for line in LINES:
+        a, b, c = state[line[0]], state[line[1]], state[line[2]]
+        # If both players present, line is blocked
+        has_p = (a == 1) or (b == 1) or (c == 1)
+        has_o = (a == -1) or (b == -1) or (c == -1)
+        if has_p and has_o:
+            continue
+        s = a + b + c
+        if s > 0:
+            score += LINE_W[s]
+        elif s < 0:
+            score -= LINE_W[-s]
+
+    # Small positional bias for already placed pieces
+    for idx, v in enumerate(state):
+        if v == 1:
+            score += POS_BIAS[idx]
+        elif v == -1:
+            score -= POS_BIAS[idx]
+
+    return score
+
+
+def _order_moves(state: List[int], moves: List[int], player: int) -> List[int]:
+    # Strong ordering: immediate win first, blocks next, then heuristic-ish
+    ordered: List[Tuple[int, int]] = []
+
+    opp = -player
+    for m in moves:
+        # Try move
+        state[m] = player
+        if _check_winner(state) == player:
+            state[m] = 0
+            ordered.append((10**8, m))
+            continue
+
+        # Check if it blocks opponent immediate win
+        state[m] = 0
+        state[m] = opp
+        opp_wins = (_check_winner(state) == opp)
+        state[m] = 0
+
+        block_bonus = 10**6 if opp_wins else 0
+
+        # Quick local score: positional + how many lines it contributes to
+        local = POS_BIAS[m] * 5 + block_bonus
+
+        ordered.append((local, m))
+
+    ordered.sort(reverse=True)
+    return [m for _, m in ordered]
+
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    state = _flatten(board)
+
+    # Always return a legal move
+    legal = _legal_moves(state)
+    if not legal:
+        return (0, 0, 0)
+
+    # 1) Immediate win
+    win_move = _find_immediate(state, 1)
+    if win_move is not None:
+        return (win_move // 9, (win_move % 9) // 3, win_move % 3)
+
+    # 2) Immediate block
+    block_move = _find_immediate(state, -1)
+    if block_move is not None:
+        return (block_move // 9, (block_move % 9) // 3, block_move % 3)
+
+    # 3) Iterative deepening alpha-beta with transposition
+    start = time.perf_counter()
+    TIME_LIMIT = 0.95
+
+    # TT: key -> (depth, value, flag, bestmove)
+    # flag: 0 exact, -1 upperbound, +1 lowerbound
+    TT: Dict[Tuple[int, ...], Tuple[int, int, int, Optional[int]]] = {}
+
+    def negamax(depth: int, alpha: int, beta: int, player: int) -> Tuple[int, Optional[int]]:
+        # Time cutoff
+        if time.perf_counter() - start > TIME_LIMIT:
+            raise TimeoutError
+
+        key = tuple(state)
+        alpha0, beta0 = alpha, beta
+
+        if key in TT:
+            t_depth, t_val, t_flag, t_move = TT[key]
+            if t_depth >= depth:
+                if t_flag == 0:
+                    return t_val, t_move
+                elif t_flag == 1:  # lower bound
+                    alpha = max(alpha, t_val)
+                elif t_flag == -1:  # upper bound
+                    beta = min(beta, t_val)
+                if alpha >= beta:
+                    return t_val, t_move
+
+        w = _check_winner(state)
+        if w != 0:
+            # prefer faster wins / slower losses
+            val = (200000 - (10 - depth)) if w == 1 else (-200000 + (10 - depth))
+            return val * player, None  # from current player's perspective
+
+        moves = _legal_moves(state)
+        if not moves:
+            return 0, None
+
+        if depth == 0:
+            return _heuristic(state) * player, None
+
+        moves = _order_moves(state, moves, player)
+
+        best_val = -INF
+        best_move = moves[0]
+
+        for m in moves:
+            state[m] = player
+            val, _ = negamax(depth - 1, -beta, -alpha, -player)
+            val = -val
+            state[m] = 0
+
+            if val > best_val:
+                best_val = val
+                best_move = m
+            if best_val > alpha:
+                alpha = best_val
+            if alpha >= beta:
+                break
+
+        # Store in TT
+        flag = 0
+        if best_val <= alpha0:
+            flag = -1  # upper
+        elif best_val >= beta0:
+            flag = 1   # lower
+        TT[key] = (depth, best_val, flag, best_move)
+
+        return best_val, best_move
+
+    # Root search with iterative deepening
+    best_root_move = legal[0]
+    best_root_val = -INF
+
+    # If center is available, it's usually very strong early
+    center = _idx(1, 1, 1)
+    if state[center] == 0:
+        best_root_move = center
+
+    max_depth = 8  # typically reachable with alpha-beta + ordering within time
+    for d in range(1, max_depth + 1):
+        try:
+            # Root: we want best move for player +1
+            moves = _order_moves(state, _legal_moves(state), 1)
+            alpha, beta = -INF, INF
+            cur_best_val = -INF
+            cur_best_move = moves[0]
+
+            for m in moves:
+                if time.perf_counter() - start > TIME_LIMIT:
+                    raise TimeoutError
+
+                state[m] = 1
+                val, _ = negamax(d - 1, -beta, -alpha, -1)
+                val = -val
+                state[m] = 0
+
+                if val > cur_best_val:
+                    cur_best_val = val
+                    cur_best_move = m
+                if val > alpha:
+                    alpha = val
+
+            best_root_val, best_root_move = cur_best_val, cur_best_move
+
+        except TimeoutError:
+            break
+
+    # Ensure legality (paranoia)
+    if state[best_root_move] != 0:
+        best_root_move = _legal_moves(state)[0]
+
+    return (best_root_move // 9, (best_root_move % 9) // 3, best_root_move % 3)
+</code>

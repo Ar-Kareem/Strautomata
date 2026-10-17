@@ -1,0 +1,259 @@
+<thinking>
+I'll implement a robust hunt/target Battleship policy in a single Python file. Key ideas:
+- If there are any hits (1) on the board, enter target mode: find hit clusters and extend along the orientation of clusters (if aligned) or try promising adjacent cells for single-hit clusters. Extensions prioritize unknown cells that allow room for a ship.
+- Otherwise (hunt mode), compute a probability/heat map by sliding each ship length (5,4,3,3,2) across the grid in both orientations and counting placements that do not conflict with misses. Placements that include hits are weighted higher. Parity preference is also applied in hunt mode to increase efficiency.
+- Always avoid firing at already fired cells; if something goes wrong, fall back to a random unknown cell.
+
+The policy returns a single (row, col) tuple of an unknown cell to fire at.
+</thinking>
+<code>
+import random
+import numpy as np
+from collections import deque
+
+# Ship lengths in the game
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+
+def _find_hit_clusters(board):
+    """Return list of clusters (lists of (r,c)) of connected hits (4-neighbor)."""
+    n = 10
+    visited = [[False]*n for _ in range(n)]
+    clusters = []
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 1 and not visited[r][c]:
+                q = deque()
+                q.append((r,c))
+                visited[r][c] = True
+                comp = []
+                while q:
+                    x,y = q.popleft()
+                    comp.append((x,y))
+                    for dx,dy in ((1,0),(-1,0),(0,1),(0,-1)):
+                        nx,ny = x+dx, y+dy
+                        if 0 <= nx < n and 0 <= ny < n and not visited[nx][ny] and board[nx][ny] == 1:
+                            visited[nx][ny] = True
+                            q.append((nx,ny))
+                clusters.append(comp)
+    return clusters
+
+def _valid_cell(board, r, c):
+    return 0 <= r < 10 and 0 <= c < 10 and board[r][c] != -1
+
+def _unknown(board, r, c):
+    return 0 <= r < 10 and 0 <= c < 10 and board[r][c] == 0
+
+def _extend_along_line(board, cluster):
+    """
+    If cluster is linear (all same row or same col) try to extend at both ends.
+    Return best unknown extension cell or None.
+    """
+    coords = cluster
+    if len(coords) == 0:
+        return None
+    rows = {r for r,c in coords}
+    cols = {c for r,c in coords}
+    candidates = []
+    if len(rows) == 1:  # horizontal
+        r = next(iter(rows))
+        minc = min(c for _,c in coords)
+        maxc = max(c for _,c in coords)
+        # left
+        if _unknown(board, r, minc-1):
+            # measure free run length from that side
+            free = 0
+            c = minc-1
+            while 0 <= c and board[r][c] != -1:
+                free += 1
+                c -= 1
+            candidates.append(((r, minc-1), free))
+        # right
+        if _unknown(board, r, maxc+1):
+            free = 0
+            c = maxc+1
+            while c < 10 and board[r][c] != -1:
+                free += 1
+                c += 1
+            candidates.append(((r, maxc+1), free))
+    elif len(cols) == 1:  # vertical
+        c = next(iter(cols))
+        minr = min(r for r,_ in coords)
+        maxr = max(r for r,_ in coords)
+        # up
+        if _unknown(board, minr-1, c):
+            free = 0
+            r = minr-1
+            while 0 <= r and board[r][c] != -1:
+                free += 1
+                r -= 1
+            candidates.append(((minr-1, c), free))
+        # down
+        if _unknown(board, maxr+1, c):
+            free = 0
+            r = maxr+1
+            while r < 10 and board[r][c] != -1:
+                free += 1
+                r += 1
+            candidates.append(((maxr+1, c), free))
+    # Choose candidate with max free space (and random tie-break)
+    if not candidates:
+        return None
+    max_free = max(f for _,f in candidates)
+    best = [cell for cell,free in candidates if free == max_free]
+    return random.choice(best)
+
+def _score_adjacent_cells(board, cluster):
+    """
+    For a cluster (len==1 or non-linear), score adjacent unknown cells by counting
+    how many single-ship placements (for all ship lengths) could include cluster hits and that cell.
+    Returns the best cell (r,c) or None.
+    """
+    n = 10
+    hits = set(cluster)
+    # gather candidate unknown neighbors around the cluster
+    cand = set()
+    for r,c in cluster:
+        for dr,dc in ((1,0),(-1,0),(0,1),(0,-1)):
+            nr,nc = r+dr, c+dc
+            if 0 <= nr < n and 0 <= nc < n and board[nr][nc] == 0:
+                cand.add((nr,nc))
+    if not cand:
+        return None
+    # For each candidate cell, count possible placements of any ship length that include both that cell and ALL hits in this cluster
+    scores = {}
+    for cell in cand:
+        scores[cell] = 0
+        cr,cc = cell
+        for L in SHIP_LENGTHS:
+            # horizontal placements that could include all hits+cell
+            for start_c in range(cc - (L-1), cc+1):
+                start_r = cr
+                end_c = start_c + L - 1
+                if start_c < 0 or end_c >= n:
+                    continue
+                cells = [(start_r, c) for c in range(start_c, end_c+1)]
+                # must include the candidate cell and also must include all hits in cluster (if cluster cells aren't in this placement, it's invalid for this ship)
+                if (cr,cc) not in cells:
+                    continue
+                # check hits: every hit in cluster must be included (we're scoring placements that would represent the same ship)
+                if not all(h in cells for h in hits):
+                    continue
+                # placement must not include a miss
+                conflict = any(board[r][c] == -1 for r,c in cells)
+                if conflict:
+                    continue
+                scores[cell] += 1
+            # vertical
+            for start_r in range(cr - (L-1), cr+1):
+                start_c = cc
+                end_r = start_r + L - 1
+                if start_r < 0 or end_r >= n:
+                    continue
+                cells = [(r, start_c) for r in range(start_r, end_r+1)]
+                if (cr,cc) not in cells:
+                    continue
+                if not all(h in cells for h in hits):
+                    continue
+                conflict = any(board[r][c] == -1 for r,c in cells)
+                if conflict:
+                    continue
+                scores[cell] += 1
+    # choose candidate with highest score (tie-break randomly)
+    maxscore = max(scores.values())
+    best = [cell for cell,sc in scores.items() if sc == maxscore]
+    return random.choice(best) if best else None
+
+def _build_heatmap(board):
+    """
+    Build a heatmap by sliding each ship length across the board and counting
+    consistent placements. Placements including known hits are weighted higher.
+    """
+    n = 10
+    heat = np.zeros((n,n), dtype=float)
+    b = board
+    HIT_WEIGHT = 3.0  # boost placements that include existing hits
+    for L in SHIP_LENGTHS:
+        # horizontal placements
+        for r in range(n):
+            for start_c in range(0, n - L + 1):
+                cells = [(r, c) for c in range(start_c, start_c + L)]
+                # cannot include a miss
+                if any(b[x][y] == -1 for x,y in cells):
+                    continue
+                # placement is allowed; weight more if it includes hits
+                includes_hits = any(b[x][y] == 1 for x,y in cells)
+                w = HIT_WEIGHT if includes_hits else 1.0
+                for x,y in cells:
+                    heat[x,y] += w
+        # vertical placements
+        for c in range(n):
+            for start_r in range(0, n - L + 1):
+                cells = [(r, c) for r in range(start_r, start_r + L)]
+                if any(b[x][y] == -1 for x,y in cells):
+                    continue
+                includes_hits = any(b[x][y] == 1 for x,y in cells)
+                w = HIT_WEIGHT if includes_hits else 1.0
+                for x,y in cells:
+                    heat[x,y] += w
+    return heat
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Choose a cell (row,col) to fire at next given the current board knowledge.
+    board: 10x10 list of lists with values: 0 unknown, -1 miss, 1 hit
+    """
+    # copy board and basic structures
+    n = 10
+    b = board
+    # find unknown cells
+    unknowns = [(r,c) for r in range(n) for c in range(n) if b[r][c] == 0]
+    if not unknowns:
+        # no unknowns; shouldn't happen in normal play, but fallback
+        return (0,0)
+
+    # If there are hits, enter target mode
+    clusters = _find_hit_clusters(b)
+    if clusters:
+        # Try to target clusters: prefer extensions that continue a line
+        # Evaluate clusters sorted by size desc so larger clusters get priority
+        clusters = sorted(clusters, key=lambda x: -len(x))
+        for cluster in clusters:
+            # If cluster is linear and length >= 1, try to extend along the line
+            if len(cluster) >= 1:
+                ext = _extend_along_line(b, cluster)
+                if ext is not None:
+                    return ext
+            # If extension didn't succeed, try scoring adjacent cells
+            sc = _score_adjacent_cells(b, cluster)
+            if sc is not None:
+                return sc
+        # If clusters exist but none yielded a move (rare), fall through to heatmap
+    # Hunt mode or fallback: build heatmap
+    heat = _build_heatmap(b)
+    # zero out already fired cells
+    for r in range(n):
+        for c in range(n):
+            if b[r][c] != 0:
+                heat[r,c] = -1e9
+    # If all heatmap values are -inf (or very negative), fallback to parity-aware random unknown
+    maxval = heat.max()
+    if not np.isfinite(maxval) or maxval <= -1e8:
+        # Parity preference: choose unknown cells on checkerboard (i+j)%2==0
+        parity_cells = [(r,c) for r,c in unknowns if (r+c) % 2 == 0]
+        if parity_cells:
+            return random.choice(parity_cells)
+        return random.choice(unknowns)
+    # If no hits present, prefer parity a bit by boosting those cells slightly
+    if not clusters:
+        for r,c in unknowns:
+            if (r + c) % 2 == 0:
+                heat[r,c] *= 1.1
+
+    # choose argmax, tie-break randomly among maxima
+    maxval = heat.max()
+    candidates = [(int(r), int(c)) for r,c in np.argwhere(heat == maxval)]
+    if not candidates:
+        # fallback random unknown
+        return random.choice(unknowns)
+    return random.choice(candidates)
+</code>

@@ -1,0 +1,98 @@
+
+def policy(state, role):
+    """
+    Suicide game policy using minimax with memoization.
+    Goal: Avoid making 3-in-a-row (opposite of regular tic-tac-toe).
+    """
+    # Parse the game state into a board dictionary
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            board[(prop[1], prop[2])] = prop[3]
+    
+    # Define all lines (rows, columns, diagonals)
+    lines = [
+        [("1", "1"), ("1", "2"), ("1", "3")],
+        [("2", "1"), ("2", "2"), ("2", "3")],
+        [("3", "1"), ("3", "2"), ("3", "3")],
+        [("1", "1"), ("2", "1"), ("3", "1")],
+        [("1", "2"), ("2", "2"), ("3", "2")],
+        [("1", "3"), ("2", "3"), ("3", "3")],
+        [("1", "1"), ("2", "2"), ("3", "3")],
+        [("1", "3"), ("2", "2"), ("3", "1")],
+    ]
+    
+    def has_line(board, player):
+        """Check if player has completed a line (3 in a row)."""
+        for line in lines:
+            if all(board.get(pos) == player for pos in line):
+                return True
+        return False
+    
+    def get_blanks(board):
+        """Return list of empty cell coordinates."""
+        return [(r, c) for (r, c), v in board.items() if v == "b"]
+    
+    opponent = "o" if role == "x" else "x"
+    memo = {}
+    
+    def board_key(board):
+        """Create hashable key for memoization."""
+        return tuple(sorted(board.items()))
+    
+    def minimax(board, player_to_move):
+        """
+        Minimax algorithm with memoization.
+        Returns score from `role`'s perspective.
+        +1000 = win, -1000 = loss, 0 = draw
+        """
+        key = (board_key(board), player_to_move)
+        if key in memo:
+            return memo[key]
+        
+        blanks = get_blanks(board)
+        if not blanks:
+            return 0  # Draw
+        
+        next_player = "o" if player_to_move == "x" else "x"
+        scores = []
+        
+        for move in blanks:
+            new_board = board.copy()
+            new_board[move] = player_to_move
+            
+            if has_line(new_board, player_to_move):
+                # Current player made 3-in-a-row, they lose
+                score = -1000 if player_to_move == role else 1000
+            else:
+                score = minimax(new_board, next_player)
+            scores.append(score)
+        
+        # Current player optimizes for themselves
+        result = max(scores) if player_to_move == role else min(scores)
+        memo[key] = result
+        return result
+    
+    # Find the best move for the current role
+    blanks = get_blanks(board)
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in blanks:
+        new_board = board.copy()
+        new_board[move] = role
+        
+        if has_line(new_board, role):
+            score = -1000  # This move would make us lose
+        else:
+            score = minimax(new_board, opponent)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Fallback in case of no valid moves
+    if best_move is None:
+        best_move = blanks[0] if blanks else ("1", "1")
+    
+    return f"mark({best_move[0]},{best_move[1]})"

@@ -1,0 +1,82 @@
+
+import numpy as np
+from typing import List
+
+def policy(hand: List[str], target: int) -> str:
+    # Define card values
+    card_values = {
+        "A": 11,
+        "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+        "J": 10, "Q": 10, "K": 10
+    }
+    
+    # Calculate current hand value
+    def calculate_hand_value(hand):
+        value = 0
+        aces = 0
+        for card in hand:
+            if card == "A":
+                aces += 1
+                value += 11
+            else:
+                value += card_values[card]
+        
+        # Adjust Aces from 11 to 1 if needed
+        while value > target and aces > 0:
+            value -= 10
+            aces -= 1
+        
+        return value
+    
+    # Get current hand value
+    current_value = calculate_hand_value(hand)
+    
+    # If already at or above target, stay
+    if current_value >= target:
+        return "STAY"
+    
+    # Determine remaining cards
+    all_cards = set(["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"])
+    remaining_cards = list(all_cards - set(hand))
+    
+    # Calculate probability of busting on next hit
+    bust_count = 0
+    for card in remaining_cards:
+        new_value = current_value + (11 if card == "A" else card_values[card])
+        if new_value > target:
+            bust_count += 1
+    
+    bust_probability = bust_count / len(remaining_cards)
+    
+    # Calculate expected opponent behavior
+    # Assume opponent plays optimally to reach target
+    opponent_win_probability = 0
+    
+    # Simulate opponent's potential outcomes
+    for card in remaining_cards:
+        # Calculate opponent's potential hand value if they draw this card
+        opponent_value = current_value + (11 if card == "A" else card_values[card])
+        if opponent_value > target:
+            # Opponent would bust
+            opponent_win_probability += 0
+        else:
+            # Opponent would have a better hand
+            opponent_win_probability += 1
+    
+    opponent_win_probability /= len(remaining_cards)
+    
+    # Decision logic
+    # If high chance of opponent busting, stay
+    if opponent_win_probability < 0.5:
+        return "STAY"
+    
+    # If low chance of busting on hit, hit
+    if bust_probability < 0.5:
+        return "HIT"
+    
+    # If close to target and moderate bust risk, stay
+    if current_value >= target - 3:
+        return "STAY"
+    
+    # Otherwise, hit
+    return "HIT"

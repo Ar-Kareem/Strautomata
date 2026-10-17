@@ -1,0 +1,42 @@
+
+def policy(hand: list[str], target: int) -> str:
+    all_cards = {'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'}
+    
+    def calculate_hand_value(cards, t):
+        total = 0
+        aces = 0
+        for card in cards:
+            if card == 'A':
+                aces += 1
+            elif card in {'J', 'Q', 'K'}:
+                total += 10
+            else:
+                total += int(card)
+        total += 11 * aces
+        while total > t and aces > 0:
+            total -= 10
+            aces -= 1
+        return total
+    
+    current_value = calculate_hand_value(hand, target)
+    if current_value > target:
+        return "STAY"
+    
+    remaining = list(all_cards - set(hand))
+    if not remaining:
+        return "STAY"
+    
+    current_score = -abs(target - current_value)
+    total_score = 0.0
+    
+    for card in remaining:
+        new_hand = hand + [card]
+        new_value = calculate_hand_value(new_hand, target)
+        if new_value > target:
+            card_score = -10000
+        else:
+            card_score = -abs(target - new_value)
+        total_score += card_score
+    
+    avg_score = total_score / len(remaining)
+    return "HIT" if avg_score > current_score else "STAY"

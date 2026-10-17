@@ -1,0 +1,353 @@
+The strategy for this policy is to prioritize legal moves that either bear off checkers when in the endgame, move checkers from the bar when required, hit opponent blots (single checkers) when beneficial, make strategic points in the home board, or otherwise minimize the number of moves required to bear off by advancing checkers efficiently. The policy uses a handcrafted evaluation function that considers:  
+- Forcing a move from the bar if necessary.  
+- Maximizing the number of opponent blots hit (especially in the opponent's home board).  
+- Advancing back checkers (on high-numbered points) when safe.  
+- Making points in our home board (especially 1–6) to build a prime.  
+- Bearing off efficiently when all checkers are in the home board.  
+- Using higher die first when it leads to a safer or more efficient move.  
+
+Instead of brute-force search, which is overkill for 1s execution, we use greedy heuristic rules with look-ahead via hypothetical state updates. The engine ensures legal moves, but we must construct only valid actions. We try both H and L orderings and pick the one with the highest heuristic score.
+
+<code>
+import numpy as np
+
+def policy(state: dict) -> str:
+    my_pts = np.array(state['my_pts'])  # 24 points
+    opp_pts = np.array(state['opp_pts'])
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = sorted(state['dice'], reverse=True)
+    if len(dice) == 0:
+        return "H:P,P"
+    if len(dice) == 1:
+        d1 = d2 = dice[0]
+    else:
+        d1, d2 = dice  # d1 >= d2
+
+    # Determine home board: points 0 to 5 are our home
+    home_board = np.arange(0, 6)
+
+    # Check if all our checkers are in home board
+    in_home = np.sum(my_pts[6:]) == 0
+
+    # Utility: check if a point is safe (not a blot)
+    def is_safe(point):
+        return my_pts[point] >= 2
+
+    # Utility: check if a point is open (can move to)
+    def is_open(point):
+        return point >= 0 and point <= 23 and opp_pts[point] <= 1
+
+    # Utility: check if hitting opponent at `dest` is possible
+    def can_hit(dest):
+        return dest >= 0 and dest <= 23 and opp_pts[dest] == 1
+
+    # Utility: get destination from src with die roll
+    def move_to(src, die):
+        if src == 'B':
+            return 24 - die  # entering from bar: die-1 in 0..23
+        return src - die
+
+    # Generate all legal moves from a given state and dice
+    def get_moves():
+        moves = []
+        # If on bar, must enter
+        if my_bar > 0:
+            for die in dice:
+                dest = 24 - die
+                if dest < 0 or dest > 23:  # bearing off from bar not needed
+                    continue
+                if is_open(dest):
+                    other_dice = [d for d in dice if d != die]
+                    if other_dice:
+                        # Try to use second die from remaining checkers
+                        submoves = get_moves_after_bar(die)
+                        for sm in submoves:
+                            if die == d1:
+                                moves.append(('H', 'B', sm[2]))
+                            else:
+                                moves.append(('L', 'B', sm[2]))
+                    else:
+                        if die == d1:
+                            moves.append(('H', 'B', 'P'))
+                        else:
+                            moves.append(('L', 'B', 'P'))
+            # If no move from bar, pass
+            if not moves:
+                moves.append(('H', 'P', 'P'))
+            return moves
+
+        # Otherwise, generate moves from points
+        for die1 in dice:
+            for src in range(24):
+                if my_pts[src] == 0:
+                    continue
+                dest1 = src - die1
+                # Check bearing off
+                if dest1 < 0:
+                    if in_home and src + 1 == die1:  # exactly bear off
+                        pass  # valid
+                    elif in_home and src + 1 < die1 and all(my_pts[i] == 0 for i in range(die1 - 1, 6)):
+                        pass  # valid: shorter die can bear off
+                    else:
+                        continue  # not valid
+                else:
+                    if not is_open(dest1):
+                        continue
+
+                # After first move, update hypothetical state
+                my_pts_mod = my_pts.copy()
+                opp_pts_mod = opp_pts.copy()
+                my_off_mod = my_off
+                my_pts_mod[src] -= 1
+                if dest1 < 0:
+                    my_off_mod += 1
+                else:
+                    if can_hit(dest1):
+                        opp_pts_mod[dest1] = 0
+                        my_pts_mod[24 - dest1 - 1] += 1  # opponent checker to bar
+                    else:
+                        my_pts_mod[dest1] += 1
+
+                # Use the remaining die
+                remaining_dice = [d for d in dice if d != die1]
+                if not remaining_dice:
+                    if die1 == d1:
+                        moves.append(('H', f'A{src}', 'P'))
+                    else:
+                        moves.append(('L', f'A{src}', 'P'))
+                else:
+                    die2 = remaining_dice[0]
+                    submoves = []
+                    for src2 in range(24):
+                        if my_pts_mod[src2] == 0:
+                            continue
+                        dest2 = src2 - die2
+                        if dest2 < 0:
+                            if np.sum(my_pts_mod[6:]) == 0 and (src2 + 1 == die2 or (src2 + 1 < die2 and all(my_pts_mod[i] == 0 for i in range(die2 - 1, 6)))):
+                                submoves.append(f'A{src2}')
+                        else:
+                            if is_open(dest2):
+                                submoves.append(f'A{src2}')
+                    if submoves:
+                        for sm in submoves:
+                            if die1 == d1:
+                                moves.append(('H', f'A{src}', sm))
+                            else:
+                                moves.append(('L', f'A{src}', sm))
+                    else:
+                        # Try to play die2 only if die1 cannot be played in combination
+                        # But engine requires playing highest die if both possible
+                        # So if die2 can be played alone and die1 cannot, then it's not allowed
+                        # But since we are in the loop where die1 was played, we must have both
+                        pass
+
+        # Also consider moves where lower die is played first if different dice
+        if d1 != d2:
+            for die1 in [d2, d1]:  # now try lower first
+                for src in range(24):
+                    if my_pts[src] == 0:
+                        continue
+                    dest1 = src - die1
+                    if dest1 < 0:
+                        if in_home and src + 1 == die1:
+                            pass
+                        elif in_home and src + 1 < die1 and all(my_pts[i] == 0 for i in range(die1 - 1, 6)):
+                            pass
+                        else:
+                            continue
+                    else:
+                        if not is_open(dest1):
+                            continue
+
+                    my_pts_mod = my_pts.copy()
+                    opp_pts_mod = opp_pts.copy()
+                    my_off_mod = my_off
+                    my_pts_mod[src] -= 1
+                    if dest1 < 0:
+                        my_off_mod += 1
+                    else:
+                        if can_hit(dest1):
+                            opp_pts_mod[dest1] = 0
+                            my_pts_mod[24 - dest1 - 1] += 1
+                        else:
+                            my_pts_mod[dest1] += 1
+
+                    remaining_dice = [d for d in dice if d != die1]
+                    if not remaining_dice:
+                        if die1 == d1:
+                            moves.append(('H', f'A{src}', 'P'))
+                        else:
+                            moves.append(('L', f'A{src}', 'P'))
+                    else:
+                        die2 = remaining_dice[0]
+                        submoves = []
+                        for src2 in range(24):
+                            if my_pts_mod[src2] == 0:
+                                continue
+                            dest2 = src2 - die2
+                            if dest2 < 0:
+                                if np.sum(my_pts_mod[6:]) == 0 and (src2 + 1 == die2 or (src2 + 1 < die2 and all(my_pts_mod[i] == 0 for i in range(die2 - 1, 6)))):
+                                    submoves.append(f'A{src2}')
+                            else:
+                                if is_open(dest2):
+                                    submoves.append(f'A{src2}')
+                        if submoves:
+                            for sm in submoves:
+                                if die1 == d1:
+                                    moves.append(('H', f'A{src}', sm))
+                                else:
+                                    moves.append(('L', f'A{src}', sm))
+
+        # De-duplicate moves
+        moves = list(set(moves))
+
+        # If no move found, pass
+        if not moves:
+            moves = [('H', 'P', 'P')]
+
+        return moves
+
+    def get_moves_after_bar(used_die):
+        # After using one die from bar, try to use the other
+        # Used only internally
+        moves = []
+        remaining_dice = [d for d in dice if d != used_die]
+        if not remaining_dice:
+            return []
+        die2 = remaining_dice[0]
+        for src in range(24):
+            if my_pts[src] == 0:
+                continue
+            dest = src - die2
+            if dest < 0:
+                if in_home and (src + 1 == die2 or (src + 1 < die2 and all(my_pts[i] == 0 for i in range(die2 - 1, 6)))):
+                    moves.append(f'A{src}')
+            else:
+                if is_open(dest):
+                    moves.append(f'A{src}')
+        return moves
+
+    # Scoring function for a move
+    def evaluate_move(move_code):
+        order, from1, from2 = move_code
+        score = 0.0
+
+        # If pass, worst score
+        if from1 == 'P':
+            return -1000.0
+
+        # Extract die used for first move
+        if order == 'H':
+            die1, die2 = d1, d2
+        else:
+            die1, die2 = d2, d1
+
+        # First move
+        if from1 == 'B':
+            src1 = None
+            dest1 = 24 - die1
+        else:
+            src_idx1 = int(from1[1:])
+            src1 = src_idx1
+            dest1 = src1 - die1
+
+        # Reward for bearing off
+        if dest1 < 0:
+            score += 10.0
+        # Reward for hitting
+        if 0 <= dest1 <= 23 and can_hit(dest1):
+            score += 8.0
+        # Reward for moving back checker (safe progress)
+        if from1 != 'B' and src1 >= 18:
+            score += 0.5
+        # Penalty for leaving blot
+        if from1 != 'B' and my_pts[src1] == 1 and not is_safe(src1 - die1 if src1 - die1 >= 0 else -1):  # destination not relevant
+            # We are moving the last checker, so source becomes blot only if destination is not safe
+            # But destination is where it lands
+            # Actually, we care about whether after move, src1 has 0, so no blot, but we leave a blot if dest1 is vulnerable
+            pass
+        # But if dest1 >=0 and is_open(dest1) but after move, my_pts[dest1] becomes 1 and opp can hit
+        # We simulate
+        if 0 <= dest1 <= 23:
+            if opp_pts[dest1] == 0:  # safe
+                pass
+            elif opp_pts[dest1] == 1:
+                # It's a hit, so we already scored it
+                # But after hitting, it's safe
+                pass
+            else:
+                # Cannot land, but already filtered
+                pass
+        else:
+            # bearing off
+            pass
+
+        # Second move
+        if from2 == 'P':
+            pass
+        else:
+            src_idx2 = int(from2[1:])
+            dest2 = src_idx2 - die2
+            if dest2 < 0:
+                score += 10.0
+            elif 0 <= dest2 <= 23 and opp_pts[dest2] == 1:
+                score += 8.0
+            if src_idx2 >= 18:
+                score += 0.5
+
+        # Bonus for using higher die first if it moves a back checker
+        if order == 'H':
+            if from1 != 'B' and int(from1[1:]) >= 18:
+                score += 0.1
+        # But if H moves a low checker and L moves a high, prefer L
+        # We handle both in scoring
+
+        return score
+
+    # Get all legal moves
+    moves = get_moves()
+
+    # Filter only valid and legal
+    valid_moves = []
+    for move in moves:
+        order, f1, f2 = move
+        if f1 == 'P' and f2 == 'P':
+            valid_moves.append(move)
+            continue
+        # Must follow: if bar, must move from bar
+        if my_bar > 0 and f1 != 'B' and f2 != 'B':
+            continue
+        # Dice order: if both dice playable, must play both
+        if len(dice) == 2 and f2 == 'P' and (f1 != 'P'):
+            # Check if the other die can be played
+            other_die = d2 if order == 'H' else d1
+            can_play_other = False
+            for src in range(24):
+                if my_pts[src] == 0:
+                    continue
+                dest = src - other_die
+                if dest < 0:
+                    if in_home and (src + 1 == other_die or (src + 1 < other_die and all(my_pts[i] == 0 for i in range(other_die - 1, 6)))):
+                        can_play_other = True
+                        break
+                else:
+                    if is_open(dest):
+                        can_play_other = True
+                        break
+            if can_play_other:
+                continue  # must play both
+        valid_moves.append(move)
+
+    if not valid_moves:
+        return "H:P,P"
+
+    # Score all valid moves
+    scored_moves = [(move, evaluate_move(move)) for move in valid_moves]
+    # Best move
+    best_move = max(scored_moves, key=lambda x: x[1])[0]
+
+    return f"{best_move[0]}:{best_move[1]},{best_move[2]}"
+</code>

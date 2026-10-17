@@ -1,0 +1,175 @@
+
+from typing import List, Tuple
+
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1), (0, 1),
+        (1, -1), (1, 0), (1, 1)]
+
+def flood_fill_groups(occupied: set) -> Tuple[dict, dict, dict]:
+    """
+    Return three dictionaries:
+      - pos_to_group: mapping from board coordinates to a group identifier
+      - group_libs: mapping from group identifier to the set of liberties
+      - (the third dict is the same as pos_to_group for convenience)
+    """
+    pos_to_group: dict[Tuple[int, int], int] = {}
+    group_libs: dict[int, set[Tuple[int, int]]] = {}
+    gid_counter = 0
+
+    for pos in occupied:
+        if pos not in pos_to_group:
+            queue = [pos]
+            component = []               # positions belonging to the current group
+            while queue:
+                cur = queue.pop()
+                if cur in pos_to_group:
+                    continue
+                pos_to_group[cur] = gid_counter
+                component.append(cur)
+                for dr, dc in DIRS:
+                    nr, nc = cur[0] + dr, cur[1] + dc
+                    npos = (nr, nc)
+                    if 0 <= nr < 19 and 0 <= nc < 19:
+                        if npos in occupied and npos not in pos_to_group:
+                            queue.append(npos)
+            # compute liberties for this group
+            libs: set[Tuple[int, int]] = set()
+            for p in component:
+                for dr, dc in DIRS:
+                    nr, nc = p[0] + dr, p[1] + dc
+                    npos = (nr, nc)
+                    if 0 <= nr < 19 and 0 <= nc < 19:
+                        if npos not in occupied:
+                            libs.add(npos)
+            group_libs[gid_counter] = libs
+            gid_counter += 1
+
+    return pos_to_group, group_libs, pos_to_group
+
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """
+    Choose a single legal move on a 19x19 board.
+    Returns a 1‑based tuple (row, col) or (0, 0) to pass.
+    """
+    # ---------- 1️⃣  Convert input to 0‑based sets ----------
+    me_set: set[Tuple[int, int]] = {(r - 1, c - 1) for r, c in me}
+    opp_set: set[Tuple[int, int]] = {(r - 1, c - 1) for r, c in opponent}
+
+    # board is full → forced pass
+    if len(me_set) + len(opp_set) == 19 * 19:
+        return (0, 0)
+
+    # ---------- 2️⃣  Build static structures ----------
+    me_pos_to_group, me_group_libs, _ = flood_fill_groups(me_set)
+    opp_pos_to_group, opp_group_libs, _ = flood_fill_groups(opp_set)
+
+    # corner / edge definitions (0‑based)
+    corners: set[Tuple[int, int]] = {(0, 0), (0, 18), (18, 0), (18, 18)}
+    edges: set[Tuple[int, int]] = {(i, 0) for i in range(19)} | \
+                                 {(i, 18) for i in range(19)} | \
+                                 {(0, i) for i in range(19)} | \
+                                 {(18, i) for i in range(19)}
+
+    # ---------- 3️⃣  Pre‑compute my‑adjacent‑group mapping ----------
+    # For each empty point we need the group ids of nearby friendly stones.
+    empty_to_my_adj: dict[Tuple[int, int], set[int]] = {}
+    for pos in me_set:
+        for dr, dc in DIRS:
+            nr, nc = pos[0] + dr, pos[1] + dc
+            npos = (nr, nc)
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                if npos not in empty_to_my_adj:
+                    empty_to_my_adj[npos] = set()
+                if npos in me_pos_to_group:
+                    empty_to_my_adj[npos].add(me_pos_to_group[npos])
+
+    # ---------- 4️⃣  Evaluate every empty point ----------
+    best_move: Tuple[int, int] | None = None
+    best_score = -1
+
+    for r in range(19):
+        for c in range(19):
+            empty = (r, c)
+            if empty in me_set or empty in opp_set:
+                continue   # occupied, skip
+
+            # ----- opponent side -----
+            opp_adj_group_ids = set()
+            captured_groups = set()
+            atari_groups = set()
+            for dr, dc in DIRS:
+                nr, nc = r + dr, c + dc
+                if not (0 <= nr < 19 and 0 <= nc < 19):
+                    continue
+                npos = (nr, nc)
+                if npos in opp_set:
+                    gid = opp_pos_to_group[npos]
+                    opp_adj_group_ids.add(gid)
+                    lib_set = opp_group_libs[gid]
+                    # capture detection: exactly this empty point is the sole liberty
+                    if lib_set == {empty}:
+                        captured_groups.add(gid)
+
+            opp_ignoring = opp_adj_group_ids - captured_groups
+            opp_liberty_change = len(opp_ignoring)
+
+            opp_threat_bonus = 0
+            for gid in opp_ignoring:
+                lib_before = len(opp_group_libs[gid])
+                # after placing on `empty`, that liberty disappears
+                lib_after = lib_before - 1
+                if lib_after == 1:                # opponent would become atari
+                    opp_threat_bonus += 50
+
+            # ----- my side -----
+            my_adj_group_ids = empty_to_my_adj.get(empty, set())
+            sum_my_libs = 0
+            union_my_libs: set[Tuple[int, int]] = set()
+            for gid in my_adj_group_ids:
+                lib_set = me_group_libs[gid]
+                sum_my_libs += len(lib_set)
+                union_my_libs.update(lib_set)
+
+            # empty's own adjacency after the move
+            new_empties = set()
+            for dr, dc in DIRS:
+                nr, nc = r + dr, c + dc
+                if not (0 <= nr < 19 and 0 <= nc < 19):
+                    continue
+                npos = (nr, nc)
+                if npos not in me_set and npos not in opp_set:
+                    new_empties.add(npos)
+
+            # liberties of the new component after we place a stone here
+            union_new = union_my_libs.union(new_empties)
+
+            # avoid suicide: component must have at least one liberty
+            if len(union_new) == 0:
+                continue   # illegal suicide move
+
+            liberty_gain = max(0, len(union_new) - sum_my_libs)
+            connectivity_bonus = 200 if len(my_adj_group_ids) >= 2 else 0
+
+            pos_bonus = 100 if empty in corners else 20 if empty in edges else 0
+
+            # ----- scoring -----
+            capture_bonus = 5000 * len(captured_groups)
+            total_score = (capture_bonus
+                          + opp_liberty_change * 10
+                          + opp_threat_bonus
+                          + liberty_gain * 5
+                          + connectivity_bonus
+                          + pos_bonus)
+
+            # deterministic tie‑break: smaller row/col wins
+            if total_score > best_score or (total_score == best_score and empty < best_move if best_move else False):
+                best_score = total_score
+                best_move = empty
+
+    # ---------- 5️⃣  Return the chosen move ----------
+    if best_move is None:
+        # no non‑suicidal legal move → pass
+        return (0, 0)
+    else:
+        return (best_move[0] + 1, best_move[1] + 1)

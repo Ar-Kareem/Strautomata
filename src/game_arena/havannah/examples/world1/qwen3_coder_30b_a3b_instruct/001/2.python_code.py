@@ -1,0 +1,150 @@
+
+import numpy as np
+import random
+from collections import deque
+from typing import List, Tuple
+
+def get_neighbors(row: int, col: int) -> List[Tuple[int, int]]:
+    """Get all 6 neighbors of a hexagonal cell."""
+    neighbors = []
+    # Hexagonal neighbors (row, col offset)
+    offsets = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+    for dr, dc in offsets:
+        new_row, new_col = row + dr, col + dc
+        if 0 <= new_row < 15 and 0 <= new_col < 15:
+            neighbors.append((new_row, new_col))
+    return neighbors
+
+def is_connected(me: List[Tuple[int, int]], row1: int, col1: int, row2: int, col2: int) -> bool:
+    """Check if two positions are connected in the given player's stones."""
+    if (row1, col1) == (row2, col2):
+        return True
+    
+    visited = set()
+    queue = deque([(row1, col1)])
+    visited.add((row1, col1))
+    
+    while queue:
+        r, c = queue.popleft()
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) == (row2, col2):
+                return True
+            if (nr, nc) in me and (nr, nc) not in visited:
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+    
+    return False
+
+def evaluate_ring(player_stones: List[Tuple[int, int]], move_row: int, move_col: int) -> float:
+    """Estimate how likely placing a stone creates a ring."""
+    # This is a simplified heuristic - in practice you'd want to check
+    # if the stone could help create a ring via connected paths
+    return 0.0
+
+def evaluate_bridge(player_stones: List[Tuple[int, int]], move_row: int, move_col: int) -> float:
+    """Estimate how likely placing a stone supports a bridge."""
+    # Bridge connects any two opposite corners
+    corners = [(0,0), (0,14), (14,0), (14,14)]
+    # Check if placing a stone can help connect two corners
+    return 0.0
+
+def evaluate_fork(player_stones: List[Tuple[int, int]], move_row: int, move_col: int) -> float:
+    """Estimate how likely placing a stone supports a fork."""
+    # Fork connects any three edges
+    # This is a complex calculation - we'll make a simplified assessment
+    return 0.0
+
+def evaluate_move(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], 
+                 move_row: int, move_col: int, valid_mask) -> float:
+    """Evaluate the quality of a move using multiple heuristics."""
+    if not valid_mask[move_row][move_col]:
+        return -1000.0  # Illegal move
+    
+    # Don't place on occupied cell
+    if (move_row, move_col) in me or (move_row, move_col) in opp:
+        return -1000.0
+    
+    score = 0.0
+    
+    # Focus on connecting existing stones
+    connected_to_existing = False
+    for r, c in get_neighbors(move_row, move_col):
+        if (r, c) in me:
+            connected_to_existing = True
+            score += 5.0  # Favor connecting to existing stones
+    
+    # Connect to opponent stones (counter-play)
+    for r, c in get_neighbors(move_row, move_col):
+        if (r, c) in opp:
+            score += 3.0  # Favor blocking opponent
+            
+    # Center control (important in Havannah)
+    center_dist = max(abs(move_row - 7), abs(move_col - 7))
+    if center_dist <= 3:
+        score += 2.0  # Encourage center control
+    
+    # Check if move creates immediate connections
+    # Simple strategy: prefer moves that help form larger chains
+    my_neighbors = 0
+    for r, c in get_neighbors(move_row, move_col):
+        if (r, c) in me:
+            my_neighbors += 1
+    
+    score += my_neighbors * 2.0  # Reward moves that connect to more existing stones
+    
+    return score
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    """Main policy function to choose the best move."""
+    # Convert lists to sets for faster lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    valid_positions = [(i, j) for i in range(15) for j in range(15) if valid_mask[i][j] and (i, j) not in me_set and (i, j) not in opp_set]
+    
+    # If no valid moves, return a random valid move just to be safe
+    if not valid_positions:
+        # Find any valid empty position
+        for i in range(15):
+            for j in range(15):
+                if valid_mask[i][j] and (i, j) not in me_set and (i, j) not in opp_set:
+                    return (i, j)
+        return (0, 0)  # This shouldn't happen
+    
+    # Try several moves and choose the best
+    best_move = valid_positions[0]
+    best_score = float('-inf')
+    
+    # Evaluate a few promising moves
+    candidates = random.sample(valid_positions, min(20, len(valid_positions)))
+    
+    for row, col in candidates:
+        score = evaluate_move(me, opp, row, col, valid_mask)
+        if score > best_score:
+            best_score = score
+            best_move = (row, col)
+    
+    # If we found a very high-scoring move, use it
+    if best_score > 10.0:
+        return best_move
+    
+    # Otherwise, use a more defensive approach with a bit of randomness
+    # Check for immediate blocking needs
+    for r, c in valid_positions:
+        # Block potential immediate opponent wins
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in opp:
+                # Analyze if this move significantly blocks opponent
+                if len(get_neighbors(nr, nc)) > 1:  # Check if opponent has multiple connections
+                    return (r, c)
+    
+    # If no immediate threat, use default strategy
+    # Bias towards center but also consider edge positions that could build structures
+    center_positions = [(i, j) for i in range(6, 9) for j in range(6, 9) if valid_mask[i][j]]
+    if center_positions:
+        # Try to place near center if it's available
+        for row, col in center_positions:
+            if (row, col) in valid_positions:
+                return (row, col)
+    
+    # Fallback to simply returning the first valid position
+    return valid_positions[0]

@@ -1,0 +1,123 @@
+
+import numpy as np
+from collections import deque
+import math
+
+def policy(me, opp, valid_mask):
+    valid_mask = np.array(valid_mask)
+    size = len(valid_mask)
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    valid_cells = set((r, c) for r in range(size) for c in range(size) if valid_mask[r][c])
+    
+    def get_adj(cell):
+        r, c = cell
+        candidates = [(r-1,c), (r+1,c), (r-1,c-1), (r,c-1), (r-1,c+1), (r,c+1)]
+        return [n for n in candidates if n in valid_cells]
+    
+    adj = {cell: get_adj(cell) for cell in valid_cells}
+    available = [c for c in valid_cells if c not in me_set and c not in opp_set]
+    
+    if not available:
+        return list(valid_cells)[0] if valid_cells else (0, 0)
+    if len(available) == 1:
+        return available[0]
+    
+    corners = set(c for c in valid_cells if len(adj[c]) == 3)
+    boundary = set(c for c in valid_cells if len(adj[c]) < 6)
+    
+    cx = sum(c[0] for c in valid_cells) / len(valid_cells)
+    cy = sum(c[1] for c in valid_cells) / len(valid_cells)
+    
+    sorted_corners = sorted(corners, key=lambda c: math.atan2(c[0]-cx, c[1]-cy))
+    nc = len(sorted_corners)
+    edge_id = {c: -1 for c in corners}
+    
+    for i in range(nc):
+        c1, c2 = sorted_corners[i], sorted_corners[(i+1) % nc]
+        visited, queue, parent = {c1}, deque([c1]), {}
+        while queue:
+            cur = queue.popleft()
+            if cur == c2: break
+            for nb in adj[cur]:
+                if nb in boundary and nb not in visited:
+                    visited.add(nb); parent[nb] = cur; queue.append(nb)
+        cur = c2
+        while cur in parent:
+            if cur not in corners: edge_id[cur] = i
+            cur = parent[cur]
+    
+    def find_comp(start, stones):
+        if start not in stones: return set()
+        comp, queue = {start}, deque([start])
+        while queue:
+            cur = queue.popleft()
+            for nb in adj[cur]:
+                if nb in stones and nb not in comp:
+                    comp.add(nb); queue.append(nb)
+        return comp
+    
+    def is_win_comp(comp):
+        if len(comp & corners) >= 2: return True
+        edges = {edge_id.get(c,-1) for c in comp}; edges.discard(-1)
+        if len(edges) >= 3: return True
+        if len(comp) >= 6:
+            start = boundary - comp
+            if not start: return True
+            reach, q = set(start), deque(start)
+            while q:
+                cur = q.popleft()
+                for nb in adj[cur]:
+                    if nb not in reach and nb not in comp:
+                        reach.add(nb); q.append(nb)
+            if valid_cells - reach - comp: return True
+        return False
+    
+    def is_win(stones):
+        visited = set()
+        for s in stones:
+            if s in visited: continue
+            comp = find_comp(s, stones)
+            visited.update(comp)
+            if is_win_comp(comp): return True
+        return False
+    
+    for m in available:
+        if is_win(me_set | {m}): return m
+    
+    blocks = [m for m in available if is_win(opp_set | {m})]
+    if blocks: return blocks[0]
+    
+    def count_threats(stones, moves):
+        return sum(1 for m in moves if is_win(stones | {m}))
+    
+    for m in available:
+        remaining = [x for x in available if x != m]
+        if count_threats(me_set | {m}, remaining) >= 2:
+            return m
+    
+    for m in available:
+        remaining = [x for x in available if x != m]
+        if count_threats(opp_set | {m}, remaining) >= 2:
+            return m
+    
+    def evaluate(m):
+        s = sum(2.0 for n in adj[m] if n in me_set)
+        s += sum(0.5 for n in adj[m] if n in opp_set)
+        if m in corners: s += 5.0
+        elif m in boundary: s += 2.0
+        s -= 0.01 * math.sqrt((m[0]-cx)**2 + (m[1]-cy)**2)
+        
+        comp = find_comp(m, me_set | {m})
+        s += len(comp & corners) * 5.0
+        edges = {edge_id.get(c,-1) for c in comp}; edges.discard(-1)
+        s += len(edges) * 4.0
+        s += len(comp) * 0.3
+        
+        return s
+    
+    if not me and not opp:
+        return min(available, key=lambda c: (c[0]-cx)**2 + (c[1]-cy)**2)
+    
+    return max(available, key=evaluate)

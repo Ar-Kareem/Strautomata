@@ -1,0 +1,119 @@
+
+import numpy as np
+import random
+
+def policy(you, opponent) -> str:
+    # Convert inputs to numpy arrays for efficient manipulation
+    board_me = np.array(you, dtype=np.int8)
+    board_opp = np.array(opponent, dtype=np.int8)
+    
+    # Precompute all possible 5-in-a-row lines (40 lines total)
+    # Each line is a list of 5 (row, col) tuples
+    lines_coords = []
+    # Horizontal
+    for r in range(6):
+        for c in range(2):
+            lines_coords.append([(r, c+i) for i in range(5)])
+    # Vertical
+    for c in range(6):
+        for r in range(2):
+            lines_coords.append([(r+i, c) for i in range(5)])
+    # Diagonal \
+    for r in range(2):
+        for c in range(2):
+            lines_coords.append([(r+i, c+i) for i in range(5)])
+    # Diagonal /
+    for r in range(2):
+        for c in range(2):
+            lines_coords.append([(r+i, 5-c-i) for i in range(5)])
+            
+    # Convert to numpy array for vectorized indexing: shape (40, 5, 2)
+    lines_np = np.array(lines_coords)
+
+    def evaluate_state(b_me, b_opp):
+        # Vectorized evaluation of the board state
+        # Extract values for all lines simultaneously
+        vals_me = b_me[lines_np[:, :, 0], lines_np[:, :, 1]]
+        vals_opp = b_opp[lines_np[:, :, 0], lines_np[:, :, 1]]
+        
+        # Count marbles in each line
+        sums_me = np.sum(vals_me, axis=1)
+        sums_opp = np.sum(vals_opp, axis=1)
+        
+        # Check Win/Loss conditions
+        win_me = np.any(sums_me == 5)
+        win_opp = np.any(sums_opp == 5)
+        
+        if win_me and win_opp: return 50000  # Draw
+        if win_me: return 100000            # Win
+        if win_opp: return -100000           # Loss
+        
+        # Heuristic scoring
+        # We only care about lines where the opponent has 0 marbles (potential wins for me)
+        # or where I have 0 marbles (potential wins for opponent).
+        # If both have pieces, the line is dead.
+        
+        # Mask of lines open for me (opponent has 0)
+        open_me = (sums_opp == 0)
+        # Mask of lines open for opponent (I have 0)
+        open_opp = (sums_me == 0)
+        
+        # Exponential weighting: 1->10, 2->100, 3->1000, 4->10000
+        score = 0
+        score += np.sum(10 ** sums_me[open_me])
+        score -= np.sum(10 ** sums_opp[open_opp])
+        
+        return score
+
+    # Identify legal moves (empty cells)
+    empties = np.argwhere(board_me + board_opp == 0)
+    
+    best_score = -float('inf')
+    best_move_str = ""
+    
+    # Define quadrants for rotation: (row_slice, col_slice, quad_index)
+    quads = [
+        (slice(0,3), slice(0,3), 0),
+        (slice(0,3), slice(3,6), 1),
+        (slice(3,6), slice(0,3), 2),
+        (slice(3,6), slice(3,6), 3)
+    ]
+    
+    # Iterate over all placements and rotations
+    for r, c in empties:
+        # Place my marble temporarily
+        board_me[r, c] = 1
+        
+        for rs, cs, q_idx in quads:
+            for direction in ['L', 'R']:
+                # Create copies to simulate the state
+                # (Copying 6x6 arrays is cheap)
+                s_me = board_me.copy()
+                s_opp = board_opp.copy()
+                
+                # Apply rotation
+                k = 1 if direction == 'L' else -1
+                s_me[rs, cs] = np.rot90(s_me[rs, cs], k=k)
+                s_opp[rs, cs] = np.rot90(s_opp[rs, cs], k=k)
+                
+                # Evaluate the resulting state
+                score = evaluate_state(s_me, s_opp)
+                
+                # Add tiny random noise to break ties and introduce unpredictability
+                score += random.random()
+                
+                # Update best move found
+                if score > best_score:
+                    best_score = score
+                    best_move_str = f"{r+1},{c+1},{q_idx},{direction}"
+                    
+                    # If we found a winning move, we can stop searching immediately
+                    if score >= 100000:
+                        # Reset board state before returning
+                        board_me[r, c] = 0
+                        return best_move_str
+                        
+        # Undo placement for next iteration
+        board_me[r, c] = 0
+        
+    return best_move_str

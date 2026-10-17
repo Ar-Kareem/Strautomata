@@ -1,0 +1,163 @@
+
+def policy(state: dict) -> str:
+    # Helper function to generate all legal moves for a given die
+    def generate_moves(state, die):
+        moves = []
+        # If we have checkers on the bar, we must move from bar
+        if state['my_bar'] > 0:
+            dest = 23 - die
+            if 0 <= dest <= 23 and state['opp_pts'][dest] <= 1:
+                moves.append('B')
+        else:
+            # Check all points for possible moves
+            for i in range(24):
+                if state['my_pts'][i] > 0:
+                    dest = i - die
+                    if dest >= 0:
+                        # Normal move
+                        if state['opp_pts'][dest] <= 1:
+                            moves.append('A' + str(i))
+                    else:
+                        # Bearing off
+                        # Must be in home board (A0-A5)
+                        if i < 6:
+                            # Check all checkers in home board
+                            if all(checker == 0 for checker in state['my_pts'][6:]):
+                                # Check die requirement and no blockers
+                                if die >= (i + 1):
+                                    if i == 0 or all(state['my_pts'][j] == 0 for j in range(i)):
+                                        moves.append('A' + str(i))
+        return moves
+
+    # Helper function to simulate a move
+    def simulate_move(state, move, die):
+        new_state = {
+            'my_pts': state['my_pts'][:],
+            'opp_pts': state['opp_pts'][:],
+            'my_bar': state['my_bar'],
+            'opp_bar': state['opp_bar'],
+            'my_off': state['my_off'],
+            'opp_off': state['opp_off']
+        }
+        
+        if move == 'B':
+            new_state['my_bar'] -= 1
+            dest = 23 - die
+            if new_state['opp_pts'][dest] == 1:
+                new_state['opp_pts'][dest] = 0
+                new_state['opp_bar'] += 1
+            new_state['my_pts'][dest] += 1
+        elif move != 'P':
+            i = int(move[1:])
+            new_state['my_pts'][i] -= 1
+            dest = i - die
+            if dest >= 0:
+                if new_state['opp_pts'][dest] == 1:
+                    new_state['opp_pts'][dest] = 0
+                    new_state['opp_bar'] += 1
+                new_state['my_pts'][dest] += 1
+            else:
+                new_state['my_off'] += 1
+        
+        return new_state
+
+    # Helper function to evaluate a state
+    def evaluate(state):
+        score = 0
+        my_home = state['my_pts'][:6]
+        opp_home = state['opp_pts'][:6]
+        
+        # Home board strength
+        strong = sum(1 for x in my_home if x >= 2)
+        weak = sum(1 for x in my_home if x == 1)
+        score += 2 * strong - 2 * weak
+        
+        # Opponent home board
+        opp_strong = sum(1 for x in opp_home if x >= 2)
+        opp_weak = sum(1 for x in opp_home if x == 1)
+        score += 2 * opp_weak - 2 * opp_strong
+        
+        # Bar and off checkers
+        score -= 2 * state['my_bar']
+        score += 2 * state['opp_bar']
+        score += 3 * state['my_off']
+        score -= 3 * state['opp_off']
+        
+        # Count home board checkers
+        score += 0.1 * sum(my_home)
+        score -= 0.1 * sum(opp_home)
+        
+        return score
+
+    # Process dice
+    dice = state['dice']
+    if len(dice) == 0:
+        return "H:P,P"
+    
+    if len(dice) == 1:
+        die = dice[0]
+        moves = generate_moves(state, die)
+        if not moves:
+            return "H:P,P"
+        
+        best_move = None
+        best_score = -1000000
+        for m in moves:
+            new_state = simulate_move(state, m, die)
+            score = evaluate(new_state)
+            if score > best_score:
+                best_score = score
+                best_move = m
+        return "H:" + best_move + ",P"
+    
+    # Two dice case
+    d1, d2 = dice[0], dice[1]
+    orders = [('H', [max(d1, d2), min(d1, d2)]), ('L', [min(d1, d2), max(d1, d2)])]
+    
+    best_overall_move = None
+    best_overall_score = -1000000
+    
+    for order, dice_order in orders:
+        d1_first, d2_second = dice_order[0], dice_order[1]
+        moves1 = generate_moves(state, d1_first)
+        
+        if not moves1:
+            # Try second die only
+            moves2 = generate_moves(state, d2_second)
+            if not moves2:
+                score = evaluate(state)
+                if score > best_overall_score:
+                    best_overall_score = score
+                    best_overall_move = (order, 'P', 'P')
+            else:
+                best_move2 = None
+                best_score2 = -1000000
+                for m2 in moves2:
+                    new_state = simulate_move(state, m2, d2_second)
+                    score = evaluate(new_state)
+                    if score > best_score2:
+                        best_score2 = score
+                        best_move2 = m2
+                if best_score2 > best_overall_score:
+                    best_overall_score = best_score2
+                    best_overall_move = (order, 'P', best_move2)
+        else:
+            # Try all first moves
+            for m1 in moves1:
+                state1 = simulate_move(state, m1, d1_first)
+                moves2 = generate_moves(state1, d2_second)
+                
+                if not moves2:
+                    score = evaluate(state1)
+                    if score > best_overall_score:
+                        best_overall_score = score
+                        best_overall_move = (order, m1, 'P')
+                else:
+                    for m2 in moves2:
+                        state2 = simulate_move(state1, m2, d2_second)
+                        score = evaluate(state2)
+                        if score > best_overall_score:
+                            best_overall_score = score
+                            best_overall_move = (order, m1, m2)
+    
+    return best_overall_move[0] + ":" + best_overall_move[1] + "," + best_overall_move[2]

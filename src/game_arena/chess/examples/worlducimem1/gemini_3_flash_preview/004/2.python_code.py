@@ -1,0 +1,131 @@
+
+import random
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # 1. Constants and Weights
+    VALS = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    # Simplified piece-square tables (centrality and advancement)
+    PST = {
+        'P': [0,  0,  0,  0,  0,  0,  0,  0,
+              5, 10, 10,-20,-20, 10, 10,  5,
+              5, -5,-10,  0,  0,-10, -5,  5,
+              0,  0,  0, 20, 20,  0,  0,  0,
+              5,  5, 10, 25, 25, 10,  5,  5,
+              10, 10, 20, 30, 30, 20, 10, 10,
+              50, 50, 50, 50, 50, 50, 50, 50,
+              0,  0,  0,  0,  0,  0,  0,  0],
+        'N': [-50,-40,-30,-30,-30,-30,-40,-50,
+              -40,-20,  0,  5,  5,  0,-20,-40,
+              -30,  5, 10, 15, 15, 10,  5,-30,
+              -30,  0, 15, 20, 20, 15,  0,-30,
+              -30,  5, 15, 20, 20, 15,  5,-30,
+              -30,  0, 10, 15, 15, 10,  0,-30,
+              -40,-20,  0,  0,  0,  0,-20,-40,
+              -50,-40,-30,-30,-30,-30,-40,-50]
+    }
+
+    def sq_to_idx(sq):
+        file = ord(sq[0]) - ord('a')
+        rank = int(sq[1]) - 1
+        return (rank, file)
+
+    def get_pst_val(piece_type, color, sq):
+        r, f = sq_to_idx(sq)
+        if piece_type not in PST: return 0
+        idx = r * 8 + f if color == 'w' else (7 - r) * 8 + f
+        return PST[piece_type][idx]
+
+    # 2. Identify all possible pseudo-legal moves (simplified)
+    my_color = 'w' if to_play == 'white' else 'b'
+    opp_color = 'b' if my_color == 'w' else 'w'
+    
+    def get_raw_moves():
+        moves = []
+        directions = {
+            'N': [(2,1), (2,-1), (-2,1), (-2,-1), (1,2), (1,-2), (-1,2), (-1,-2)],
+            'B': [(1,1), (1,-1), (-1,1), (-1,-1)],
+            'R': [(1,0), (-1,0), (0,1), (0,-1)],
+            'Q': [(1,1), (1,-1), (-1,1), (-1,-1), (1,0), (-1,0), (0,1), (0,-1)],
+            'K': [(1,1), (1,-1), (-1,1), (-1,-1), (1,0), (-1,0), (0,1), (0,-1)]
+        }
+        
+        for sq, p in pieces.items():
+            if p[0] != my_color: continue
+            pt = p[1]
+            r, f = sq_to_idx(sq)
+            
+            if pt == 'P':
+                fwd = 1 if my_color == 'w' else -1
+                # Push
+                tr, tf = r + fwd, f
+                tsq = chr(ord('a')+tf) + str(tr+1)
+                if 0 <= tr < 8 and tsq not in pieces:
+                    if tr == 0 or tr == 7:
+                        for promo in 'qrbn': moves.append(sq + tsq + promo)
+                    else:
+                        moves.append(sq + tsq)
+                        # Double push
+                        if (my_color == 'w' and r == 1) or (my_color == 'b' and r == 6):
+                            t2r = r + 2*fwd
+                            t2sq = chr(ord('a')+tf) + str(t2r+1)
+                            if t2sq not in pieces: moves.append(sq + t2sq)
+                # Captures
+                for df in [-1, 1]:
+                    tr, tf = r + fwd, f + df
+                    if 0 <= tr < 8 and 0 <= tf < 8:
+                        tsq = chr(ord('a')+tf) + str(tr+1)
+                        if tsq in pieces and pieces[tsq][0] == opp_color:
+                            if tr == 0 or tr == 7:
+                                for promo in 'qrbn': moves.append(sq + tsq + promo)
+                            else:
+                                moves.append(sq+tsq)
+            else:
+                for dr, df in directions[pt]:
+                    cur_r, cur_f = r, f
+                    while True:
+                        cur_r += dr
+                        cur_f += df
+                        if not (0 <= cur_r < 8 and 0 <= cur_f < 8): break
+                        tsq = chr(ord('a')+cur_f) + str(cur_r+1)
+                        if tsq in pieces:
+                            if pieces[tsq][0] == opp_color:
+                                moves.append(sq + tsq)
+                            break
+                        moves.append(sq + tsq)
+                        if pt in 'NK': break
+        return moves
+
+    # 3. Simple Search / Eval
+    best_move = None
+    max_eval = -999999
+    
+    legal_moves = get_raw_moves()
+    if not legal_moves: return ("0000", memory) # Should not happen in valid state
+
+    for move in legal_moves:
+        start, end = move[:2], move[2:4]
+        score = 0
+        
+        # Capture value
+        if end in pieces:
+            score += VALS[pieces[end][1]] * 10
+            
+        # Positional value
+        pt = pieces[start][1]
+        score += get_pst_val(pt, my_color, end) - get_pst_val(pt, my_color, start)
+        
+        # Promotion
+        if len(move) > 4:
+            score += VALS[move[4].upper()]
+
+        # Simple check: Is the end square hanging?
+        # (Very basic heuristic: lower score if moving into potential capture)
+        # This is a bit complex without full move gen, so we'll use randomness for ties
+        score += random.random()
+
+        if score > max_eval:
+            max_eval = score
+            best_move = move
+
+    return (best_move or legal_moves[0], memory)

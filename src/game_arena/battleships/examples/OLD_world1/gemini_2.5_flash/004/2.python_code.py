@@ -1,0 +1,117 @@
+
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    n = len(board)
+
+    # Phase 1: Hunt mode - search for a new ship
+    # If we have any hits, prioritize shooting around them
+    hit_cells = []
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 1:
+                hit_cells.append((r, c))
+
+    if hit_cells:
+        # Try to sink the ship we hit
+        # Prioritize extending a known hit
+        best_target = find_best_target_around_hits(board, hit_cells)
+        if best_target:
+            return best_target
+
+    # If no hit-based targets, or all adjacent cells are shot, go into checkerboard pattern
+    # This is a simple but effective hunt strategy
+    available_targets = []
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 0:  # Only target unknown cells
+                # Checkerboard pattern: (r + c) % 2 == 0
+                # Or a slightly more distributed pattern
+                if (r * n + c) % 3 == 0: # Shoot every 3rd cell in a flattened grid order
+                    available_targets.append((r, c))
+    
+    # If no checkerboard targets, just pick any random unknown cell
+    if not available_targets:
+        for r in range(n):
+            for c in range(n):
+                if board[r][c] == 0:
+                    available_targets.append((r, c))
+
+    if available_targets:
+        return random.choice(available_targets)
+    
+    # Fallback: if somehow no available targets (should not happen if game is not over)
+    # This case implies the board is full, meaning all ships are sunk or all water hit.
+    # In a real game, this would mean the current player has lost or won.
+    # For safety, pick any unhit cell, though it implies an error in game state or logic.
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    # Should ideally not reach here in a valid game state.
+    # If all cells are hit or missed, the game is over.
+    return (0, 0) # Default, signifies an issue or game over
+
+def find_best_target_around_hits(board: list[list[int]]) -> tuple[int, int]:
+    n = len(board)
+    
+    # Group adjacent hits to identify ship segments
+    segments = group_hits(board)
+    
+    # Prioritize extending existing segments
+    for segment in segments:
+        for r, c in segment:
+            # Check horizontal extensions
+            if (c > 0 and board[r][c-1] == 0):
+                # Check if it's already part of the segment and consistent
+                if (r, c-1) not in segment and (len(segment) > 1 and board[r][c+1] == 1 or len(segment) == 1):
+                    return (r, c-1)
+            if (c < n - 1 and board[r][c+1] == 0):
+                # Check if it's already part of the segment and consistent
+                if (r, c+1) not in segment and (len(segment) > 1 and board[r][c-1] == 1 or len(segment) == 1):
+                    return (r, c+1)
+
+            # Check vertical extensions
+            if (r > 0 and board[r-1][c] == 0):
+                 if (r-1, c) not in segment and (len(segment) > 1 and board[r+1][c] == 1 or len(segment) == 1):
+                    return (r-1, c)
+            if (r < n - 1 and board[r+1][c] == 0):
+                 if (r+1, c) not in segment and (len(segment) > 1 and board[r-1][c] == 1 or len(segment) == 1):
+                    return (r+1, c)
+    
+    # If no immediate extension, target 1-hit cells adjacents
+    # This helps in breaking ties and reducing randomness
+    # This also acts as a fallback for the "hunt" mode if checkerboard isn't yielding results
+    for r, c in [(r_val, c_val) for r_val in range(n) for c_val in range(n) if board[r_val][c_val] == 1]:
+        # Check adjacent cells
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < n and 0 <= nc < n and board[nr][nc] == 0:
+                return (nr, nc)
+    
+    return None
+
+def group_hits(board: list[list[int]]) -> list[list[tuple[int, int]]]:
+    n = len(board)
+    visited = [[False for _ in range(n)] for _ in range(n)]
+    segments = []
+
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] == 1 and not visited[r][c]:
+                current_segment = []
+                stack = [(r, c)]
+                visited[r][c] = True
+
+                while stack:
+                    cr, cc = stack.pop()
+                    current_segment.append((cr, cc))
+
+                    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < n and 0 <= nc < n and board[nr][nc] == 1 and not visited[nr][nc]:
+                            visited[nr][nc] = True
+                            stack.append((nr, nc))
+                segments.append(current_segment)
+    return segments

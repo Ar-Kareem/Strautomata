@@ -1,0 +1,202 @@
+An elegant explanation of the method, followed by the complete Python code for the policy.
+
+### Method Explanation
+
+My policy, `Aegis`, employs a model-based expectiminimax strategy with a one-step lookahead. It determines whether to "HIT" or "STAY" by calculating and comparing the expected utility of each action.
+
+1.  **Opponent Modeling**: The core of the strategy is to build a probabilistic model of the opponent's final score. I assume the opponent plays a simple but rational threshold-based policy: they will "HIT" until their score reaches a certain value (determined as `target - 5`), then "STAY". Using a recursive, memoized function, I compute the entire probability distribution of the opponent's possible final scores, including their probability of busting. This complex calculation is performed only once for each unique `target` value and the result is cached.
+
+2.  **Utility Calculation**: The "utility" of any potential outcome is defined as +1 for a win, -1 for a loss, and 0 for a draw. The policy calculates its expected utility for a given score by comparing it against every possible opponent score from the pre-calculated distribution, weighted by their probabilities.
+
+3.  **Decision Logic**:
+    *   **Utility of STAY**: This is calculated directly by comparing the current hand's score against the opponent's score distribution.
+    *   **Utility of HIT**: This is estimated by performing a one-step lookahead. The policy considers every card remaining in its own deck. For each possible draw, it calculates the resulting score and its utility, assuming it would "STAY" in that new state. The overall utility of "HIT" is the average of these potential outcomes. This provides a robust estimate of whether hitting is beneficial without getting into a computationally expensive multi-step search.
+
+By comparing the expected utility of "HIT" versus "STAY", my policy makes a mathematically-grounded decision that dynamically adapts to the `target` score, the cards in its hand, and the cards still left in its deck.
+
+```python
+import collections
+from typing import List, Dict, FrozenSet, Tuple
+
+# --- Globals for Caching and Constants ---
+
+CARD_VALUES: Dict[str, int] = {
+    "A": 11, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7,
+    "8": 8, "9": 9, "10": 10, "J": 10, "Q": 10, "K": 10
+}
+FULL_DECK: FrozenSet[str] = frozenset(CARD_VALUES.keys())
+
+# Cache for opponent's final score distribution. Key: (target, opponent_threshold)
+OPPONENT_SCORE_DIST_CACHE: Dict[Tuple[int, int], Dict] = {}
+
+# Cache for the recursive calculation of score distribution.
+# Key: (hand, deck, threshold, target)
+SCORE_DIST_MEMO: Dict[Tuple[FrozenSet[str], FrozenSet[str], int, int], Dict] = {}
+
+
+# --- Helper Functions ---
+
+def get_hand_value(hand: List[str], target: int) -> int:
+    """Calculates the value of a hand, handling Aces adaptively."""
+    value = sum(CARD_VALUES[card] for card in hand)
+    num_aces = hand.count("A")
+
+    # An Ace is 1 instead of 11 if the total would exceed the target.
+    while value > target and num_aces > 0:
+        value -= 10
+        num_aces -= 1
+    return value
+
+
+def _compute_score_dist(
+    hand: FrozenSet[str],
+    deck: FrozenSet[str],
+    threshold: int,
+    target: int
+) -> Dict:
+    """
+    Recursively computes the probability distribution of final scores for a player
+    following a simple threshold-based policy. (Internal, memoized function).
+    """
+    state = (hand, deck, threshold, target)
+    if state in SCORE_DIST_MEMO:
+        return SCORE_DIST_MEMO[state]
+
+    score = get_hand_value(list(hand), target)
+
+    # Base case 1: Bust. The game ends, score is "bust".
+    if score > target:
+        return {"bust": 1.0}
+
+    # Base case 2: Stay.
+    # Player stays if their score reaches the threshold or they can't draw.
+    if score >= threshold or not deck:
+        return {score: 1.0}
+
+    # Recursive step: Hit.
+    # Calculate the weighted average of distributions from all possible next states.
+    total_dist = collections.defaultdict(float)
+    prob_draw = 1.0 / len(deck)
+
+    for card in deck:
+        new_hand = hand | {card}
+        new_deck = deck - {card}
+        
+        # Recursively find the distribution of final scores from the new state.
+        dist = _compute_score_dist(new_hand, new_deck, threshold, target)
+        for s, p in dist.items():
+            total_dist[s] += p * prob_draw
+
+    result = dict(total_dist)
+    SCORE_DIST_MEMO[state] = result
+    return result
+
+
+def _get_opponent_dist(target: int) -> Dict:
+    """
+    Calculates or retrieves from cache the opponent's final score distribution.
+    This model assumes the opponent plays with a fixed, rational policy.
+    """
+    # Heuristic for the opponent's threshold policy.
+    # Assumes the opponent will HIT if their score is less than `target - 5`.
+    # This threshold represents a reasonably aggressive opponent.
+    opp_threshold = target - 5
+    
+    cache_key = (target, opp_threshold)
+    if cache_key in OPPONENT_SCORE_DIST_CACHE:
+        return OPPONENT_SCORE_DIST_CACHE[cache_key]
+
+    # The opponent starts with an empty hand and a full 13-card deck.
+    dist = _compute_score_dist(
+        hand=frozenset(),
+        deck=FULL_DECK,
+        threshold=opp_threshold,
+        target=target
+    )
+    
+    OPPONENT_SCORE_DIST_CACHE[cache_key] = dist
+    return dist
+
+
+def _calculate_utility(my_score: int, opponent_dist: Dict, target: int) -> float:
+    """
+    Calculates the expected utility (win=1, lose=-1, draw=0) for a given score
+    against the opponent's modeled score distribution.
+    """
+    if my_score > target:
+        return -1.0  # Safeguard: should be handled before calling.
+
+    utility = 0.0
+    my_diff = abs(target - my_score)
+
+    for opp_score, prob in opponent_dist.items():
+        if opp_score == "bust":
+            utility += prob * 1.0  # Opponent busts, I win.
+            continue
+        
+        opp_score_val = int(opp_score)
+        opp_diff = abs(target - opp_score_val)
+
+        if my_diff < opp_diff:
+            utility += prob * 1.0  # I win (closer to target).
+        elif my_diff > opp_diff:
+            utility += prob * -1.0 # I lose (further from target).
+        # If diffs are equal, it's a draw (utility += 0).
+
+    return utility
+
+
+# --- Main Policy Function ---
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Determines the best action ("HIT" or "STAY") based on a one-step
+    lookahead and a model of the opponent's strategy.
+    """
+    # 1. Get the pre-calculated probability distribution of the opponent's final score.
+    opponent_dist = _get_opponent_dist(target)
+
+    # 2. Calculate current hand score.
+    my_current_score = get_hand_value(hand, target)
+    
+    # If score is already the target, staying is always the best option.
+    if my_current_score == target:
+        return "STAY"
+
+    # 3. Evaluate the "STAY" action.
+    # The utility is calculated based on our current score vs. the opponent model.
+    utility_stay = _calculate_utility(my_current_score, opponent_dist, target)
+
+    # 4. Evaluate the "HIT" action.
+    remaining_deck = FULL_DECK - set(hand)
+    
+    # If no cards are left to draw, we must stay.
+    if not remaining_deck:
+        return "STAY"
+
+    utility_hit = 0.0
+    prob_draw = 1.0 / len(remaining_deck)
+
+    # Average the utility over all possible cards we could draw.
+    for card in remaining_deck:
+        new_hand = hand + [card]
+        new_score = get_hand_value(new_hand, target)
+
+        if new_score > target:
+            # If a hit leads to a bust, the utility is -1 (a certain loss).
+            utility_hit += prob_draw * -1.0
+        else:
+            # ONE-STEP LOOKAHEAD: Assume if we hit, we will then STAY.
+            # This estimates the hit's value without a full recursive search.
+            utility_from_new_score = _calculate_utility(new_score, opponent_dist, target)
+            utility_hit += prob_draw * utility_from_new_score
+
+    # 5. Make the decision.
+    # Choose the action with the higher expected utility.
+    # In case of a tie, "STAY" is chosen as the safer, default option.
+    if utility_hit > utility_stay:
+        return "HIT"
+    else:
+        return "STAY"
+
+```

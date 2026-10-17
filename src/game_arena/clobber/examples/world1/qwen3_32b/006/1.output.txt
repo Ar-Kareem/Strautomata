@@ -1,0 +1,120 @@
+The strategy for this policy is to implement a **Minimax algorithm with Alpha-Beta pruning** and a heuristic that evaluates board states based on mobility differences. The policy prioritizes moves that maximize the player's mobility while minimizing the opponent's future mobility, leveraging a depth of 2 to balance computational efficiency and strategic depth. Alpha-Beta pruning is used to optimize the search, ensuring the policy can process the full state space within the 1-second time constraint on a standard CPU.
+
+---
+
+<code>
+```python
+import math
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    def get_legal_moves(current_player, current_opponent):
+        moves = []
+        directions = [(-1, 0, 'U'), (1, 0, 'D'), (0, -1, 'L'), (0, 1, 'R')]
+        for cell_index in range(30):
+            row = cell_index // 6
+            col = cell_index % 6
+            if current_player[cell_index] == 1:
+                for dr, dc, dir_char in directions:
+                    new_row, new_col = row + dr, col + dc
+                    new_index = new_row * 6 + new_col
+                    if 0 <= new_row < 5 and 0 <= new_col < 6:
+                        if current_opponent[new_index] == 1:
+                            moves.append((row, col, dir_char))
+        return moves
+
+    def simulate_move(player_moves, opponent_moves, move):
+        row, col, direction = move
+        original_index = row * 6 + col
+        if direction == 'U':
+            new_row, new_col = row - 1, col
+        elif direction == 'D':
+            new_row, new_col = row + 1, col
+        elif direction == 'R':
+            new_row, new_col = row, col + 1
+        elif direction == 'L':
+            new_row, new_col = row, col - 1
+
+        if not (0 <= new_row < 5 and 0 <= new_col < 6):
+            return (player_moves, opponent_moves)
+
+        new_index = new_row * 6 + new_col
+
+        new_player = player_moves[:]
+        new_opponent = opponent_moves[:]
+
+        new_player[original_index] = 0
+        new_player[new_index] = 1
+        new_opponent[new_index] = 0
+        return (new_player, new_opponent)
+
+    def minimax(you, opponent, depth, is_our_turn, alpha, beta):
+        if is_our_turn:
+            player_moves = you
+            player_opponent = opponent
+        else:
+            player_moves = opponent
+            player_opponent = you
+
+        legal_moves = get_legal_moves(player_moves, player_opponent)
+        if not legal_moves:
+            return (-math.inf if is_our_turn else math.inf, None)
+        if depth == 0:
+            our_mobility = len(legal_moves)
+            if is_our_turn:
+                their_mobility = len(get_legal_moves(player_opponent, player_moves))
+                return (our_mobility - their_mobility, None)
+            else:
+                their_mobility = len(get_legal_moves(player_opponent, player_moves))
+                return (their_mobility - our_mobility, None)
+
+        if is_our_turn:
+            best_score = -math.inf
+            best_move = None
+            for move in legal_moves:
+                new_you, new_opponent = simulate_move(player_moves, player_opponent, move)
+                score, _ = minimax(new_you, new_opponent, depth - 1, False, alpha, beta)
+                current_score = -score
+                if current_score > best_score:
+                    best_score = current_score
+                    best_move = move
+                alpha = max(alpha, best_score)
+                if beta <= alpha:
+                    break
+            return (best_score, best_move)
+        else:
+            best_score = math.inf
+            best_move = None
+            for move in legal_moves:
+                new_opponent, new_player = simulate_move(player_moves, player_opponent, move)
+                score, _ = minimax(new_player, new_opponent, depth - 1, True, alpha, beta)
+                current_score = -score
+                if current_score < best_score:
+                    best_score = current_score
+                    best_move = move
+                beta = min(beta, best_score)
+                if beta <= alpha:
+                    break
+            return (best_score, best_move)
+
+    # Main execution
+    best_score, best_move = minimax(you, opponent, 2, True, -math.inf, math.inf)
+    if best_move is None:
+        # No legal move found (edge case, should never occur)
+        # Return the first legal move to avoid disqualification
+        for i in range(30):
+            if you[i] == 1:
+                row = i // 6
+                col = i % 6
+                if opponent[(row - 1) * 6 + col] == 1:
+                    return f"{row},{col},U"
+                elif opponent[(row + 1) * 6 + col] == 1:
+                    return f"{row},{col},D"
+                elif opponent[row * 6 + (col - 1)] == 1:
+                    return f"{row},{col},L"
+                elif opponent[row * 6 + (col + 1)] == 1:
+                    return f"{row},{col},R"
+        return "0,0,U"
+
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+```
+</code>

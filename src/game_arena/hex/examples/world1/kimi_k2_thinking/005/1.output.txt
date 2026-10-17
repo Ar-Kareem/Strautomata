@@ -1,0 +1,166 @@
+**Strategy Overview**
+
+This Hex AI follows a three-tier decision hierarchy designed for both speed and strength on 11×11 boards:
+
+1. **Win/Block First**: Immediately play any move that wins the game or blocks the opponent's winning move. This uses BFS connectivity checks optimized with deques.
+2. **Heuristic Evaluation**: If no forced move exists, score all legal moves based on connectivity, center control, edge proximity, and pattern recognition.
+3. **Fallback**: In the extremely rare case no move is scored, return the first empty cell.
+
+The core insight is that Hex is a connectivity game—strengthening your own network while disrupting the opponent's yields strong play. The heuristic heavily weights moves that connect multiple friendly groups (bridge creation) while maintaining central board influence.
+
+**Why This Works**
+- The BFS win/block check is O(N²) per move but runs on a small board with pruning
+- Heuristic scoring runs in O(N²) and captures strategic concepts without expensive search
+- Combines offensive connectivity with defensive blocking
+- Center and edge bonuses guide early-game exploration
+
+```python
+from collections import deque
+
+def policy(me, opp, color):
+    """Hex AI: prioritize wins/blocks, then connectivity/center control"""
+    N = 11
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Hex adjacency: all 8 neighbors except (i-1,j-1) and (i+1,j+1)
+    NEIGHBORS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+    
+    def would_connect(move, player_color, player_stones, opponent_stones):
+        """Check if placing 'move' connects player's two edges"""
+        stones = set(player_stones)
+        if move:
+            stones.add(move)
+        
+        if player_color == 'b':  # Black: top (row 0) to bottom (row 10)
+            start = [(0, c) for c in range(N) if (0, c) in stones]
+            if not start:
+                return False
+            visited = set(start)
+            queue = deque(start)
+            while queue:
+                r, c = queue.popleft()
+                if r == N - 1:
+                    return True
+                for dr, dc in NEIGHBORS:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < N and 0 <= nc < N:
+                        pos = (nr, nc)
+                        if pos in stones and pos not in visited:
+                            visited.add(pos)
+                            queue.append(pos)
+        else:  # White: left (col 0) to right (col 10)
+            start = [(r, 0) for r in range(N) if (r, 0) in stones]
+            if not start:
+                return False
+            visited = set(start)
+            queue = deque(start)
+            while queue:
+                r, c = queue.popleft()
+                if c == N - 1:
+                    return True
+                for dr, dc in NEIGHBORS:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < N and 0 <= nc < N:
+                        pos = (nr, nc)
+                        if pos in stones and pos not in visited:
+                            visited.add(pos)
+                            queue.append(pos)
+        return False
+    
+    # 1. Check immediate winning moves
+    for r in range(N):
+        for c in range(N):
+            pos = (r, c)
+            if pos not in me_set and pos not in opp_set:
+                if would_connect(pos, color, me, opp):
+                    return pos
+    
+    # 2. Block opponent's immediate wins
+    opp_color = 'w' if color == 'b' else 'b'
+    for r in range(N):
+        for c in range(N):
+            pos = (r, c)
+            if pos not in me_set and pos not in opp_set:
+                if would_connect(pos, opp_color, opp, me):
+                    return pos
+    
+    # 3. Heuristic-based move selection
+    center = N // 2
+    best_score = float('-inf')
+    best_move = None
+    
+    for r in range(N):
+        for c in range(N):
+            pos = (r, c)
+            if pos in me_set or pos in opp_set:
+                continue
+            
+            score = 0
+            
+            # Count friendly and opponent neighbors
+            friendly = opponent = 0
+            for dr, dc in NEIGHBORS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < N and 0 <= nc < N:
+                    neighbor = (nr, nc)
+                    if neighbor in me_set:
+                        friendly += 1
+                    elif neighbor in opp_set:
+                        opponent += 1
+            
+            # Primary: connectivity (100 points per friendly neighbor)
+            score += friendly * 100
+            
+            # Secondary: blocking (30 points per opponent neighbor)
+            score += opponent * 30
+            
+            # Bridge bonus: connecting multiple groups
+            if friendly >= 2:
+                score += 50
+            
+            # Center control (quadratic falloff)
+            dist_sq = (r - center) ** 2 + (c - center) ** 2
+            score += max(0, 50 - dist_sq * 2)
+            
+            # Edge proximity for goal edges
+            if color == 'b':
+                if r == 0 or r == N - 1:
+                    score += 20
+                score += (5 - abs(c - center)) * 3  # Central columns
+            else:
+                if c == 0 or c == N - 1:
+                    score += 20
+                score += (5 - abs(r - center)) * 3  # Central rows
+            
+            # Bridge pattern bonuses
+            if color == 'b':
+                if (r, c - 1) in me_set and (r - 1, c) in me_set:
+                    score += 40
+                if (r, c + 1) in me_set and (r + 1, c) in me_set:
+                    score += 40
+            else:
+                if (r - 1, c) in me_set and (r, c - 1) in me_set:
+                    score += 40
+                if (r + 1, c) in me_set and (r, c + 1) in me_set:
+                    score += 40
+            
+            # Opening: strong center preference when no stones placed
+            if not me_set:
+                score += (5 - abs(r - center)) * 10
+                score += (5 - abs(c - center)) * 10
+            
+            if score > best_score:
+                best_score = score
+                best_move = pos
+    
+    # Final safety fallback
+    if best_move is None:
+        for r in range(N):
+            for c in range(N):
+                pos = (r, c)
+                if pos not in me_set and pos not in opp_set:
+                    return pos
+    
+    return best_move
+```

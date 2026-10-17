@@ -1,0 +1,81 @@
+
+
+The strategy for this policy is to prioritize moves that lead to immediate checkmate, maximize material gain through favorable captures, promote pawns to queens whenever possible, and improve king safety by castling. Secondary considerations include delivering checks and controlling the center squares. The policy evaluates each legal move using a scoring system, then selects the move with the highest score. Material values are assigned to pieces, and captures are evaluated based on potential gains. Promotions, especially to queens, are highly rewarded.
+
+<code>
+import re
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    piece_values = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+    opponent_color = 'b' if to_play == 'white' else 'w'
+
+    def score_move(move):
+        score = 0
+        
+        # Checkmate has absolute priority
+        if '#' in move:
+            return 10000
+        
+        # Parse destination square for all moves
+        squares = re.findall(r'[a-h][1-8]', move)
+        dest_square = squares[-1] if squares else None
+        
+        # Capture evaluation
+        if 'x' in move:
+            captured_value = 0
+            if dest_square:
+                if dest_square in pieces:
+                    captured_piece = pieces[dest_square]
+                    if captured_piece[0] == opponent_color:
+                        captured_value = piece_values.get(captured_piece[1], 0)
+                else:  # En passant capture (assume pawn value)
+                    captured_value = 1
+            
+            # Determine moving piece type and its value
+            first_char = move[0]
+            if first_char == 'Q':
+                moving_value = 9
+            elif first_char == 'R':
+                moving_value = 5
+            elif first_char in ('B', 'N'):
+                moving_value = 3
+            elif first_char == 'K':
+                moving_value = 0  # King captures are forced but not worth material
+            else:  # Pawn or lowercase start (pawn)
+                moving_value = 1
+            
+            # Calculate material gain and adjust score
+            material_gain = captured_value - moving_value
+            if material_gain > 0:
+                score += 1000 + material_gain * 10
+            elif material_gain == 0:
+                score += 500
+            else:
+                score -= 500
+        
+        # Promotion evaluation (prioritize queen promotions)
+        if '=' in move:
+            promo_piece = move.split('=')[1][0]
+            promo_value = piece_values.get(promo_piece, 0)
+            score += promo_value * 100
+        
+        # Castling for king safety
+        if move.startswith('O-O'):
+            score += 300
+        
+        # Check bonus
+        if '+' in move:
+            score += 100
+        
+        # Center control bonus (central squares d4/d5/e4/e5)
+        if dest_square in {'d4', 'd5', 'e4', 'e5'}:
+            is_pawn = move[0].islower()
+            score += 30 if is_pawn else 50
+        
+        return score
+
+    # Score all moves and select the highest-scoring one
+    scored_moves = [(score_move(move), move) for move in legal_moves]
+    scored_moves.sort(key=lambda x: (-x[0], x[1]))  # Sort by score descending, then move string
+    return scored_moves[0][1]
+</code>

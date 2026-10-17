@@ -1,0 +1,350 @@
+The strategy for this policy is a legal-move search with a lightweight heuristic evaluation. It first generates all legal move strings for the current dice by simulating move order, bar entry, hits, bearing off, forced-use rules, and doubles expansion. It then scores resulting positions using common Backgammon priorities: entering from the bar, using both dice, hitting blots, avoiding leaving blots, making points in the home/outer board, advancing racing position, and bearing off. If no move exists it returns `H:P,P`. This ensures legality while still being competitively reasonable.
+
+<code>
+from typing import List, Tuple, Dict
+
+# Backgammon policy:
+# - Always returns a legal move string.
+# - Generates legal plays for current dice (including doubles expanded to 4 moves).
+# - Chooses the move with the best heuristic evaluation.
+
+def policy(state: dict) -> str:
+    my_pts = list(state['my_pts'])
+    opp_pts = list(state['opp_pts'])
+    my_bar = int(state['my_bar'])
+    opp_bar = int(state['opp_bar'])
+    my_off = int(state['my_off'])
+    opp_off = int(state['opp_off'])
+    dice = list(state['dice'])
+
+    # No dice => pass safely
+    if not dice:
+        return "H:P,P"
+
+    # Expand doubles to 4 dice for legality/search; output still encodes only first two starts.
+    if len(dice) == 2 and dice[0] == dice[1]:
+        dice_seq = [dice[0]] * 4
+    else:
+        dice_seq = sorted(dice)  # [low, high] if 2 dice, or [d] if 1 die
+
+    all_moves = generate_all_legal_moves(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, dice_seq)
+
+    if not all_moves:
+        return "H:P,P"
+
+    best = None
+    best_score = None
+    for rec in all_moves:
+        score = evaluate_result(
+            rec['my_pts'], rec['opp_pts'], rec['my_bar'], rec['opp_bar'],
+            rec['my_off'], rec['opp_off'], rec['used_dice'], rec['hits'],
+            rec['made_points'], rec['left_blots_change']
+        )
+        # tiny tie-breakers
+        score += 0.001 * rec['pip_gain']
+        if best_score is None or score > best_score:
+            best_score = score
+            best = rec
+
+    return best['move_str']
+
+
+def can_bear_off(my_pts: List[int], my_bar: int) -> bool:
+    if my_bar > 0:
+        return False
+    # All remaining checkers must be in home board points 0..5
+    for i in range(6, 24):
+        if my_pts[i] > 0:
+            return False
+    return True
+
+
+def point_open(opp_pts: List[int], dest: int) -> bool:
+    return opp_pts[dest] <= 1
+
+
+def legal_single_sources(my_pts: List[int], opp_pts: List[int], my_bar: int, die: int) -> List[str]:
+    """Return legal source tokens ('B' or 'A#') for a single die."""
+    srcs = []
+    if my_bar > 0:
+        dest = 24 - die
+        if 0 <= dest <= 23 and point_open(opp_pts, dest):
+            srcs.append('B')
+        return srcs
+
+    bearing = can_bear_off(my_pts, my_bar)
+
+    for src in range(24):
+        if my_pts[src] <= 0:
+            continue
+        dest = src - die
+        if dest >= 0:
+            if point_open(opp_pts, dest):
+                srcs.append(f'A{src}')
+        else:
+            if bearing:
+                # Exact bear off always legal.
+                if src == die - 1:
+                    srcs.append(f'A{src}')
+                else:
+                    # Oversized die can bear off only from highest occupied point.
+                    higher_exists = False
+                    for j in range(src + 1, 6):
+                        if my_pts[j] > 0:
+                            higher_exists = True
+                            break
+                    if not higher_exists:
+                        srcs.append(f'A{src}')
+    return srcs
+
+
+def apply_single(my_pts: List[int], opp_pts: List[int], my_bar: int, opp_bar: int, my_off: int, src_token: str, die: int):
+    """Apply one legal move and return new state plus features."""
+    my_pts = my_pts[:]
+    opp_pts = opp_pts[:]
+    hit = 0
+    made_point = 0
+    left_blots_change = 0  # positive if fewer blots after move, negative if more blots? we'll compute simply local delta
+
+    # count local blot change at source/dest
+    def is_blot(arr, idx):
+        return 0 <= idx < 24 and arr[idx] == 1
+
+    src_idx = None
+    if src_token == 'B':
+        old_dest = 24 - die
+        before_blots = int(is_blot(my_pts, old_dest))
+        my_bar -= 1
+        src_idx = None
+        if opp_pts[old_dest] == 1:
+            opp_pts[old_dest] = 0
+            opp_bar += 1
+            hit = 1
+        my_pts[old_dest] += 1
+        after_blots = int(is_blot(my_pts, old_dest))
+        if my_pts[old_dest] == 2:
+            made_point = 1
+        left_blots_change = before_blots - after_blots
+    else:
+        src = int(src_token[1:])
+        src_idx = src
+        dest = src - die
+        before_src_blot = int(is_blot(my_pts, src))
+        before_dest_blot = int(is_blot(my_pts, dest)) if 0 <= dest < 24 else 0
+
+        my_pts[src] -= 1
+
+        if dest >= 0:
+            if opp_pts[dest] == 1:
+                opp_pts[dest] = 0
+                opp_bar += 1
+                hit = 1
+            my_pts[dest] += 1
+            after_src_blot = int(is_blot(my_pts, src))
+            after_dest_blot = int(is_blot(my_pts, dest))
+            if my_pts[dest] == 2:
+                made_point = 1
+            left_blots_change = (before_src_blot + before_dest_blot) - (after_src_blot + after_dest_blot)
+        else:
+            my_off += 1
+            after_src_blot = int(is_blot(my_pts, src))
+            left_blots_change = before_src_blot - after_src_blot
+
+    return my_pts, opp_pts, my_bar, opp_bar, my_off, hit, made_point, left_blots_change
+
+
+def pip_count(my_pts: List[int], my_bar: int) -> int:
+    # Distance to bear off for us moving from high indices to 0 then off.
+    total = my_bar * 25
+    for i, c in enumerate(my_pts):
+        if c:
+            total += c * (i + 1)
+    return total
+
+
+def search_order(state, dice_order: List[int], idx: int, starts: List[str], acc_hits: int, acc_made: int, acc_blot_delta: int, out: List[dict], orig_dice_len: int):
+    my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off = state
+
+    if idx >= len(dice_order):
+        used = len(starts)
+        move_str = encode_move(starts, dice_order, orig_dice_len)
+        out.append({
+            'move_str': move_str,
+            'my_pts': my_pts,
+            'opp_pts': opp_pts,
+            'my_bar': my_bar,
+            'opp_bar': opp_bar,
+            'my_off': my_off,
+            'opp_off': opp_off,
+            'used_dice': used,
+            'hits': acc_hits,
+            'made_points': acc_made,
+            'left_blots_change': acc_blot_delta,
+            'pip_gain': 0  # filled by caller if needed
+        })
+        return
+
+    die = dice_order[idx]
+    legal_srcs = legal_single_sources(my_pts, opp_pts, my_bar, die)
+
+    if not legal_srcs:
+        # stop here; remaining dice cannot be used in this order
+        used = len(starts)
+        move_str = encode_move(starts, dice_order, orig_dice_len)
+        out.append({
+            'move_str': move_str,
+            'my_pts': my_pts,
+            'opp_pts': opp_pts,
+            'my_bar': my_bar,
+            'opp_bar': opp_bar,
+            'my_off': my_off,
+            'opp_off': opp_off,
+            'used_dice': used,
+            'hits': acc_hits,
+            'made_points': acc_made,
+            'left_blots_change': acc_blot_delta,
+            'pip_gain': 0
+        })
+        return
+
+    for src in legal_srcs:
+        n_my_pts, n_opp_pts, n_my_bar, n_opp_bar, n_my_off, hit, made_point, blot_delta = apply_single(
+            my_pts, opp_pts, my_bar, opp_bar, my_off, src, die
+        )
+        search_order(
+            (n_my_pts, n_opp_pts, n_my_bar, n_opp_bar, n_my_off, opp_off),
+            dice_order, idx + 1, starts + [src], acc_hits + hit, acc_made + made_point,
+            acc_blot_delta + blot_delta, out, orig_dice_len
+        )
+
+
+def generate_all_legal_moves(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, dice_seq: List[int]) -> List[dict]:
+    initial_pip = pip_count(my_pts, my_bar)
+    raw = []
+
+    # Candidate orders
+    orders = []
+    if len(dice_seq) == 1:
+        orders = [dice_seq]
+    elif len(dice_seq) >= 2 and len(set(dice_seq)) == 1:
+        orders = [dice_seq]  # doubles only one distinct order
+    else:
+        lo, hi = sorted(dice_seq[:2])
+        orders = [[hi, lo], [lo, hi]]
+
+    for order in orders:
+        search_order((my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off), order, 0, [], 0, 0, 0, raw, len(dice_seq))
+
+    if not raw:
+        return []
+
+    # Enforce max dice used
+    max_used = max(r['used_dice'] for r in raw)
+    raw = [r for r in raw if r['used_dice'] == max_used]
+
+    # If only one die can be played with two distinct dice, must use higher die when possible.
+    if len(dice_seq) == 2 and dice_seq[0] != dice_seq[1] and max_used == 1:
+        hi = max(dice_seq)
+        filtered = []
+        for r in raw:
+            starts = decode_starts(r['move_str'])
+            order_char = r['move_str'][0]
+            first_is_high = (order_char == 'H')
+            # For one used die, legal move must be on higher die if possible.
+            if first_is_high and starts[0] != 'P':
+                filtered.append(r)
+        if filtered:
+            raw = filtered
+
+    # Deduplicate by move string and keep best-looking terminal state among duplicates
+    best_by_str = {}
+    for r in raw:
+        r['pip_gain'] = initial_pip - pip_count(r['my_pts'], r['my_bar'])
+        key = r['move_str']
+        prev = best_by_str.get(key)
+        if prev is None or (
+            (r['used_dice'], r['hits'], r['made_points'], r['pip_gain']) >
+            (prev['used_dice'], prev['hits'], prev['made_points'], prev['pip_gain'])
+        ):
+            best_by_str[key] = r
+
+    return list(best_by_str.values())
+
+
+def decode_starts(move_str: str) -> List[str]:
+    return move_str.split(':', 1)[1].split(',')
+
+
+def encode_move(starts: List[str], dice_order: List[int], orig_dice_len: int) -> str:
+    # Output only first two starts. Pad with P.
+    s = starts[:2] + ['P'] * (2 - min(2, len(starts)))
+    if orig_dice_len == 1:
+        # Single die: label order as H for convention.
+        return f"H:{s[0]},{s[1]}"
+    if len(dice_order) >= 2:
+        order_char = 'H' if dice_order[0] >= dice_order[1] else 'L'
+    else:
+        order_char = 'H'
+    return f"{order_char}:{s[0]},{s[1]}"
+
+
+def count_blots(pts: List[int]) -> int:
+    return sum(1 for x in pts if x == 1)
+
+
+def count_points_made(pts: List[int], lo: int = 0, hi: int = 24) -> int:
+    return sum(1 for i in range(lo, hi) if pts[i] >= 2)
+
+
+def anchor_count(pts: List[int]) -> int:
+    # Deep points in opponent home from our perspective: 18..23
+    return sum(1 for i in range(18, 24) if pts[i] >= 2)
+
+
+def evaluate_result(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, used_dice, hits, made_points, left_blots_change) -> float:
+    score = 0.0
+
+    # Strong legality-aligned priorities
+    score += used_dice * 100.0
+    score += my_off * 60.0
+    score -= my_bar * 90.0
+    score += opp_bar * 25.0
+    score += hits * 35.0
+
+    # Structure
+    my_blots = count_blots(my_pts)
+    opp_blots = count_blots(opp_pts)
+    score -= my_blots * 8.0
+    score += opp_blots * 2.0
+    score += made_points * 18.0
+    score += count_points_made(my_pts, 0, 6) * 10.0   # home board strength
+    score += count_points_made(my_pts, 6, 12) * 4.0   # outer board
+    score += anchor_count(my_pts) * 3.0
+
+    # Encourage reducing blots with the actual move
+    score += left_blots_change * 6.0
+
+    # Racing
+    my_pip = pip_count(my_pts, my_bar)
+    opp_pip = pip_count(opp_pts, opp_bar)
+    score += (opp_pip - my_pip) * 0.12
+
+    # Penalize stripped high points slightly
+    for i in range(18, 24):
+        if my_pts[i] == 1:
+            score -= 2.0
+
+    # Prime-ish contiguous blocks in home+outer
+    contig = 0
+    best_contig = 0
+    for i in range(0, 12):
+        if my_pts[i] >= 2:
+            contig += 1
+            if contig > best_contig:
+                best_contig = contig
+        else:
+            contig = 0
+    score += best_contig * 5.0
+
+    return score
+</code>

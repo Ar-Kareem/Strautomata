@@ -1,0 +1,286 @@
+
+import random
+import itertools
+from typing import List, Tuple, Dict
+
+def policy(state: dict) -> str:
+    """
+    Return one of: 'fold', 'call', 'raise', 'all-in'.
+    Strategy:
+      - Estimate win probability (equity) by Monte Carlo simulation:
+        simulate random opponent hole card (one card) and fill remaining
+        public cards to 5 if needed.
+      - Use pot odds to decide whether to fold/call.
+      - Aggress (raise) when equity is high; go all-in only for very strong equities.
+      - Never return an illegal action; if 'fold' would be disallowed by the
+        special rule (initial round with both spent 100), avoid folding.
+    """
+    # Helper conversions
+    def card_tuple(c: Dict) -> Tuple[int, int]:
+        return (int(c['rank']), int(c['suit']))
+
+    my_card = card_tuple(state['private_cards'][0])
+    public_cards = [card_tuple(c) for c in state.get('public_cards', [])]
+    to_call = int(state.get('to_call', 0))
+    pot = int(state.get('pot', 0))
+    my_spent = int(state.get('my_spent', 0))
+    opp_spent = int(state.get('opponent_spent', 0))
+    allowed = set(state.get('allowed_actions', []))
+
+    # Special rule: not allowed to fold in the very first round when both players only have 100 chips in the pot.
+    cannot_fold_initial = False
+    if 'fold' in allowed and pot == 200 and my_spent == 100 and opp_spent == 100:
+        cannot_fold_initial = True
+
+    # Build a plausible deck space based on observed ranks/suits.
+    observed_ranks = [my_card[0]] + [c[0] for c in public_cards]
+    observed_suits = [my_card[1]] + [c[1] for c in public_cards]
+    min_rank = min(observed_ranks)
+    max_rank = max(observed_ranks)
+    max_suit = max(observed_suits)
+
+    # Decide deck rank range heuristically:
+    if max_rank <= 13:
+        ranks = list(range(1, 14))  # 1..13 representation possible
+    else:
+        ranks = list(range(2, 15))  # 2..14 typical (Ace=14)
+    suits = list(range(1, max(4, max_suit) + 1))  # include up to 4 suits
+
+    # Build deck and remove known cards
+    deck = [(r, s) for r in ranks for s in suits]
+    known = set([my_card] + public_cards)
+    deck = [c for c in deck if c not in known]
+
+    # Hand evaluation utilities
+    def is_straight(ranks_list: List[int]) -> Tuple[bool, int]:
+        # ranks_list: list of ranks (may include duplicates)
+        unique = sorted(set(ranks_list), reverse=True)
+        # Handle Ace-low if 14 exists in range
+        ranks_for_check = unique[:]
+        if 14 in unique:
+            ranks_for_check = unique + [1]  # Ace as low
+        # Check for any sequence of length 5
+        for i in range(len(ranks_for_check)):
+            high = ranks_for_check[i]
+            needed = set(range(high, high - 5, -1))
+            if needed.issubset(ranks_for_check):
+                return True, high
+        return False, 0
+
+    def evaluate_5(cards: List[Tuple[int, int]]) -> Tuple[int, List[int]]:
+        # cards: list of 5 (rank,suit)
+        ranks = [c[0] for c in cards]
+        suits = [c[1] for c in cards]
+        counts = {}
+        for r in ranks:
+            counts[r] = counts.get(r, 0) + 1
+        counts_items = sorted(counts.items(), key=lambda x: (x[1], x[0]), reverse=True)
+        # Sort ranks for kickers
+        sorted_by_count_then_rank = []
+        for cnt, grp in itertools.groupby(sorted(counts_items, key=lambda x: (-x[1], -x[0])) , key=lambda x: x[1]):
+            pass
+        # Flush?
+        flush = False
+        if len(set(suits)) == 1:
+            flush = True
+        # Straight?
+        straight, high_straight = is_straight(ranks)
+        # Straight flush
+        if flush and straight:
+            return (8, [high_straight])  # category 8 = straight flush
+        # Four of a kind
+        if 4 in counts.values():
+            four_rank = max(r for r, c in counts.items() if c == 4)
+            kicker = max(r for r, c in counts.items() if c != 4)
+            return (7, [four_rank, kicker])
+        # Full house
+        if 3 in counts.values() and 2 in counts.values():
+            three_rank = max(r for r, c in counts.items() if c == 3)
+            pair_rank = max(r for r, c in counts.items() if c == 2)
+            return (6, [three_rank, pair_rank])
+        # Flush
+        if flush:
+            return (5, sorted(ranks, reverse=True))
+        # Straight
+        if straight:
+            return (4, [high_straight])
+        # Three of a kind
+        if 3 in counts.values():
+            three_rank = max(r for r, c in counts.items() if c == 3)
+            kickers = sorted([r for r, c in counts.items() if c == 1], reverse=True)
+            return (3, [three_rank] + kickers)
+        # Two pair
+        pairs = sorted([r for r, c in counts.items() if c == 2], reverse=True)
+        if len(pairs) == 2:
+            kicker = max(r for r, c in counts.items() if c == 1)
+            return (2, pairs + [kicker])
+        # One pair
+        if 2 in counts.values():
+            pair_rank = max(r for r, c in counts.items() if c == 2)
+            kickers = sorted([r for r, c in counts.items() if c == 1], reverse=True)
+            return (1, [pair_rank] + kickers)
+        # High card
+        return (0, sorted(ranks, reverse=True))
+
+    def best_value(cards: List[Tuple[int, int]]) -> Tuple[int, List[int]]:
+        # choose best 5-card eval from all 5-card combos
+        best = None
+        for combo in itertools.combinations(cards, 5):
+            val = evaluate_5(list(combo))
+            if best is None or val > best:
+                best = val
+        # If less than 5 cards available, evaluate what's possible by padding with very low cards (should not happen in final simulations)
+        if best is None:
+            # fallback: treat available ranks as high-card
+            ranks = [c[0] for c in cards]
+            return (0, sorted(ranks, reverse=True))
+        return best
+
+    # Monte Carlo equity estimator
+    def estimate_equity(samples: int = 300) -> float:
+        wins = 0.0
+        ties = 0.0
+        needed_public = max(0, 5 - (1 + len(public_cards)))  # we and opponent each have 1; public+1 should reach 5
+        # But public_cards may be 3/4/5 depending on street. We'll fill to 5 total community cards.
+        if needed_public == 0:
+            # already 5 cards total (private 1 + public 4?) Actually need to reach total community 5 => public may be 4 -> fill 1, etc.
+            pass
+        deck_local = deck[:]  # copy
+        # If deck too small, reduce samples
+        samples = min(samples, max(1, len(deck_local)))
+        for _ in range(samples):
+            # sample opponent hole and remaining public
+            if len(deck_local) < (1 + needed_public):
+                # reshuffle deck baseline to allow sampling with replacement fallback
+                choices = random.sample(deck_local, len(deck_local))
+                # If not enough, break
+                break
+            draw = random.sample(deck_local, 1 + needed_public)
+            opp_card = draw[0]
+            drawn_public = draw[1:]
+            full_public = public_cards + drawn_public
+            # Form hands
+            my_full = [my_card] + full_public
+            opp_full = [opp_card] + full_public
+            my_val = best_value(my_full)
+            opp_val = best_value(opp_full)
+            if my_val > opp_val:
+                wins += 1.0
+            elif my_val == opp_val:
+                ties += 1.0
+            # continue
+        total = samples
+        if total == 0:
+            return 0.5
+        return (wins + ties * 0.5) / total
+
+    # Quick heuristic: if there are already 5 community cards (public length 5), we can do exact evaluation without simulation
+    if len(public_cards) + 1 >= 5:
+        # No extra community cards to simulate; do exact head-to-head against all possible opponent cards
+        deck_exact = [c for c in deck]
+        wins = 0.0
+        ties = 0.0
+        total = 0
+        for opp_card in deck_exact:
+            # exclude identical card (already excluded)
+            full_public = public_cards
+            my_full = [my_card] + full_public
+            opp_full = [opp_card] + full_public
+            my_val = best_value(my_full)
+            opp_val = best_value(opp_full)
+            if my_val > opp_val:
+                wins += 1.0
+            elif my_val == opp_val:
+                ties += 1.0
+            total += 1
+        equity = (wins + ties * 0.5) / max(1, total)
+    else:
+        # Monte Carlo sample count tuned to be fast
+        sample_count = 300
+        equity = estimate_equity(sample_count)
+
+    # Decision thresholds
+    # Break-even equity to call:
+    if to_call > 0:
+        break_even = to_call / (pot + to_call) if (pot + to_call) > 0 else 1.0
+    else:
+        break_even = 0.0
+
+    # Base action selection
+    action = None
+
+    # If we are facing no bet (to_call == 0): prefer raise if strong, otherwise check (call)
+    if to_call == 0:
+        # Aggressive if equity > 0.55 (value bet) or strong made hand on later streets
+        if equity > 0.70 and 'all-in' in allowed:
+            action = 'all-in'
+        elif equity > 0.6 and 'raise' in allowed:
+            action = 'raise'
+        elif equity > 0.5 and 'raise' in allowed:
+            # smaller chance to raise; use randomness to avoid predictability
+            if random.random() < 0.7:
+                action = 'raise'
+            else:
+                action = 'call'  # check
+        else:
+            # check if call allowed (check)
+            if 'call' in allowed:
+                action = 'call'
+            elif 'raise' in allowed and equity > 0.4:
+                action = 'raise'
+            else:
+                # fallback to any allowed non-fold action, prefer call then raise then all-in then fold
+                for act in ['call', 'raise', 'all-in', 'fold']:
+                    if act in allowed:
+                        action = act
+                        break
+    else:
+        # Facing a bet
+        # Strong hands: raise or all-in
+        if equity > 0.72 and 'all-in' in allowed:
+            action = 'all-in'
+        elif equity > 0.65 and 'raise' in allowed:
+            action = 'raise'
+        else:
+            # If equity exceeds break_even by margin, call
+            # Use a margin to account for future betting & implied odds
+            margin = 0.02
+            if equity + margin >= break_even and 'call' in allowed:
+                # if marginal call but we have low equity, sometimes fold; use small randomization
+                if equity < break_even + 0.02:
+                    # borderline -- prefer to fold sometimes unless pot odds justify
+                    if random.random() < 0.5 and 'fold' in allowed and not cannot_fold_initial:
+                        action = 'fold'
+                    else:
+                        action = 'call'
+                else:
+                    action = 'call'
+            else:
+                # Equity not sufficient: fold if allowed, except initial-round prohibition
+                if 'fold' in allowed and not cannot_fold_initial:
+                    action = 'fold'
+                elif 'call' in allowed:
+                    action = 'call'
+                elif 'raise' in allowed and equity > break_even * 1.2:
+                    action = 'raise'
+                elif 'all-in' in allowed and equity > 0.60:
+                    action = 'all-in'
+                else:
+                    # fallback
+                    for act in ['call', 'fold', 'raise', 'all-in']:
+                        if act in allowed and not (act == 'fold' and cannot_fold_initial):
+                            action = act
+                            break
+
+    # Safety: ensure we return a legal action and obey initial-round no-fold rule
+    if action not in allowed or (action == 'fold' and cannot_fold_initial):
+        # Pick best available in preference order
+        for act in ['raise', 'all-in', 'call', 'fold']:
+            if act in allowed and not (act == 'fold' and cannot_fold_initial):
+                action = act
+                break
+    # Final fallback (shouldn't happen): return any allowed
+    if action is None:
+        action = next(iter(allowed))
+
+    return action

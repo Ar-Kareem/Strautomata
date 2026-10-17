@@ -1,0 +1,162 @@
+
+def policy(you: list[list[int]], opponent: list[list[int]]) -> str:
+    """
+    Determines the next move in Clobber on a 5x6 board.
+    Strategy: Heuristic-based look-ahead prioritizing immediate captures of 
+    non-moving pieces and board control.
+    """
+    ROWS, COLS = 5, 6
+    # Directions: U, D, L, R corresponding to (dr, dc)
+    directions = {'U': (-1, 0), 'D': (1, 0), 'L': (0, -1), 'R': (0, 1)}
+    
+    def get_moves(board, opp_board):
+        """Generates list of (r, c, dir, nr, nc) for a given board state."""
+        moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board[r][c] == 1:
+                    for d, (dr, dc) in directions.items():
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS:
+                            if opp_board[nr][nc] == 1:
+                                moves.append((r, c, d, nr, nc))
+        return moves
+
+    def get_potential_moves(board, opp_board):
+        """Calculates the number of moves a player has (mobility)."""
+        count = 0
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board[r][c] == 1:
+                    for dr, dc in directions.values():
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS and opp_board[nr][nc] == 1:
+                            count += 1
+        return count
+
+    def evaluate(r, c, d, nr, nc, my_b, op_b):
+        """
+        Evaluates a move.
+        Returns a score. Higher is better.
+        """
+        # 1. Immediate Capture Logic
+        # Check if the captured piece (nr, nc) had any moves in the original board.
+        # If it had 0 moves, it was "dead" and capturing it gains us space.
+        captured_mobility = 0
+        for dr, dc in directions.values():
+            tr, tc = nr + dr, nc + dc
+            if 0 <= tr < ROWS and 0 <= tc < COLS:
+                if my_b[tr][tc] == 1: # Could it move to us?
+                    captured_mobility += 1
+        
+        # If the piece was trapped (cannot move), it's a very good capture (liberation)
+        base_score = 10 if captured_mobility == 0 else 0
+
+        # 2. Simulation: Apply move to temporary boards
+        # Create deep copies
+        new_my = [row[:] for row in my_b]
+        new_op = [row[:] for row in op_b]
+        
+        # Update boards: Remove start, remove opp, place me
+        new_my[r][c] = 0
+        new_op[nr][nc] = 0
+        new_my[nr][nc] = 1
+
+        # 3. Look Ahead: Evaluate resulting position
+        # Calculate mobility difference (My Mobility - Opponent Mobility)
+        my_mobility = get_potential_moves(new_my, new_op)
+        op_mobility = get_potential_moves(new_op, new_my)
+        
+        # Weighting: Mobility is crucial in Clobber.
+        # We want to maximize our moves and minimize theirs.
+        score = base_score + (my_mobility - op_mobility * 1.5)
+        
+        # Center Control Bonus: Encourage moving towards center for flexibility
+        center_bonus = 0
+        if 1 <= nr <= 3 and 1 <= nc <= 4:
+            center_bonus = 0.5
+        score += center_bonus
+        
+        return score
+
+    # Main Logic
+    my_moves = get_moves(you, opponent)
+    
+    if not my_moves:
+        # Should not happen if game logic is correct, but safety check
+        return "0,0,U" # Fallback
+
+    best_score = -float('inf')
+    best_move = my_moves[0]
+
+    # 1. Check for "Dead" Opponent Pieces
+    # Scan opponent board for pieces with 0 mobility.
+    for r in range(ROWS):
+        for c in range(COLS):
+            if opponent[r][c] == 1:
+                is_vulnerable = False
+                moves_against_it = []
+                # Check if we can capture it
+                for dr, dc in directions.values():
+                    pr, pc = r + dr, c + dc
+                    if 0 <= pr < ROWS and 0 <= pc < COLS and you[pr][pc] == 1:
+                        is_vulnerable = True
+                        moves_against_it.append((pr, pc, r, c))
+                
+                if is_vulnerable:
+                    # Check if it is "dead" (cannot move)
+                    dead = True
+                    for dr, dc in directions.values():
+                        tr, tc = r + dr, c + dc
+                        if 0 <= tr < ROWS and 0 <= tc < COLS and opponent[tr][tc] == 0:
+                            # It can move to empty space, so it's not dead
+                            # Wait, Clobber pieces capture opponent pieces. 
+                            # A piece is "dead" if it has NO legal moves (cannot capture).
+                            if opponent[tr][tc] == 1: 
+                                continue # blocked by friend
+                            if you[tr][tc] == 1:
+                                # It can capture us, so it's not dead
+                                dead = False
+                                break
+                            # If empty, it's not dead (can move there? No, Clobber must capture.
+                            # Wait. In Clobber, you CANNOT move to empty squares. You ONLY capture.
+                            # So a piece is mobile only if it can capture an opponent piece.
+                            if you[tr][tc] == 1:
+                                dead = False # It can capture us
+                                break
+                    
+                    # Correct logic for Clobber mobility:
+                    # A piece can move if it has an orthogonal neighbor of the opponent.
+                    mobile = False
+                    for dr, dc in directions.values():
+                        tr, tc = r + dr, c + dc
+                        if 0 <= tr < ROWS and 0 <= tc < COLS:
+                            if you[tr][tc] == 1:
+                                mobile = True
+                                break
+                    
+                    if not mobile:
+                        # This opponent piece cannot move. If we capture it, we remove a "useless" piece
+                        # and free up space.
+                        # Prioritize this heavily.
+                        for (pr, pc, tr, tc) in moves_against_it:
+                            return f"{pr},{pc},{get_dir(pr, pc, tr, tc)}"
+
+    # 2. Evaluation of all moves if no immediate dead piece found
+    for move in my_moves:
+        r, c, d, nr, nc = move
+        score = evaluate(r, c, d, nr, nc, you, opponent)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    r, c, d, nr, nc = best_move
+    return f"{r},{c},{d}"
+
+def get_dir(r1, c1, r2, c2):
+    if r2 < r1: return 'U'
+    if r2 > r1: return 'D'
+    if c2 < c1: return 'L'
+    if c2 > c1: return 'R'
+    return 'U' # Fallback

@@ -1,0 +1,200 @@
+**Strategy**
+
+This policy implements a greedy chess engine that prioritizes:
+1. **Immediate checkmates** – any move delivering checkmate is played instantly
+2. **Legal move validation** – all generated moves are filtered to ensure the player's king remains safe
+3. **Material advantage** – captures are scored by standard piece values (Queen=9, Rook=5, Bishop/Knight=3, Pawn=1)
+4. **Tactical threats** – moves giving check receive a bonus
+5. **Positional control** – moves to center squares (d4, e4, d5, e5) are rewarded
+6. **Promotion handling** – always promotes to queen, the strongest piece
+The engine performs a 1-ply search with static evaluation, avoiding deeper computation to stay within the 1-second time limit.
+
+<code>
+import numpy as np
+
+# Piece values
+PIECE_VAL = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+
+# Movement directions
+DIRS = {
+    'N': [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (-1, 2), (1, -2), (-1, -2)],
+    'K': [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)],
+    'B': [(1, 1), (-1, -1), (1, -1), (-1, 1)],
+    'R': [(1, 0), (-1, 0), (0, 1), (0, -1)],
+    'Q': [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)]
+}
+
+# Center squares for positional bonus
+CENTER = {'d4', 'e4', 'd5', 'e5'}
+
+def to_coord(s): return ord(s[0]) - 97, int(s[1]) - 1
+def to_square(x, y): return chr(97 + x) + str(y + 1)
+def get_piece(board, x, y): return board.get(to_square(x, y)) if 0 <= x < 8 and 0 <= y < 8 else None
+
+def generate_piece_moves(board, sq, piece):
+    """Generate pseudo-legal moves for a piece"""
+    x, y = to_coord(sq)
+    c, p = piece[0], piece[1]
+    moves = []
+    
+    # Pawn moves
+    if p == 'P':
+        d = 1 if c == 'w' else -1
+        # Single push
+        if not get_piece(board, x, y + d):
+            dest = to_square(x, y + d)
+            if y + d in (0, 7):  # Promotion
+                moves.append(sq + dest + 'q')
+            else:
+                moves.append(sq + dest)
+            # Double push
+            if y == (1 if c == 'w' else 6) and not get_piece(board, x, y + 2*d):
+                moves.append(sq + to_square(x, y + 2*d))
+        # Captures
+        for dx in (-1, 1):
+            tgt = get_piece(board, x + dx, y + d)
+            if tgt and tgt[0] != c:
+                dest = to_square(x + dx, y + d)
+                if y + d in (0, 7):
+                    moves.append(sq + dest + 'q')
+                else:
+                    moves.append(sq + dest)
+    
+    # Knight moves
+    elif p == 'N':
+        for dx, dy in DIRS['N']:
+            moves.append(sq + to_square(x + dx, y + dy))
+    
+    # King moves (including castling)
+    elif p == 'K':
+        for dx, dy in DIRS['K']:
+            moves.append(sq + to_square(x + dx, y + dy))
+        # Castling
+        if sq == ('e1' if c == 'w' else 'e8'):
+            rank = 0 if c == 'w' else 7
+            if get_piece(board, 7, rank) == c + 'R' and not any(get_piece(board, i, rank) for i in (5, 6)):
+                moves.append(sq + to_square(6, rank))
+            if get_piece(board, 0, rank) == c + 'R' and not any(get_piece(board, i, rank) for i in (1, 2, 3)):
+                moves.append(sq + to_square(2, rank))
+    
+    # Sliding pieces
+    else:
+        for dx, dy in DIRS[p]:
+            for i in range(1, 8):
+                tx, ty = x + i*dx, y + i*dy
+                tgt = get_piece(board, tx, ty)
+                if tgt:
+                    if tgt[0] != c:
+                        moves.append(sq + to_square(tx, ty))
+                    break
+                moves.append(sq + to_square(tx, ty))
+    
+    return [m for m in moves if 0 <= to_coord(m[2:4])[0] < 8 and 0 <= to_coord(m[2:4])[1] < 8 and 
+                               (get_piece(board, to_coord(m[2:4])[0], to_coord(m[2:4])[1]) is None or 
+                                get_piece(board, to_coord(m[2:4])[0], to_coord(m[2:4])[1])[0] != c)]
+
+def is_square_attacked(board, square, attacker_color):
+    """Check if a square is under attack"""
+    x, y = to_coord(square)
+    d = -1 if attacker_color == 'w' else 1
+    
+    # Pawns
+    if get_piece(board, x - 1, y - d) == attacker_color + 'P' or \
+       get_piece(board, x + 1, y - d) == attacker_color + 'P':
+        return True
+    
+    # Knights
+    for dx, dy in DIRS['N']:
+        if get_piece(board, x + dx, y + dy) == attacker_color + 'N':
+            return True
+    
+    # King
+    for dx, dy in DIRS['K']:
+        if get_piece(board, x + dx, y + dy) == attacker_color + 'K':
+            return True
+    
+    # Sliding pieces
+    for p in ['B', 'R', 'Q']:
+        for dx, dy in DIRS[p]:
+            for i in range(1, 8):
+                tgt = get_piece(board, x + i*dx, y + i*dy)
+                if tgt:
+                    if tgt == attacker_color + p or (p != 'Q' and tgt == attacker_color + 'Q'):
+                        return True
+                    break
+    
+    return False
+
+def apply_move(board, move):
+    """Apply a move and return new board state"""
+    new_board = board.copy()
+    fr, to = move[:2], move[2:4]
+    pc = new_board.pop(fr)
+    
+    # Castling
+    if pc[1] == 'K' and abs(ord(fr[0]) - ord(to[0])) == 2:
+        y = 0 if pc[0] == 'w' else 7
+        if to == to_square(6, y):
+            new_board[to_square(5, y)] = new_board.pop(to_square(7, y))
+        else:
+            new_board[to_square(3, y)] = new_board.pop(to_square(0, y))
+    
+    new_board[to] = pc[0] + move[4].upper() if len(move) > 4 else pc
+    return new_board
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """Select the best legal move"""
+    c = 'w' if to_play == 'white' else 'b'
+    board = pieces.copy()
+    
+    king = next((sq for sq, p in board.items() if p == c + 'K'), '')
+    opp = 'b' if c == 'w' else 'w'
+    
+    # Generate pseudo-legal moves
+    moves = []
+    for sq, pc in board.items():
+        if pc[0] == c:
+            moves.extend(generate_piece_moves(board, sq, pc))
+    
+    # Filter legal moves
+    legal = [m for m in moves if not is_square_attacked(apply_move(board, m), king if m[:2] != king else m[2:4], opp)]
+    
+    if not legal:
+        return ""
+    
+    if len(legal) == 1:
+        return legal[0]
+    
+    # Check for checkmates
+    for m in legal:
+        nb = apply_move(board, m)
+        opp_king = next((sq for sq, p in nb.items() if p == opp + 'K'), '')
+        if opp_king and is_square_attacked(nb, opp_king, c):
+            if not any(not is_square_attacked(apply_move(nb, om), opp_king, c) for om in 
+                      [m for sq, pc in nb.items() if pc[0] == opp for m in generate_piece_moves(nb, sq, pc)]):
+                return m
+    
+    # Score moves
+    best = legal[0]
+    best_score = -1e9
+    
+    for m in legal:
+        nb = apply_move(board, m)
+        score = 0
+        # Material
+        cap = board.get(m[2:4])
+        if cap:
+            score += PIECE_VAL[cap[1]] * 100
+        # Check
+        opp_king = next((sq for sq, p in nb.items() if p == opp + 'K'), '')
+        if opp_king and is_square_attacked(nb, opp_king, c):
+            score += 30
+        # Center
+        if m[2:4] in CENTER:
+            score += 10
+        
+        if score > best_score:
+            best_score, best = score, m
+    
+    return best
+</code>

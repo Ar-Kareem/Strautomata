@@ -1,0 +1,194 @@
+## Strategy
+
+My strategy implements a minimax search with alpha-beta pruning, optimized for Dots and Boxes:
+
+1. **Chain-based reasoning**: In Dots and Boxes, the endgame is dominated by chains and loops. The key strategic principle is to avoid opening long chains for your opponent.
+
+2. **Move categorization**:
+   - **Capturing moves**: Moves that complete a box (box has 3 sides filled). Always take these first.
+   - **Safe moves**: Moves that don't give the opponent any box (neither adjacent box reaches 3 sides after the move).
+   - **Risky moves**: Moves that create a box with 3 sides, giving the opponent a capture opportunity.
+
+3. **Minimax with alpha-beta pruning**: I implement a depth-limited search that evaluates positions. The evaluation function considers the score difference and penalizes positions where you've left boxes with 3 sides for the opponent.
+
+4. **Greedy capturing**: When a capture is available, always take it (this is mandatory in optimal play since you get another turn).
+
+5. **Double-deal / hard-hearted handout**: In chain situations, sometimes it's better to sacrifice 2 boxes to maintain control. The search handles this naturally.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    def get_legal_moves(h, v):
+        moves = []
+        for r in range(5):
+            for c in range(4):
+                if h[r, c] == 0:
+                    moves.append((r, c, 'H'))
+        for r in range(4):
+            for c in range(5):
+                if v[r, c] == 0:
+                    moves.append((r, c, 'V'))
+        return moves
+
+    def count_sides(h, v, r, c):
+        count = 0
+        if h[r, c] != 0: count += 1      # top
+        if h[r+1, c] != 0: count += 1    # bottom
+        if v[r, c] != 0: count += 1      # left
+        if v[r, c+1] != 0: count += 1    # right
+        return count
+
+    def apply_move(h, v, cap, move, player):
+        h = h.copy(); v = v.copy(); cap = cap.copy()
+        r, c, d = move
+        if d == 'H':
+            h[r, c] = player
+        else:
+            v[r, c] = player
+        captured = 0
+        # Check which boxes are completed
+        if d == 'H':
+            # Box above: row r-1, col c
+            if r > 0 and cap[r-1, c] == 0:
+                if count_sides(h, v, r-1, c) == 4:
+                    cap[r-1, c] = player
+                    captured += 1
+            # Box below: row r, col c
+            if r < 4 and cap[r, c] == 0:
+                if count_sides(h, v, r, c) == 4:
+                    cap[r, c] = player
+                    captured += 1
+        else:  # V
+            # Box left: row r, col c-1
+            if c > 0 and cap[r, c-1] == 0:
+                if count_sides(h, v, r, c-1) == 4:
+                    cap[r, c-1] = player
+                    captured += 1
+            # Box right: row r, col c
+            if c < 4 and cap[r, c] == 0:
+                if count_sides(h, v, r, c) == 4:
+                    cap[r, c] = player
+                    captured += 1
+        return h, v, cap, captured
+
+    def evaluate(h, v, cap):
+        return np.sum(cap)
+
+    def minimax(h, v, cap, player, depth, alpha, beta):
+        moves = get_legal_moves(h, v)
+        if not moves or depth <= 0:
+            return evaluate(h, v, cap), None
+        
+        best_move = moves[0]
+        if player == 1:
+            max_val = -100
+            for m in moves:
+                nh, nv, nc, capt = apply_move(h, v, cap, m, 1)
+                if capt > 0:
+                    val, _ = minimax(nh, nv, nc, 1, depth, alpha, beta)
+                else:
+                    val, _ = minimax(nh, nv, nc, -1, depth - 1, alpha, beta)
+                if val > max_val:
+                    max_val = val; best_move = m
+                alpha = max(alpha, val)
+                if beta <= alpha: break
+            return max_val, best_move
+        else:
+            min_val = 100
+            for m in moves:
+                nh, nv, nc, capt = apply_move(h, v, cap, m, -1)
+                if capt > 0:
+                    val, _ = minimax(nh, nv, nc, -1, depth, alpha, beta)
+                else:
+                    val, _ = minimax(nh, nv, nc, 1, depth - 1, alpha, beta)
+                if val < min_val:
+                    min_val = val; best_move = m
+                beta = min(beta, val)
+                if beta <= alpha: break
+            return min_val, best_move
+
+    moves = get_legal_moves(horizontal, vertical)
+    remaining = len(moves)
+    
+    if remaining <= 16:
+        depth = 40
+    elif remaining <= 20:
+        depth = 8
+    elif remaining <= 25:
+        depth = 5
+    else:
+        depth = 3
+
+    # Prioritize: captures first, then safe, then risky
+    captures = []
+    safe = []
+    risky = []
+    for m in moves:
+        _, _, _, capt = apply_move(horizontal, vertical, capture, m, 1)
+        if capt > 0:
+            captures.append(m)
+        else:
+            # Check if it creates a 3-sided box for opponent
+            r, c, d = m
+            h2 = horizontal.copy(); v2 = vertical.copy()
+            if d == 'H': h2[r,c] = 1
+            else: v2[r,c] = 1
+            gives = False
+            if d == 'H':
+                if r > 0 and count_sides(h2, v2, r-1, c) == 3: gives = True
+                if r < 4 and count_sides(h2, v2, r, c) == 3: gives = True
+            else:
+                if c > 0 and count_sides(h2, v2, r, c-1) == 3: gives = True
+                if c < 4 and count_sides(h2, v2, r, c) == 3: gives = True
+            if gives:
+                risky.append(m)
+            else:
+                safe.append(m)
+    
+    # Reorder moves for better alpha-beta
+    ordered = captures + safe + risky
+    
+    if len(captures) > 0 and len(safe) == 0 and len(risky) == 0:
+        m = captures[0]
+        return f"{m[0]},{m[1]},{m[2]}"
+    
+    # For small remaining, do full search
+    if remaining <= 20:
+        def minimax2(h, v, cap, player, alpha, beta, ordered_moves=None):
+            mvs = get_legal_moves(h, v)
+            if not mvs:
+                return evaluate(h, v, cap), None
+            best_move = mvs[0]
+            if player == 1:
+                max_val = -100
+                for m in mvs:
+                    nh, nv, nc, capt = apply_move(h, v, cap, m, 1)
+                    nxt = 1 if capt > 0 else -1
+                    val, _ = minimax2(nh, nv, nc, nxt, alpha, beta)
+                    if val > max_val: max_val = val; best_move = m
+                    alpha = max(alpha, val)
+                    if beta <= alpha: break
+                return max_val, best_move
+            else:
+                min_val = 100
+                for m in mvs:
+                    nh, nv, nc, capt = apply_move(h, v, cap, m, -1)
+                    nxt = -1 if capt > 0 else 1
+                    val, _ = minimax2(nh, nv, nc, nxt, alpha, beta)
+                    if val < min_val: min_val = val; best_move = m
+                    beta = min(beta, val)
+                    if beta <= alpha: break
+                return min_val, best_move
+        
+        _, best = minimax2(horizontal, vertical, capture, 1, -100, 100)
+        if best: return f"{best[0]},{best[1]},{best[2]}"
+
+    _, best = minimax(horizontal, vertical, capture, 1, depth, -100, 100)
+    if best:
+        return f"{best[0]},{best[1]},{best[2]}"
+    
+    m = ordered[0]
+    return f"{m[0]},{m[1]},{m[2]}"
+</code>

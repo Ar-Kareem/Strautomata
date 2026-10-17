@@ -1,0 +1,137 @@
+
+import copy
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # Define piece values for material calculation
+    piece_values = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1, 'K': 0}  # King has no material value
+    
+    # Determine color of current player
+    player_color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if player_color == 'w' else 'w'
+    
+    # 1. Check for checkmate moves
+    for move in legal_moves:
+        if '+' in move and '++' not in move:  # Check for check (note: checkmate will usually have + anyway, but we check context)
+            # We can't know for sure if it's checkmate without simulation,
+            # but winning moves with check are included in capture/check moves
+            # So we will instead simulate captures and checks in turn
+            pass  # We'll catch checkmates in material and threat analysis
+    
+    # We'll create a helper to evaluate capture value
+    def get_capture_value(move_str):
+        if 'x' in move_str:
+            # Extract destination square
+            dest_square = move_str.split('x')[-1]
+            if '=' in dest_square:  # Promotion
+                dest_square = dest_square.split('=')[0]
+            captured_piece_code = pieces.get(dest_square, '')
+            if captured_piece_code and captured_piece_code[0] == opponent_color:
+                captured_piece_type = captured_piece_code[1]
+                return piece_values.get(captured_piece_type, 0)
+        return 0
+
+    # 2. Check for promotions
+    promotion_moves = [m for m in legal_moves if '=' in m]
+    if promotion_moves:
+        # Always promote to Queen unless otherwise forced (but Queen is always best unless mate with knight)
+        queen_promotions = [m for m in promotion_moves if '=Q' in m]
+        if queen_promotions:
+            return queen_promotions[0]
+        # If no queen, use other promotion
+        return promotion_moves[0]
+    
+    # 3. Check for checkmate - assume any move that gives check and ends game is mate
+    # We don't simulate full positions, so we rely on: if a move gives check AND opponent can't escape
+    # But without board state simulation, we can't be 100% sure.
+    # Instead, we note: if a move is a check AND captures the king? That's impossible.
+    # So we look for threats: if opponent king is in check and we have a move that is check and high material gain, it's likely mate candidate
+    # We'll look for checks that capture or threaten the king directly
+    checking_moves = [m for m in legal_moves if '+' in m]
+    if checking_moves:
+        # Among checking moves, prioritize those with highest material gain
+        moves_with_values = [(m, get_capture_value(m)) for m in checking_moves]
+        moves_with_values.sort(key=lambda x: x[1], reverse=True)
+        # Return the highest value check
+        return moves_with_values[0][0]
+
+    # 4. Prioritize captures of high-value pieces
+    capture_moves = [m for m in legal_moves if 'x' in m]
+    if capture_moves:
+        capture_values = [(m, get_capture_value(m)) for m in capture_moves]
+        capture_values.sort(key=lambda x: x[1], reverse=True)
+        best_capture = capture_values[0]
+        # If we capture a Queen, take it immediately
+        if best_capture[1] >= 9:
+            return best_capture[0]
+        # If we capture a Rook or more, take it
+        if best_capture[1] >= 5:
+            return best_capture[0]
+        # Otherwise, prefer captures over non-captures
+        return best_capture[0]
+    
+    # 5. If no captures, look for castling
+    castling_moves = [m for m in legal_moves if m in ['O-O', 'O-O-O']]
+    if castling_moves:
+        # Castling is usually safe and improves king safety
+        # Prefer kingside if both are available
+        if 'O-O' in castling_moves:
+            return 'O-O'
+        else:
+            return castling_moves[0]
+    
+    # 6. Prefer moves that develop pieces toward center or control center
+    center_squares = {'d4', 'd5', 'e4', 'e5'}
+    center_moves = []
+    for move in legal_moves:
+        # Remove any promotion, capture, or check notation to get target square
+        clean_move = move
+        if 'x' in clean_move:
+            clean_move = clean_move.split('x')[-1]
+        if '+' in clean_move:
+            clean_move = clean_move.replace('+', '')
+        if '=' in clean_move:
+            clean_move = clean_move.split('=')[0]
+        if clean_move in center_squares:
+            center_moves.append(move)
+    
+    if center_moves:
+        # Prefer non-capturing center moves
+        return center_moves[0]
+    
+    # 7. If no clear endgame tactic, prefer moving pieces with highest mobility potential
+    # Simple heuristic: prefer moves that are not on first/last rank for pawns (avoid moving pawns unless necessary)
+    # Prefer knights and bishops to central moves
+    # Since we can't simulate, we assume: pawn moves are less preferred unless forced
+    non_pawn_moves = [m for m in legal_moves if not (m[0] in 'abcdefgh' and len(m) == 2 and m[1] in '12345678')]
+    # Actually, pawns are denoted by just their destination or e.g. 'e5', so we need to check if it's a pawn move
+    pawn_moves = []
+    other_moves = []
+    for move in legal_moves:
+        # Pawn moves without capture: single letter file + rank
+        if len(move) == 2 and move[0] in 'abcdefgh' and move[1] in '12345678':
+            pawn_moves.append(move)
+        else:
+            other_moves.append(move)
+    
+    if other_moves:
+        # Prefer other moves (non-pawn) to develop pieces
+        # Among other moves, prefer those that don't move same piece again if possible (but we don't track history)
+        return other_moves[0]
+    
+    # If only pawn moves are available, pick the one that advances most or captures if possible
+    if pawn_moves:
+        # Prefer capturing pawn moves
+        pawn_captures = [m for m in pawn_moves if 'x' in m]
+        if pawn_captures:
+            return pawn_captures[0]
+        # Otherwise, advance pawns toward center or promotion
+        # Prefer central pawns
+        central_files = 'def'
+        central_pawns = [m for m in pawn_moves if m[0] in central_files]
+        if central_pawns:
+            return central_pawns[0]
+        # Otherwise, pick first
+        return pawn_moves[0]
+    
+    # Fallback: return first legal move (should not happen, but safety)
+    return legal_moves[0]

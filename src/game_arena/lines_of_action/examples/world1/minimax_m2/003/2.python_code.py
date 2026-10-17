@@ -1,0 +1,175 @@
+
+def policy(board):
+    # Precompute counts for rows, columns, and diagonals
+    row_counts = [0] * 8
+    col_counts = [0] * 8
+    diag1_counts = {}  # main diagonal: constant = i - j
+    diag2_counts = {}  # anti-diagonal: constant = i + j
+
+    for i in range(8):
+        for j in range(8):
+            if board[i][j] != 0:
+                row_counts[i] += 1
+                col_counts[j] += 1
+                d1 = i - j
+                diag1_counts[d1] = diag1_counts.get(d1, 0) + 1
+                d2 = i + j
+                diag2_counts[d2] = diag2_counts.get(d2, 0) + 1
+
+    moves = []
+    # Define the 8 directions
+    directions = [(dr, dc) for dr in [-1, 0, 1] for dc in [-1, 0, 1] if not (dr == 0 and dc == 0)]
+
+    for i in range(8):
+        for j in range(8):
+            if board[i][j] == 1:  # our piece
+                for dr, dc in directions:
+                    # Determine total_count for the line of movement
+                    if dr == 0:
+                        total_count = row_counts[i]
+                    elif dc == 0:
+                        total_count = col_counts[j]
+                    else:
+                        if dr * dc == 1:  # main diagonal
+                            total_count = diag1_counts.get(i - j, 0)
+                        else:  # anti-diagonal
+                            total_count = diag2_counts.get(i + j, 0)
+
+                    # Calculate destination
+                    dest_r = i + dr * total_count
+                    dest_c = j + dc * total_count
+
+                    # Check destination is on the board
+                    if dest_r < 0 or dest_r >= 8 or dest_c < 0 or dest_c >= 8:
+                        continue
+
+                    # Check the path for enemy pieces
+                    path_clear = True
+                    for step in range(1, total_count):
+                        path_r = i + step * dr
+                        path_c = j + step * dc
+                        # If any intermediate square has an enemy piece, move is illegal
+                        if board[path_r][path_c] == -1:
+                            path_clear = False
+                            break
+                    if not path_clear:
+                        continue
+
+                    # Check destination: cannot land on our own piece
+                    if board[dest_r][dest_c] == 1:
+                        continue
+
+                    # If we get here, the move is legal
+                    moves.append(f"{i},{j}:{dest_r},{dest_c}")
+
+    # If no moves found, use fallback (without precomputation)
+    if not moves:
+        for i in range(8):
+            for j in range(8):
+                if board[i][j] == 1:
+                    for dr, dc in directions:
+                        total_count = 0
+                        if dr == 0:
+                            for col in range(8):
+                                if board[i][col] != 0:
+                                    total_count += 1
+                        elif dc == 0:
+                            for row in range(8):
+                                if board[row][j] != 0:
+                                    total_count += 1
+                        else:
+                            if dr * dc == 1:
+                                for x in range(8):
+                                    y = x - (i - j)
+                                    if 0 <= y < 8 and board[x][y] != 0:
+                                        total_count += 1
+                            else:
+                                for x in range(8):
+                                    y = (i + j) - x
+                                    if 0 <= y < 8 and board[x][y] != 0:
+                                        total_count += 1
+
+                        dest_r = i + dr * total_count
+                        dest_c = j + dc * total_count
+
+                        if dest_r < 0 or dest_r >= 8 or dest_c < 0 or dest_c >= 8:
+                            continue
+
+                        path_clear = True
+                        for step in range(1, total_count):
+                            path_r = i + step * dr
+                            path_c = j + step * dc
+                            if board[path_r][path_c] == -1:
+                                path_clear = False
+                                break
+                        if not path_clear:
+                            continue
+                        if board[dest_r][dest_c] == 1:
+                            continue
+                        moves.append(f"{i},{j}:{dest_r},{dest_c}")
+
+        if moves:
+            return moves[0]  # return the first legal move found
+        else:
+            return ""  # should not happen, but return empty string
+
+    # If we have moves, evaluate each one
+    best_move = None
+    best_score = -10**9
+
+    for move in moves:
+        from_r, from_c, to_r, to_c = map(int, move.replace(':', ',').split(','))
+        # Simulate the move
+        new_board = [row[:] for row in board]
+        new_board[from_r][from_c] = 0
+        if new_board[to_r][to_c] == -1:
+            new_board[to_r][to_c] = 1
+        else:
+            new_board[to_r][to_c] = 1
+
+        # Count connected components for our pieces (player 1)
+        visited = [[False] * 8 for _ in range(8)]
+        comp_self = 0
+        dirs = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+        for r in range(8):
+            for c in range(8):
+                if new_board[r][c] == 1 and not visited[r][c]:
+                    stack = [(r, c)]
+                    visited[r][c] = True
+                    while stack:
+                        x, y = stack.pop()
+                        for dx, dy in dirs:
+                            nx, ny = x + dx, y + dy
+                            if 0 <= nx < 8 and 0 <= ny < 8 and new_board[nx][ny] == 1 and not visited[nx][ny]:
+                                visited[nx][ny] = True
+                                stack.append((nx, ny))
+                    comp_self += 1
+
+        # Count connected components for opponent (-1)
+        visited = [[False] * 8 for _ in range(8)]
+        comp_opp = 0
+        for r in range(8):
+            for c in range(8):
+                if new_board[r][c] == -1 and not visited[r][c]:
+                    stack = [(r, c)]
+                    visited[r][c] = True
+                    while stack:
+                        x, y = stack.pop()
+                        for dx, dy in dirs:
+                            nx, ny = x + dx, y + dy
+                            if 0 <= nx < 8 and 0 <= ny < 8 and new_board[nx][ny] == -1 and not visited[nx][ny]:
+                                visited[nx][ny] = True
+                                stack.append((nx, ny))
+                    comp_opp += 1
+
+        # Evaluate the board state
+        if comp_self == 1:
+            score = 10000
+        else:
+            score = -comp_self + 0.5 * comp_opp
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move if best_move is not None else moves[0]

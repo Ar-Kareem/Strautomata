@@ -1,0 +1,200 @@
+
+import numpy as np
+import random
+
+# --- Constants ---
+# Player representations on the board
+ME = 1
+OPPONENT = -1
+EMPTY = 0
+# Board dimensions
+BOARD_SIZE = 4
+
+# --- Helper Functions for Game Logic and AI ---
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """Checks if the given player has won the game."""
+    # Check rows
+    for r in range(BOARD_SIZE):
+        if np.all(board[r, :] == player):
+            return True
+    # Check columns
+    for c in range(BOARD_SIZE):
+        if np.all(board[:, c] == player):
+            return True
+    # Check diagonals
+    if np.all(np.diag(board) == player) or np.all(np.diag(np.fliplr(board)) == player):
+        return True
+    return False
+
+def get_valid_locations(board: np.ndarray) -> list[tuple[int, int]]:
+    """Returns a list of (row, col) tuples for all empty cells."""
+    return list(zip(*np.where(board == EMPTY)))
+
+def check_terminal_state(board: np.ndarray) -> tuple[bool, int]:
+    """
+    Checks if the game has reached a terminal state (win, loss, or draw).
+    Returns (is_terminal: bool, winner: int), where winner is ME, OPPONENT, or EMPTY for a draw.
+    """
+    if check_win(board, ME):
+        return True, ME
+    if check_win(board, OPPONENT):
+        return True, OPPONENT
+    if len(get_valid_locations(board)) == 0:
+        return True, EMPTY  # Draw
+    return False, None
+
+def evaluate_window(window: np.ndarray) -> int:
+    """
+    Heuristically evaluates a 4-cell window (row, column, or diagonal).
+    The score is from the perspective of ME.
+    """
+    my_pieces = np.count_nonzero(window == ME)
+    opp_pieces = np.count_nonzero(window == OPPONENT)
+    empty_cells = np.count_nonzero(window == EMPTY)
+
+    # A line with pieces from both players cannot be won by either
+    if my_pieces > 0 and opp_pieces > 0:
+        return 0
+
+    score = 0
+    if my_pieces == 3 and empty_cells == 1:
+        score += 100
+    elif my_pieces == 2 and empty_cells == 2:
+        score += 10
+    elif my_pieces == 1 and empty_cells == 3:
+        score += 1
+        
+    # Give a slightly higher penalty for opponent's threats to encourage blocking
+    if opp_pieces == 3 and empty_cells == 1:
+        score -= 120 
+    elif opp_pieces == 2 and empty_cells == 2:
+        score -= 10
+        
+    return score
+
+def score_position(board: np.ndarray) -> int:
+    """
+    Scores the entire board based on a heuristic.
+    A positive score is good for ME, a negative score is good for OPPONENT.
+    """
+    score = 0
+    
+    # Score center control (important in 4x4)
+    center_array = board[1:3, 1:3]
+    score += np.count_nonzero(center_array == ME) * 3
+
+    # Score all rows, columns, and diagonals
+    for r in range(BOARD_SIZE):
+        score += evaluate_window(board[r, :])
+    for c in range(BOARD_SIZE):
+        score += evaluate_window(board[:, c])
+    score += evaluate_window(np.diag(board))
+    score += evaluate_window(np.diag(np.fliplr(board)))
+    
+    return score
+
+def minimax(board: np.ndarray, depth: int, is_maximizing: bool, alpha: float, beta: float) -> int:
+    """
+    Minimax algorithm with alpha-beta pruning to find the best move.
+    """
+    is_terminal, winner = check_terminal_state(board)
+    if is_terminal:
+        if winner == ME:
+            return 1000000 + depth  # Prioritize faster wins
+        elif winner == OPPONENT:
+            return -1000000 - depth # Try to delay losses
+        else:  # Draw
+            return 0
+    
+    if depth == 0:
+        return score_position(board)
+
+    valid_locations = get_valid_locations(board)
+
+    if is_maximizing:
+        value = -np.inf
+        for r, c in valid_locations:
+            board_copy = board.copy()
+            board_copy[r, c] = ME
+            new_score = minimax(board_copy, depth - 1, False, alpha, beta)
+            value = max(value, new_score)
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:  # Minimizing
+        value = np.inf
+        for r, c in valid_locations:
+            board_copy = board.copy()
+            board_copy[r, c] = OPPONENT
+            new_score = minimax(board_copy, depth - 1, True, alpha, beta)
+            value = min(value, new_score)
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+# --- Main Policy Function ---
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    The main function to determine the next move for the AI.
+    It uses a depth-limited Minimax algorithm with alpha-beta pruning and heuristics.
+    """
+    np_board = np.array(board)
+    valid_locations = get_valid_locations(np_board)
+    
+    if not valid_locations:
+        return (-1,-1) # Should not happen
+
+    # 1. IMMEDIATE WIN: If a winning move is available, take it.
+    for r, c in valid_locations:
+        board_copy = np_board.copy()
+        board_copy[r, c] = ME
+        if check_win(board_copy, ME):
+            return (r, c)
+
+    # 2. BLOCK OPPONENT'S WIN: If the opponent can win on their next turn, block them.
+    for r, c in valid_locations:
+        board_copy = np_board.copy()
+        board_copy[r, c] = OPPONENT
+        if check_win(board_copy, OPPONENT):
+            return (r, c)
+            
+    # 3. OPENING HEURISTIC: For early game, prioritize center squares to speed up computation.
+    num_empty = len(valid_locations)
+    if num_empty >= 14:
+        center_squares = [(1, 1), (2, 2), (1, 2), (2, 1)]
+        random.shuffle(center_squares)
+        for r_c in center_squares:
+            if np_board[r_c[0], r_c[1]] == EMPTY:
+                return r_c
+
+    # 4. MINIMAX SEARCH: If no immediate action needed, find the best strategic move.
+    
+    # Adjust total search depth based on the game phase for performance.
+    if num_empty > 9:
+        total_depth = 4  # Early-game
+    elif num_empty > 5:
+        total_depth = 5  # Mid-game
+    else:  
+        total_depth = 7  # End-game (can search deeper)
+
+    best_score = -np.inf
+    # Shuffle moves to introduce randomness in case of ties
+    random.shuffle(valid_locations)
+    best_move = valid_locations[0]
+
+    # Iterate through all possible moves and evaluate them
+    for r, c in valid_locations:
+        board_copy = np_board.copy()
+        board_copy[r, c] = ME
+        # Search total_depth-1 levels deeper, as this loop is the first level.
+        score = minimax(board_copy, total_depth - 1, False, -np.inf, np.inf)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            
+    return best_move

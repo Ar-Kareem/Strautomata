@@ -1,0 +1,33 @@
+
+import random
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    n = 10
+    board_np = np.array(board)
+
+    # 1. Hunt Mode: If no active hits, search for new ships
+    # Prioritize checkerboard pattern to cover more ground efficiently
+    for r in range(n):
+        for c in range(n):
+            if (r + c) % 2 == 0 and board_np[r, c] == 0:
+                return r, c
+    
+    # If no checkerboard available, hit remaining unknown 
+    for r in range(n):
+        for c in range(n):
+            if board_np[r, c] == 0:
+                return r, c
+
+
+    # Fallback: This should ideally not be reached if there are unshot cells,
+    # but as a failsafe, return a random (already shot) cell.
+    # This indicates a potential issue in the logic if it's ever hit during normal play.
+    empty_cells = [(r, c) for r in range(n) for c in range(n) if board_np[r, c] == 0]
+    if empty_cells:
+        return random.choice(empty_cells)
+    else:
+        # All cells have been fired upon (game over or very unusual state)
+        # Just pick a random cell, it doesn't matter at this point
+        return random.randint(0, n - 1), random.randint(0, n - 1)
+

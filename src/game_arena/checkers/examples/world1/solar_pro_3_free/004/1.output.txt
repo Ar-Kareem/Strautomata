@@ -1,0 +1,278 @@
+**Strategy**
+
+The policy first checks whether any capture is possible. In Checkers a capture must be taken, so the opponent’s moves are never considered unless they are forced captures.  
+For every possible capture sequence (including multi‑jump chains) the code evaluates the resulting board position. The evaluation is a simple weighted sum:  
+
+- My men = +1, my kings = +2.  
+- Opponent men = –1, opponent kings = –2.  
+- Mobility (difference in the number of legal moves between the two sides) adds a small bonus.  
+
+If a capture makes a regular piece king, an extra promotion bonus is added. Among capture candidates the move with the highest evaluation is chosen; tie‑breaks favour the sequence that captures the most pieces and gives a king if possible.
+
+If no capture exists, the policy generates all ordinary (single‑step) moves. It prefers moves that advance a men piece toward the opposite side (higher distance to the promotion row), with the same evaluation criteria and a promotion bonus. Again the best move is returned.
+
+The implementation uses NumPy for board manipulation, runs well within the 1 s time limit, and always returns a legal move.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Set
+
+# ----------------------------------------------------------------------
+# Basic helpers
+# ----------------------------------------------------------------------
+DARK = {(r, c) for r in range(8) for c in range(8) if (r + c) % 2 == 0}
+
+FORWARD_B = [(-1, 1), (-1, -1)]   # black (downwards)
+FORWARD_W = [(1, 1), (1, -1)]     # white (upwards)
+ALL_DIRS = FORWARD_B + FORWARD_W
+
+def on_board(coord: Tuple[int, int]) -> bool:
+    r, c = coord
+    return 0 <= r < 8 and 0 <= c < 8
+
+def is_dark(coord: Tuple[int, int]) -> bool:
+    r, c = coord
+    return (r + c) % 2 == 0
+
+def board_copy(board: np.ndarray) -> np.ndarray:
+    return board.copy()
+
+# ----------------------------------------------------------------------
+# Board application helpers
+# ----------------------------------------------------------------------
+def apply_capture(board: np.ndarray,
+                  from_pos: Tuple[int, int],
+                  to_pos: Tuple[int, int],
+                  captured: List[Tuple[int, int]],
+                  piece_type: int,
+                  color: str) -> np.ndarray:
+    """Apply a capture move (single or multi‑jump) to the board."""
+    new_board = board_copy(board)
+    new_board[from_pos[0], from_pos[1]] = 0               # remove from square
+    for sq in captured:
+        new_board[sq[0], sq[1]] = 0                     # remove captured squares
+
+    # promotion check
+    if piece_type == 1:                                # men
+        if (color == 'b' and to_pos[0] == 0) or (color == 'w' and to_pos[0] == 7):
+            piece_type = 2                              # become king
+    new_board[to_pos[0], to_pos[1]] = piece_type
+    return new_board
+
+def apply_normal_move(board: np.ndarray,
+                      from_pos: Tuple[int, int],
+                      to_pos: Tuple[int, int],
+                      color: str) -> np.ndarray:
+    """Apply a non‑capture move."""
+    new_board = board_copy(board)
+    piece_type = board[from_pos[0], from_pos[1]]
+    new_board[from_pos[0], from_pos[1]] = 0
+
+    # promotion if landing on promotion row
+    if piece_type == 1:
+        if (color == 'b' and to_pos[0] == 0) or (color == 'w' and to_pos[0] == 7):
+            piece_type = 2
+    new_board[to_pos[0], to_pos[1]] = piece_type
+    return new_board
+
+# ----------------------------------------------------------------------
+# Move generation
+# ----------------------------------------------------------------------
+def generate_all_moves(board: np.ndarray,
+                       color: str,
+                       my_set: Set[Tuple[int, int]],
+                       opp_set: Set[Tuple[int, int]]) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """All legal moves (including captures) for the given side."""
+    moves = []
+    for r, c in my_set:
+        pt = board[r, c]
+        # direction set for this piece
+        if pt == 1:                     # men – only forward
+            dirs = FORWARD_B if color == 'b' else FORWARD_W
+        else:                           # king
+            dirs = ALL_DIRS
+
+        for d in dirs:
+            # normal step
+            to = (r + d[0], c + d[1])
+            if on_board(to) and is_dark(to) and board[to[0], to[1]] == 0:
+                moves.append(( (r, c), to ))
+            # capture step
+            adj = (r + d[0], c + d[1])
+            landing = (adj[0] + d[0], adj[1] + d[1])
+            if (on_board(adj) and on_board(landing) and is_dark(landing) and
+                board[adj[0], adj[1]] in opp_set and board[landing[0], landing[1]] == 0):
+                moves.append(( (r, c), landing ))
+    return moves
+
+def generate_non_capture_moves(board: np.ndarray,
+                               color: str,
+                               my_set: Set[Tuple[int, int]],
+                               opp_set: Set[Tuple[int, int]]) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """Only single‑step non‑capture moves."""
+    all_moves = generate_all_moves(board, color, my_set, opp_set)
+    non_captures = []
+    for from_pos, to_pos in all_moves:
+        # is it a capture? the jump must be two squares and the middle square must be opponent
+        dr = to_pos[0] - from_pos[0]
+        dc = to_pos[1] - from_pos[1]
+        step = (dr // 2, dc // 2)               # direction (dx, dy)
+        if (on_board(step) and is_dark(step[0], step[1]) and
+            board[from_pos[0] + step[0], from_pos[1] + step[1]] in opp_set):
+            # it is a capture – skip
+            continue
+        non_captures.append((from_pos, to_pos))
+    return non_captures
+
+# ----------------------------------------------------------------------
+# Recursive capture generation
+# ----------------------------------------------------------------------
+def rec_captures(board: np.ndarray,
+                start: Tuple[int, int],
+                dirs: List[Tuple[int, int]],
+                piece_type: int,
+                color: str,
+                opp_set: Set[Tuple[int, int]]) -> List[Tuple[Tuple[int, int], List[Tuple[int, int]]]]:
+    """Return all maximal capture sequences that start at `start`."""
+    results: List[Tuple[Tuple[int, int], List[Tuple[int, int]]]] = []
+    for d in dirs:
+        adj = (start[0] + d[0], start[1] + d[1])
+        landing = (adj[0] + d[0], adj[1] + d[1])
+        if not (on_board(adj) and on_board(landing) and is_dark(landing)):
+            continue
+        if board[adj[0], adj[1]] not in opp_set or board[landing[0], landing[1]] != 0:
+            continue
+
+        # make this capture
+        new_board = board_copy(board)
+        new_board[adj[0], adj[1]] = 0
+        new_piece_type = piece_type
+        # promotion if needed
+        if piece_type == 1 and ((color == 'b' and landing[0] == 0) or (color == 'w' and landing[0] == 7)):
+            new_piece_type = 2
+        new_board[landing[0], landing[1]] = new_piece_type
+        # next possible directions
+        next_dirs = ALL_DIRS if new_piece_type == 2 else dirs
+
+        # explore further captures from the new landing square
+        sub_seqs = rec_captures(new_board, landing, next_dirs, new_piece_type, color, opp_set)
+        for final, captured_list in sub_seqs:
+            results.append((final, [adj] + captured_list))
+        # if no further captures, this branch ends here
+        if not sub_seqs:
+            results.append((landing, [adj]))
+    return results
+
+# ----------------------------------------------------------------------
+# Move evaluation
+# ----------------------------------------------------------------------
+def evaluate(board: np.ndarray, color: str) -> float:
+    """Simple piece‑value + mobility evaluation."""
+    # piece values
+    piece_vals = {1: 1.0, 2: 2.0, 3: -1.0, 4: -2.0}
+    score = sum(piece_vals.get(board[r, c], 0) for r in range(8) for c in range(8))
+
+    # mobility bonus
+    w_mob = 0.1
+    my_moves = len(generate_all_moves(board, color, {my_men, my_kings}, {opp_men, opp_kings}))
+    opp_moves = len(generate_all_moves(board,
+                                      'b' if color == 'w' else 'w',
+                                      {opp_men, opp_kings},
+                                      {my_men, my_kings}))
+    score += w_mob * (my_moves - opp_moves)
+
+    return score
+
+# ----------------------------------------------------------------------
+# Main policy
+# ----------------------------------------------------------------------
+def policy(my_men: List[Tuple[int, int]],
+           my_kings: List[Tuple[int, int]],
+           opp_men: List[Tuple[int, int]],
+           opp_kings: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Return the next move as ((from_row, from_col), (to_row, to_col)).
+    """
+
+    # build sets for quick look‑ups
+    my_pieces: Set[Tuple[int, int]] = set(my_men) | set(my_kings)
+    opp_pieces: Set[Tuple[int, int]] = set(opp_men) | set(opp_kings)
+
+    # initial board
+    board = np.zeros((8, 8), dtype=int)
+    for r, c in my_men:
+        board[r, c] = 1
+    for r, c in my_kings:
+        board[r, c] = 2
+    for r, c in opp_men:
+        board[r, c] = 3
+    for r, c in opp_kings:
+        board[r, c] = 4
+
+    # direction sets for the whole game
+    forward = FORWARD_B if color == 'b' else FORWARD_W
+
+    # --------------------------------------------------------------
+    # 1)  Mandatory captures (if any)
+    # --------------------------------------------------------------
+    capture_candidates: List[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]] = []
+
+    for start in my_pieces:
+        pt = board[start[0], start[1]]
+        dirs = forward if pt == 1 else ALL_DIRS
+        seqs = rec_captures(board_copy(board), start, dirs, pt, color, opp_pieces)
+        for final, captured in seqs:
+            capture_candidates.append((start, final, captured))
+
+    if capture_candidates:
+        best_move = None
+        best_score = -float('inf')
+        best_captures = -1
+        best_promotion = False
+
+        for from_pos, to_pos, captured in capture_candidates:
+            piece_type = board[from_pos[0], from_pos[1]]
+            new_board = apply_capture(board, from_pos, to_pos, captured, piece_type, color)
+            score = evaluate(new_board, color)
+
+            # promotion bonus check
+            promotion = (piece_type == 1 and
+                         ((color == 'b' and to_pos[0] == 0) or
+                          (color == 'w' and to_pos[0] == 7)))
+            # tie‑break: more captures, then promotion
+            if (score, len(captured), promotion) > (best_score, best_captures, best_promotion):
+                best_score, best_captures, best_promotion = score, len(captured), promotion
+                best_move = (from_pos, to_pos)
+
+        if best_move is not None:
+            return best_move
+
+    # --------------------------------------------------------------
+    # 2)  No captures – regular moves
+    # --------------------------------------------------------------
+    non_capture_moves: List[Tuple[Tuple[int, int], Tuple[int, int], bool, float, int]] = []
+
+    for from_pos, to_pos in generate_non_capture_moves(board, color, my_pieces, opp_pieces):
+        piece_type = board[from_pos[0], from_pos[1]]
+        new_board = apply_normal_move(board, from_pos, to_pos, color)
+        score = evaluate(new_board, color)
+
+        # promotion?
+        promotion = (piece_type == 1 and
+                     ((color == 'b' and to_pos[0] == 0) or
+                      (color == 'w' and to_pos[0] == 7)))
+
+        # distance to promotion row – the farther the better
+        distance = from_pos[0] if color == 'b' else 7 - from_pos[0]
+
+        non_capture_moves.append((from_pos, to_pos, promotion, score, distance))
+
+    if non_capture_moves:
+        # primary: evaluation, secondary: distance, tertiary: promotion
+        best = max(non_capture_moves, key=lambda x: (x[3], x[4], x[2]))
+        return best[0], best[1]
+
+    # Should never happen – no legal move means the game is over.
+    raise RuntimeError("No legal move found for the given player.")
+</code>

@@ -1,0 +1,198 @@
+The strategy for this policy is to implement a minimax algorithm with alpha-beta pruning for optimal decision-making in 3D Tic Tac Toe. Since the state space is manageable (only 27 cells), we can search deeply enough to find winning moves or block opponent threats. The evaluation function prioritizes:
+
+1. Immediate wins (if any move completes a line of three 1's)
+2. Blocking opponent's immediate wins (if any move blocks three -1's in a line)
+3. Center control (favoring the center cell (1,1,1) as it participates in the most lines)
+4. Maximizing potential winning lines while minimizing opponent's
+5. If no immediate threats, use alpha-beta minimax to a depth of 4-5 moves, evaluating board state based on open lines and centrality
+
+We precompute all 49 possible winning lines in 3D Tic Tac Toe (27 rows/columns/pillars + 18 diagonals) to efficiently check for wins. The algorithm prioritizes forced moves before deep search to ensure responsiveness.
+
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    # Convert to numpy array for easier indexing
+    b = np.array(board)
+    
+    # Precompute all 49 winning lines in 3D tic-tac-toe
+    winning_lines = []
+    
+    # Row lines (3 layers, 3 rows per layer, 3 cells per row)
+    for l in range(3):
+        for i in range(3):
+            winning_lines.append([(l, i, j) for j in range(3)])
+    
+    # Column lines (3 layers, 3 columns per layer, 3 cells per column)
+    for l in range(3):
+        for j in range(3):
+            winning_lines.append([(l, i, j) for i in range(3)])
+    
+    # Pillar lines (3 rows, 3 columns, 3 layers per pillar)
+    for i in range(3):
+        for j in range(3):
+            winning_lines.append([(l, i, j) for l in range(3)])
+    
+    # Diagonals on each layer (like 2D tic-tac-toe)
+    for l in range(3):
+        # Main diagonal on layer l
+        winning_lines.append([(l, i, i) for i in range(3)])
+        # Anti-diagonal on layer l
+        winning_lines.append([(l, i, 2-i) for i in range(3)])
+    
+    # Vertical diagonals (through layers)
+    # Diagonals going through all 3 layers in x-y plane
+    for i in range(3):
+        winning_lines.append([(l, i, l) for l in range(3)])
+        winning_lines.append([(l, i, 2-l) for l in range(3)])
+    
+    for j in range(3):
+        winning_lines.append([(l, l, j) for l in range(3)])
+        winning_lines.append([(l, 2-l, j) for l in range(3)])
+    
+    # Space diagonals (corner to corner through the cube)
+    winning_lines.append([(i, i, i) for i in range(3)])  # main space diagonal
+    winning_lines.append([(i, i, 2-i) for i in range(3)])
+    winning_lines.append([(i, 2-i, i) for i in range(3)])
+    winning_lines.append([(i, 2-i, 2-i) for i in range(3)])
+    
+    # Check for immediate win
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if b[i, j, k] == 0:  # empty cell
+                    # Try placing our mark here
+                    b[i, j, k] = 1
+                    if is_winner(b, 1, winning_lines):
+                        b[i, j, k] = 0  # revert
+                        return (i, j, k)
+                    b[i, j, k] = 0  # revert
+    
+    # Check for opponent's immediate win and block
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if b[i, j, k] == 0:  # empty cell
+                    # Try placing opponent's mark here
+                    b[i, j, k] = -1
+                    if is_winner(b, -1, winning_lines):
+                        b[i, j, k] = 0  # revert
+                        return (i, j, k)
+                    b[i, j, k] = 0  # revert
+    
+    # Prefer center if available
+    if b[1, 1, 1] == 0:
+        return (1, 1, 1)
+    
+    # If no immediate threats, use minimax
+    # Get all empty positions
+    empty_cells = [(i, j, k) for i in range(3) for j in range(3) for k in range(3) if b[i, j, k] == 0]
+    
+    if not empty_cells:
+        # Shouldn't happen in valid game
+        return (0, 0, 0)
+    
+    # Use minimax with alpha-beta pruning
+    best_move = empty_cells[0]
+    best_score = float('-inf')
+    
+    # Search depth based on number of moves made
+    moves_made = 27 - len(empty_cells)
+    depth = min(5, 6 - moves_made//3)  # Deepen as game progresses
+    
+    for cell in empty_cells:
+        i, j, k = cell
+        b[i, j, k] = 1
+        score = minimax(b, depth - 1, float('-inf'), float('inf'), False, winning_lines)
+        b[i, j, k] = 0
+        
+        if score > best_score:
+            best_score = score
+            best_move = cell
+    
+    return best_move
+
+def is_winner(board, player, winning_lines):
+    """Check if player has won"""
+    for line in winning_lines:
+        if all(board[i, j, k] == player for i, j, k in line):
+            return True
+    return False
+
+def evaluate_board(board, winning_lines):
+    """Simple evaluation function counting potential lines"""
+    score = 0
+    
+    # Count player's potential lines (-1 for opponent)
+    for line in winning_lines:
+        line_values = [board[i, j, k] for i, j, k in line]
+        
+        # Count player's marks and empty cells
+        player_count = line_values.count(1)
+        opponent_count = line_values.count(-1)
+        empty_count = line_values.count(0)
+        
+        if player_count > 0 and opponent_count == 0:
+            # Player has potential line
+            if player_count == 2:
+                score += 10  # Two in a row, one empty = strong threat
+            elif player_count == 1:
+                score += 1   # One mark, others empty
+        
+        elif opponent_count > 0 and player_count == 0:
+            # Opponent has potential line
+            if opponent_count == 2:
+                score -= 10  # Opponent almost wins
+            elif opponent_count == 1:
+                score -= 1   # Opponent has one mark
+    
+    # Bonus for center control
+    if board[1, 1, 1] == 1:
+        score += 3
+    elif board[1, 1, 1] == -1:
+        score -= 3
+    
+    return score
+
+def minimax(board, depth, alpha, beta, is_maximizing, winning_lines):
+    """Minimax with alpha-beta pruning"""
+    if depth == 0:
+        return evaluate_board(board, winning_lines)
+    
+    # Check if game is over
+    if is_winner(board, 1, winning_lines):
+        return 1000
+    if is_winner(board, -1, winning_lines):
+        return -1000
+    
+    empty_cells = [(i, j, k) for i in range(3) for j in range(3) for k in range(3) if board[i, j, k] == 0]
+    
+    if not empty_cells:  # Draw
+        return 0
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for cell in empty_cells:
+            i, j, k = cell
+            board[i, j, k] = 1
+            eval_score = minimax(board, depth - 1, alpha, beta, False, winning_lines)
+            board[i, j, k] = 0
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # Beta cutoff
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for cell in empty_cells:
+            i, j, k = cell
+            board[i, j, k] = -1
+            eval_score = minimax(board, depth - 1, alpha, beta, True, winning_lines)
+            board[i, j, k] = 0
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # Alpha cutoff
+        return min_eval
+</code>

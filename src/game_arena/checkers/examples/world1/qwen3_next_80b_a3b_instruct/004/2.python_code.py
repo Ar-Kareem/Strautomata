@@ -1,0 +1,338 @@
+
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]], 
+           opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]], 
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Implementation of a smart Checkers policy using minimax with alpha-beta pruning.
+    """
+    # Convert lists to sets for faster lookup
+    my_pieces = set(my_men + my_kings)
+    opp_pieces = set(opp_men + opp_kings)
+    
+    # Determine direction based on color
+    # For black ('b'): moves downward (row decreases)
+    # For white ('w'): moves upward (row increases)
+    direction = -1 if color == 'b' else 1
+    
+    # Get all possible moves (captures first, then non-captures)
+    capture_moves = get_all_capture_moves(my_pieces, opp_pieces, color, my_kings, opp_kings)
+    if capture_moves:
+        # If captures are available, only consider capture moves
+        best_move = find_best_move(my_pieces, opp_pieces, color, direction, capture_moves, my_kings, opp_kings, depth=4)
+        if best_move:
+            return best_move
+        # Fallback: return first capture (should not happen if we evaluate properly)
+        return capture_moves[0]
+    
+    # No captures available, generate non-capture moves
+    non_capture_moves = get_all_non_capture_moves(my_pieces, color, direction, my_kings)
+    if not non_capture_moves:
+        # No legal moves? Shouldn't happen in valid games, but return dummy
+        return ((0, 0), (0, 0))
+    
+    # Find best non-capture move
+    best_move = find_best_move(my_pieces, opp_pieces, color, direction, non_capture_moves, my_kings, opp_kings, depth=4)
+    if best_move:
+        return best_move
+    
+    # Fallback: return first available move
+    return non_capture_moves[0]
+
+
+def get_all_capture_moves(my_pieces: set, opp_pieces: set, color: str, my_kings: List, opp_kings: List) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """
+    Generate all possible capture moves for the player.
+    Returns list of (from, to) tuples.
+    """
+    capture_moves = []
+    my_king_set = set(my_kings)
+    
+    # For each of my pieces, check for captures
+    for from_pos in my_pieces:
+        row, col = from_pos
+        # Determine possible directions
+        if from_pos in my_king_set:
+            # King can move in all four diagonal directions
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            # Regular piece moves only in forward direction
+            direction = -1 if color == 'b' else 1
+            directions = [(direction, -1), (direction, 1)]
+        
+        for dr, dc in directions:
+            # Check if there's an opponent piece in the diagonal direction
+            mid_row, mid_col = row + dr, col + dc
+            land_row, land_col = row + 2*dr, col + 2*dc
+            
+            # Check if middle square has opponent piece
+            if (mid_row, mid_col) in opp_pieces:
+                # Check if landing square is within bounds and empty
+                if 0 <= land_row <= 7 and 0 <= land_col <= 7:
+                    # Only dark squares are playable: (i+j) must be odd
+                    if (land_row + land_col) % 2 == 1 and (land_row, land_col) not in my_pieces and (land_row, land_col) not in opp_pieces:
+                        capture_moves.append(((row, col), (land_row, land_col)))
+    
+    return capture_moves
+
+
+def get_all_non_capture_moves(my_pieces: set, color: str, direction: int, my_kings: List) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """
+    Generate all possible non-capture moves for the player.
+    Returns list of (from, to) tuples.
+    """
+    non_capture_moves = []
+    my_king_set = set(my_kings)
+    
+    for from_pos in my_pieces:
+        row, col = from_pos
+        if from_pos in my_king_set:
+            # King can move in all four diagonal directions
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            # Regular piece moves only in forward direction
+            directions = [(direction, -1), (direction, 1)]
+        
+        for dr, dc in directions:
+            to_row, to_col = row + dr, col + dc
+            # Check if landing square is within bounds
+            if 0 <= to_row <= 7 and 0 <= to_col <= 7:
+                # Only dark squares are playable
+                if (to_row + to_col) % 2 == 1:
+                    if (to_row, to_col) not in my_pieces:  # Must be empty
+                        non_capture_moves.append(((row, col), (to_row, to_col)))
+    
+    return non_capture_moves
+
+
+def evaluate_board(my_pieces, opp_pieces, my_kings, opp_kings, color) -> float:
+    """
+    Evaluate the board state for the current player.
+    Higher score means better position for the current player.
+    """
+    # Base material score: kings are worth more
+    my_material = len(my_pieces) + 3 * len(my_kings)   # Kings worth 3x
+    opp_material = len(opp_pieces) + 3 * len(opp_kings)
+    material_score = my_material - opp_material
+    
+    # Mobility score: count number of possible moves (approximate)
+    # This is a quick estimate since computing exact moves is expensive
+    my_mobility = 0
+    opp_mobility = 0
+    direction = -1 if color == 'b' else 1
+    my_king_set = set(my_kings)
+    opp_king_set = set(opp_kings)
+    
+    # Estimate my mobility
+    for (r, c) in my_pieces:
+        if (r, c) in my_king_set:
+            dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            dirs = [(direction, -1), (direction, 1)]
+        
+        for dr, dc in dirs:
+            tr, tc = r + dr, c + dc
+            if 0 <= tr <= 7 and 0 <= tc <= 7 and (tr + tc) % 2 == 1:
+                my_mobility += 1
+    
+    # Estimate opponent mobility
+    opp_direction = 1 if color == 'b' else -1  # Opponent moves opposite direction
+    for (r, c) in opp_pieces:
+        if (r, c) in opp_king_set:
+            dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            dirs = [(opp_direction, -1), (opp_direction, 1)]
+        
+        for dr, dc in dirs:
+            tr, tc = r + dr, c + dc
+            if 0 <= tr <= 7 and 0 <= tc <= 7 and (tr + tc) % 2 == 1:
+                opp_mobility += 1
+    
+    mobility_score = (my_mobility - opp_mobility) * 0.1
+    
+    # Center control: pieces in center are more valuable
+    center_score = 0
+    center_zone = [(2,2), (2,3), (2,4), (2,5), (3,2), (3,3), (3,4), (3,5), 
+                   (4,2), (4,3), (4,4), (4,5), (5,2), (5,3), (5,4), (5,5)]
+    
+    for piece in my_pieces:
+        if piece in center_zone:
+            center_score += 0.1
+    for piece in opp_pieces:
+        if piece in center_zone:
+            center_score -= 0.1
+    
+    # King promotion potential: pieces that can become kings
+    promotion_score = 0
+    if color == 'b':  # black moves down, so row 0 is promotion
+        for (r, c) in my_pieces:
+            if r == 1:  # One step from promotion
+                promotion_score += 0.3
+        for (r, c) in opp_pieces:
+            if r == 6:  # Opponent one step from promotion
+                promotion_score -= 0.3
+    else:  # white moves up, so row 7 is promotion
+        for (r, c) in my_pieces:
+            if r == 6:
+                promotion_score += 0.3
+        for (r, c) in opp_pieces:
+            if r == 1:
+                promotion_score -= 0.3
+    
+    # Safety: avoid pieces on edge (vulnerable)
+    edge_penalty = 0
+    for (r, c) in my_pieces:
+        if r == 0 or r == 7 or c == 0 or c == 7:
+            edge_penalty -= 0.1
+    for (r, c) in opp_pieces:
+        if r == 0 or r == 7 or c == 0 or c == 7:
+            edge_penalty += 0.1
+    
+    total_score = material_score + mobility_score + center_score + promotion_score + edge_penalty
+    return total_score
+
+
+def make_move(board_state, move_from, move_to, color, my_kings, opp_kings, opp_pieces):
+    """
+    Simulate a move and return new board state.
+    Assume move is legal.
+    Returns: (new_my_pieces, new_opp_pieces, new_my_kings, new_opp_kings)
+    """
+    my_pieces, opp_pieces = board_state
+    new_my_pieces = my_pieces.copy()
+    new_opp_pieces = opp_pieces.copy()
+    new_my_kings = my_kings.copy()
+    new_opp_kings = opp_kings.copy()
+    
+    # Remove piece from original position
+    new_my_pieces.remove(move_from)
+    
+    # Move piece to new position
+    if color == 'b':
+        # Black: if reaches row 0, becomes king
+        if move_to[0] == 0 and move_from not in my_kings:
+            new_my_kings.append(move_to)
+        else:
+            new_my_pieces.add(move_to)
+    else:  # white
+        # White: if reaches row 7, becomes king
+        if move_to[0] == 7 and move_from not in my_kings:
+            new_my_kings.append(move_to)
+        else:
+            new_my_pieces.add(move_to)
+    
+    # Handle capture
+    mid_row = (move_from[0] + move_to[0]) // 2
+    mid_col = (move_from[1] + move_to[1]) // 2
+    mid_pos = (mid_row, mid_col)
+    
+    if mid_pos in opp_pieces:
+        new_opp_pieces.remove(mid_pos)
+        # Check if captured piece was a king
+        if mid_pos in opp_kings:
+            new_opp_kings.remove(mid_pos)
+    
+    return new_my_pieces, new_opp_pieces, new_my_kings, new_opp_kings
+
+
+def minimax(board_state, my_kings, opp_kings, depth, alpha, beta, maximizing_player, color, direction):
+    """
+    Minimax algorithm with alpha-beta pruning.
+    board_state: (my_pieces_set, opp_pieces_set)
+    """
+    my_pieces, opp_pieces = board_state
+    
+    # Terminal conditions
+    if depth == 0:
+        return evaluate_board(my_pieces, opp_pieces, my_kings, opp_kings, color)
+    
+    if len(opp_pieces) + len(opp_kings) == 0:
+        return float('inf')  # Win
+    
+    if len(my_pieces) + len(my_kings) == 0:
+        return float('-inf')  # Loss
+    
+    # Generate captures first
+    capture_moves = get_all_capture_moves(my_pieces, opp_pieces, color, my_kings, opp_kings)
+    
+    if maximizing_player:
+        max_eval = float('-inf')
+        if capture_moves:
+            moves = capture_moves
+        else:
+            moves = get_all_non_capture_moves(my_pieces, color, direction, my_kings)
+        
+        for move in moves:
+            from_pos, to_pos = move
+            new_board_state = make_move(board_state, from_pos, to_pos, color, my_kings, opp_kings, opp_pieces)
+            eval_score = minimax(new_board_state, new_board_state[2], new_board_state[3], 
+                                depth - 1, alpha, beta, False, color, direction)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # Beta cut-off
+        return max_eval
+    else:
+        min_eval = float('inf')
+        # Opponent's turn
+        opp_color = 'w' if color == 'b' else 'b'
+        opp_direction = 1 if color == 'b' else -1
+        opp_capture_moves = get_all_capture_moves(opp_pieces, my_pieces, opp_color, opp_kings, my_kings)
+        
+        if opp_capture_moves:
+            moves = opp_capture_moves
+        else:
+            moves = get_all_non_capture_moves(opp_pieces, opp_color, opp_direction, opp_kings)
+        
+        for move in moves:
+            from_pos, to_pos = move
+            # We need to flip the perspective for opponent's move
+            # Swap the board so that opponent becomes maximizer
+            new_opp_pieces, new_my_pieces, new_opp_kings, new_my_kings = make_move(
+                (opp_pieces, my_pieces), from_pos, to_pos, opp_color, opp_kings, my_kings, my_pieces)
+            
+            # Swap back for our perspective
+            new_board_state = (new_my_pieces, new_opp_pieces)
+            new_my_kings_list = list(new_my_kings)
+            new_opp_kings_list = list(new_opp_kings)
+            
+            eval_score = minimax(new_board_state, new_my_kings_list, new_opp_kings_list,
+                                depth - 1, alpha, beta, True, color, direction)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # Alpha cut-off
+        return min_eval
+
+
+def find_best_move(my_pieces, opp_pieces, color, direction, moves, my_kings, opp_kings, depth=4):
+    """
+    Find the best move from the list of moves using minimax.
+    Returns the best (from, to) move as a tuple.
+    """
+    if not moves:
+        return None
+    
+    best_move = None
+    best_score = float('-inf') if color == 'b' else float('-inf')  # We are maximizing for current player
+    
+    # Try each move and evaluate
+    for move in moves:
+        from_pos, to_pos = move
+        
+        # Simulate move
+        new_board_state = make_move((my_pieces, opp_pieces), from_pos, to_pos, color, my_kings, opp_kings, opp_pieces)
+        new_my_pieces, new_opp_pieces, new_my_kings, new_opp_kings = new_board_state
+        
+        # Evaluate the resulting position
+        score = minimax((new_my_pieces, new_opp_pieces), new_my_kings, new_opp_kings, 
+                       depth - 1, float('-inf'), float('inf'), False, color, direction)
+        
+        # Update best move if this one is better
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

@@ -1,0 +1,101 @@
+
+import numpy as np
+from collections import deque
+
+def is_connected(board, player):
+    positions = [(i, j) for i in range(8) for j in range(8) if board[i][j] == player]
+    if not positions:
+        return 0
+    visited = set()
+    components = 0
+    directions = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
+    for start in positions:
+        if start in visited:
+            continue
+        components += 1
+        queue = deque([start])
+        visited.add(start)
+        while queue:
+            x, y = queue.popleft()
+            for dx, dy in directions:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < 8 and 0 <= ny < 8 and board[nx][ny] == player and (nx, ny) not in visited:
+                    visited.add((nx, ny))
+                    queue.append((nx, ny))
+    return components
+
+def get_pieces_in_line(board, row, col, dx, dy):
+    count = 0
+    x, y = row, col
+    while 0 <= x < 8 and 0 <= y < 8:
+        if board[x][y] != 0:
+            count += 1
+        x += dx
+        y += dy
+    return count
+
+def is_clear_path(board, from_row, from_col, to_row, to_col):
+    dr = to_row - from_row
+    dc = to_col - from_col
+    if dr == 0 and dc == 0:
+        return False  # Same position
+    steps = max(abs(dr), abs(dc))
+    dir_r = dr // steps if steps else 0
+    dir_c = dc // steps if steps else 0
+    for k in range(1, steps):
+        r = from_row + k * dir_r
+        c = from_col + k * dir_c
+        if board[r][c] == -1:  # Blocked by opponent
+            return False
+    return True
+
+def get_legal_moves(board):
+    moves = []
+    directions = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
+    for from_r in range(8):
+        for from_c in range(8):
+            if board[from_r][from_c] != 1:
+                continue
+            for dr, dc in directions:
+                pieces_in_line = get_pieces_in_line(board, from_r, from_c, dr, dc)
+                for k in range(1, pieces_in_line + 1):
+                    to_r = from_r + k * dr
+                    to_c = from_c + k * dc
+                    if not (0 <= to_r < 8 and 0 <= to_c < 8):
+                        continue
+                    if abs(dr * k) > 7 or abs(dc * k) > 7:
+                        continue
+                    if not is_clear_path(board, from_r, from_c, to_r, to_c):
+                        continue
+                    moves.append((from_r, from_c, to_r, to_c))
+    return moves
+
+def simulate_move(board, move):
+    board_copy = [row[:] for row in board]
+    fr, fc, tr, tc = move
+    board_copy[tr][tc] = 1
+    board_copy[fr][fc] = 0
+    return board_copy
+
+def policy(board) -> str:
+    legal_moves = get_legal_moves(board)
+    if not legal_moves:
+        # Shouldn't happen, but just in case, pick a piece and move nowhere, but that might be invalid.
+        # Actually, if no moves, pick any piece at (0,0) if valid, but assume there are moves.
+        return "0,0:0,0"  # Fallback, but invalid move.
+    
+    best_move = None
+    best_score = float('inf')
+    for move in legal_moves:
+        new_board = simulate_move(board, move)
+        fr, fc, tr, tc = move
+        opponent_captured = board[tr][tc] == -1
+        components = is_connected(new_board, 1)
+        # Heuristic: prioritize fewer components, then opponent capture, then closer to center
+        center_dist = (3.5 - tr)**2 + (3.5 - tc)**2
+        score = (components, -int(opponent_captured), center_dist)
+        if score < best_score:
+            best_score = score
+            best_move = move
+    
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"

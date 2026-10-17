@@ -1,0 +1,218 @@
+## Strategy
+
+My strategy implements a minimax search with alpha-beta pruning and iterative deepening to find the best move within the time constraint. The evaluation function considers:
+
+1. **Material count**: Having more pieces is advantageous.
+2. **Advancement**: Pieces closer to the opponent's home row are more valuable (exponentially weighted).
+3. **Winning/losing detection**: Immediate wins are highly valued; losses are heavily penalized.
+4. **Center control**: Slight preference for central columns.
+5. **Protection**: Pieces that are defended by friendly pieces get a bonus.
+6. **Capture threats**: Penalize pieces that can be captured next turn.
+7. **Passed pieces**: Pieces with no opposing pieces in front of them on adjacent columns get a bonus.
+
+The search uses move ordering (captures first, then advances closer to promotion) to improve alpha-beta pruning efficiency. Iterative deepening ensures we always have a move ready and can search as deep as time allows.
+
+<code>
+import time
+
+def policy(me, opp, color):
+    start_time = time.time()
+    time_limit = 0.85
+    
+    me_set = frozenset(me)
+    opp_set = frozenset(opp)
+    direction = 1 if color == 'w' else -1
+    my_goal = 7 if color == 'w' else 0
+    opp_goal = 0 if color == 'w' else 7
+    opp_dir = -direction
+    
+    def get_moves(my_pieces, opp_pieces, d, is_me=True):
+        moves = []
+        my_s = my_pieces if isinstance(my_pieces, frozenset) else frozenset(my_pieces)
+        opp_s = opp_pieces if isinstance(opp_pieces, frozenset) else frozenset(opp_pieces)
+        all_occ = my_s | opp_s
+        for (r, c) in my_s:
+            nr = r + d
+            if nr < 0 or nr > 7:
+                continue
+            # straight forward
+            if (nr, c) not in all_occ:
+                moves.append(((r, c), (nr, c)))
+            # diagonal captures and moves
+            for dc in [-1, 1]:
+                nc = c + dc
+                if nc < 0 or nc > 7:
+                    continue
+                if (nr, nc) in opp_s:
+                    moves.append(((r, c), (nr, nc)))
+                elif (nr, nc) not in all_occ:
+                    moves.append(((r, c), (nr, nc)))
+        return moves
+    
+    def evaluate(my_pieces, opp_pieces):
+        if not opp_pieces:
+            return 100000
+        if not my_pieces:
+            return -100000
+        
+        score = 0
+        # Material
+        score += (len(my_pieces) - len(opp_pieces)) * 100
+        
+        opp_s = opp_pieces if isinstance(opp_pieces, frozenset) else frozenset(opp_pieces)
+        my_s = my_pieces if isinstance(my_pieces, frozenset) else frozenset(my_pieces)
+        
+        for (r, c) in my_s:
+            adv = r * direction if color == 'w' else (7 - r) * (-direction) 
+            # distance to goal
+            dist = abs(my_goal - r)
+            adv_val = 7 - dist
+            score += adv_val * adv_val * 3
+            # center bonus
+            score += (3.5 - abs(c - 3.5)) * 2
+            # check if passed
+            passed = True
+            for (or_, oc) in opp_s:
+                if abs(oc - c) <= 1:
+                    if direction == 1 and or_ > r:
+                        passed = False
+                        break
+                    elif direction == -1 and or_ < r:
+                        passed = False
+                        break
+            if passed:
+                score += adv_val * 15
+            # winning move available
+            if r + direction == my_goal:
+                score += 5000
+        
+        for (r, c) in opp_s:
+            dist = abs(opp_goal - r)
+            adv_val = 7 - dist
+            score -= adv_val * adv_val * 3
+            score -= (3.5 - abs(c - 3.5)) * 2
+            passed = True
+            for (mr, mc) in my_s:
+                if abs(mc - c) <= 1:
+                    if opp_dir == 1 and mr > r:
+                        passed = False
+                        break
+                    elif opp_dir == -1 and mr < r:
+                        passed = False
+                        break
+            if passed:
+                score -= adv_val * 15
+            if r + opp_dir == opp_goal:
+                score -= 5000
+        
+        return score
+    
+    def order_moves(moves, my_pieces, opp_pieces, d):
+        opp_s = opp_pieces if isinstance(opp_pieces, frozenset) else frozenset(opp_pieces)
+        scored = []
+        goal = my_goal
+        for m in moves:
+            s = 0
+            (fr, fc), (tr, tc) = m
+            if (tr, tc) in opp_s:
+                s += 1000
+            if tr == goal:
+                s += 10000
+            s += (7 - abs(goal - tr)) * 10
+            scored.append((s, m))
+        scored.sort(key=lambda x: -x[0])
+        return [m for _, m in scored]
+    
+    best_move_global = [None]
+    
+    def minimax(my_pieces, opp_pieces, depth, alpha, beta, maximizing):
+        if time.time() - start_time > time_limit:
+            raise TimeoutError
+        
+        if maximizing:
+            # Check if any of my pieces on goal
+            for (r, c) in my_pieces:
+                if r == my_goal:
+                    return 100000 + depth
+            if not opp_pieces:
+                return 100000 + depth
+            if not my_pieces:
+                return -100000 - depth
+            
+            moves = get_moves(my_pieces, opp_pieces, direction, True)
+            if not moves:
+                return -100000 - depth
+            if depth == 0:
+                return evaluate(my_pieces, opp_pieces)
+            
+            moves = order_moves(moves, my_pieces, opp_pieces, direction)
+            max_eval = -200000
+            for m in moves:
+                (fr, fc), (tr, tc) = m
+                new_my = (my_pieces - {(fr, fc)}) | {(tr, tc)}
+                opp_s = opp_pieces if isinstance(opp_pieces, frozenset) else frozenset(opp_pieces)
+                new_opp = opp_s - {(tr, tc)}
+                val = minimax(new_my, new_opp, depth - 1, alpha, beta, False)
+                if val > max_eval:
+                    max_eval = val
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            for (r, c) in opp_pieces:
+                if r == opp_goal:
+                    return -100000 - depth
+            if not my_pieces:
+                return -100000 - depth
+            if not opp_pieces:
+                return 100000 + depth
+            
+            moves = get_moves(opp_pieces, my_pieces, opp_dir, False)
+            if not moves:
+                return 100000 + depth
+            if depth == 0:
+                return evaluate(my_pieces, opp_pieces)
+            
+            moves = order_moves(moves, opp_pieces, my_pieces, opp_dir)
+            min_eval = 200000
+            for m in moves:
+                (fr, fc), (tr, tc) = m
+                new_opp = (opp_pieces - {(fr, fc)}) | {(tr, tc)}
+                my_s = my_pieces if isinstance(my_pieces, frozenset) else frozenset(my_pieces)
+                new_my = my_s - {(tr, tc)}
+                val = minimax(new_my, new_opp, depth - 1, alpha, beta, True)
+                if val < min_eval:
+                    min_eval = val
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    all_moves = get_moves(me_set, opp_set, direction)
+    if not all_moves:
+        return (me[0], (me[0][0] + direction, me[0][1]))
+    
+    best_move_global[0] = all_moves[0]
+    
+    for max_depth in range(1, 20):
+        try:
+            ordered = order_moves(all_moves, me_set, opp_set, direction)
+            best_val = -200000
+            best_m = ordered[0]
+            for m in ordered:
+                (fr, fc), (tr, tc) = m
+                new_my = (me_set - {(fr, fc)}) | {(tr, tc)}
+                new_opp = opp_set - {(tr, tc)}
+                val = minimax(new_my, new_opp, max_depth - 1, best_val, 200000, False)
+                if val > best_val:
+                    best_val = val
+                    best_m = m
+            best_move_global[0] = best_m
+            if best_val > 90000:
+                break
+        except TimeoutError:
+            break
+    
+    return best_move_global[0]
+</code>

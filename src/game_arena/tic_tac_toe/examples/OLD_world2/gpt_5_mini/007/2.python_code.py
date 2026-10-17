@@ -1,0 +1,135 @@
+
+from typing import List, Tuple, Optional, Dict
+
+# 4x4 Tic Tac Toe policy using minimax with alpha-beta and memoization.
+
+# Precompute winning lines (indices in flattened 16-length board)
+_LINES = [
+    # rows
+    (0, 1, 2, 3),
+    (4, 5, 6, 7),
+    (8, 9, 10, 11),
+    (12, 13, 14, 15),
+    # cols
+    (0, 4, 8, 12),
+    (1, 5, 9, 13),
+    (2, 6, 10, 14),
+    (3, 7, 11, 15),
+    # diagonals
+    (0, 5, 10, 15),
+    (3, 6, 9, 12),
+]
+
+
+def _flatten(board: List[List[int]]) -> Tuple[int, ...]:
+    return tuple(board[r][c] for r in range(4) for c in range(4))
+
+
+def _check_winner(b: Tuple[int, ...]) -> Optional[int]:
+    # Return 1 if we (1) have a 4-in-row, -1 if opponent (-1) does, else None
+    for line in _LINES:
+        s = b[line[0]] + b[line[1]] + b[line[2]] + b[line[3]]
+        if s == 4:
+            return 1
+        if s == -4:
+            return -1
+    return None
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose a move for 4x4 Tic Tac Toe.
+    board: 4x4 list of ints: 0 empty, 1 = us, -1 = opponent
+    Returns (row, col) with 0-based indices.
+    """
+
+    b = _flatten(board)
+
+    # If board already terminal or full, return first empty or (0,0)
+    winner = _check_winner(b)
+    empties = [i for i, v in enumerate(b) if v == 0]
+    if winner is not None or not empties:
+        if empties:
+            idx = empties[0]
+            return (idx // 4, idx % 4)
+        return (0, 0)
+
+    # Quick check: if we have an immediate winning move, take it.
+    for i in empties:
+        lst = list(b)
+        lst[i] = 1
+        if _check_winner(tuple(lst)) == 1:
+            return (i // 4, i % 4)
+
+    # Quick block: if opponent has immediate winning move, block it.
+    for i in empties:
+        lst = list(b)
+        lst[i] = -1
+        if _check_winner(tuple(lst)) == -1:
+            # block by playing here
+            return (i // 4, i % 4)
+
+    # Full minimax search with alpha-beta and memoization
+    from functools import lru_cache
+
+    @lru_cache(maxsize=None)
+    def minimax(state: Tuple[int, ...], player: int, alpha: int, beta: int) -> Tuple[int, Optional[int]]:
+        """
+        Returns (score, move_index)
+        score: 1 = win for us, -1 = loss for us, 0 = draw
+        player: current to move (1 for us, -1 for opponent)
+        """
+        w = _check_winner(state)
+        if w is not None:
+            return (w, None)
+        empties_local = [i for i, v in enumerate(state) if v == 0]
+        if not empties_local:
+            return (0, None)  # draw
+
+        best_move: Optional[int] = None
+
+        if player == 1:
+            # maximizer
+            best_score = -2
+            # move ordering: try center-ish squares first for speed
+            order = sorted(empties_local, key=lambda x: (x not in (5,6,9,10), x))
+            for i in order:
+                lst = list(state)
+                lst[i] = 1
+                score, _ = minimax(tuple(lst), -1, alpha, beta)
+                if score > best_score:
+                    best_score = score
+                    best_move = i
+                alpha = max(alpha, best_score)
+                if alpha >= beta:
+                    break
+                # prune if found winning move
+                if best_score == 1:
+                    break
+            return (best_score, best_move)
+        else:
+            # minimizer (opponent)
+            best_score = 2
+            order = sorted(empties_local, key=lambda x: (x not in (5,6,9,10), x))
+            for i in order:
+                lst = list(state)
+                lst[i] = -1
+                score, _ = minimax(tuple(lst), 1, alpha, beta)
+                if score < best_score:
+                    best_score = score
+                    best_move = i
+                beta = min(beta, best_score)
+                if alpha >= beta:
+                    break
+                if best_score == -1:
+                    break
+            return (best_score, best_move)
+
+    score, move_idx = minimax(b, 1, -2, 2)
+    if move_idx is None:
+        # fallback: choose first empty
+        if empties:
+            idx = empties[0]
+            return (idx // 4, idx % 4)
+        return (0, 0)
+    return (move_idx // 4, move_idx % 4)

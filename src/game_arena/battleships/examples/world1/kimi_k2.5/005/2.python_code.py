@@ -1,0 +1,130 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    rows, cols = 10, 10
+    
+    # Helper to get valid neighbors
+    def neighbors(r, c):
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                yield (nr, nc)
+    
+    # Collect hits and unknowns
+    hits = []
+    unknown = []
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 1:
+                hits.append((r, c))
+            elif board[r][c] == 0:
+                unknown.append((r, c))
+    
+    if not unknown:
+        return (0, 0)  # Should never happen in valid game
+    
+    # Group hits into connected components (4-connected)
+    visited = set()
+    components = []
+    for r, c in hits:
+        if (r, c) not in visited:
+            stack = [(r, c)]
+            comp = []
+            visited.add((r, c))
+            while stack:
+                cr, cc = stack.pop()
+                comp.append((cr, cc))
+                for nr, nc in neighbors(cr, cc):
+                    if (nr, nc) not in visited and board[nr][nc] == 1:
+                        visited.add((nr, nc))
+                        stack.append((nr, nc))
+            components.append(comp)
+    
+    # Hunt mode: find open ends of hit ships
+    targets = []
+    for comp in components:
+        if len(comp) == 1:
+            r, c = comp[0]
+            for nr, nc in neighbors(r, c):
+                if board[nr][nc] == 0:
+                    targets.append((nr, nc))
+        else:
+            # Determine orientation
+            rows_set = {x[0] for x in comp}
+            cols_set = {x[1] for x in comp}
+            
+            if len(rows_set) == 1:  # Horizontal
+                r = rows_set.pop()
+                min_c = min(cols_set)
+                max_c = max(cols_set)
+                if min_c > 0 and board[r][min_c - 1] == 0:
+                    targets.append((r, min_c - 1))
+                if max_c < cols - 1 and board[r][max_c + 1] == 0:
+                    targets.append((r, max_c + 1))
+            elif len(cols_set) == 1:  # Vertical
+                c = cols_set.pop()
+                min_r = min(rows_set)
+                max_r = max(rows_set)
+                if min_r > 0 and board[min_r - 1][c] == 0:
+                    targets.append((min_r - 1, c))
+                if max_r < rows - 1 and board[max_r + 1][c] == 0:
+                    targets.append((max_r + 1, c))
+            else:
+                # Should not happen in valid Battleship (no diagonal touching)
+                for r, c in comp:
+                    for nr, nc in neighbors(r, c):
+                        if board[nr][nc] == 0:
+                            targets.append((nr, nc))
+    
+    if targets:
+        # Return first target (could shuffle for unpredictability, but deterministic is fine)
+        return targets[0]
+    
+    # Search mode: Probability density calculation
+    ship_lengths = [5, 4, 3, 3, 2]
+    prob = [[0 for _ in range(cols)] for _ in range(rows)]
+    
+    for L in ship_lengths:
+        # Horizontal placements
+        for r in range(rows):
+            for c in range(cols - L + 1):
+                valid = True
+                for k in range(L):
+                    if board[r][c + k] != 0:
+                        valid = False
+                        break
+                if valid:
+                    for k in range(L):
+                        prob[r][c + k] += 1
+        # Vertical placements
+        for r in range(rows - L + 1):
+            for c in range(cols):
+                valid = True
+                for k in range(L):
+                    if board[r + k][c] != 0:
+                        valid = False
+                        break
+                if valid:
+                    for k in range(L):
+                        prob[r + k][c] += 1
+    
+    # Find cell with maximum probability
+    max_prob = -1
+    candidates = []
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0:
+                if prob[r][c] > max_prob:
+                    max_prob = prob[r][c]
+                    candidates = [(r, c)]
+                elif prob[r][c] == max_prob:
+                    candidates.append((r, c))
+    
+    if candidates:
+        # Tie-break by distance to center (prefer center)
+        def dist_to_center(rc):
+            return abs(rc[0] - 4.5) + abs(rc[1] - 4.5)
+        candidates.sort(key=dist_to_center)
+        return candidates[0]
+    
+    # Fallback
+    return unknown[0]

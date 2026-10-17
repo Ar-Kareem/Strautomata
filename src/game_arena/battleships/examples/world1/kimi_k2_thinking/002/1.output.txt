@@ -1,0 +1,151 @@
+The strategy is built around a probabilistic view of the opponent’s board.  
+All possible placements of the five ships (lengths 5, 4, 3, 3, 2) are generated once.  
+During each turn we:
+
+1. **Score every unknown cell** by counting how many still‑legal placements cover that cell.  
+   – A placement is legal if it does **not** intersect a known miss (‑1).  
+   – If a placement contains known hits (1) it receives a bonus (`HIT_BONUS`) because a hit makes that placement more likely.
+
+2. **Boost cells that neighbour a hit**. This biases the search toward finishing a ship once it has been touched.
+
+3. **Detect short line segments** of hits (≥ 2 cells in a row). The two possible extensions of such a line receive an extra bonus (`ADJACENT_BONUS*2`) so the AI quickly sinks a ship whose orientation is known.
+
+4. Add a tiny **parity bonus** (`PARITY_BONUS`) to cells with even `(row+col)`. This spreads early shots over the board and helps to locate the smallest ship (length 2) faster.
+
+5. Mask out cells that are already known (hit or miss) and fire at the remaining cell with the highest score. If several cells tie, the first one (deterministic) is chosen.
+
+The whole computation touches only a few thousand placements, well within the 1 s time limit.
+
+```python
+import numpy as np
+from typing import List, Tuple
+
+# ----------------------------------------------------------------------
+# Pre‑compute every possible placement for the five ships on a 10×10 grid.
+# ----------------------------------------------------------------------
+BOARD_SIZE = 10
+
+def generate_placements(length: int) -> List[List[Tuple[int, int]]]:
+    """Return a list of placements (each placement is a list of (r,c) cells)."""
+    placements = []
+    # horizontal
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE - length + 1):
+            placements.append([(r, c + i) for i in range(length)])
+    # vertical
+    for r in range(BOARD_SIZE - length + 1):
+        for c in range(BOARD_SIZE):
+            placements.append([(r + i, c) for i in range(length)])
+    return placements
+
+# Ship lengths present in the game (the two 3‑length ships are listed twice)
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+
+# Flat list that holds *all* placements for each ship (the two 3‑length ships
+# are counted separately, which naturally doubles their influence).
+ALL_PLACEMENTS: List[List[Tuple[int, int]]] = []
+for L in SHIP_LENGTHS:
+    ALL_PLACEMENTS.extend(generate_placements(L))
+
+# ----------------------------------------------------------------------
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """Return the next cell to fire at."""
+    board_arr = np.array(board, dtype=int)
+    rows, cols = board_arr.shape
+
+    # --------------------------------------------------------------
+    # Hyper‑parameters (tuned by brief experimentation)
+    # --------------------------------------------------------------
+    HIT_BONUS       = 2.0   # extra weight per known hit in a placement
+    ADJACENT_BONUS  = 5.0   # extra weight for cells next to a hit
+    PARITY_BONUS    = 0.5   # tiny bias for even (row+col) cells
+
+    # Probability map – the higher the value, the more likely a ship occupies that cell.
+    prob = np.zeros((rows, cols), dtype=float)
+
+    # --------------------------------------------------------------
+    # 1) Score cells by counting legal placements that can cover them.
+    # --------------------------------------------------------------
+    for placement in ALL_PLACEMENTS:
+        # A placement is illegal if it touches a known miss.
+        illegal = False
+        for r, c in placement:
+            if board_arr[r, c] == -1:
+                illegal = True
+                break
+        if illegal:
+            continue
+
+        # Placements that contain known hits are more probable.
+        hits = sum(1 for r, c in placement if board_arr[r, c] == 1)
+        weight = 1.0 + HIT_BONUS * hits
+
+        for r, c in placement:
+            prob[r, c] += weight
+
+    # --------------------------------------------------------------
+    # 2) Boost cells neighbouring any known hit (helps to finish a ship).
+    # --------------------------------------------------------------
+    hit_cells = np.argwhere(board_arr == 1)
+    for r, c in hit_cells:
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols and board_arr[nr, nc] == 0:
+                prob[nr, nc] += ADJACENT_BONUS
+
+    # --------------------------------------------------------------
+    # 3) If we already see a short line of hits, boost its possible extensions.
+    # --------------------------------------------------------------
+    for r, c in hit_cells:
+        # Horizontal line (at least two adjacent hits)
+        if c + 1 < cols and board_arr[r, c + 1] == 1:
+            left = c
+            while left - 1 >= 0 and board_arr[r, left - 1] == 1:
+                left -= 1
+            right = c + 1
+            while right + 1 < cols and board_arr[r, right + 1] == 1:
+                right += 1
+            if left - 1 >= 0 and board_arr[r, left - 1] == 0:
+                prob[r, left - 1] += ADJACENT_BONUS * 2
+            if right + 1 < cols and board_arr[r, right + 1] == 0:
+                prob[r, right + 1] += ADJACENT_BONUS * 2
+
+        # Vertical line (at least two adjacent hits)
+        if r + 1 < rows and board_arr[r + 1, c] == 1:
+            top = r
+            while top - 1 >= 0 and board_arr[top - 1, c] == 1:
+                top -= 1
+            bottom = r + 1
+            while bottom + 1 < rows and board_arr[bottom + 1, c] == 1:
+                bottom += 1
+            if top - 1 >= 0 and board_arr[top - 1, c] == 0:
+                prob[top - 1, c] += ADJACENT_BONUS * 2
+            if bottom + 1 < rows and board_arr[bottom + 1, c] == 0:
+                prob[bottom + 1, c] += ADJACENT_BONUS * 2
+
+    # --------------------------------------------------------------
+    # 4) Small parity bonus – helps to locate the smallest ship early.
+    # --------------------------------------------------------------
+    for r in range(rows):
+        for c in range(cols):
+            if board_arr[r, c] == 0 and (r + c) % 2 == 0:
+                prob[r, c] += PARITY_BONUS
+
+    # --------------------------------------------------------------
+    # 5) Mask out cells that are already known (hit or miss) and pick the best.
+    # --------------------------------------------------------------
+    prob[board_arr != 0] = -np.inf
+
+    best_score = prob.max()
+    # Fallback – should never happen in a real game, but keeps the function safe.
+    if best_score == -np.inf:
+        for r in range(rows):
+            for c in range(cols):
+                if board_arr[r, c] == 0:
+                    return (r, c)
+        return (0, 0)   # board is full – game should already be over
+
+    candidates = np.argwhere(prob == best_score)
+    row, col = candidates[0]          # deterministic – first among ties
+    return (int(row), int(col))
+```

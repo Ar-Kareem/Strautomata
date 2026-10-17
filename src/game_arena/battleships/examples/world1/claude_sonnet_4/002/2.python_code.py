@@ -1,0 +1,175 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def get_neighbors(r, c):
+        """Get valid neighboring coordinates"""
+        neighbors = []
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10:
+                neighbors.append((nr, nc))
+        return neighbors
+    
+    def find_ship_direction(hits):
+        """Determine if hits form a line and return direction"""
+        if len(hits) < 2:
+            return None
+        
+        # Check if all hits are in same row (horizontal ship)
+        rows = set(r for r, c in hits)
+        if len(rows) == 1:
+            return 'horizontal'
+        
+        # Check if all hits are in same column (vertical ship)
+        cols = set(c for r, c in hits)
+        if len(cols) == 1:
+            return 'vertical'
+        
+        return None
+    
+    # Find all hits and group them into connected components (individual ships)
+    hits = []
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 1:
+                hits.append((i, j))
+    
+    # Group connected hits
+    hit_groups = []
+    visited = set()
+    
+    for hit in hits:
+        if hit in visited:
+            continue
+        
+        # BFS to find connected hits
+        group = []
+        queue = [hit]
+        visited.add(hit)
+        
+        while queue:
+            r, c = queue.pop(0)
+            group.append((r, c))
+            
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) not in visited and board[nr][nc] == 1:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        
+        hit_groups.append(group)
+    
+    # Target mode: focus on unresolved ship groups
+    for group in hit_groups:
+        direction = find_ship_direction(group)
+        
+        if direction == 'horizontal':
+            # Ship is horizontal, check ends
+            row = group[0][0]
+            min_col = min(c for r, c in group)
+            max_col = max(c for r, c in group)
+            
+            # Check left end
+            if min_col > 0 and board[row][min_col - 1] == 0:
+                return (row, min_col - 1)
+            # Check right end
+            if max_col < 9 and board[row][max_col + 1] == 0:
+                return (row, max_col + 1)
+                
+        elif direction == 'vertical':
+            # Ship is vertical, check ends
+            col = group[0][1]
+            min_row = min(r for r, c in group)
+            max_row = max(r for r, c in group)
+            
+            # Check top end
+            if min_row > 0 and board[min_row - 1][col] == 0:
+                return (min_row - 1, col)
+            # Check bottom end
+            if max_row < 9 and board[max_row + 1][col] == 0:
+                return (max_row + 1, col)
+        
+        else:
+            # Single hit or unclear direction, check all adjacent cells
+            for r, c in group:
+                for nr, nc in get_neighbors(r, c):
+                    if board[nr][nc] == 0:
+                        return (nr, nc)
+    
+    # Hunt mode: use probability-based targeting
+    ship_lengths = [5, 4, 3, 3, 2]
+    prob = [[0 for _ in range(10)] for _ in range(10)]
+    
+    for ship_len in ship_lengths:
+        # Try horizontal placements
+        for r in range(10):
+            for c in range(10 - ship_len + 1):
+                can_place = True
+                has_hit = False
+                
+                # Check if this position conflicts with known misses or existing hits
+                for k in range(ship_len):
+                    cell_val = board[r][c + k]
+                    if cell_val == -1:  # Miss - can't place ship here
+                        can_place = False
+                        break
+                    elif cell_val == 1:  # Hit - this could be part of an existing ship
+                        has_hit = True
+                
+                # Only consider placements that don't conflict and could represent new ships
+                if can_place and not has_hit:
+                    for k in range(ship_len):
+                        if board[r][c + k] == 0:  # Unknown cell
+                            prob[r][c + k] += 1
+        
+        # Try vertical placements
+        for r in range(10 - ship_len + 1):
+            for c in range(10):
+                can_place = True
+                has_hit = False
+                
+                for k in range(ship_len):
+                    cell_val = board[r + k][c]
+                    if cell_val == -1:  # Miss
+                        can_place = False
+                        break
+                    elif cell_val == 1:  # Hit
+                        has_hit = True
+                
+                if can_place and not has_hit:
+                    for k in range(ship_len):
+                        if board[r + k][c] == 0:  # Unknown cell
+                            prob[r + k][c] += 1
+    
+    # Find the cell with highest probability
+    best_prob = -1
+    best_cells = []
+    
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                if prob[i][j] > best_prob:
+                    best_prob = prob[i][j]
+                    best_cells = [(i, j)]
+                elif prob[i][j] == best_prob and prob[i][j] > 0:
+                    best_cells.append((i, j))
+    
+    if best_cells:
+        # Prefer checkerboard pattern for equal probabilities
+        checkerboard_cells = [(r, c) for r, c in best_cells if (r + c) % 2 == 0]
+        if checkerboard_cells:
+            return checkerboard_cells[0]
+        return best_cells[0]
+    
+    # Fallback: checkerboard pattern on remaining cells
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0 and (i + j) % 2 == 0:
+                return (i, j)
+    
+    # Final fallback: any unknown cell
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                return (i, j)
+    
+    # Should never reach here in a valid game
+    return (0, 0)

@@ -1,0 +1,227 @@
+
+import time
+import random
+
+# ----------------------------------------------------------------------
+# Constants
+# ----------------------------------------------------------------------
+INF = 10 ** 9                     # "infinite" score for a forced win
+ORDER = [3, 2, 4, 1, 5, 0, 6]    # column priority (centre first)
+MAX_DEPTH = 8                     # maximal depth we will try to reach
+TIME_LIMIT = 0.9                   # we must stop before 1 second
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def get_valid_moves(board):
+    """Return a list of columns where the top cell is empty."""
+    return [c for c in range(7) if board[0][c] == 0]
+
+def drop_piece(board, col, player):
+    """Return a new board with `player` placed in the lowest empty row of `col`."""
+    new_board = [row[:] for row in board]
+    for r in range(5, -1, -1):
+        if new_board[r][col] == 0:
+            new_board[r][col] = player
+            break
+    return new_board
+
+def check_win(board, player):
+    """Return True if `player` has four in a row anywhere."""
+    # horizontal
+    for r in range(6):
+        for c in range(4):
+            if all(board[r][c + i] == player for i in range(4)):
+                return True
+    # vertical
+    for c in range(7):
+        for r in range(3):
+            if all(board[r + i][c] == player for i in range(4)):
+                return True
+    # diagonal down‑right
+    for r in range(3):
+        for c in range(4):
+            if all(board[r + i][c + i] == player for i in range(4)):
+                return True
+    # diagonal down‑left
+    for r in range(3):
+        for c in range(3, 7):
+            if all(board[r + i][c - i] == player for i in range(4)):
+                return True
+    return False
+
+def is_winning_move(board, col, player):
+    """Return True if dropping `player` into `col` results in an immediate win."""
+    if board[0][col] != 0:
+        return False
+    new_board = drop_piece(board, col, player)
+    return check_win(new_board, player)
+
+def evaluate_window(window):
+    """
+    Score a 4‑cell window from the perspective of the current player (1).
+    Mixed windows (both players present) are worthless.
+    """
+    score = 0
+    pl = 1
+    op = -1
+    pl_cnt = window.count(pl)
+    op_cnt = window.count(op)
+    empty_cnt = window.count(0)
+
+    if pl_cnt > 0 and op_cnt > 0:
+        return 0
+
+    # player advantage
+    if pl_cnt == 4:
+        score += 1000000
+    elif pl_cnt == 3 and empty_cnt == 1:
+        score += 100
+    elif pl_cnt == 2 and empty_cnt == 2:
+        score += 10
+    elif pl_cnt == 1 and empty_cnt == 3:
+        score += 1
+
+    # opponent advantage (negative)
+    if op_cnt == 4:
+        score -= 1000000
+    elif op_cnt == 3 and empty_cnt == 1:
+        score -= 100
+    elif op_cnt == 2 and empty_cnt == 2:
+        score -= 10
+    elif op_cnt == 1 and empty_cnt == 3:
+        score -= 1
+
+    return score
+
+def evaluate(board):
+    """
+    Heuristic evaluation of `board` from the current player's point of view.
+    The score is built from all possible 4‑cell windows plus a small central‑column bonus.
+    """
+    score = 0
+    # central column bonus
+    centre_col = 3
+    centre_count = sum(1 for r in range(6) if board[r][centre_col] == 1)
+    score += centre_count * 3
+
+    # horizontal windows
+    for r in range(6):
+        row = board[r]
+        for c in range(4):
+            score += evaluate_window(row[c:c + 4])
+
+    # vertical windows
+    for c in range(7):
+        col = [board[r][c] for r in range(6)]
+        for r in range(3):
+            score += evaluate_window(col[r:r + 4])
+
+    # diagonal down‑right windows
+    for r in range(3):
+        for c in range(4):
+            window = [board[r + i][c + i] for i in range(4)]
+            score += evaluate_window(window)
+
+    # diagonal down‑left windows
+    for r in range(3):
+        for c in range(3, 7):
+            window = [board[r + i][c - i] for i in range(4)]
+            score += evaluate_window(window)
+
+    return score
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    """
+    Alpha‑beta minimax.
+    Returns (best_column, best_score) for the current node.
+    """
+    # terminal states
+    if check_win(board, 1):
+        return None, INF
+    if check_win(board, -1):
+        return None, -INF
+
+    valid_moves = get_valid_moves(board)
+    if not valid_moves:                     # draw
+        return None, 0
+    if depth == 0:
+        return None, evaluate(board)
+
+    if maximizing_player:
+        best_score = -INF
+        best_col = None
+        for col in ORDER:
+            if col not in valid_moves:
+                continue
+            child = drop_piece(board, col, 1)
+            _, score = minimax(child, depth - 1, alpha, beta, False)
+            if score > best_score:
+                best_score = score
+                best_col = col
+            alpha = max(alpha, best_score)
+            if alpha >= beta:
+                break
+        return best_col, best_score
+    else:
+        best_score = INF
+        best_col = None
+        for col in ORDER:
+            if col not in valid_moves:
+                continue
+            child = drop_piece(board, col, -1)
+            _, score = minimax(child, depth - 1, alpha, beta, True)
+            if score < best_score:
+                best_score = score
+                best_col = col
+            beta = min(beta, best_score)
+            if alpha >= beta:
+                break
+        return best_col, best_score
+
+def policy(board):
+    """
+    Return a legal column (0‑6) for the current player.
+    """
+    # quick win / block
+    valid_moves = get_valid_moves(board)
+    valid_set = set(valid_moves)
+    if not valid_moves:            # should never happen, but keep safe
+        return 0
+
+    # 1. win immediately if possible (prefer central columns)
+    for col in ORDER:
+        if col in valid_set and is_winning_move(board, col, 1):
+            return col
+    # 2. block opponent's immediate win
+    for col in ORDER:
+        if col in valid_set and is_winning_move(board, col, -1):
+            return col
+
+    # 3. iterative deepening minimax
+    best_move = None
+    depth = 1
+    start = time.time()
+
+    while depth <= MAX_DEPTH:
+        move, score = minimax(board, depth, -INF, INF, True)
+        if move is not None:
+            best_move = move
+        # if we already see a forced win, no need to go deeper
+        if score >= INF // 2:
+            break
+        # respect the global time limit
+        if time.time() - start > TIME_LIMIT:
+            break
+        depth += 1
+
+    # final fallback: choose the highest‑priority legal column
+    if best_move is None:
+        for col in ORDER:
+            if col in valid_set:
+                best_move = col
+                break
+    if best_move is None:
+        best_move = valid_moves[0]
+
+    return best_move

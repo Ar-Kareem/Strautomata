@@ -1,0 +1,122 @@
+<thinking>
+Let me think through this step by step.
+
+First, I need to understand the game mechanics:
+1. I have a deck with cards A,2,3,4,5,6,7,8,9,10,J,Q,K
+2. Each card has a value: 2-10 are face value, J,Q,K are 10, A is 11 (if hand <= target) or 1 (if hand > target)
+3. Target T is between 10 and 30
+4. I need to decide whether to HIT or STAY based on my current hand
+
+Key insights for policy:
+- If I'm already over the target, I must STAY (even though it's likely to bust)
+- If I have a strong hand close to target, I should consider STAY
+- If I have a weak hand, I should likely HIT
+- The decision may also depend on how close I am to the target
+
+Let me think of a good policy:
+1. If hand sum > target, I must STAY (or bust immediately) - this actually isn't right. I can't hit if I've already busted. The game should terminate if I bust. But if I have a hand that's already worse than target, should I hit? That might be suboptimal.
+
+Actually, let me re-read... "If at any point the sum of your card values is greater than target, you bust and immediately lose." - This means if I hit and exceed the target, I lose immediately.
+
+So the policy should be:
+1. First, calculate current hand value correctly (accounting for A as 1 or 11)
+2. If it's already over target, there's nothing to do but STAY or the game is already lost (but in that case, I shouldn't get to call this function)
+3. If hand value >= target: STAY (I've reached or exceeded target)
+4. If hand value is significantly below target: HIT (try to get closer)
+5. If hand value is between ~target-5 and target: make a more nuanced decision based on risk/reward
+
+I should think about probabilities. If I'm far from target, I want to try getting closer. But if I'm near, I don't want to risk busting.
+
+Let me look for a good heuristic:
+- If hand value >= target: STAY
+- If hand value is quite low (e.g. < target-10): HIT
+- If hand value is between target-10 and target: evaluate the risk
+
+More sophisticated: maybe calculate expected value of hitting vs staying.
+But for a simple but effective policy, I could use:
+1. If hand sum >= target: STAY
+2. If hand sum < target - 10: HIT
+3. Otherwise (target-10 to target-1): STAY with higher probability, HIT with lower probability
+
+Actually, let me think of a cleaner approach:
+- If current sum >= target: STAY (don't risk busting)
+- If sum < target and it's not too close to target: HIT (try to get closer)
+- If sum is reasonably close to target, assess the risk of busting
+
+A reasonable strategy:
+- If sum > target - 5: STAY (we have a good chance of winning)
+- Otherwise: HIT (we're far from target)
+
+But even better:
+- If hand sum >= target: STAY (already achieved or exceeded)
+- If hand sum < target - 10: HIT (safe to hit)
+- Otherwise: Consider the risk
+
+Let me make a decision tree or simple threshold rule:
+- hand_sum >= target: STAY 
+- hand_sum <= target - 15: HIT (safe)
+- Otherwise (middle range): I should probably HIT since we're still behind
+
+Actually this should be simpler:
+If the hand value is >= target, STAY.
+If the hand value is < target - 10, HIT.
+Otherwise, consider the risk of busting.
+
+For a simple approach:
+- If hand sum >= target: STAY
+- If hand sum <= target - 10: HIT
+- If hand sum > target - 10 and hand sum < target: evaluate risk
+
+A quick simple rule: 
+- If hand sum is within 5 of target, STAY
+- Otherwise, HIT
+
+Wait, let's not overthink - I'm trying to build a strategy to get close to target without going over. 
+
+Let me use:
+1. Calculate current hand value properly with A as 1 or 11
+2. If hand value >= target: STAY
+3. If hand value is significantly below target or we're close to target and not too risky, HIT
+</thinking>
+<code>
+def policy(hand: list[str], target: int) -> str:
+    # Calculate the current value of the hand
+    def calculate_hand_value(hand):
+        value = 0
+        aces = 0
+        for card in hand:
+            if card in ["J", "Q", "K"]:
+                value += 10
+            elif card == "A":
+                aces += 1
+                value += 11  # Initially count A as 11
+            else:
+                value += int(card)
+        
+        # Adjust for aces if we're over the limit
+        while value > target and aces > 0:
+            value -= 10  # Convert an ace from 11 to 1
+            aces -= 1
+            
+        return value
+    
+    current_value = calculate_hand_value(hand)
+    
+    # If we have already busted or reached/exceeded target, stay
+    if current_value >= target:
+        return "STAY"
+    
+    # If we're far from target, we want to draw more cards
+    if current_value <= target - 10:
+        return "HIT"
+    
+    # If we're reasonably close to target, be more cautious
+    # In this case, staying might be better as we risk busting
+    if current_value >= target - 5:
+        return "STAY"
+    
+    # Otherwise (target-10 to target-5 range), take the risk of hitting
+    # This heuristic aims to get near target while avoiding busting
+    # But still have a reasonable chance of winning
+    return "HIT"
+</code>

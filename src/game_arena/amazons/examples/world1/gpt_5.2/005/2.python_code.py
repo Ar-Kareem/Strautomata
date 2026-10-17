@@ -1,0 +1,343 @@
+
+import time
+from collections import deque
+from functools import lru_cache
+import numpy as np
+
+# 6x6 Amazons policy with selective alpha-beta search
+
+DIRS_8 = (
+    (-1, 0), (1, 0), (0, -1), (0, 1),
+    (-1, -1), (-1, 1), (1, -1), (1, 1),
+)
+
+N = 6
+WIN_SCORE = 100000
+
+# Time budget (seconds). Keep margin for arena overhead.
+TIME_BUDGET = 0.95
+
+
+def in_bounds(r, c):
+    return 0 <= r < N and 0 <= c < N
+
+
+def ray_dests(board, r, c):
+    """All empty squares reachable from (r,c) with queen-like movement."""
+    res = []
+    for dr, dc in DIRS_8:
+        rr, cc = r + dr, c + dc
+        while in_bounds(rr, cc) and board[rr, cc] == 0:
+            res.append((rr, cc))
+            rr += dr
+            cc += dc
+    return res
+
+
+def ray_len(board, r, c):
+    """Count of empty squares reachable from (r,c) with queen-like movement."""
+    cnt = 0
+    for dr, dc in DIRS_8:
+        rr, cc = r + dr, c + dc
+        while in_bounds(rr, cc) and board[rr, cc] == 0:
+            cnt += 1
+            rr += dr
+            cc += dc
+    return cnt
+
+
+def apply_move(board, move, player):
+    """Return new board after move (fr,fc,tr,tc,ar,ac)."""
+    fr, fc, tr, tc, ar, ac = move
+    b = board.copy()
+    b[fr, fc] = 0
+    b[tr, tc] = player
+    b[ar, ac] = -1
+    return b
+
+
+def board_key(board):
+    # dtype may vary; tobytes is fine for caching in-process
+    return board.tobytes()
+
+
+@lru_cache(maxsize=200000)
+def _step_mobility_cached(bkey, player):
+    board = np.frombuffer(bkey, dtype=np.int64).reshape((N, N))
+    # Note: board reconstructed as int64; values preserved.
+    # Find all amazons:
+    pos = np.argwhere(board == player)
+    total = 0
+    for r, c in pos:
+        total += ray_len(board, int(r), int(c))
+    return total
+
+
+def step_mobility(board, player):
+    # Ensure stable dtype for cache key reconstruction.
+    b64 = board.astype(np.int64, copy=False)
+    return _step_mobility_cached(board_key(b64), player)
+
+
+def queen_bfs_dist(board, starts):
+    """
+    Compute minimal number of queen moves from any start position to each square.
+    Starts can be occupied (amazons). Movement cannot pass through any non-empty square.
+    Distances returned for all squares; unreachable => 999.
+    """
+    dist = np.full((N, N), 999, dtype=np.int16)
+    q = deque()
+
+    # Sources: set to 0, enqueue
+    for (sr, sc) in starts:
+        if dist[sr, sc] > 0:
+            dist[sr, sc] = 0
+            q.append((sr, sc))
+
+    # BFS in graph where edges are queen-moves landing on empty squares
+    # We allow expanding from any node (including occupied sources), but only traverse through empty squares.
+    while q:
+        r, c = q.popleft()
+        dnext = dist[r, c] + 1
+        for dr, dc in DIRS_8:
+            rr, cc = r + dr, c + dc
+            while in_bounds(rr, cc):
+                if board[rr, cc] != 0:
+                    break
+                if dist[rr, cc] > dnext:
+                    dist[rr, cc] = dnext
+                    q.append((rr, cc))
+                rr += dr
+                cc += dc
+
+    return dist
+
+
+@lru_cache(maxsize=20000)
+def _territory_cached(bkey, me, opp):
+    board = np.frombuffer(bkey, dtype=np.int64).reshape((N, N))
+
+    my_starts = [tuple(map(int, rc)) for rc in np.argwhere(board == me)]
+    opp_starts = [tuple(map(int, rc)) for rc in np.argwhere(board == opp)]
+
+    if not my_starts:
+        return -9999
+    if not opp_starts:
+        return 9999
+
+    dme = queen_bfs_dist(board, my_starts)
+    dop = queen_bfs_dist(board, opp_starts)
+
+    score = 0
+    empties = np.argwhere(board == 0)
+    for r, c in empties:
+        r = int(r); c = int(c)
+        a = int(dme[r, c])
+        b = int(dop[r, c])
+        if a == 999 and b == 999:
+            continue
+        if b == 999 and a != 999:
+            score += 1
+        elif a == 999 and b != 999:
+            score -= 1
+        else:
+            if a < b:
+                score += 1
+            elif a > b:
+                score -= 1
+    return score
+
+
+def territory_score(board, me, opp):
+    b64 = board.astype(np.int64, copy=False)
+    return _territory_cached(board_key(b64), int(me), int(opp))
+
+
+def evaluate(board, me, opp):
+    mm = step_mobility(board, me)
+    om = step_mobility(board, opp)
+
+    # Terminal-ish (no moves): if opponent can't move, it's winning; if we can't, losing
+    # Note: in search, no-move is handled before leaf usually, but keep here for safety.
+    if om == 0 and mm > 0:
+        return WIN_SCORE
+    if mm == 0:
+        return -WIN_SCORE
+
+    terr = territory_score(board, me, opp)
+
+    # Weighted heuristic:
+    # - mobility difference is crucial
+    # - territory estimates longer-term space advantage
+    return 3.0 * (mm - om) + 2.0 * terr
+
+
+def arrow_potential(board_after_amazon_move, ar):
+    # board_after_amazon_move has arrow square empty (candidate), estimate "blocking value"
+    return ray_len(board_after_amazon_move, ar[0], ar[1])
+
+
+def generate_moves(board, player, arrow_limit=10):
+    """
+    Generate legal moves (fr,fc,tr,tc,ar,ac).
+    Selective: for each (from->to), only keep up to arrow_limit arrows by arrow potential.
+    """
+    amazons = np.argwhere(board == player)
+    for fr, fc in amazons:
+        fr = int(fr); fc = int(fc)
+        dests = ray_dests(board, fr, fc)
+        for tr, tc in dests:
+            tr = int(tr); tc = int(tc)
+            # Apply amazon move (without arrow yet)
+            tmp = board.copy()
+            tmp[fr, fc] = 0
+            tmp[tr, tc] = player
+
+            arrows = ray_dests(tmp, tr, tc)
+            if not arrows:
+                continue
+
+            if arrow_limit is not None and len(arrows) > arrow_limit:
+                # Keep top arrows by how "central"/impactful they are
+                scored = []
+                for ar in arrows:
+                    scored.append((arrow_potential(tmp, ar), ar))
+                scored.sort(reverse=True, key=lambda x: x[0])
+                arrows = [ar for _, ar in scored[:arrow_limit]]
+
+            for ar, ac in arrows:
+                ar = int(ar); ac = int(ac)
+                yield (fr, fc, tr, tc, ar, ac)
+
+
+def quick_move_order_score(board, move, me, opp):
+    """
+    Fast-ish ordering score: after the full move, prefer higher mobility diff.
+    Also prefer moves that place the moved amazon closer to center a bit.
+    """
+    fr, fc, tr, tc, ar, ac = move
+    b2 = apply_move(board, move, me)
+    mm = step_mobility(b2, me)
+    om = step_mobility(b2, opp)
+    center = (N - 1) / 2.0
+    center_bonus = -((tr - center) ** 2 + (tc - center) ** 2)  # less negative is better
+    return (mm - om) + 0.05 * center_bonus
+
+
+def _limits_for_depth(depth):
+    # Controls branching in search nodes
+    if depth >= 3:
+        return 14, 8   # max_moves, arrow_limit
+    if depth == 2:
+        return 22, 10
+    return 48, 12
+
+
+class _Timeout(Exception):
+    pass
+
+
+def negamax(board, depth, alpha, beta, me, opp, start_t):
+    if time.time() - start_t > TIME_BUDGET:
+        raise _Timeout()
+
+    mm = step_mobility(board, me)
+    if mm == 0:
+        # Current player cannot move -> losing
+        return -WIN_SCORE + (3 - depth)
+
+    if depth == 0:
+        return evaluate(board, me, opp)
+
+    max_moves, arrow_limit = _limits_for_depth(depth)
+    moves = list(generate_moves(board, me, arrow_limit=arrow_limit))
+    if not moves:
+        return -WIN_SCORE + (3 - depth)
+
+    # Order moves
+    moves.sort(key=lambda mv: quick_move_order_score(board, mv, me, opp), reverse=True)
+    if len(moves) > max_moves:
+        moves = moves[:max_moves]
+
+    best = -1e18
+    for mv in moves:
+        b2 = apply_move(board, mv, me)
+        val = -negamax(b2, depth - 1, -beta, -alpha, opp, me, start_t)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+        if time.time() - start_t > TIME_BUDGET:
+            raise _Timeout()
+    return best
+
+
+def move_to_str(move):
+    fr, fc, tr, tc, ar, ac = move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+
+def policy(board) -> str:
+    """
+    Required API. board is a 6x6 numpy array with:
+      0 empty, 1 us, 2 opponent, -1 arrow.
+    Returns: "from_row,from_col:to_row,to_col:arrow_row,arrow_col"
+    """
+    # Ensure numpy array
+    if not isinstance(board, np.ndarray):
+        board = np.array(board, dtype=int)
+    else:
+        # Keep as int for safety
+        board = board.astype(int, copy=False)
+
+    me, opp = 1, 2
+    start_t = time.time()
+
+    # Generate at least one legal move (robustness requirement)
+    root_moves = list(generate_moves(board, me, arrow_limit=14))
+    if not root_moves:
+        # Environment says this shouldn't happen; return a placeholder string.
+        # (Will be illegal if truly no moves, but avoids crash.)
+        return "0,0:0,0:0,0"
+
+    # Initial best: best-ordered by quick score
+    root_moves.sort(key=lambda mv: quick_move_order_score(board, mv, me, opp), reverse=True)
+    best_move = root_moves[0]
+    best_val = -1e18
+
+    # Iterative deepening
+    for depth in (1, 2, 3):
+        if time.time() - start_t > TIME_BUDGET:
+            break
+        try:
+            # Root: try a limited set depending on depth
+            max_moves, arrow_limit = _limits_for_depth(depth)
+            moves = list(generate_moves(board, me, arrow_limit=arrow_limit))
+            moves.sort(key=lambda mv: quick_move_order_score(board, mv, me, opp), reverse=True)
+            if len(moves) > max_moves:
+                moves = moves[:max_moves]
+
+            alpha, beta = -1e18, 1e18
+            local_best_move = moves[0]
+            local_best_val = -1e18
+
+            for mv in moves:
+                if time.time() - start_t > TIME_BUDGET:
+                    raise _Timeout()
+                b2 = apply_move(board, mv, me)
+                val = -negamax(b2, depth - 1, -beta, -alpha, opp, me, start_t)
+                if val > local_best_val:
+                    local_best_val = val
+                    local_best_move = mv
+                if val > alpha:
+                    alpha = val
+
+            # Accept deeper result
+            best_move, best_val = local_best_move, local_best_val
+
+        except _Timeout:
+            break
+
+    return move_to_str(best_move)

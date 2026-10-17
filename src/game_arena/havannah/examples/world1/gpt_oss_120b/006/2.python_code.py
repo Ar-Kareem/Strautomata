@@ -1,0 +1,233 @@
+
+import numpy as np
+from collections import deque, defaultdict
+from typing import List, Tuple
+
+# Hexagonal neighbour offsets (row, col)
+NEIGH = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)]
+
+def _in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < 15 and 0 <= c < 15
+
+def _valid_neighbours(r: int, c: int, valid_mask: np.ndarray) -> List[Tuple[int, int]]:
+    """Return list of neighbour coordinates that are inside the board and playable."""
+    lst = []
+    for dr, dc in NEIGH:
+        nr, nc = r + dr, c + dc
+        if _in_bounds(nr, nc) and valid_mask[nr, nc]:
+            lst.append((nr, nc))
+    return lst
+
+def _build_components(stones: List[Tuple[int, int]],
+                      valid_mask: np.ndarray) -> Tuple[dict, dict]:
+    """
+    Returns (comp_id_of_cell, info_of_comp)
+    comp_id_of_cell maps (r,c) -> component number
+    info_of_comp maps component number -> {'stones': set(...), 'edges': int, 'corners': int}
+    """
+    board = np.full((15, 15), -1, dtype=int)  # -1 = empty / not player's stone
+    for idx, (r, c) in enumerate(stones):
+        board[r, c] = idx  # temporary unique marker
+
+    comp_of_cell = {}
+    comp_info = {}
+    visited = set()
+    comp_counter = 0
+
+    for (r, c) in stones:
+        if (r, c) in visited:
+            continue
+        # BFS to collect component
+        q = deque()
+        q.append((r, c))
+        visited.add((r, c))
+        comp_cells = set()
+        edge_set = set()
+        corner_set = set()
+
+        while q:
+            cr, cc = q.popleft()
+            comp_cells.add((cr, cc))
+
+            # edge detection: if any neighbour is outside valid_mask
+            for dr, dc in NEIGH:
+                nr, nc = cr + dr, cc + dc
+                if not _in_bounds(nr, nc) or not valid_mask[nr, nc]:
+                    edge_set.add((cr, cc))
+                elif (nr, nc) not in visited and board[nr, nc] != -1:
+                    visited.add((nr, nc))
+                    q.append((nr, nc))
+
+            # corner detection: degree <= 2
+            nb = _valid_neighbours(cr, cc, valid_mask)
+            if len(nb) <= 2:
+                corner_set.add((cr, cc))
+
+        # store component info
+        comp_id = comp_counter
+        comp_counter += 1
+        for cell in comp_cells:
+            comp_of_cell[cell] = comp_id
+        comp_info[comp_id] = {
+            'stones': comp_cells,
+            'edges': len(edge_set),
+            'corners': len(corner_set)
+        }
+
+    return comp_of_cell, comp_info
+
+def _cell_edge_corner(r: int, c: int, valid_mask: np.ndarray) -> Tuple[int, int]:
+    """Return (is_edge, is_corner) for a single cell."""
+    # edge if any neighbour is outside playable area
+    is_edge = 0
+    for dr, dc in NEIGH:
+        nr, nc = r + dr, c + dc
+        if not _in_bounds(nr, nc) or not valid_mask[nr, nc]:
+            is_edge = 1
+            break
+    # corner if degree <= 2
+    nb = _valid_neighbours(r, c, valid_mask)
+    is_corner = 1 if len(nb) <= 2 else 0
+    return is_edge, is_corner
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           valid_mask) -> Tuple[int, int]:
+    """
+    Choose the next move for Havannah.
+
+    Parameters
+    ----------
+    me : list of (row, col) for our stones (player‑0)
+    opp : list of (row, col) for opponent stones (player‑1)
+    valid_mask : 2‑D bool array (15×15) with True on playable cells
+
+    Returns
+    -------
+    (row, col) : a legal empty cell
+    """
+
+    # Convert mask to numpy array for fast indexing
+    valid = np.array(valid_mask, dtype=bool)
+
+    # Build component information for both players
+    my_comp_of, my_comp_info = _build_components(me, valid)
+    opp_comp_of, opp_comp_info = _build_components(opp, valid)
+
+    # Set of occupied cells for quick lookup
+    occupied = set(me) | set(opp)
+
+    best_my_score = -1
+    best_my_move = None
+
+    best_opp_score = -1
+    best_opp_move = None
+
+    # Constants for scoring
+    EDGE_W = 10
+    CORNER_W = 5
+    LOOP_BONUS = 5
+
+    # Iterate over every empty, playable cell
+    for r in range(15):
+        for c in range(15):
+            if not valid[r, c] or (r, c) in occupied:
+                continue
+
+            # --------------------  OUR perspective  --------------------
+            # Find neighbouring our components
+            neigh_my = []
+            neigh_ids = set()
+            for nr, nc in _valid_neighbours(r, c, valid):
+                if (nr, nc) in my_comp_of:
+                    cid = my_comp_of[(nr, nc)]
+                    neigh_ids.add(cid)
+                    neigh_my.append(cid)
+
+            # Merge edge / corner counts of those components
+            merged_edges = 0
+            merged_corners = 0
+            seen = set()
+            for cid in neigh_ids:
+                info = my_comp_info[cid]
+                merged_edges += info['edges']
+                merged_corners += info['corners']
+                seen.add(cid)
+
+            # If we connect multiple distinct components, edges/corners should not be double‑counted.
+            # The simple sum works because components are disjoint.
+
+            # Add possible edge/corner contribution of the new stone itself
+            is_edge, is_corner = _cell_edge_corner(r, c, valid)
+            merged_edges += is_edge
+            merged_corners += is_corner
+
+            # Loop detection: does the cell touch at least two stones of the same component?
+            loop_bonus = 0
+            comp_touch_counts = defaultdict(int)
+            for nr, nc in _valid_neighbours(r, c, valid):
+                if (nr, nc) in my_comp_of:
+                    comp_touch_counts[my_comp_of[(nr, nc)]] += 1
+            if any(cnt >= 2 for cnt in comp_touch_counts.values()):
+                loop_bonus = LOOP_BONUS
+
+            my_score = EDGE_W * merged_edges + CORNER_W * merged_corners + loop_bonus
+
+            if my_score > best_my_score:
+                best_my_score = my_score
+                best_my_move = (r, c)
+
+            # --------------------  OPPONENT perspective  --------------------
+            # Symmetric calculation for opponent
+            neigh_opp = []
+            opp_ids = set()
+            for nr, nc in _valid_neighbours(r, c, valid):
+                if (nr, nc) in opp_comp_of:
+                    cid = opp_comp_of[(nr, nc)]
+                    opp_ids.add(cid)
+                    neigh_opp.append(cid)
+
+            merged_edges_o = 0
+            merged_corners_o = 0
+            for cid in opp_ids:
+                info = opp_comp_info[cid]
+                merged_edges_o += info['edges']
+                merged_corners_o += info['corners']
+
+            is_edge_o, is_corner_o = _cell_edge_corner(r, c, valid)
+            merged_edges_o += is_edge_o
+            merged_corners_o += is_corner_o
+
+            # Loop bonus for opponent (doesn't matter much, but kept symmetric)
+            loop_bonus_o = 0
+            opp_comp_touch_counts = defaultdict(int)
+            for nr, nc in _valid_neighbours(r, c, valid):
+                if (nr, nc) in opp_comp_of:
+                    opp_comp_touch_counts[opp_comp_of[(nr, nc)]] += 1
+            if any(cnt >= 2 for cnt in opp_comp_touch_counts.values()):
+                loop_bonus_o = LOOP_BONUS
+
+            opp_score = EDGE_W * merged_edges_o + CORNER_W * merged_corners_o + loop_bonus_o
+
+            if opp_score > best_opp_score:
+                best_opp_score = opp_score
+                best_opp_move = (r, c)
+
+    # If opponent threatens a very good move (e.g., would close a bridge/fork),
+    # block it. Simple heuristic: block when opponent's score exceeds our best
+    # by a margin.
+    if best_opp_score > best_my_score + 5 and best_opp_move is not None:
+        return best_opp_move
+
+    # Otherwise play our best move
+    if best_my_move is not None:
+        return best_my_move
+
+    # Fallback – pick the first available cell (should never happen)
+    for r in range(15):
+        for c in range(15):
+            if valid[r, c] and (r, c) not in occupied:
+                return (r, c)
+
+    # No move possible – raise error (should not occur in a normal game)
+    raise RuntimeError("No legal moves available")

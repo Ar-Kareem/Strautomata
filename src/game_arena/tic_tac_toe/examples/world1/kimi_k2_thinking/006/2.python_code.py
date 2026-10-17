@@ -1,0 +1,99 @@
+
+def policy(board):
+    """
+    Return the optimal move for the given board state using minimax with alpha-beta pruning.
+    
+    Args:
+        board: A 3x3 list of lists, where 0=empty, 1=our move, -1=opponent's move
+    
+    Returns:
+        A tuple (row, col) representing the move
+    """
+    best_score = -float('inf')
+    best_move = None
+    
+    # Check all possible moves
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                # Try this move
+                board[r][c] = 1
+                score = minimax(board, 0, False, -float('inf'), float('inf'))
+                board[r][c] = 0
+                
+                # Update best move
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+                    
+                    # Early exit for winning move
+                    if best_score == 10:
+                        return best_move
+    
+    return best_move
+
+def minimax(board, depth, is_maximizing, alpha, beta):
+    """
+    Minimax algorithm with alpha-beta pruning.
+    Maximizing player is us (1), minimizing player is opponent (-1).
+    """
+    result = check_winner(board)
+    if result == 1:
+        return 10 - depth
+    elif result == -1:
+        return depth - 10
+    elif result == 0:
+        return 0
+    
+    if is_maximizing:
+        best_score = -float('inf')
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == 0:
+                    board[r][c] = 1
+                    score = minimax(board, depth + 1, False, alpha, beta)
+                    board[r][c] = 0
+                    best_score = max(best_score, score)
+                    alpha = max(alpha, best_score)
+                    if beta <= alpha:
+                        return best_score
+        return best_score
+    else:
+        best_score = float('inf')
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == 0:
+                    board[r][c] = -1
+                    score = minimax(board, depth + 1, True, alpha, beta)
+                    board[r][c] = 0
+                    best_score = min(best_score, score)
+                    beta = min(beta, best_score)
+                    if beta <= alpha:
+                        return best_score
+        return best_score
+
+def check_winner(board):
+    """
+    Check if the game has ended.
+    Returns: 1 (we win), -1 (opponent wins), 0 (draw), or None (game not over)
+    """
+    # Check rows and columns
+    for i in range(3):
+        if board[i][0] == board[i][1] == board[i][2] != 0:
+            return board[i][0]
+        if board[0][i] == board[1][i] == board[2][i] != 0:
+            return board[0][i]
+    
+    # Check diagonals
+    if board[0][0] == board[1][1] == board[2][2] != 0:
+        return board[0][0]
+    if board[0][2] == board[1][1] == board[2][0] != 0:
+        return board[0][2]
+    
+    # Check for empty cells (game not over)
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                return None
+    
+    return 0  # Draw

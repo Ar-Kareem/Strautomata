@@ -1,0 +1,328 @@
+
+from __future__ import annotations
+
+from typing import List, Tuple, Set
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Move:
+    me_set = set(me)
+    opp_set = set(opp)
+
+    moves = generate_moves(me_set, opp_set, color)
+    if not moves:
+        # Should not normally happen in Breakthrough, but return something safe-looking if ever reached.
+        # We still try to avoid crashing.
+        if me:
+            p = me[0]
+            d = 1 if color == 'w' else -1
+            return (p, (max(0, min(7, p[0] + d)), p[1]))
+        return ((0, 0), (0, 0))
+
+    # Immediate win if available
+    goal_row = 7 if color == 'w' else 0
+    for mv in moves:
+        if mv[1][0] == goal_row:
+            return mv
+
+    # Search depth: usually 3 plies, 4 in small positions
+    total_pieces = len(me_set) + len(opp_set)
+    depth = 4 if total_pieces <= 10 else 3
+
+    ordered = order_moves(moves, me_set, opp_set, color)
+
+    best_move = ordered[0]
+    best_val = -10**18
+    alpha = -10**18
+    beta = 10**18
+
+    for mv in ordered:
+        nme, nopp = apply_move(me_set, opp_set, mv)
+        val = -alphabeta(nopp, nme, opponent(color), depth - 1, -beta, -alpha)
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if val > alpha:
+            alpha = val
+
+    return best_move
+
+
+def opponent(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def generate_moves(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str) -> List[Move]:
+    d = 1 if color == 'w' else -1
+    moves: List[Move] = []
+    occupied = me | opp
+
+    # Deterministic order helps reproducibility
+    pieces = sorted(me)
+    for r, c in pieces:
+        nr = r + d
+        if not (0 <= nr < 8):
+            continue
+
+        # Forward move
+        if (nr, c) not in occupied:
+            moves.append(((r, c), (nr, c)))
+
+        # Diagonal moves: legal if empty or occupied by opponent
+        nc = c - 1
+        if nc >= 0:
+            if (nr, nc) not in me:
+                moves.append(((r, c), (nr, nc)))
+
+        nc = c + 1
+        if nc < 8:
+            if (nr, nc) not in me:
+                moves.append(((r, c), (nr, nc)))
+
+    return moves
+
+
+def apply_move(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], mv: Move) -> Tuple[Set[Tuple[int, int]], Set[Tuple[int, int]]]:
+    (fr, fc), (tr, tc) = mv
+    nme = set(me)
+    nopp = set(opp)
+    nme.remove((fr, fc))
+    nme.add((tr, tc))
+    if (tr, tc) in nopp:
+        nopp.remove((tr, tc))
+    return nme, nopp
+
+
+def is_terminal(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str) -> int | None:
+    # Returns large score from side-to-move perspective if terminal, else None.
+    if not opp:
+        return 10**9
+    if not me:
+        return -10**9
+
+    my_goal = 7 if color == 'w' else 0
+    opp_goal = 0 if color == 'w' else 7
+
+    for r, _ in me:
+        if r == my_goal:
+            return 10**9
+    for r, _ in opp:
+        if r == opp_goal:
+            return -10**9
+
+    # No legal moves is effectively losing in practical arena handling
+    if not generate_moves(me, opp, color):
+        return -10**9
+
+    return None
+
+
+def alphabeta(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str, depth: int, alpha: int, beta: int) -> int:
+    term = is_terminal(me, opp, color)
+    if term is not None:
+        return term
+    if depth == 0:
+        return evaluate(me, opp, color)
+
+    moves = generate_moves(me, opp, color)
+    moves = order_moves(moves, me, opp, color)
+
+    best = -10**18
+    for mv in moves:
+        nme, nopp = apply_move(me, opp, mv)
+        val = -alphabeta(nopp, nme, opponent(color), depth - 1, -beta, -alpha)
+        if val > best:
+            best = val
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+    return best
+
+
+def order_moves(moves: List[Move], me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str) -> List[Move]:
+    goal_row = 7 if color == 'w' else 0
+    d = 1 if color == 'w' else -1
+
+    def key(mv: Move):
+        (fr, fc), (tr, tc) = mv
+        score = 0
+
+        # Winning move first
+        if tr == goal_row:
+            score += 1_000_000
+
+        # Capture priority
+        if (tr, tc) in opp:
+            score += 50_000
+            score += advancement_value((tr, tc), opponent(color)) * 30
+
+        # Threaten promotion
+        if tr + d == goal_row:
+            score += 20_000
+
+        # Centrality
+        score += (3 - abs(3.5 - tc)) * 100
+
+        # Advancement
+        score += advancement_value((tr, tc), color) * 200
+
+        # Prefer protected destinations
+        if is_protected((tr, tc), me, color, ignore_from=(fr, fc)):
+            score += 3_000
+
+        # Avoid immediate capture
+        if is_square_attackable_by_opp_after_move(me, opp, color, mv):
+            score -= 4_000
+
+        # Slight preference for straight moves when safe
+        if tc == fc:
+            score += 100
+
+        return -score
+
+    return sorted(moves, key=key)
+
+
+def advancement_value(piece: Tuple[int, int], color: str) -> int:
+    r, _ = piece
+    return r if color == 'w' else (7 - r)
+
+
+def evaluate(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str) -> int:
+    term = is_terminal(me, opp, color)
+    if term is not None:
+        return term
+
+    score = 0
+    ocolor = opponent(color)
+    my_goal = 7 if color == 'w' else 0
+    opp_goal = 0 if color == 'w' else 7
+    d = 1 if color == 'w' else -1
+    od = -d
+
+    # Material
+    score += 1200 * (len(me) - len(opp))
+
+    # Advancement and structure
+    for p in me:
+        r, c = p
+        adv = advancement_value(p, color)
+        score += adv * 140
+
+        # Central files
+        score += int((3.5 - abs(c - 3.5)) * 20)
+
+        # Protected pieces
+        if is_protected(p, me, color):
+            score += 90
+
+        # Passed / clear lane bonus
+        if is_passed(p, opp, color):
+            score += 220 + adv * 40
+
+        # Near-promotion threats
+        if r + d == my_goal:
+            score += 500
+            if not is_square_controlled_by(opp, (my_goal, c), ocolor):
+                score += 250
+            for dc in (-1, 1):
+                nc = c + dc
+                if 0 <= nc < 8 and not is_square_controlled_by(opp, (my_goal, nc), ocolor):
+                    score += 180
+
+    for p in opp:
+        r, c = p
+        adv = advancement_value(p, ocolor)
+        score -= adv * 145
+        score -= int((3.5 - abs(c - 3.5)) * 20)
+
+        if is_protected(p, opp, ocolor):
+            score -= 90
+
+        if is_passed(p, me, ocolor):
+            score -= 240 + adv * 45
+
+        if r + od == opp_goal:
+            score -= 650
+
+    # Mobility
+    my_moves = len(generate_moves(me, opp, color))
+    opp_moves = len(generate_moves(opp, me, ocolor))
+    score += 25 * (my_moves - opp_moves)
+
+    # Immediate tactical threats
+    my_wins_next = count_winning_moves(me, opp, color)
+    opp_wins_next = count_winning_moves(opp, me, ocolor)
+    score += 900 * my_wins_next
+    score -= 1100 * opp_wins_next
+
+    # Pieces under attack / attacking
+    my_attacked = 0
+    opp_attacked = 0
+    for p in me:
+        if is_square_controlled_by(opp, p, ocolor):
+            my_attacked += 1
+    for p in opp:
+        if is_square_controlled_by(me, p, color):
+            opp_attacked += 1
+    score += 70 * opp_attacked
+    score -= 85 * my_attacked
+
+    return score
+
+
+def count_winning_moves(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str) -> int:
+    goal_row = 7 if color == 'w' else 0
+    cnt = 0
+    for mv in generate_moves(me, opp, color):
+        if mv[1][0] == goal_row:
+            cnt += 1
+    return cnt
+
+
+def is_protected(piece: Tuple[int, int], me: Set[Tuple[int, int]], color: str, ignore_from: Tuple[int, int] | None = None) -> bool:
+    r, c = piece
+    back = -1 if color == 'w' else 1
+    br = r + back
+    if not (0 <= br < 8):
+        return False
+    for bc in (c - 1, c + 1):
+        if 0 <= bc < 8:
+            if (br, bc) in me and (ignore_from is None or (br, bc) != ignore_from):
+                return True
+    return False
+
+
+def is_square_controlled_by(pieces: Set[Tuple[int, int]], sq: Tuple[int, int], color: str) -> bool:
+    r, c = sq
+    back = -1 if color == 'w' else 1
+    pr = r + back
+    if not (0 <= pr < 8):
+        return False
+    return ((pr, c - 1) in pieces if c - 1 >= 0 else False) or ((pr, c + 1) in pieces if c + 1 < 8 else False)
+
+
+def is_square_attackable_by_opp_after_move(me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], color: str, mv: Move) -> bool:
+    nme, nopp = apply_move(me, opp, mv)
+    dest = mv[1]
+    return is_square_controlled_by(nopp, dest, opponent(color))
+
+
+def is_passed(piece: Tuple[int, int], opp: Set[Tuple[int, int]], color: str) -> bool:
+    r, c = piece
+    if color == 'w':
+        for orow, ocol in opp:
+            if orow > r and abs(ocol - c) <= 1:
+                return False
+        return True
+    else:
+        for orow, ocol in opp:
+            if orow < r and abs(ocol - c) <= 1:
+                return False
+        return True

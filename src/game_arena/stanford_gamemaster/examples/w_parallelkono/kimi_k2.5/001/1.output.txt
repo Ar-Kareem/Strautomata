@@ -1,0 +1,96 @@
+The strategy for this policy is to prioritize capturing opponent pieces via jumps (which award 12 points), then advance pieces toward the opponent's side to threaten future captures, and finally use sideways moves as needed. The game is played on two parallel 4x4 boards (a and b). Each turn requires the player to make one move on each board. The state includes `played` markers to indicate which board has been acted upon this turn. The policy detects which board needs a move, generates all legal orthogonal moves and jumps for the current player's pieces on that board, and selects the best available action. If both boards have been played, the policy returns `tick` to end the turn.
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the state to find played boards and cell contents
+    played_boards = set()
+    cells = {}  # (board, row, col) -> piece
+    
+    for fact in state:
+        if fact[0] == "played" and len(fact) > 1:
+            played_boards.add(fact[1])
+        elif fact[0] == "cell" and len(fact) >= 5:
+            board = fact[1]
+            row = int(fact[2])
+            col = int(fact[3])
+            piece = fact[4]
+            cells[(board, row, col)] = piece
+    
+    # Determine which board to play on
+    # Order: prefer 'a' then 'b', or whichever is not played yet
+    target_board = None
+    if 'a' not in played_boards:
+        target_board = 'a'
+    elif 'b' not in played_boards:
+        target_board = 'b'
+    else:
+        # Both boards played, must tick to end turn
+        return "tick"
+    
+    opponent = 'black' if role == 'red' else 'red'
+    legal_moves = []  # (r, c, nr, nc)
+    legal_jumps = []  # (r, c, nr, nc, jr, jc)
+    
+    # Find all pieces belonging to role on target_board
+    for (b, r, c), piece in cells.items():
+        if b != target_board or piece != role:
+            continue
+        
+        # Check 4 orthogonal directions: up, down, left, right
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            
+            # Check bounds (4x4 grid)
+            if 1 <= nr <= 4 and 1 <= nc <= 4:
+                # Check for simple move to blank cell
+                if cells.get((target_board, nr, nc)) == 'blank':
+                    legal_moves.append((r, c, nr, nc))
+                
+                # Check for jump: own piece at adjacent, opponent at next
+                jr, jc = r + 2*dr, c + 2*dc
+                if 1 <= jr <= 4 and 1 <= jc <= 4:
+                    mid_piece = cells.get((target_board, nr, nc))
+                    end_piece = cells.get((target_board, jr, jc))
+                    if mid_piece == role and end_piece == opponent:
+                        legal_jumps.append((r, c, nr, nc, jr, jc))
+    
+    # Prioritize jumps (captures)
+    if legal_jumps:
+        # Select first available jump
+        r, c, nr, nc, jr, jc = legal_jumps[0]
+        return f"jump({target_board},{r},{c},{nr},{nc},{jr},{jc})"
+    
+    # If no jumps, make a move
+    if legal_moves:
+        # Separate forward moves from others
+        forward_moves = []
+        backward_moves = []
+        
+        for r, c, nr, nc in legal_moves:
+            # Determine if forward: red moves toward row 1 (decreasing), black toward row 4 (increasing)
+            is_forward = False
+            if role == 'red' and nr < r:
+                is_forward = True
+            elif role == 'black' and nr > r:
+                is_forward = True
+            
+            if is_forward:
+                forward_moves.append((r, c, nr, nc))
+            else:
+                backward_moves.append((r, c, nr, nc))
+        
+        # Prefer forward moves, then any other move
+        selected = None
+        if forward_moves:
+            selected = forward_moves[0]
+        elif backward_moves:
+            selected = backward_moves[0]
+        
+        if selected:
+            r, c, nr, nc = selected
+            return f"move({target_board},{r},{c},{nr},{nc})"
+    
+    # No legal moves found on this board, return tick as fallback
+    # (This handles edge cases where a player is blocked)
+    return "tick"
+</code>

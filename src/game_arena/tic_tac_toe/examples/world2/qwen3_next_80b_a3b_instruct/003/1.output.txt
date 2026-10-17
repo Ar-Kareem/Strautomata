@@ -1,0 +1,119 @@
+<thinking>
+I need to implement a policy for a 4x4 Tic Tac Toe game. The goal is to win or block the opponent, and if neither is immediately possible, choose a good strategic move.
+
+Approach:
+1. First, check if I (player 1) can win in the next move by placing my mark in any empty cell that completes a line of 4 in a row, column, or diagonal.
+2. If no immediate win is possible, check if the opponent (player -1) can win in their next move, and block that.
+3. If no immediate wins or blocks are possible, use a heuristic to choose a good move:
+   - Prefer the center (more opportunities for lines) - positions (1,1), (1,2), (2,1), (2,2) are central.
+   - Prefer corners if center is taken (corners are also good for multiple lines).
+   - Avoid edges if possible.
+4. If all else fails, pick any empty cell.
+
+For a 4x4 grid, a line of 4 (horizontal, vertical, or diagonal) wins. Let me implement helper functions to check for potential wins.
+
+I'll use numpy for easier matrix operations, but since it's a small 4x4 grid, even pure Python would be fast.
+
+Implementation plan:
+- Define a function to check if a player has a winning opportunity in a line.
+- Scan all possible lines: 4 rows, 4 columns, 2 main diagonals (length 4), and also the two diagonals of length 3? Wait — the rules state it's 4x4 Tic Tac Toe, and to win you need 4 in a row, so only full-length lines matter (exactly 4 in a line). But in 4x4, the only possible winning lines are the 4 rows, 4 columns, and 2 main diagonals (the full-length ones). So 10 total lines.
+
+Actually, some variants allow 4-in-a-row anywhere, but in 4x4, that means only complete rows/columns/diagonals of 4. There are:
+- 4 horizontal
+- 4 vertical  
+- 2 diagonals (top-left to bottom-right, and top-right to bottom-left)
+
+Total: 10 lines.
+
+I'll scan each line and check if:
+- There are 3 of my pieces and 1 empty → I can win.
+- There are 3 of opponent's pieces and 1 empty → I must block.
+
+Then, if no win/block, I'll pick the best available cell using a priority order: center > corners > edges.
+
+Let me code accordingly.
+</thinking>
+<code>
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    board = np.array(board)
+    
+    # Define all possible lines (rows, cols, diagonals) of length 4
+    lines = []
+    
+    # Rows
+    for i in range(4):
+        lines.append(board[i, :])
+    
+    # Columns
+    for j in range(4):
+        lines.append(board[:, j])
+    
+    # Diagonals
+    lines.append(np.array([board[i, i] for i in range(4)]))  # Main diagonal
+    lines.append(np.array([board[i, 3-i] for i in range(4)]))  # Anti-diagonal
+    
+    # Check for immediate win
+    for i, line in enumerate(lines):
+        if np.sum(line) == 3:  # Three 1's and one 0, so I can win
+            # Find the empty position in this line
+            empty_idx = np.where(line == 0)[0][0]
+            if i < 4:  # It's a row
+                return (i, empty_idx)
+            elif i < 8:  # It's a column
+                return (empty_idx, i - 4)
+            elif i == 8:  # Main diagonal
+                return (empty_idx, empty_idx)
+            else:  # Anti-diagonal
+                return (empty_idx, 3 - empty_idx)
+    
+    # Check for opponent win (block)
+    for i, line in enumerate(lines):
+        if np.sum(line) == -3:  # Three -1's and one 0
+            empty_idx = np.where(line == 0)[0][0]
+            if i < 4:  # Row
+                return (i, empty_idx)
+            elif i < 8:  # Column
+                return (empty_idx, i - 4)
+            elif i == 8:  # Main diagonal
+                return (empty_idx, empty_idx)
+            else:  # Anti-diagonal
+                return (empty_idx, 3 - empty_idx)
+    
+    # No immediate win or block. Choose a strategic move.
+    # Priority: center (positions (1,1), (1,2), (2,1), (2,2)) > corners > edges
+    center_positions = [(1,1), (1,2), (2,1), (2,2)]
+    corner_positions = [(0,0), (0,3), (3,0), (3,3)]
+    edge_positions = [(0,1), (0,2), (1,0), (1,3), (2,0), (2,3), (3,1), (3,2)]
+    
+    # Find all empty cells
+    empty_cells = []
+    for r in range(4):
+        for c in range(4):
+            if board[r, c] == 0:
+                empty_cells.append((r, c))
+    
+    # Try center first
+    for pos in center_positions:
+        if pos in empty_cells:
+            return pos
+    
+    # Then corners
+    for pos in corner_positions:
+        if pos in empty_cells:
+            return pos
+    
+    # Then any edge
+    for pos in edge_positions:
+        if pos in empty_cells:
+            return pos
+    
+    # Fallback: any empty cell (should not happen if board has empty spots, but return first)
+    if empty_cells:
+        return empty_cells[0]
+    
+    # Should not reach here in a valid game, but return (0,0) as fallback
+    return (0, 0)
+</code>

@@ -1,0 +1,352 @@
+The strategy for this policy is to implement a competitive, efficient Havannah AI using a combination of:
+
+1. **Hexagonal Grid Neighbor Logic**: Properly account for the axial/hexagonal structure of the board using precise neighbor lookup, critical for evaluating rings, bridges, and forks.
+2. **Threat Detection and Defense**: Evaluate opponent’s potential to form winning structures (ring, bridge, fork) and block imminent threats.
+3. **Offensive Expansion via Pattern Evaluation**: Prioritize moves that extend strong groups, create forks/bridges, or initiate rings.
+4. **Mobility & Influence Heuristic**: Prefer central and edge-connected positions that offer high connectivity and future path potential.
+5. **Greedy Best-First Search with Move Prioritization**: Rather than full minimax (too slow), rank valid moves using a heuristic score combining safety, offense, and connectivity, returning the highest-ranked legal move.
+
+The heuristic weights proximity to edges, corner connectivity, and group cohesion. Special emphasis is placed on:
+- **Corners** for bridge potential,
+- **Edge access** for forks,
+- **Loops** by checking if placing a stone completes a ring via flood-fill cycle detection.
+
+We ensure **only legal moves** are returned by filtering using `valid_mask`.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Set
+from collections import deque
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    N = 15
+    board = np.zeros((N, N), dtype=int)
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opp:
+        board[r][c] = 2
+
+    # Direction vectors for 6 hex neighbors in 2D (r, c) coordinates
+    # These depend on the row: even vs odd columns have shifted neighbors
+    def get_neighbors(r, c):
+        if r % 2 == 0:  # even row
+            neighbors = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, -1), (1, 0)]
+        else:  # odd row
+            neighbors = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, 1)]
+        result = []
+        for dr, dc in neighbors:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < N and 0 <= nc < N:
+                result.append((nr, nc))
+        return result
+
+    def is_corner(r, c):
+        corners = [(0,0), (0,7), (0,14), (7,0), (7,14), (14,0), (14,7), (14,14)]
+        # But actual corners in Havannah are only 6: we map to (0,0), (0,14), (7,0), (7,14), (14,0), (14,14)
+        return (r, c) in [(0,0), (0,14), (7,0), (7,14), (14,0), (14,14)]
+
+    def on_edge(r, c):
+        return r == 0 or r == 14 or c == 0 or c == 14 or (r + c) == 7 or (r + c) == 21
+
+    def get_edge_type(r, c):
+        if r == 0 and c != 0 and c != 14:
+            return 'top'
+        elif r == 14 and c != 0 and c != 14:
+            return 'bottom'
+        elif c == 0 and r != 0 and r != 14:
+            return 'left'
+        elif c == 14 and r != 0 and r != 14:
+            return 'right'
+        elif (r + c) == 7 and not is_corner(r, c):
+            return 'top_left'
+        elif (r + c) == 21 and not is_corner(r, c):
+            return 'bottom_right'
+        return None
+
+    def flood_fill(board, start_r, start_c, color):
+        """Flood fill to collect connected group of given color."""
+        if board[start_r][start_c] != color:
+            return set()
+        stack = [(start_r, start_c)]
+        group = set()
+        visited = np.zeros((N, N), dtype=bool)
+        while stack:
+            r, c = stack.pop()
+            if visited[r][c]:
+                continue
+            visited[r][c] = True
+            group.add((r, c))
+            for nr, nc in get_neighbors(r, c):
+                if board[nr][nc] == color and not visited[nr][nc]:
+                    stack.append((nr, nc))
+        return group
+
+    def forms_ring(board, r, c, color):
+        """Check if placing a stone of `color` at (r,c) completes a ring."""
+        temp_board = board.copy()
+        temp_board[r][c] = color
+        group = flood_fill(temp_board, r, c, color)
+        if len(group) < 6:
+            return False
+
+        # Build graph of group
+        graph = {}
+        for cell in group:
+            graph[cell] = []
+            for nb in get_neighbors(*cell):
+                if nb in group:
+                    graph[cell].append(nb)
+
+        # Try to find a cycle that surrounds at least one cell
+        visited = set()
+        parent = {}
+        cycle_start = None
+
+        def dfs(v, par):
+            nonlocal cycle_start
+            visited.add(v)
+            parent[v] = par
+            for w in graph.get(v, []):
+                if w == par:
+                    continue
+                if w in visited:
+                    cycle_start = w
+                    return v
+                res = dfs(w, v)
+                if cycle_start is not None:
+                    return res
+            return None
+
+        for start in group:
+            if start not in visited:
+                cycle_start = None
+                end = dfs(start, None)
+                if cycle_start is not None:
+                    # Reconstruct cycle
+                    cycle = []
+                    curr = end
+                    while curr != cycle_start:
+                        cycle.append(curr)
+                        curr = parent[curr]
+                    cycle.append(cycle_start)
+                    if len(cycle) >= 6:
+                        # Check if cycle encloses any cell
+                        # Use parity/raycast to count enclosed cells
+                        min_r, max_r = min(r for r, _ in cycle), max(r for r, _ in cycle)
+                        min_c, max_c = min(c for _, c in cycle), max(c for _, c in cycle)
+                        enclosed = False
+                        for test_r in range(min_r, max_r + 1):
+                            for test_c in range(min_c, max_c + 1):
+                                if (test_r, test_c) not in group and temp_board[test_r][test_c] == 0:
+                                    # Ray casting: count edge crossings
+                                    crossings = 0
+                                    ray_r, ray_c = test_r, test_c
+                                    dr, dc = 1, 0.5  # diagonal down-right ray
+                                    for step in range(1, N*2):
+                                        ray_r += dr
+                                        ray_c += dc
+                                        if ray_r < 0 or ray_r > 14 or ray_c < 0 or ray_c > 14:
+                                            break
+                                        cell_r, cell_c = int(ray_r), int(ray_c)
+                                        if ray_c - cell_c > 0.5:
+                                            cell_c += 1
+                                        if (cell_r, cell_c) in cycle:
+                                            crossings += 1
+                                    if crossings % 2 == 1:
+                                        enclosed = True
+                                        break
+                            if enclosed:
+                                break
+                        if enclosed:
+                            return True
+        return False
+
+    def connects_corners(group):
+        corners = [(0,0), (0,14), (7,0), (7,14), (14,0), (14,14)]
+        connected = set()
+        for (r, c) in group:
+            if (r, c) in corners:
+                connected.add((r, c))
+        return len(connected) >= 2
+
+    def connects_edges(group):
+        edges = {'top': 0, 'bottom': 0, 'left': 0, 'right': 0, 'top_left': 0, 'bottom_right': 0}
+        for (r, c) in group:
+            edge_type = get_edge_type(r, c)
+            if edge_type:
+                edges[edge_type] += 1
+        count_connected = sum(1 for count in edges.values() if count > 0)
+        return count_connected >= 3
+
+    def evaluate_win_potential(board, color) -> Tuple[bool, bool, bool]:
+        """Returns (has_ring, has_bridge, has_fork)"""
+        has_ring = False
+        has_bridge = False
+        has_fork = False
+
+        visited = set()
+        for r in range(N):
+            for c in range(N):
+                if board[r][c] == color and (r, c) not in visited:
+                    group = flood_fill(board, r, c, color)
+                    visited |= group
+                    if not has_ring:
+                        # Simulate each empty neighbor to check if ring can be completed
+                        for nr, nc in group:
+                            for nnr, nnc in get_neighbors(nr, nc):
+                                if board[nnr][nnc] == 0:
+                                    if forms_ring(board, nnr, nnc, color):
+                                        has_ring = True
+                                        break
+                            if has_ring:
+                                break
+                    if not has_bridge and connects_corners(group):
+                        has_bridge = True
+                    if not has_fork and connects_edges(group):
+                        has_fork = True
+        return has_ring, has_bridge, has_fork
+
+    # Get current threats
+    my_color = 1
+    opp_color = 2
+    _, my_bridge, my_fork = evaluate_win_potential(board, my_color)
+    opp_ring, opp_bridge, opp_fork = evaluate_win_potential(board, opp_color)
+
+    # Immediate win?
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c]:
+                if forms_ring(board, r, c, my_color):
+                    return (r, c)
+                temp_board = board.copy()
+                temp_board[r][c] = my_color
+                my_group = flood_fill(temp_board, r, c, my_color)
+                if connects_corners(my_group) and my_group:
+                    for g in flood_fill_groups(temp_board, my_color):
+                        if connects_corners(g):
+                            return (r, c)
+                if connects_edges(my_group) and my_group:
+                    for g in flood_fill_groups(temp_board, my_color):
+                        if connects_edges(g):
+                            return (r, c)
+
+    # Immediate defense: block opponent's win
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c]:
+                if forms_ring(board, r, c, opp_color):
+                    return (r, c)
+                temp_board = board.copy()
+                temp_board[r][c] = opp_color
+                opp_group = flood_fill(temp_board, r, c, opp_color)
+                if connects_corners(opp_group):
+                    for g in flood_fill_groups(temp_board, opp_color):
+                        if connects_corners(g):
+                            return (r, c)
+                if connects_edges(opp_group):
+                    for g in flood_fill_groups(temp_board, opp_color):
+                        if connects_edges(g):
+                            return (r, c)
+
+    # If no immediate win or defense, use heuristic scoring
+    valid_moves = [(r, c) for r in range(N) for c in range(N) if valid_mask[r][c]]
+
+    if not valid_moves:
+        # Should not happen, but fallback
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c]:
+                    return (r, c)
+
+    scores = np.zeros(len(valid_moves))
+
+    for idx, (r, c) in enumerate(valid_moves):
+        score = 0.0
+
+        # Proximity to center (central control)
+        center = (7, 7)
+        dist_to_center = abs(r - center[0]) + abs(c - center[1])
+        score += (14 - dist_to_center) * 0.1
+
+        # Edge and corner access
+        if is_corner(r, c):
+            score += 2.0
+        if on_edge(r, c):
+            score += 1.0
+
+        # Connection to my stones
+        connected_count = 0
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in me:
+                connected_count += 1
+        score += connected_count * 3.0
+
+        # Encourage branching to multiple edges
+        temp_board = board.copy()
+        temp_board[r][c] = my_color
+        new_group = flood_fill(temp_board, r, c, my_color)
+        edge_types = set()
+        corner_count = 0
+        for (gr, gc) in new_group:
+            if is_corner(gr, gc):
+                corner_count += 1
+            et = get_edge_type(gr, gc)
+            if et:
+                edge_types.add(et)
+        if corner_count >= 2:
+            score += 5.0
+        if len(edge_types) >= 3:
+            score += 7.0
+
+        # Avoid isolated moves unless forced
+        if connected_count == 0 and len(me) > 5:
+            score -= 2.0
+
+        scores[idx] = score
+
+    # Choose highest scoring move
+    best_idx = np.argmax(scores)
+    return valid_moves[best_idx]
+
+
+def flood_fill_groups(board, color):
+    """Return all connected groups of given color."""
+    N = board.shape[0]
+    visited = np.zeros((N, N), dtype=bool)
+    groups = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == color and not visited[r][c]:
+                group = flood_fill(board, r, c, color)
+                for cell in group:
+                    visited[cell] = True
+                groups.append(group)
+    return groups
+
+
+def flood_fill(board, start_r, start_c, color):
+    """Flood fill to collect connected group of given color."""
+    if board[start_r][start_c] != color:
+        return set()
+    stack = [(start_r, start_c)]
+    group = set()
+    visited = np.zeros((board.shape[0], board.shape[1]), dtype=bool)
+    while stack:
+        r, c = stack.pop()
+        if visited[r][c]:
+            continue
+        visited[r][c] = True
+        group.add((r, c))
+        for nr, nc in get_neighbors_fast(r, c):
+            if 0 <= nr < board.shape[0] and 0 <= nc < board.shape[1]:
+                if board[nr][nc] == color and not visited[nr][nc]:
+                    stack.append((nr, nc))
+    return group
+
+def get_neighbors_fast(r, c):
+    if r % 2 == 0:
+        return [(r-1, c-1), (r-1, c), (r, c-1), (r, c+1), (r+1, c-1), (r+1, c)]
+    else:
+        return [(r-1, c), (r-1, c+1), (r, c-1), (r, c+1), (r+1, c), (r+1, c+1)]
+
+</code>

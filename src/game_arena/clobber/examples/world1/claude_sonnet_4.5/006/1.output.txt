@@ -1,0 +1,147 @@
+I'll create a competitive Clobber policy that uses strategic evaluation to make smart moves.
+
+## Strategy
+
+My policy uses the following approach:
+
+1. **Mobility-focused evaluation**: Prioritize moves that maximize our mobility (number of legal moves) while minimizing opponent's mobility
+2. **Territorial control**: Value positions that control more of the board
+3. **Aggressive play**: Prefer captures that reduce opponent's options
+4. **Lookahead**: Use a minimax-style evaluation with alpha-beta pruning to look ahead 2-3 moves
+5. **Endgame awareness**: As pieces reduce, prioritize leaving the opponent with no moves
+
+Key heuristics:
+- **Mobility difference**: Our legal moves - opponent's legal moves (heavily weighted)
+- **Piece count**: Secondary consideration (fewer opponent pieces is better)
+- **Centrality**: Pieces near the center have more potential moves
+- **Corner avoidance**: Don't trap our own pieces in corners
+
+The policy uses minimax with alpha-beta pruning to evaluate positions 2 moves deep, choosing the move that leads to the best position after the opponent's best response.
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> str:
+    import numpy as np
+    
+    you = np.array(you)
+    opponent = np.array(opponent)
+    
+    def get_legal_moves(player, other):
+        """Get all legal moves for player"""
+        moves = []
+        rows, cols = player.shape
+        directions = [(-1, 0, 'U'), (1, 0, 'D'), (0, -1, 'L'), (0, 1, 'R')]
+        
+        for r in range(rows):
+            for c in range(cols):
+                if player[r, c] == 1:
+                    for dr, dc, dir_name in directions:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < rows and 0 <= nc < cols and other[nr, nc] == 1:
+                            moves.append((r, c, dir_name))
+        return moves
+    
+    def apply_move(player, other, move):
+        """Apply a move and return new board states"""
+        r, c, direction = move
+        player = player.copy()
+        other = other.copy()
+        
+        dir_map = {'U': (-1, 0), 'D': (1, 0), 'L': (0, -1), 'R': (0, 1)}
+        dr, dc = dir_map[direction]
+        nr, nc = r + dr, c + dc
+        
+        player[r, c] = 0
+        player[nr, nc] = 1
+        other[nr, nc] = 0
+        
+        return player, other
+    
+    def evaluate_position(player, other):
+        """Evaluate board position"""
+        player_moves = len(get_legal_moves(player, other))
+        other_moves = len(get_legal_moves(other, player))
+        
+        # If opponent has no moves, we win (very high score)
+        if other_moves == 0:
+            return 10000
+        
+        # If we have no moves, we lose (very low score)
+        if player_moves == 0:
+            return -10000
+        
+        # Mobility difference is the most important factor
+        mobility_score = (player_moves - other_moves) * 100
+        
+        # Piece count difference (secondary)
+        piece_score = (np.sum(player) - np.sum(other)) * 10
+        
+        # Centrality bonus - pieces near center are more valuable
+        rows, cols = player.shape
+        centrality = 0
+        for r in range(rows):
+            for c in range(cols):
+                if player[r, c] == 1:
+                    # Distance from center
+                    center_r, center_c = rows / 2, cols / 2
+                    dist = abs(r - center_r) + abs(c - center_c)
+                    centrality += (5 - dist)
+        
+        return mobility_score + piece_score + centrality
+    
+    def minimax(player, other, depth, alpha, beta, maximizing):
+        """Minimax with alpha-beta pruning"""
+        if depth == 0:
+            return evaluate_position(player, other)
+        
+        moves = get_legal_moves(player, other)
+        
+        if not moves:
+            return -10000 if maximizing else 10000
+        
+        if maximizing:
+            max_eval = float('-inf')
+            for move in moves:
+                new_player, new_other = apply_move(player, other, move)
+                eval_score = minimax(new_player, new_other, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_other, new_player = apply_move(other, player, move)
+                eval_score = minimax(new_player, new_other, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Get all legal moves
+    legal_moves = get_legal_moves(you, opponent)
+    
+    # Always return a legal move (required to avoid disqualification)
+    if not legal_moves:
+        # Should never happen if game logic is correct, but safety fallback
+        return "0,0,R"
+    
+    # Evaluate each move using minimax
+    best_move = None
+    best_score = float('-inf')
+    
+    # Use depth 2 for good performance/quality tradeoff
+    search_depth = 2
+    
+    for move in legal_moves:
+        new_you, new_opponent = apply_move(you, opponent, move)
+        score = minimax(new_you, new_opponent, search_depth, float('-inf'), float('inf'), False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Format and return the move
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+</code>

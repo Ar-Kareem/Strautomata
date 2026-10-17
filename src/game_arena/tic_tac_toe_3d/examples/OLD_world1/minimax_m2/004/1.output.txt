@@ -1,0 +1,178 @@
+
+
+To solve this problem, we need to implement a policy function for a 3D Tic Tac Toe game (3x3x3) that determines the next move for the player. The solution involves analyzing the current board state, checking for immediate winning or blocking moves, and then using a heuristic strategy to select the best available move if neither is possible.
+
+### Approach
+1. **Precompute Lines and Line Mapping**: 
+   - The game board has 49 possible winning lines. These lines are precomputed and stored in a list. Additionally, a dictionary maps each cell on the board to the list of lines that include that cell. This allows efficient access to relevant lines when evaluating possible moves.
+   
+2. **Identify Winning Moves**:
+   - For each empty cell on the board, temporarily place the player's piece (1) and check if this move completes any winning line (i.e., three in a row). If such a move is found, it is immediately chosen as the next move.
+
+3. **Identify Blocking Moves**:
+   - If no winning move is found, check for blocking moves. For each empty cell, temporarily place the opponent's piece (-1) and check if this move completes any winning line for the opponent. If such a move is found, it is chosen to block the opponent.
+
+4. **Heuristic Move Selection**:
+   - If neither a winning nor a blocking move is available, evaluate each empty cell based on a heuristic score. The score is derived from the number of favorable lines (lines without opponent pieces) that the cell is part of. Each favorable line contributes a score based on how many of the player's pieces are already present in that line.
+   - The cell with the highest score is selected. In case of ties, the cell's priority (center, corner, face center, or edge) is used to break the tie, with higher priority cells being preferred.
+
+### Solution Code
+```python
+# Precompute all possible lines in a 3x3x3 Tic Tac Toe board
+lines = []
+lines_by_cell = {}
+
+# X-axis lines (fixed y and z)
+for z in range(3):
+    for y in range(3):
+        line = [(z, 0, y), (z, 1, y), (z, 2, y)]
+        lines.append(line)
+
+# Y-axis lines (fixed x and z)
+for z in range(3):
+    for x in range(3):
+        line = [(z, x, 0), (z, x, 1), (z, x, 2)]
+        lines.append(line)
+
+# Z-axis lines (fixed x and y)
+for x in range(3):
+    for y in range(3):
+        line = [(0, x, y), (1, x, y), (2, x, y)]
+        lines.append(line)
+
+# Diagonals in fixed z planes
+for z in range(3):
+    line = [(z, 0, 0), (z, 1, 1), (z, 2, 2)]
+    lines.append(line)
+    line = [(z, 0, 2), (z, 1, 1), (z, 2, 0)]
+    lines.append(line)
+
+# Diagonals in fixed x planes (y-z planes)
+for x in range(3):
+    line = [(0, x, 0), (1, x, 1), (2, x, 2)]
+    lines.append(line)
+    line = [(0, x, 2), (1, x, 1), (2, x, 0)]
+    lines.append(line)
+
+# Diagonals in fixed y planes (x-z planes)
+for y in range(3):
+    line = [(0, 0, y), (1, 1, y), (2, 2, y)]
+    lines.append(line)
+    line = [(0, 2, y), (1, 1, y), (2, 0, y)]
+    lines.append(line)
+
+# Space diagonals
+lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+lines.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+
+# Build a dictionary mapping each cell to the lines that include it
+for line in lines:
+    for cell in line:
+        if cell not in lines_by_cell:
+            lines_by_cell[cell] = []
+        lines_by_cell[cell].append(line)
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    empty_cells = []
+    for z in range(3):
+        for x in range(3):
+            for y in range(3):
+                if board[z][x][y] == 0:
+                    empty_cells.append((z, x, y))
+    
+    if not empty_cells:
+        return (0, 0, 0)
+    
+    # Check for winning moves
+    for cell in empty_cells:
+        z0, x0, y0 = cell
+        if cell in lines_by_cell:
+            for line in lines_by_cell[cell]:
+                count_1 = 0
+                for c in line:
+                    if c == cell:
+                        continue
+                    z, x, y = c
+                    if board[z][x][y] == 1:
+                        count_1 += 1
+                if count_1 == 2:
+                    return cell
+    
+    # Check for blocking moves
+    for cell in empty_cells:
+        z0, x0, y0 = cell
+        if cell in lines_by_cell:
+            for line in lines_by_cell[cell]:
+                count_neg1 = 0
+                for c in line:
+                    if c == cell:
+                        continue
+                    z, x, y = c
+                    if board[z][x][y] == -1:
+                        count_neg1 += 1
+                if count_neg1 == 2:
+                    return cell
+    
+    # Heuristic evaluation
+    scores = {}
+    for cell in empty_cells:
+        z0, x0, y0 = cell
+        score = 0
+        if cell in lines_by_cell:
+            for line in lines_by_cell[cell]:
+                count_1 = 0
+                count_neg1 = 0
+                for c in line:
+                    if c == cell:
+                        continue
+                    z, x, y = c
+                    val = board[z][x][y]
+                    if val == 1:
+                        count_1 += 1
+                    elif val == -1:
+                        count_neg1 += 1
+                if count_neg1 == 0:
+                    score += count_1 * 10
+        scores[cell] = score
+    
+    # Find best cell by score and priority
+    best_cell = None
+    best_score = -1
+    best_priority = -1
+    for cell, score in scores.items():
+        z0, x0, y0 = cell
+        if cell == (1, 1, 1):
+            priority = 1000
+        elif cell in [(0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)]:
+            priority = 100
+        elif cell in [(0,1,1), (1,0,1), (1,1,0), (2,1,1), (1,2,1), (1,1,2)]:
+            priority = 10
+        else:
+            priority = 1
+        
+        if score > best_score or (score == best_score and priority > best_priority):
+            best_score = score
+            best_priority = priority
+            best_cell = cell
+    
+    if best_cell is not None:
+        return best_cell
+    else:
+        return empty_cells[0]
+```
+
+### Explanation
+1. **Precomputation**:
+   - The code precomputes all 49 possible winning lines in a 3x3x3 grid, storing them in a list `lines`. It also creates a dictionary `lines_by_cell` that maps each cell to the list of lines it belongs to. This facilitates quick access to relevant lines during move evaluation.
+
+2. **Winning and Blocking Moves**:
+   - The function first checks for immediate winning moves by evaluating each empty cell. If placing the player's piece in that cell completes a winning line, it returns that move.
+   - If no winning move is found, it checks for blocking moves by simulating the opponent's move. If placing the opponent's piece would complete a winning line for them, the function returns this cell to block the opponent.
+
+3. **Heuristic Strategy**:
+   - If neither a winning nor a blocking move exists, the function evaluates each empty cell based on a heuristic. The heuristic calculates a score for each cell by summing contributions from all lines the cell is part of, considering only lines without opponent pieces. The score is higher if the cell is part of lines with more of the player's pieces.
+   - The cell with the highest score is selected. In case of ties, the cell's priority (center, corner, face center, or edge) is used, with higher priority cells being chosen first.
+
+This approach ensures that the player makes optimal moves by leveraging immediate wins, blocking opponent threats, and applying a strategic heuristic to guide further decisions.

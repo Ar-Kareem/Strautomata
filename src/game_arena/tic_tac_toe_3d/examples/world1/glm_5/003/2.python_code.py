@@ -1,0 +1,191 @@
+
+import math
+import random
+
+# Precompute all 49 winning lines (3 cells each)
+# There are 3 planes of 3x3 grids (rows/cols) = 3*3*2 = 18
+# There are 3 sets of vertical pillars = 3*3 = 9
+# There are diagonals on the 3 horizontal planes = 3*2 = 6
+# There are diagonals on the 6 vertical planes (front/back/sides) = 6*2 = 12
+# There are 4 space diagonals = 4
+# Total = 18 + 9 + 6 + 12 + 4 = 49
+
+LINES = []
+
+# Rows and Cols on each horizontal plane (k fixed)
+for k in range(3):
+    for i in range(3):
+        LINES.append([(i, j, k) for j in range(3)]) # Rows
+        LINES.append([(j, i, k) for j in range(3)]) # Cols
+
+# Vertical pillars (i, j fixed)
+for i in range(3):
+    for j in range(3):
+        LINES.append([(i, j, k) for k in range(3)])
+
+# Diagonals on horizontal planes (k fixed)
+for k in range(3):
+    LINES.append([(d, d, k) for d in range(3)])
+    LINES.append([(d, 2-d, k) for d in range(3)])
+
+# Diagonals on vertical planes (j fixed)
+for j in range(3):
+    LINES.append([(d, j, d) for d in range(3)])
+    LINES.append([(d, j, 2-d) for d in range(3)])
+
+# Diagonals on vertical planes (i fixed)
+for i in range(3):
+    LINES.append([(i, d, d) for d in range(3)])
+    LINES.append([(i, d, 2-d) for d in range(3)])
+
+# Space diagonals
+LINES.append([(d, d, d) for d in range(3)])
+LINES.append([(d, d, 2-d) for d in range(3)])
+LINES.append([(d, 2-d, d) for d in range(3)])
+LINES.append([(d, 2-d, 2-d) for d in range(3)])
+
+
+def check_winner(board):
+    for line in LINES:
+        vals = [board[i][j][k] for i, j, k in line]
+        if vals[0] != 0 and vals[0] == vals[1] == vals[2]:
+            return vals[0]
+    return 0
+
+def evaluate(board):
+    score = 0
+    for line in LINES:
+        vals = [board[i][j][k] for i, j, k in line]
+        p1 = sum(1 for v in vals if v == 1)
+        p2 = sum(1 for v in vals if v == -1)
+        
+        if p1 > 0 and p2 > 0:
+            continue # Blocked line
+        elif p1 > 0:
+            if p1 == 3: return 10000 # Should be caught by check_winner, but safety
+            score += 10 ** p1
+        elif p2 > 0:
+            if p2 == 3: return -10000
+            score -= 10 ** p2
+    return score
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    winner = check_winner(board)
+    if winner == 1: return 10000 + depth
+    if winner == -1: return -10000 - depth
+    
+    moves = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    moves.append((i,j,k))
+    
+    if not moves: return 0 # Draw
+    if depth == 0: return evaluate(board)
+    
+    # Move ordering: prioritize center, then corners, then edges
+    # Center=(1,1,1). Corners have even sum indices? No.
+    # Just simple heuristic: center first if available.
+    # We sort moves to try "better" ones first to improve pruning.
+    def move_score(move):
+        i, j, k = move
+        # Center is (1,1,1) -> dist 0
+        # Corners: (0,0,0)... -> dist 1
+        s = 0
+        if (i, j, k) == (1, 1, 1): s -= 3 # Highest priority
+        # Manhattan distance from center could work as proxy
+        s += abs(i-1) + abs(j-1) + abs(k-1)
+        return s
+
+    moves.sort(key=move_score)
+
+    if maximizing_player:
+        max_eval = -math.inf
+        for i, j, k in moves:
+            board[i][j][k] = 1
+            eval_val = minimax(board, depth-1, alpha, beta, False)
+            board[i][j][k] = 0
+            max_eval = max(max_eval, eval_val)
+            alpha = max(alpha, eval_val)
+            if beta <= alpha: break
+        return max_eval
+    else:
+        min_eval = math.inf
+        for i, j, k in moves:
+            board[i][j][k] = -1
+            eval_val = minimax(board, depth-1, alpha, beta, True)
+            board[i][j][k] = 0
+            min_eval = min(min_eval, eval_val)
+            beta = min(beta, eval_val)
+            if beta <= alpha: break
+        return min_eval
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Create a mutable copy
+    b = [[list(row) for row in plane] for plane in board]
+    
+    # Find empty cells
+    empty_cells = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if b[i][j][k] == 0:
+                    empty_cells.append((i, j, k))
+    
+    if not empty_cells:
+        return (0, 0, 0) # Should not happen
+
+    # Check for immediate win (depth 1)
+    for i, j, k in empty_cells:
+        b[i][j][k] = 1
+        if check_winner(b) == 1:
+            return (i, j, k)
+        b[i][j][k] = 0
+
+    # Check for immediate block (opponent win)
+    for i, j, k in empty_cells:
+        b[i][j][k] = -1
+        if check_winner(b) == -1:
+            return (i, j, k)
+        b[i][j][k] = 0
+
+    # Determine depth based on remaining moves
+    # 27 cells max. 
+    # 1s is plenty for depth 4-5.
+    # If fewer moves, we can go deeper.
+    rem = len(empty_cells)
+    if rem > 18: depth = 3
+    elif rem > 10: depth = 4
+    elif rem > 5: depth = 5
+    else: depth = 6
+
+    best_score = -math.inf
+    best_move = empty_cells[0]
+    
+    # Order moves for root
+    def move_priority(move):
+        # Center
+        if move == (1,1,1): return 0
+        # Corners
+        if sum(m%2 for m in move) == 3 or sum(m%2 for m in move) == 0: 
+             # Actually corners are (0,0,0), (0,0,2), (0,2,0)...
+             # Indices sum parity logic: 
+             # (0,0,0) sum even. (0,0,2) sum even. (0,2,2) sum even. (2,2,2) sum even.
+             # Wait, (0,0,1) is edge center?
+             # Let's stick to distance from center
+             return abs(move[0]-1) + abs(move[1]-1) + abs(move[2]-1)
+        return abs(move[0]-1) + abs(move[1]-1) + abs(move[2]-1)
+
+    empty_cells.sort(key=move_priority)
+
+    for i, j, k in empty_cells:
+        b[i][j][k] = 1
+        score = minimax(b, depth, -math.inf, math.inf, False)
+        b[i][j][k] = 0
+        
+        if score > best_score:
+            best_score = score
+            best_move = (i, j, k)
+            
+    return best_move

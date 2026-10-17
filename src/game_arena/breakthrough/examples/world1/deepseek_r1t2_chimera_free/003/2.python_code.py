@@ -1,0 +1,131 @@
+
+import time
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    start_time = time.time()
+    
+    def generate_moves(pieces, opponent_pieces, player_color):
+        moves = []
+        direction = 1 if player_color == 'w' else -1
+        home_row = 7 if player_color == 'w' else 0
+        
+        for (r, c) in pieces:
+            new_r = r + direction
+            if new_r < 0 or new_r > 7:
+                continue
+            
+            # Straight move
+            straight = (new_r, c)
+            if straight not in pieces and straight not in opponent_pieces:
+                moves.append(((r, c), straight))
+            
+            # Diagonal left
+            left = (new_r, c - 1)
+            if c - 1 >= 0 and left not in pieces:
+                moves.append(((r, c), left))
+            
+            # Diagonal right
+            right = (new_r, c + 1)
+            if c + 1 < 8 and right not in pieces:
+                moves.append(((r, c), right))
+        
+        return moves
+
+    def apply_move(pieces, opponent_pieces, move, player_color):
+        (from_r, from_c), (to_r, to_c) = move
+        new_pieces = pieces.copy()
+        new_pieces.remove((from_r, from_c))
+        new_pieces.append((to_r, to_c))
+        
+        new_opponent = opponent_pieces.copy()
+        if (to_r, to_c) in new_opponent:
+            new_opponent.remove((to_r, to_c))
+        
+        return new_pieces, new_opponent
+
+    def evaluate(my_pieces, opp_pieces, my_color):
+        score = 0
+        opponent_color = 'b' if my_color == 'w' else 'w'
+        opponent_home = 7 if opponent_color == 'w' else 0
+        
+        # Material advantage
+        score += (len(my_pieces) - len(opp_pieces)) * 100
+        
+        # Advancement and central control
+        for (r, c) in my_pieces:
+            # Progress towards opponent's home
+            if my_color == 'w':
+                progress = r
+            else:
+                progress = 7 - r
+            score += progress * 5
+            
+            # Bonus for central columns
+            if 2 <= c <= 5:
+                score += 1
+                
+            # Victory condition check
+            if r == opponent_home:
+                score += 10000
+        
+        # Threat detection
+        for (r, c) in opp_pieces:
+            if my_color == 'w' and r == 6:
+                score -= 500
+            elif my_color == 'b' and r == 1:
+                score -= 500
+        
+        return score
+    
+    def is_winning_move(move, color):
+        _, (to_r, _) = move
+        opponent_home = 7 if color == 'w' else 0
+        return to_r == opponent_home
+    
+    # Generate all possible moves
+    all_moves = generate_moves(me, opp, color)
+    
+    # Check for immediate winning moves
+    for move in all_moves:
+        if is_winning_move(move, color):
+            return move
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in all_moves:
+        # Time check to avoid timeout
+        if time.time() - start_time > 0.8:
+            break
+            
+        new_me, new_opp = apply_move(me, opp, move, color)
+        
+        # Evaluate immediate state if opponent has no moves
+        opp_moves = generate_moves(new_opp, new_me, 'w' if color == 'b' else 'b')
+        if not opp_moves:
+            current_score = evaluate(new_me, new_opp, color)
+            if current_score > best_score:
+                best_score = current_score
+                best_move = move
+            continue
+        
+        # Find opponent's best response (minimize our score)
+        min_opp_score = float('inf')
+        for opp_move in opp_moves:
+            opp_new, me_after = apply_move(new_opp, new_me, opp_move, 'w' if color == 'b' else 'b')
+            current_score = evaluate(me_after, opp_new, color)
+            if current_score < min_opp_score:
+                min_opp_score = current_score
+            
+            if min_opp_score < best_score:
+                break  # Alpha-beta pruning
+        
+        if min_opp_score > best_score:
+            best_score = min_opp_score
+            best_move = move
+    
+    # Fallback to first legal move if no evaluation occurred
+    if best_move is None and all_moves:
+        best_move = all_moves[0]
+    
+    return best_move

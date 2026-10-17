@@ -1,0 +1,431 @@
+
+from typing import List, Tuple, Dict
+
+Square = Tuple[int, int]
+Move = Tuple[Square, Square]
+
+INF = 10**9
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    state = _make_state(my_men, my_kings, opp_men, opp_kings, color)
+    moves = _legal_moves(state)
+    if not moves:
+        # Should not happen in normal arena play, but return something syntactically valid.
+        # If there are pieces, "move" a piece to itself as fallback.
+        all_my = list(state["my_men"] | state["my_kings"])
+        if all_my:
+            p = all_my[0]
+            return (p, p)
+        return ((0, 0), (0, 0))
+
+    # Stable legal fallback
+    best_fallback = _pick_fallback_move(state, moves)
+
+    # Iterative deepening style fixed depths for speed/reliability
+    best_move = best_fallback
+    best_score = -INF
+
+    # Depth chosen to fit 1s comfortably in Python for typical branching.
+    ordered = _order_root_moves(state, moves)
+    for depth in (4, 6):
+        local_best = best_move
+        local_best_score = -INF
+        alpha = -INF
+        beta = INF
+        for mv in ordered:
+            child = _apply_move(state, mv)
+            score = -_alphabeta(child, depth - 1, -beta, -alpha)
+            if score > local_best_score:
+                local_best_score = score
+                local_best = mv
+            if score > alpha:
+                alpha = score
+        best_move = local_best
+        best_score = local_best_score
+        ordered = _order_root_moves(state, moves, preferred=best_move)
+
+    return best_move
+
+
+def _make_state(my_men, my_kings, opp_men, opp_kings, color):
+    return {
+        "my_men": frozenset(tuple(x) for x in my_men),
+        "my_kings": frozenset(tuple(x) for x in my_kings),
+        "opp_men": frozenset(tuple(x) for x in opp_men),
+        "opp_kings": frozenset(tuple(x) for x in opp_kings),
+        "color": color,  # side to move
+    }
+
+
+def _inside(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def _is_dark(sq: Square):
+    r, c = sq
+    return ((r + c) & 1) == 1
+
+
+def _forward_dirs(color):
+    # black moves downward to lower row values, white upward to higher row values
+    return [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]
+
+
+def _all_dirs():
+    return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+
+def _promotion_row(color):
+    return 0 if color == 'b' else 7
+
+
+def _occupied(state):
+    return state["my_men"] | state["my_kings"] | state["opp_men"] | state["opp_kings"]
+
+
+def _piece_dirs(color, is_king):
+    return _all_dirs() if is_king else _forward_dirs(color)
+
+
+def _simple_moves_for_piece(state, pos: Square, is_king: bool):
+    occ = _occupied(state)
+    out = []
+    for dr, dc in _piece_dirs(state["color"], is_king):
+        nr, nc = pos[0] + dr, pos[1] + dc
+        if _inside(nr, nc) and _is_dark((nr, nc)) and (nr, nc) not in occ:
+            out.append((pos, (nr, nc)))
+    return out
+
+
+def _capture_sequences_for_piece(state, start: Square, is_king: bool):
+    my_men = set(state["my_men"])
+    my_kings = set(state["my_kings"])
+    opp_men = set(state["opp_men"])
+    opp_kings = set(state["opp_kings"])
+    color = state["color"]
+
+    sequences = []
+
+    def rec(pos, king, my_men, my_kings, opp_men, opp_kings):
+        found = False
+        dirs = _piece_dirs(color, king)
+        my_occ = my_men | my_kings
+        opp_occ = opp_men | opp_kings
+        occ = my_occ | opp_occ
+
+        for dr, dc in dirs:
+            mr, mc = pos[0] + dr, pos[1] + dc
+            lr, lc = pos[0] + 2 * dr, pos[1] + 2 * dc
+            if not (_inside(mr, mc) and _inside(lr, lc)):
+                continue
+            if not _is_dark((lr, lc)):
+                continue
+            if (mr, mc) in opp_occ and (lr, lc) not in occ:
+                found = True
+
+                n_my_men = set(my_men)
+                n_my_kings = set(my_kings)
+                n_opp_men = set(opp_men)
+                n_opp_kings = set(opp_kings)
+
+                if king:
+                    n_my_kings.remove(pos)
+                else:
+                    n_my_men.remove(pos)
+
+                if (mr, mc) in n_opp_men:
+                    n_opp_men.remove((mr, mc))
+                else:
+                    n_opp_kings.remove((mr, mc))
+
+                landed = (lr, lc)
+                became_king = king or (landed[0] == _promotion_row(color))
+
+                # Standard rule simplification used here: promotion ends sequence.
+                if became_king and not king:
+                    n_my_kings.add(landed)
+                    sequences.append((start, landed))
+                else:
+                    if became_king:
+                        n_my_kings.add(landed)
+                    else:
+                        n_my_men.add(landed)
+
+                    before = len(sequences)
+                    rec(landed, became_king, n_my_men, n_my_kings, n_opp_men, n_opp_kings)
+                    if len(sequences) == before:
+                        sequences.append((start, landed))
+
+        return found
+
+    rec(start, is_king, my_men, my_kings, opp_men, opp_kings)
+    # Deduplicate while preserving order
+    seen = set()
+    out = []
+    for mv in sequences:
+        if mv not in seen:
+            seen.add(mv)
+            out.append(mv)
+    return out
+
+
+def _legal_moves(state):
+    captures = []
+    for p in state["my_men"]:
+        captures.extend(_capture_sequences_for_piece(state, p, False))
+    for p in state["my_kings"]:
+        captures.extend(_capture_sequences_for_piece(state, p, True))
+    if captures:
+        return captures
+
+    moves = []
+    for p in state["my_men"]:
+        moves.extend(_simple_moves_for_piece(state, p, False))
+    for p in state["my_kings"]:
+        moves.extend(_simple_moves_for_piece(state, p, True))
+    return moves
+
+
+def _apply_move(state, move: Move):
+    start, end = move
+    my_men = set(state["my_men"])
+    my_kings = set(state["my_kings"])
+    opp_men = set(state["opp_men"])
+    opp_kings = set(state["opp_kings"])
+    color = state["color"]
+
+    is_king = start in my_kings
+    dr = end[0] - start[0]
+    dc = end[1] - start[1]
+
+    if is_king:
+        my_kings.remove(start)
+    else:
+        my_men.remove(start)
+
+    if abs(dr) == 1 and abs(dc) == 1:
+        landed_king = is_king or (end[0] == _promotion_row(color))
+        if landed_king:
+            my_kings.add(end)
+        else:
+            my_men.add(end)
+    else:
+        # Reconstruct jumped path by greedily following legal captures from start to end.
+        cur = start
+        cur_is_king = is_king
+        while cur != end:
+            progressed = False
+            dirs = _piece_dirs(color, cur_is_king)
+            occ_my = my_men | my_kings
+            occ_opp = opp_men | opp_kings
+            occ = occ_my | occ_opp
+            for jdr, jdc in dirs:
+                mr, mc = cur[0] + jdr, cur[1] + jdc
+                lr, lc = cur[0] + 2 * jdr, cur[1] + 2 * jdc
+                if not (_inside(mr, mc) and _inside(lr, lc)):
+                    continue
+                if (mr, mc) in occ_opp and (lr, lc) not in occ:
+                    # only take branches that can still reach end geometrically
+                    if (end[0] - lr) * (end[0] - cur[0]) < 0 and not cur_is_king:
+                        continue
+                    if abs(end[0] - lr) + abs(end[1] - lc) >= abs(end[0] - cur[0]) + abs(end[1] - cur[1]):
+                        continue
+
+                    if (mr, mc) in opp_men:
+                        opp_men.remove((mr, mc))
+                    else:
+                        opp_kings.remove((mr, mc))
+                    cur = (lr, lc)
+                    progressed = True
+                    if not cur_is_king and cur[0] == _promotion_row(color):
+                        cur_is_king = True
+                    break
+            if not progressed:
+                # Fallback if greedy pathing fails: infer single jumped squares along line segments impossible here,
+                # but to remain robust, place piece at end and continue.
+                cur = end
+
+        if cur_is_king:
+            my_kings.add(end)
+        else:
+            my_men.add(end)
+
+    # Switch perspective: returned state is from next player to move
+    return {
+        "my_men": frozenset(opp_men),
+        "my_kings": frozenset(opp_kings),
+        "opp_men": frozenset(my_men),
+        "opp_kings": frozenset(my_kings),
+        "color": 'w' if color == 'b' else 'b',
+    }
+
+
+def _terminal_score(state):
+    moves = _legal_moves(state)
+    if moves:
+        return None
+    return -100000  # side to move has no legal move
+
+
+def _alphabeta(state, depth, alpha, beta):
+    term = _terminal_score(state)
+    if term is not None:
+        return term
+    if depth <= 0:
+        return _evaluate(state)
+
+    moves = _legal_moves(state)
+    moves = _order_moves(state, moves)
+
+    best = -INF
+    for mv in moves:
+        child = _apply_move(state, mv)
+        score = -_alphabeta(child, depth - 1, -beta, -alpha)
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+
+def _order_root_moves(state, moves, preferred=None):
+    scored = []
+    for mv in moves:
+        s = _move_heuristic(state, mv)
+        if preferred is not None and mv == preferred:
+            s += 100000
+        scored.append((s, mv))
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [mv for _, mv in scored]
+
+
+def _order_moves(state, moves):
+    return _order_root_moves(state, moves)
+
+
+def _move_heuristic(state, mv):
+    (r1, c1), (r2, c2) = mv
+    score = 0
+    if abs(r2 - r1) >= 2:
+        score += 500 + 10 * abs(r2 - r1)
+    if r2 == _promotion_row(state["color"]):
+        score += 300
+    score += 4 - abs(3.5 - r2)
+    score += 4 - abs(3.5 - c2)
+    return score
+
+
+def _evaluate(state):
+    my_men = state["my_men"]
+    my_kings = state["my_kings"]
+    opp_men = state["opp_men"]
+    opp_kings = state["opp_kings"]
+    color = state["color"]
+
+    score = 0
+
+    # Material
+    score += 100 * len(my_men) + 175 * len(my_kings)
+    score -= 100 * len(opp_men) + 175 * len(opp_kings)
+
+    # Promotion progress for men
+    if color == 'w':
+        score += sum(8 * r for r, c in my_men)
+        score -= sum(8 * (7 - r) for r, c in opp_men)
+    else:
+        score += sum(8 * (7 - r) for r, c in my_men)
+        score -= sum(8 * r for r, c in opp_men)
+
+    # Center control
+    for r, c in my_men | my_kings:
+        if 2 <= r <= 5 and 2 <= c <= 5:
+            score += 8
+    for r, c in opp_men | opp_kings:
+        if 2 <= r <= 5 and 2 <= c <= 5:
+            score -= 8
+
+    # Back rank guard
+    my_back = 0 if color == 'b' else 7
+    opp_back = 7 if color == 'b' else 0
+    score += 10 * sum(1 for r, c in my_men if r == my_back)
+    score -= 10 * sum(1 for r, c in opp_men if r == opp_back)
+
+    # Mobility
+    my_moves = len(_legal_moves(state))
+    opp_state = {
+        "my_men": state["opp_men"],
+        "my_kings": state["opp_kings"],
+        "opp_men": state["my_men"],
+        "opp_kings": state["my_kings"],
+        "color": 'w' if color == 'b' else 'b',
+    }
+    opp_moves = len(_legal_moves(opp_state))
+    score += 3 * (my_moves - opp_moves)
+
+    # Edge preference for men slightly, kings less so
+    for r, c in my_men:
+        if c == 0 or c == 7:
+            score += 3
+    for r, c in opp_men:
+        if c == 0 or c == 7:
+            score -= 3
+
+    # Threatened pieces
+    score -= 18 * _count_immediate_capturable(state, mine=True)
+    score += 18 * _count_immediate_capturable(state, mine=False)
+
+    return score
+
+
+def _count_immediate_capturable(state, mine=True):
+    if mine:
+        target_men = state["my_men"]
+        target_kings = state["my_kings"]
+        attacker_men = state["opp_men"]
+        attacker_kings = state["opp_kings"]
+        attacker_color = 'w' if state["color"] == 'b' else 'b'
+        blockers = state["my_men"] | state["my_kings"] | state["opp_men"] | state["opp_kings"]
+    else:
+        target_men = state["opp_men"]
+        target_kings = state["opp_kings"]
+        attacker_men = state["my_men"]
+        attacker_kings = state["my_kings"]
+        attacker_color = state["color"]
+        blockers = state["my_men"] | state["my_kings"] | state["opp_men"] | state["opp_kings"]
+
+    targets = target_men | target_kings
+    threatened = set()
+
+    for p in attacker_men:
+        for dr, dc in _forward_dirs(attacker_color):
+            mr, mc = p[0] + dr, p[1] + dc
+            lr, lc = p[0] + 2 * dr, p[1] + 2 * dc
+            if _inside(mr, mc) and _inside(lr, lc):
+                if (mr, mc) in targets and (lr, lc) not in blockers:
+                    threatened.add((mr, mc))
+
+    for p in attacker_kings:
+        for dr, dc in _all_dirs():
+            mr, mc = p[0] + dr, p[1] + dc
+            lr, lc = p[0] + 2 * dr, p[1] + 2 * dc
+            if _inside(mr, mc) and _inside(lr, lc):
+                if (mr, mc) in targets and (lr, lc) not in blockers:
+                    threatened.add((mr, mc))
+
+    return len(threatened)
+
+
+def _pick_fallback_move(state, moves):
+    # Prefer captures, promotions, center, and kings
+    best = moves[0]
+    best_s = -INF
+    for mv in moves:
+        s = _move_heuristic(state, mv)
+        if mv[0] in state["my_kings"]:
+            s += 5
+        if s > best_s:
+            best_s = s
+            best = mv
+    return best

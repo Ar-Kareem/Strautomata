@@ -1,0 +1,317 @@
+The strategy for this policy is to utilize a Minimax algorithm with Alpha-Beta pruning to explore the game tree up to a depth of 3. This depth is chosen to balance foresight with the 1-second execution time constraint. The move generator strictly enforces mandatory captures and recursively searches for multi-jump sequences. If a capture is available, the policy will only consider capturing moves. The evaluation function assigns weights to material (Men=10, Kings=30) and positional factors (advancement towards promotion and edge control). To ensure performance and safety, the code includes time-checking mechanisms to return the best move found if the time limit is approaching.
+
+<code>
+import time
+import random
+from copy import deepcopy
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Returns a legal move for the checkers player defined by the inputs.
+    """
+    # --- Constants ---
+    EMPTY = 0
+    W_MAN = 1
+    W_KING = 2
+    B_MAN = -1
+    B_KING = -2
+
+    # --- Board Setup ---
+    # Create an 8x8 board representation
+    board = [[EMPTY for _ in range(8)] for _ in range(8)]
+    
+    # Determine signs for logic (White=Positive, Black=Negative)
+    my_sign = 1 if color == 'w' else -1
+    opp_sign = -my_sign
+    
+    # Place my pieces
+    for r, c in my_men:
+        board[r][c] = W_MAN if my_sign == 1 else B_MAN
+    for r, c in my_kings:
+        board[r][c] = W_KING if my_sign == 1 else B_KING
+        
+    # Place opponent pieces
+    for r, c in opp_men:
+        board[r][c] = W_MAN if opp_sign == 1 else B_MAN
+    for r, c in opp_kings:
+        board[r][c] = W_KING if opp_sign == 1 else B_KING
+
+    # --- Helper Functions ---
+    def is_valid(r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def is_opponent(p1, p2):
+        # Returns True if p1 and p2 are opponents (non-zero and opposite signs)
+        return (p1 > 0 and p2 < 0) or (p1 < 0 and p2 > 0)
+
+    def get_turn_sign(turn_color_str):
+        return 1 if turn_color_str == 'w' else -1
+
+    # --- Move Generation ---
+    
+    def get_simple_moves(bd, turn_sign):
+        """Generates non-capture moves."""
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                p = bd[r][c]
+                if p == EMPTY or (p > 0) != (turn_sign > 0):
+                    continue
+                
+                directions = []
+                if abs(p) == 1: # Man
+                    if p == W_MAN: directions = [(1, -1), (1, 1)]
+                    else: directions = [(-1, -1), (-1, 1)]
+                else: # King
+                    directions = [(1, -1), (1, 1), (-1, -1), (-1, 1)]
+                
+                for dr, dc in directions:
+                    nr, nc = r + dr, c + dc
+                    if is_valid(nr, nc) and bd[nr][nc] == EMPTY:
+                        moves.append(((r, c), (nr, nc)))
+        return moves
+
+    def get_jump_sequences(bd, turn_sign):
+        """Generates all multi-jump sequences. Returns list of ((start), (end))."""
+        # First, scan to see if ANY jump is possible for the current player
+        can_jump = False
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                p = bd[r][c]
+                if p == EMPTY or (p > 0) != (turn_sign > 0): continue
+                pieces.append((r,c))
+                
+                dirs = []
+                if abs(p) == 1: dirs = [(2, -2), (2, 2)] if p > 0 else [(-2, -2), (-2, 2)]
+                else: dirs = [(2, -2), (2, 2), (-2, -2), (-2, 2)]
+                
+                for dr, dc in dirs:
+                    mr, mc = r + dr//2, c + dc//2
+                    nr, nc = r + dr, c + dc
+                    if is_valid(nr, nc) and is_valid(mr, mc):
+                        if bd[nr][nc] == EMPTY and is_opponent(bd[mr][mc], p):
+                            can_jump = True
+                            break
+                            
+        if not can_jump:
+            return []
+        
+        # Recursively find all jump sequences
+        jump_moves = []
+        
+        def recurse(curr_r, curr_c, path, current_bd):
+            piece = current_bd[curr_r][curr_c]
+            
+            j_dirs = []
+            if abs(piece) == 1: 
+                j_dirs = [(2, -2), (2, 2)] if piece > 0 else [(-2, -2), (-2, 2)]
+            else: 
+                j_dirs = [(2, -2), (2, 2), (-2, -2), (-2, 2)]
+            
+            found_jump = False
+            for dr, dc in j_dirs:
+                mr, mc = curr_r + dr//2, curr_c + dc//2
+                nr, nc = curr_r + dr, curr_c + dc
+                
+                if is_valid(nr, nc) and is_valid(mr, mc):
+                    mid_val = current_bd[mr][mc]
+                    dest_val = current_bd[nr][nc]
+                    
+                    if dest_val == EMPTY and is_opponent(mid_val, piece):
+                        found_jump = True
+                        # Create new board state for recursion
+                        new_bd = deepcopy(current_bd)
+                        new_bd[curr_r][curr_c] = EMPTY
+                        new_bd[mr][mc] = EMPTY
+                        new_bd[nr][nc] = piece
+                        
+                        # Check promotion
+                        promoted = False
+                        if piece == W_MAN and nr == 7:
+                            new_bd[nr][nc] = W_KING
+                            promoted = True
+                        elif piece == B_MAN and nr == 0:
+                            new_bd[nr][nc] = B_KING
+                            promoted = True
+                        
+                        if promoted:
+                            # Promotion ends turn (standard rule)
+                            jump_moves.append(((path[0][0], path[0][1]), (nr, nc)))
+                        else:
+                            recurse(nr, nc, path + [(nr, nc)], new_bd)
+            
+            if not found_jump and len(path) > 1:
+                # End of a jump chain
+                jump_moves.append(((path[0][0], path[0][1]), (path[-1][0], path[-1][1])))
+
+        for r, c in pieces:
+            recurse(r, c, [(r, c)], bd)
+            
+        return jump_moves
+
+    def get_all_moves(bd, turn_color_str):
+        ts = get_turn_sign(turn_color_str)
+        jumps = get_jump_sequences(bd, ts)
+        if jumps:
+            return jumps
+        return get_simple_moves(bd, ts)
+
+    # --- Evaluation Function ---
+    def evaluate(bd):
+        score = 0
+        for r in range(8):
+            for c in range(8):
+                p = bd[r][c]
+                if p == EMPTY: continue
+                
+                val = 0
+                # Material values
+                if abs(p) == 1: val = 10
+                else: val = 30
+                
+                # Advancement bonus
+                if p == W_MAN: val += r * 0.5
+                if p == B_MAN: val += (7 - r) * 0.5
+                
+                # Edge safety/Control
+                if c == 0 or c == 7: val += 0.5
+                
+                # Calculate score relative to the policy's color
+                if color == 'w':
+                    score += val if p > 0 else -val
+                else:
+                    score += val if p < 0 else -val
+        return score
+
+    # --- Minimax with Alpha-Beta Pruning ---
+    def minimax(bd, depth, alpha, beta, is_maximizing, start_time, turn_color_str):
+        # Time check
+        if time.time() - start_time > 0.95:
+            return evaluate(bd)
+            
+        if depth == 0:
+            return evaluate(bd)
+            
+        moves = get_all_moves(bd, turn_color_str)
+        
+        if not moves:
+            # Game over state for this branch
+            return -10000 if is_maximizing else 10000
+            
+        # Move ordering to improve pruning
+        # Prioritize captures (distance 2) and promotions
+        def sort_key(m):
+            fr, fc = m[0]
+            tr, tc = m[1]
+            p = bd[fr][fc]
+            score = 0
+            if abs(fr - tr) == 2: score += 20 # Capture priority
+            if color == 'w' and tr == 7 and p == W_MAN: score += 10
+            if color == 'b' and tr == 0 and p == B_MAN: score += 10
+            return score
+
+        moves.sort(key=sort_key, reverse=True)
+        
+        next_turn = 'w' if turn_color_str == 'b' else 'b'
+        
+        if is_maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                fr, fc = move[0]
+                tr, tc = move[1]
+                nb = deepcopy(bd)
+                p = nb[fr][fc]
+                nb[fr][fc] = EMPTY
+                
+                if abs(fr - tr) == 2:
+                    mr, mc = (fr+tr)//2, (fc+tc)//2
+                    nb[mr][mc] = EMPTY
+                    # Promotion check for jumps
+                    if p == W_MAN and tr == 7: p = W_KING
+                    if p == B_MAN and tr == 0: p = B_KING
+                
+                nb[tr][tc] = p
+                # Promotion check for slides
+                if p == W_MAN and tr == 7: nb[tr][tc] = W_KING
+                if p == B_MAN and tr == 0: nb[tr][tc] = B_KING
+                
+                eval_score = minimax(nb, depth - 1, alpha, beta, False, start_time, next_turn)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                fr, fc = move[0]
+                tr, tc = move[1]
+                nb = deepcopy(bd)
+                p = nb[fr][fc]
+                nb[fr][fc] = EMPTY
+                
+                if abs(fr - tr) == 2:
+                    mr, mc = (fr+tr)//2, (fc+tc)//2
+                    nb[mr][mc] = EMPTY
+                    if p == W_MAN and tr == 7: p = W_KING
+                    if p == B_MAN and tr == 0: p = B_KING
+                
+                nb[tr][tc] = p
+                if p == W_MAN and tr == 7: nb[tr][tc] = W_KING
+                if p == B_MAN and tr == 0: nb[tr][tc] = B_KING
+                
+                eval_score = minimax(nb, depth - 1, alpha, beta, True, start_time, next_turn)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # --- Main Execution ---
+    start_time = time.time()
+    legal_moves = get_all_moves(board, color)
+    
+    if not legal_moves:
+        # Should not happen in a valid game state, but return a safe dummy to crash cleanly
+        return ((0,0), (0,0))
+        
+    # Shuffle moves to add randomness to equal-scoring strategies
+    random.shuffle(legal_moves)
+    
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    # Depth 3 search (Root + recursion depth 2)
+    SEARCH_DEPTH = 2 
+    
+    for move in legal_moves:
+        # Check time
+        if time.time() - start_time > 0.95:
+            break
+            
+        fr, fc = move[0]
+        tr, tc = move[1]
+        nb = deepcopy(board)
+        p = nb[fr][fc]
+        nb[fr][fc] = EMPTY
+        
+        if abs(fr - tr) == 2:
+            mr, mc = (fr+tr)//2, (fc+tc)//2
+            nb[mr][mc] = EMPTY
+            if p == W_MAN and tr == 7: p = W_KING
+            if p == B_MAN and tr == 0: p = B_KING
+            
+        nb[tr][tc] = p
+        if p == W_MAN and tr == 7: nb[tr][tc] = W_KING
+        if p == B_MAN and tr == 0: nb[tr][tc] = B_KING
+        
+        # Call minimax for the opponent (minimizing)
+        score = minimax(nb, SEARCH_DEPTH, -float('inf'), float('inf'), False, start_time, 'w' if color == 'b' else 'b')
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move
+</code>

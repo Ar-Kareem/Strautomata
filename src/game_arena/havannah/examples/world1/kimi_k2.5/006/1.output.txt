@@ -1,0 +1,276 @@
+The strategy for this policy is to use a combination of immediate threat detection and heuristic board evaluation. The policy prioritizes:
+
+1. **Immediate win detection**: Checks if any available move creates a bridge (connects two corners), a fork (connects three edges), or a ring (encircles cells).
+2. **Threat blocking**: Blocks opponent moves that would win immediately.
+3. **Connectivity heuristic**: Evaluates moves based on:
+   - Proximity to friendly stones (encourages group formation)
+   - Distance to board center (early game control)
+   - Number of friendly neighbors (local connectivity)
+   - Distance to corners (for bridge potential)
+
+The board uses an offset coordinate system where even and odd rows have different diagonal neighbor offsets. The six corners of the 15x15 Havannah board are dynamically identified as the cells with the minimum/maximum row/column coordinates on the valid hexagonal grid.
+
+<code>
+import numpy as np
+from collections import deque
+
+# Board dimensions
+N = 15
+
+def get_neighbors(r, c):
+    """Get the 6 neighbor coordinates for a cell in odd-r horizontal layout."""
+    if r % 2 == 0:
+        # Even row: diagonals go up
+        return [(r-1, c), (r+1, c), (r-1, c-1), (r, c-1), (r-1, c+1), (r, c+1)]
+    else:
+        # Odd row: diagonals go down
+        return [(r-1, c), (r+1, c), (r, c-1), (r+1, c-1), (r, c+1), (r+1, c+1)]
+
+def get_valid_neighbors(r, c, valid_mask):
+    """Filter neighbors to only valid board cells."""
+    neighbors = []
+    for nr, nc in get_neighbors(r, c):
+        if 0 <= nr < N and 0 <= nc < N and valid_mask[nr, nc]:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def find_corners_and_edges(valid_mask):
+    """Identify the 6 corners and 6 edge regions of the hexagonal board."""
+    # Find all valid cells
+    valid_cells = set()
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r, c]:
+                valid_cells.add((r, c))
+    
+    if not valid_cells:
+        return [], [set() for _ in range(6)]
+    
+    # Corners are cells with only 2 or 3 neighbors within the valid grid
+    corners = []
+    for r, c in valid_cells:
+        ncount = sum(1 for nr, nc in get_neighbors(r, c) 
+                    if (nr, nc) in valid_cells)
+        if ncount <= 3:
+            corners.append((r, c))
+    
+    # Ensure we have 6 corners, sort them in hex order
+    if len(corners) >= 6:
+        # Sort by angle around center
+        center_r = sum(r for r, c in corners) / len(corners)
+        center_c = sum(c for r, c in corners) / len(corners)
+        
+        def angle(item):
+            r, c = item
+            return np.arctan2(r - center_r, c - center_c)
+        corners.sort(key=angle)
+    elif len(corners) < 4:
+        # Fallback: extreme points
+        corners = [
+            (0, N//2), (N//2, N-1), (N-1, N//2), (N//2, 0)
+        ]
+    
+    # Identify edges: cells on boundary between corners
+    edges = [set() for _ in range(6)]
+    # Simplified edge detection: cells with < 6 valid neighbors are boundary
+    boundary = set()
+    for r, c in valid_cells:
+        ncount = sum(1 for nr, nc in get_neighbors(r, c) 
+                    if (nr, nc) in valid_cells)
+        if ncount < 6:
+            boundary.add((r, c))
+    
+    return corners, edges, boundary
+
+def is_connected_to_any(stones_set, starts, targets, valid_mask):
+    """BFS to check if any start connects to any target."""
+    if not starts or not targets:
+        return False
+    targets = set(targets) & stones_set
+    if not targets:
+        return False
+    starts = set(starts) & stones_set
+    if not starts:
+        return False
+    
+    visited = set()
+    queue = deque(starts)
+    visited.update(starts)
+    
+    while queue:
+        curr = queue.popleft()
+        if curr in targets:
+            return True
+        for nb in get_valid_neighbors(*curr, valid_mask):
+            if nb in stones_set and nb not in visited:
+                visited.add(nb)
+                queue.append(nb)
+    return False
+
+def check_win(stones_set, move, corners, edges, boundary, valid_mask):
+    """Check if stones_set (including move) forms a winning structure."""
+    if not stones_set:
+        return False
+    
+    stones_set = set(stones_set)
+    
+    # Check Bridge: connect any 2 corners
+    corner_stones = [c for c in corners if c in stones_set]
+    if len(corner_stones) >= 2:
+        # Check if any two corners are connected
+        for i in range(len(corner_stones)):
+            for j in range(i+1, len(corner_stones)):
+                if is_connected_to_any(stones_set, [corner_stones[i]], [corner_stones[j]], valid_mask):
+                    return True
+    
+    # Check Fork: connect 3 edges
+    # Simplified: check if component touches 3 boundary regions
+    if len(boundary) > 0:
+        # Find which boundary regions (simplified as just boundary cells) are connected
+        # Group boundary cells by connected component
+        visited = set()
+        for start in stones_set:
+            if start in visited:
+                continue
+            # BFS this component
+            comp = set()
+            queue = deque([start])
+            visited.add(start)
+            comp.add(start)
+            touches_boundary = 0
+            
+            while queue:
+                curr = queue.popleft()
+                if curr in boundary:
+                    touches_boundary += 1
+                for nb in get_valid_neighbors(*curr, valid_mask):
+                    if nb in stones_set and nb not in visited:
+                        visited.add(nb)
+                        queue.append(nb)
+                        comp.add(nb)
+            
+            # A fork requires touching 3 non-adjacent edges
+            # Simplified check: component touches boundary in 3+ distinct "areas"
+            # For robustness, we check if boundary touches are far apart
+            if touches_boundary >= 3:
+                return True
+    
+    # Check Ring: encircle at least one cell
+    # Simplified: check if move creates a cycle using union-find or DFS
+    # For efficiency in 1 second, we use a simpler heuristic:
+    # If the stone has 3+ neighbors in the set, it might be completing a ring
+    if move in stones_set:
+        neighbors_in_set = sum(1 for nb in get_valid_neighbors(*move, valid_mask) if nb in stones_set)
+        if neighbors_in_set >= 3:
+            # Check if there's an enclosed empty cell
+            # BFS from neighbors to see if any empty cell is surrounded
+            empty_neighbors = [nb for nb in get_valid_neighbors(*move, valid_mask) if nb not in stones_set]
+            for empty_cell in empty_neighbors:
+                # Check if empty_cell is surrounded by stones or boundary
+                surrounded = True
+                for nb in get_valid_neighbors(*empty_cell, valid_mask):
+                    if nb not in stones_set and nb != move:
+                        surrounded = False
+                        break
+                if surrounded:
+                    return True
+    
+    return False
+
+def evaluate_move(r, c, me_set, opp_set, valid_mask, corners, center):
+    """Heuristic evaluation of a move."""
+    score = 0
+    
+    # Distance to center (prefer center)
+    dist_center = abs(r - center[0]) + abs(c - center[1])
+    score -= dist_center * 2
+    
+    # Connection to existing stones
+    my_neighbors = 0
+    opp_neighbors = 0
+    for nb in get_valid_neighbors(r, c, valid_mask):
+        if nb in me_set:
+            my_neighbors += 1
+            score += 10  # Connecting to friendly
+        elif nb in opp_set:
+            opp_neighbors += 1
+            score += 3   # Blocking opponent
+    
+    # Prefer cells with more neighbors (center vs edge)
+    valid_n = len(get_valid_neighbors(r, c, valid_mask))
+    score += valid_n * 2
+    
+    # Proximity to corners for bridge potential
+    for cr, cc in corners:
+        dist = abs(r - cr) + abs(c - cc)
+        if dist < 3:
+            score += 5
+    
+    return score
+
+def policy(me, opp, valid_mask):
+    """Main policy function."""
+    # Convert inputs
+    valid_mask = np.array(valid_mask, dtype=bool)
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Get valid empty cells
+    candidates = []
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r, c] and (r, c) not in me_set and (r, c) not in opp_set:
+                candidates.append((r, c))
+    
+    if not candidates:
+        return (0, 0)  # Should not happen
+    
+    # Precompute board topology (could be cached but computed here for safety)
+    corners, edges, boundary = find_corners_and_edges(valid_mask)
+    
+    # Ensure we have corners
+    if not corners:
+        corners = [(0, N//2), (N-1, N//2), (N//2, 0), (N//2, N-1)]
+    
+    # Calculate center
+    valid_coords = np.where(valid_mask)
+    center = (np.mean(valid_coords[0]), np.mean(valid_coords[1]))
+    
+    # Check for immediate win
+    for r, c in candidates:
+        me_set.add((r, c))
+        if check_win(me_set, (r, c), corners, edges, boundary, valid_mask):
+            return (r, c)
+        me_set.remove((r, c))
+    
+    # Check for opponent immediate win (block)
+    blocking_moves = []
+    for r, c in candidates:
+        opp_set.add((r, c))
+        if check_win(opp_set, (r, c), corners, edges, boundary, valid_mask):
+            blocking_moves.append((r, c))
+        opp_set.remove((r, c))
+    
+    if blocking_moves:
+        # Evaluate which block is best
+        best_block = blocking_moves[0]
+        best_score = -9999
+        for r, c in blocking_moves:
+            score = evaluate_move(r, c, me_set, opp_set, valid_mask, corners, center)
+            if score > best_score:
+                best_score = score
+                best_block = (r, c)
+        return best_block
+    
+    # Evaluate all candidates and pick best
+    best_move = candidates[0]
+    best_score = -9999
+    
+    for r, c in candidates:
+        score = evaluate_move(r, c, me_set, opp_set, valid_mask, corners, center)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    return best_move
+</code>

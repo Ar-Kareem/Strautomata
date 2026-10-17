@@ -1,0 +1,390 @@
+<thinking>
+We need to implement a policy function that selects a move in Kalah. Since we're in a competitive environment, we want a strong policy. Since we have 1 second, we can implement a simple heuristic or even a minimax search with alpha-beta pruning.
+
+The board has 6 houses per side, so 12 houses total plus 2 stores. The branching factor is up to 6. We can search to a reasonable depth.
+
+We need to consider:
+- The extra move rule: landing in your store gives another turn.
+- The capture rule: landing in your empty house (which was empty before the drop) opposite a non-empty opponent house captures both.
+
+We also need to handle the endgame: when one side's houses are empty, the other side collects remaining seeds.
+
+We'll implement a minimax with alpha-beta pruning, with a heuristic evaluation function.
+
+Evaluation function ideas:
+- Difference in store seeds (you[6] - opponent[6])
+- Difference in total seeds on your side vs opponent side (potential mobility)
+- Extra move opportunities
+- Capture opportunities
+
+We can also implement a simple rule-based policy as fallback, but we'll try to do a search.
+
+Depth: With 6 moves, depth 8 would be 6^8 = 1.6 million nodes, which is okay within 1 second if we implement efficiently. But we also need to simulate moves which takes some time. Maybe depth 6-7 is safer.
+
+We need to simulate a move correctly. Let's write a function simulate_move(you, opponent, move) that returns (new_you, new_opponent, extra_turn).
+
+Rules for simulation:
+1. Pick seeds from you[move].
+2. Distribute counter-clockwise, skipping opponent's store.
+
+Implementation details:
+- We have two lists: you and opponent.
+- We can think of a circular order: you[0..5], you[6], opponent[0..5], opponent[6] but skip opponent[6].
+- Actually, the order is: you[move+1..5], you[6], opponent[0..5], you[0..5], you[6], ... skipping opponent[6].
+
+We can implement distribution by maintaining a current side and index.
+
+Pseudo:
+seeds = you[move]
+you[move] = 0
+side = 0 (0 for you, 1 for opponent)
+pos = move + 1 if side == 0 else 0
+
+while seeds > 0:
+    if side == 0: # your side
+        if pos == 6: # your store
+            you[6] += 1
+            seeds -= 1
+            last_was_store = (seeds == 0)
+            if seeds == 0:
+                break
+            # after store, switch to opponent side
+            side = 1
+            pos = 0
+        else:
+            you[pos] += 1
+            seeds -= 1
+            last_house = (side == 0, pos)
+            pos += 1
+            if pos > 5:
+                # move to store?
+                # actually after house 5, next is store at index 6
+                # but we handle store in next iteration
+                pass
+    else: # opponent side
+        if pos == 6: # opponent store, skip
+            side = 0
+            pos = 0
+            continue
+        else:
+            opponent[pos] += 1
+            seeds -= 1
+            last_house = (side == 1, pos)
+            pos += 1
+            if pos > 5:
+                # after opponent's house 5, we go to your side house 0
+                side = 0
+                pos = 0
+
+After distribution:
+- If last seed landed in your store (last_was_store), extra_turn = True.
+- Else if last seed landed in your house (side==0 and pos <6) and that house had 0 before the drop (we need to track pre-count) and the opposite opponent house has >0, then capture.
+
+We need to know the state of the house before the drop. We can track the count before we increment.
+
+Better: we can simulate by copying the boards and then step by step.
+
+We'll write a function make_move(you, opponent, move) that returns (new_you, new_opponent, extra_turn).
+
+We also need to check for game end: if after move, one side's houses are all zero, then the other side collects all seeds.
+
+But in the search, we can evaluate terminal positions.
+
+Heuristic evaluation:
+We can use:
+score = (you[6] - opponent[6]) + 0.1 * (sum(you[0:6]) - sum(opponent[0:6]))
+
+But we might want to weight captures and extra moves more. However, the search should account for those.
+
+We can also add a bonus for having more moves available (mobility).
+
+Given time, we'll implement a basic minimax with alpha-beta and a simple evaluation.
+
+We'll limit depth by a parameter, say depth=8. We'll also use iterative deepening to use time better.
+
+We need to return a move from policy. We'll run minimax search from the current state, maximizing for the player to move.
+
+Since we are always the player to move, we can call minimax for each legal move.
+
+We'll implement a negamax framework for simplicity.
+
+Pseudo:
+
+def evaluate(you, opponent):
+    return you[6] - opponent[6] + 0.1 * (sum(you[0:6]) - sum(opponent[0:6]))
+
+def negamax(you, opponent, depth, alpha, beta, color):
+    if depth == 0 or game_over(you, opponent):
+        return color * evaluate(you, opponent)
+    
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        # no move, game over
+        return color * evaluate(you, opponent)
+    
+    best_value = -inf
+    for move in legal_moves:
+        new_you, new_opponent, extra_turn = make_move(you.copy(), opponent.copy(), move)
+        if extra_turn:
+            # same player moves again
+            value = negamax(new_you, new_opponent, depth-1, alpha, beta, color)
+        else:
+            # opponent's turn, color switches
+            value = -negamax(new_opponent, new_you, depth-1, -beta, -alpha, -color)
+        
+        if value > best_value:
+            best_value = value
+        
+        alpha = max(alpha, value)
+        if alpha >= beta:
+            break
+    
+    return best_value
+
+We need to handle the color parameter: color = 1 for maximizing player (us), -1 for minimizing.
+
+In the root, we call negamax for each move and pick the best.
+
+We also need to handle the endgame collection: when one side's houses are empty, the other side collects all seeds. We can incorporate that in evaluate by simulating the collection if game_over.
+
+But we also need to check game_over in the search.
+
+We'll write a function is_terminal(you, opponent) that checks if either side's houses are all zero.
+
+If terminal, we compute the final score: you[6] + sum(you[0:6]) - (opponent[6] + sum(opponent[0:6]))
+
+We should also handle the case where after a move, the game ends. In make_move, we could check if after the move, one side's houses are empty, then collect. But the rules say: after a move, if one player has no seeds in all houses, the other player moves all remaining seeds into their store. So we need to do that.
+
+We'll write a function collect_remaining(you, opponent) that, given the board, if one side's houses are empty, adds the other side's houses to their store and zeroes them.
+
+We'll call it after each move.
+
+Now, implement make_move.
+
+Let's code step by step.
+
+We'll also consider performance: we'll use list copies. Since depth is limited, it's okay.
+
+We'll also consider using tuple for state to use memoization? But with alpha-beta, it might not be necessary.
+
+We'll implement iterative deepening with time limit? But we only have 1 second, we can set a fixed depth that runs within time.
+
+We'll test with typical board: each house starts with 4 seeds.
+
+Depth 8 might be okay. Let's implement.
+
+We'll also add a simple heuristic to order moves: moves that capture or give extra turn might be better.
+
+We'll order legal moves by: extra move first, then capture, then others.
+
+Now, let's write the code.
+</thinking>
+<code>
+import copy
+import math
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Return the best move (0-5) for the current player.
+    Uses negamax search with alpha-beta pruning.
+    """
+    # Use iterative deepening with a time limit approximation (depth limit)
+    # We'll search up to depth 8, which should be safe within 1 second.
+    max_depth = 8
+    
+    def evaluate(state):
+        """Heuristic evaluation of the board from the perspective of the player to move."""
+        you_state, opp_state = state
+        # Difference in stores plus a small weight for seeds on own side (potential)
+        store_diff = you_state[6] - opp_state[6]
+        seeds_diff = sum(you_state[0:6]) - sum(opp_state[0:6])
+        return store_diff + 0.1 * seeds_diff
+    
+    def is_terminal(state):
+        """Check if the game is over (one side's houses are all empty)."""
+        you_state, opp_state = state
+        return sum(you_state[0:6]) == 0 or sum(opp_state[0:6]) == 0
+    
+    def collect_remaining(state):
+        """
+        If one player has no seeds in houses, the other player collects all remaining seeds.
+        Modifies the state in-place.
+        """
+        you_state, opp_state = state
+        if sum(you_state[0:6]) == 0:
+            # opponent collects remaining seeds
+            opp_state[6] += sum(opp_state[0:6])
+            for i in range(6):
+                opp_state[i] = 0
+        elif sum(opp_state[0:6]) == 0:
+            # you collect remaining seeds
+            you_state[6] += sum(you_state[0:6])
+            for i in range(6):
+                you_state[i] = 0
+    
+    def make_move(state, move):
+        """
+        Simulate a move for the player to move.
+        state: (you, opponent) where 'you' is the player to move.
+        move: index 0-5 (must be legal).
+        Returns (new_state, extra_turn).
+        """
+        you_state, opp_state = state
+        you = you_state.copy()
+        opponent = opp_state.copy()
+        
+        seeds = you[move]
+        you[move] = 0
+        side = 0  # 0: current player's side, 1: opponent's side
+        pos = move + 1
+        
+        last_was_store = False
+        last_side = -1
+        last_pos = -1
+        
+        # Track the count of the last house before dropping the seed (for capture)
+        # We'll record the state just before the last seed is placed.
+        # Instead, we can remember the house that received the last seed.
+        while seeds > 0:
+            if side == 0:
+                if pos == 6:
+                    you[6] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        last_was_store = True
+                        break
+                    # after store, switch to opponent side
+                    side = 1
+                    pos = 0
+                else:
+                    you[pos] += 1
+                    seeds -= 1
+                    last_side = 0
+                    last_pos = pos
+                    pos += 1
+                    if pos > 5:
+                        # next is store (handled in next iteration)
+                        pass
+            else:
+                if pos == 6:
+                    # opponent's store is skipped
+                    side = 0
+                    pos = 0
+                    continue
+                else:
+                    opponent[pos] += 1
+                    seeds -= 1
+                    last_side = 1
+                    last_pos = pos
+                    pos += 1
+                    if pos > 5:
+                        # after opponent's last house, go to player's side house 0
+                        side = 0
+                        pos = 0
+        
+        extra_turn = last_was_store
+        
+        # Capture rule
+        if not last_was_store and last_side == 0:
+            # last seed landed in player's own house
+            if you[last_pos] == 1:  # it was empty before the drop (now has 1)
+                opposite_index = 5 - last_pos
+                if opponent[opposite_index] > 0:
+                    # capture
+                    you[6] += you[last_pos] + opponent[opposite_index]
+                    you[last_pos] = 0
+                    opponent[opposite_index] = 0
+        
+        # Check for endgame collection
+        collect_remaining((you, opponent))
+        
+        return ((you, opponent), extra_turn)
+    
+    def negamax(state, depth, alpha, beta, color):
+        """
+        Negamax search with alpha-beta pruning.
+        color: 1 for maximizing player (the player to move at root), -1 for minimizing.
+        """
+        you_state, opp_state = state
+        
+        # Terminal node or depth limit
+        if depth == 0 or is_terminal(state):
+            return color * evaluate(state)
+        
+        # Generate legal moves
+        legal_moves = [i for i in range(6) if you_state[i] > 0]
+        if not legal_moves:
+            # no move, game over
+            return color * evaluate(state)
+        
+        # Move ordering: extra move moves first, then captures, then others
+        def move_priority(move):
+            # simulate quickly to see if it gives extra move or capture
+            # we can do a quick simulation without full board copy for ordering
+            # but for simplicity, we'll just use the move index (heuristic: higher houses often better)
+            # Actually, we can compute a simple heuristic: extra move if (you[move] == (6 - move))
+            # because landing in store requires exact distance.
+            # For capture: if you[move] leads to landing in empty house opposite non-empty.
+            # We'll do a quick check without full simulation.
+            seeds = you_state[move]
+            # compute landing position if we skip opponent's store
+            # The store is at index 6, but we need to consider the circular path.
+            # We'll just use a simple priority: moves that are more likely to give extra move or capture.
+            # For extra move: if (you_state[move] == (6 - move)) -> leads to store.
+            if you_state[move] == (6 - move):
+                return 2  # extra move
+            # For capture: after distributing seeds, the last seed lands at (move + seeds) % 12 (skipping opponent store)
+            # Actually, we need to compute modulo 13? Because there are 14 positions but opponent store is skipped.
+            # Instead, we'll just return 1 for moves that are not obviously bad.
+            return 0
+        
+        legal_moves.sort(key=move_priority, reverse=True)
+        
+        best_value = -math.inf
+        for move in legal_moves:
+            new_state, extra_turn = make_move(state, move)
+            if extra_turn:
+                # same player moves again
+                value = negamax(new_state, depth-1, alpha, beta, color)
+            else:
+                # opponent's turn
+                value = -negamax((new_state[1], new_state[0]), depth-1, -beta, -alpha, -color)
+            
+            if value > best_value:
+                best_value = value
+            
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        
+        return best_value
+    
+    # Root call: find best move
+    best_move = None
+    best_value = -math.inf
+    alpha = -math.inf
+    beta = math.inf
+    
+    # Get legal moves
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    
+    # If only one move, return it
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Try each move with negamax
+    for move in legal_moves:
+        new_state, extra_turn = make_move((you, opponent), move)
+        if extra_turn:
+            value = negamax(new_state, max_depth-1, alpha, beta, 1)
+        else:
+            value = -negamax((new_state[1], new_state[0]), max_depth-1, -beta, -alpha, -1)
+        
+        if value > best_value:
+            best_value = value
+            best_move = move
+        
+        alpha = max(alpha, value)
+    
+    return best_move
+</code>

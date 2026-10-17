@@ -1,0 +1,351 @@
+<thinking>
+This is a Kalah policy implementation problem. I need to create a move selection policy that chooses the best legal move.
+
+Key considerations for a good policy:
+1. **Immediate capture**: If a move allows me to capture opponent seeds, that's typically very good
+2. **Extra move**: If a move ends in my store, I get another turn (can be powerful) 
+3. **Strategic placement**: Moving seeds to positions that might enable future captures or extra moves
+4. **Avoiding emptying my side**: Helps prevent opponent from getting a big advantage
+5. **Opening moves**: During early game, spreading seeds relatively evenly might be good
+
+My approach:
+1. Evaluate all 6 possible moves (0-5)
+2. For each move, simulate its effect 
+3. Score each move based on:
+   - Immediate capture potential (would capture seeds)
+   - Extra move potential (ends in store)  
+   - Potential for future captures (leaving seeds in positions where they might become useful)
+   - Avoiding moves that might help opponent
+
+A simple heuristic would be to prioritize moves that:
+- Lead to capture
+- Lead to extra turn
+- Distribute seeds more evenly
+
+For simplicity, I'll implement a basic greedy approach: try each move, simulate, count my new store seeds (with captures), and pick the one that maximizes expected value.
+
+Actually, the problem is simpler than I thought. I should just pick the move that gives the best immediate outcome. Let me think of a decent heuristic.
+
+Let me implement a straightforward but reasonable policy:
+1.  Try to make a move with large captures
+2.  Prefer moves that give extra turn 
+3.  Prefer moves that have good potential long-term
+4.  For tie-breaking, prefer moves that keep seeds distributed
+
+I'll add a simplified evaluation function that computes the outcome of each move and select the one with maximum score. The score can be based on new store seeds after capture, extra turn, and how much future capture potential is created.
+
+However there is a mathematical way to determine the win/draw/loss outcome but that would be complex to implement. A simple but decent game theory suggestion is to prefer moves that create captures or extra turns, and think strategically about the endgame.
+
+Looking again, I should think about:
+1. What are the risks of my opponent?
+2. How do my moves affect their ability to capture?
+3. Can I use "receiving seeds" strategically?
+
+For a more strategic but simple solution, I'll evaluate:
+1. move that gives immediate capture, prioritize
+2. move that gives extra turn, second priority  
+3. move that sets up long-term ability to capture
+4. all else equal, try to not empty my houses completely
+
+Let me code something rational.
+</thinking>
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate_move(houses, opp_houses, move_index):
+        # Create copies to avoid modifying originals
+        you_houses = houses[:]
+        opp_houses_copy = opp_houses[:]
+        
+        seeds = you_houses[move_index]
+        you_houses[move_index] = 0
+        
+        # Place seeds in order: your houses (right to left), your store, opponent houses (left to right)
+        current_houses = you_houses + [you_houses[6]] + opp_houses_copy
+        pos = move_index + 1  # starting position (after the moved house)
+        
+        for _ in range(seeds):
+            if pos <= 5:  # your houses (0 to 5)
+                current_houses[pos] += 1
+            elif pos == 6:  # your store
+                current_houses[pos] += 1
+            elif pos <= 12:  # opponent houses (7 to 12 = opp[0] to opp[5])
+                current_houses[pos] += 1
+            else:  # back to your houses (13 to 18 = you[0] to you[5])
+                current_houses[pos - 13] += 1
+            pos += 1
+            
+        # Reconstruct the game state
+        new_you = current_houses[:6]
+        new_you_store = current_houses[6]
+        new_opp = current_houses[7:13]
+        
+        # Check if we landed in own store (extra move)
+        extra_move = (pos - 1) == 6  # our store is at index 6 in current_houses
+        
+        # Check capture conditions
+        # Last seed was placed at (pos-1) in the cycle
+        # Map it back to real positions
+        #
+        # The actual placement cycle is:
+        # 0 (houses[0]) ... 5 (houses[5]) -> 6 (store) -> 7 (opp[0]) ... 12 (opp[5]) -> 0 (houses[0])
+        last_house_index = (pos - 1) % 13  # map to 0-12
+        
+        # Normal logic - if last drop is in my house (and was empty before)
+        # and that house is empty in final state, it means seed was originally empty
+        # This is simpler:
+        # If we place last seed in one of your houses (0 to 5) and 
+        # if that house (before move) was empty but now isn't and 
+        # the opposite house had seeds
+        
+        # Calculate index in original homes (0-6)
+        if last_house_index <= 5:
+            restored_house_index = last_house_index
+            # Check if the house was empty originally (our seed used to be 0)
+            # But we will also want to know if it was empty in the spot we're now pointing to
+            # The situation is: last seed dropped in position (pos-1) modulo 13
+            
+            # If landing on our house and already has a seed, we're not capturing
+            if new_you[restored_house_index] == 1 and you_houses[move_index] == 0:
+                # Hmm, no, we are landing on some location.
+                # Actually just easier to simulate and track where we land:
+                
+                # New code:
+                if last_house_index <= 5:
+                    # It landed in one of my houses (0 to 5)  
+                    landing_house = last_house_index
+                    landing_house_old_value = you_houses[landing_house]  # This is now the state that the seed *came from*
+                    # We're checking if we can capture
+                    # Supposing seed in landing_house was 0 (empty), and that last seed was placed there (after our original place)
+                    # If the whole house was empty, and now it has 1 seed placed,
+                    # and the opponent's house directly opposite has > 0 seeds,
+                    # then this captures
+                    opposite_house = 5 - landing_house  # 5 is the opposing spot
+                    # We know that if we visit that position last, 
+                    # we're in our houses (0-5) 
+                    # The original state of that position is what matters to for capture logic
+                    capture = False
+                    # The move spread seeds from house `move_index`
+                    # If last seed is in house `landing_house` (same as `pos-1 %13` == landing_house) 
+                    # and that was originally empty, 
+                    # and that house is empty now
+                    # and the opposite side had seeds
+                    # but this test is tricky because we just placed one there
+                    # practically, let's just simulate and check capture based on final state.
+                    # Plain approach: 
+                    # If in final, this house is empty (if it was 0, it's now 1 after move) = 0+1 =1
+                    # So it means new_where_it_is = 0, so it never got battered by previous drop, and it was like a '0' 
+                    
+                    # If landed in my house, and it was originally 0, and if the opposite had points, then we capture those
+                    # but there's an extra nuance - which drop was it? last drop landed on that house.
+                    # Let's think one more time:
+                    # Last drop landed in index `last_house_index`. If this is 0-5: 
+                    # we started from move_index and advanced some number of spaces.
+                    # The last of the seeds moved to the house `last_house_index` in our_player state.
+                    # That deposit was balanced when last index was last_house_index.
+                    # if we added 1 there and it just happened to be at the position where a grab was triggered
+                    # we need to know if it took a net 1 from earlier landings as long as that first 
+                    # over the 1 is fully in this position. We want to know the following:
+                    # if *this drop* happened in same position (last_house_index) and this was previous 0, and 
+                    # opposite [5 - last_house_index] is more than 0: then capture!
+                    # What we want to know: was the house we're landing in "empty before this move"?
+                    if new_you[landing_house] == 1 and you_houses[landing_house] == 0:
+                        # 'SEED IS NOW AT 1, AND WAS ORIGINALLY AT 0'
+                        # This is usual case of capture.
+                        # What we must check: did the last drop land there AND it was empty before it 
+                        # AND opposed had anything 
+                        if opp_houses_copy[opposite_house] > 0:
+                            capture = True
+                            capture_seeds = opp_houses_copy[opposite_house]
+                            # Capture it
+                            new_you[landing_house] = 0  # the added seed collected
+                            new_opp[opposite_house] = 0  # removed from opponent
+                            new_you_store += capture_seeds + 1  # +1 from collected seed we're moving
+                        
+                        # To avoid multiple loops, just using 1 method then:
+                        
+                    # For simplicity: we compute the move, logic matches how game goes.
+                    # Can compute base 13 positions, from which we learn where to place, 
+                    # the new structure, and from final finish we can extract the changes.
+                    # What's easier: Direct computation of seeds dropped seems more precise.
+                        
+        # Here's a clean version:
+        # During placement, calculate the last index we place at (flowing through cycle)
+        # then based on that, check capture conditions:
+        
+        # Reset simulation logic
+        new_you_final = you_houses[:]
+        new_opp_final = opp_houses_copy[:]
+        
+        # The home cannot be empty before scramble - let's keep copy
+        seeds_left = you_houses[move_index]
+        new_you_final[move_index] = 0  # will be placed, so 0
+        
+        # Compute where we place all seeds
+        init_house = move_index + 1
+        cycle = list(range(0,6)) + [6] + list(range(0,6))  # 0-5 + store + 0-5
+        # uplift by 1 so 0 becomes 1 and so on to not collide with house zero
+        
+        # Position we drop the very last seed
+        last_index = (init_house + seeds_left - 1) % 13
+        
+        # House was indexed from 0 to 5 for our side, 6 for store, 0 to 5 for opponent
+        # Last index in rotation (positions 0 to 12) could be:
+        # [0,1,2,3,4,5] -> you side (0,6) 
+        # [7,8,9,10,11,12] -> opponent side
+        # But if it lands at last_index, it maps to: 
+        # 0-5 -> our houses 
+        # 6 -> our store
+        # 7-12 -> opponent houses (in reverse)
+        # which gives: 0 map 0, 1 map 1, etc to 6 map 6 (our store)
+        #            7 map 5 (opponent[0]), 8 map 4, 9 map 3, ..., 12 map 0 (opponent[5])
+        # To get target index for current combined array 
+        # if last_index <= 5 then final_pos = last_index (our house)
+        # else if last_index == 6 then final_pos = 6 (our store)  
+        # else if 7 <= last_index <= 12 then final_pos = 12 - last_index (mirror)
+        final_house_index = 0
+        if last_index <= 5:
+            final_house_index = last_index
+        elif last_index == 6:
+            final_house_index = 6
+        else:  # 7 <= last_index <= 12  
+            final_house_index = 12 - last_index  ## Opponent side mapping reverse
+        
+        # Now we know where seed was placed last
+        
+        # Place each seed in correct positions  
+        pos = init_house
+        for i in range(seeds_left):
+            pos_mod = pos % 13
+            if pos_mod <= 5:
+                new_you_final[pos_mod] += 1
+            elif pos_mod == 6:
+                new_you_final[6] += 1
+            else:  # 7 <= pos_mod <=12
+                # Mirror opponent positions 
+                opp_index = 12 - pos_mod
+                new_opp_final[opp_index] += 1
+            pos += 1
+        
+        # Determine if extra move
+        extra_move = (last_index == 6)  # landed in my store
+        capture = False
+        capture_count = 0
+        
+        # Determine capture
+        if 0 <= final_house_index <= 5:  # landed in your house
+            # Before move: you had `you_houses[final_house_index]` seeds 
+            # After move: we added 1 seed == it's now `you_houses[final_house_index] + 1`
+            # But new is 0 due to rules? Hmm - no. shown below when cycle undertakes final assignment
+            
+            # Correct procedure: 
+            # 1. You move no. `j` from `you[j]`)
+            # 2. Set `you[j] = 0`
+            # 3. Place `you[j]` seeds one by one in clockwise order starting `j+1`, wrapping around
+            # 4. Landings are deterministic:  
+            #      indexes in 0-5 (you), 6(store), 7-12 (opponent in reverse)
+            # The actual count is returning to your common cycle phase. Let's just use simulation:
+            
+            after_place_seeds = you_houses.copy()
+            remaining_seeds = you_houses[move_index]
+            # Start placing
+            pos = move_index + 1
+            for i in range(remaining_seeds):
+                # Don't place or drop into our store
+                drop_idx = pos % 13
+                if drop_idx == 6:
+                    after_place_seeds[6] += 1
+                elif drop_idx <= 5:
+                    after_place_seeds[drop_idx] += 1
+                else:  # 7-12  
+                    # Opponent house (mirror)
+                    opp_target = 12 - drop_idx
+                    new_opp_final[opp_target] += 1
+                pos += 1
+            
+            # Final pos is (old_start + seeds - 1) % 13 = last drop index 
+            final_index_in_cycle = (move_index + remaining_seeds - 1) % 13
+            # Map into actual house
+            if final_index_in_cycle <= 5:
+                final_house = final_index_in_cycle
+            elif final_index_in_cycle == 6:
+                final_house = 6
+            else:
+                final_house = 12 - final_index_in_cycle
+                
+            # Check capture:
+            # landed in my house? final_house 0-5
+            # The house was empty in current (before move) state doesn't matter, but what was DURING placement? 
+            # Let's think: when placing last, this is the last drop in house x? 
+            # we're checking: was our house x before placing in specific position, 
+            # so that if the last one landed there, and that specific house was zero stones initially
+            # and opp.x has seeds, then we can capture 
+            # So wait - the wrong thing is we compute what is the FIRST position that 
+            # finished placing `you_houses[move_index]` seeds.
+            # The last placement is at index (move_index + you_houses[move_index] - 1) % 13
+            
+            if 0 <= final_house <= 5:  # landed in your house
+                opposing_opponent_position = 5 - final_house
+                
+                # check if our house is empty currently, and opponent has seeds:
+                if (you_houses[final_house] == 0) and (new_opp_final[opposing_opponent_position] > 0):  
+                    # Now the trick: mixing what was shaped, all starting from 1-6 index in instance
+                    capture = True
+                    capture_count = new_opp_final[opposing_opponent_position] + 1  # Capture 1 + opposing index
+                    # Apply capture to new state
+                    new_you_final[final_house] = 0
+                    new_opp_final[opposing_opponent_position] = 0
+                    new_you_final[6] += capture_count
+                else:
+                    # no capture
+                    pass
+                    
+        # We now know captured, extra move.
+        # To build score, combine all:
+        # new store + capture bonus (capture_count) + elif extra turn bonus
+        final_store = new_you_final[6] + (capture_count if capture else 0)
+        # Prefers early transitions over staying put
+    
+        # A good general heuristic for within valid moves:
+        # Preference: capture > extra_move > outcome goodness
+        capture_bonus = 0
+        if capture:
+            capture_bonus = capture_count
+        
+        if extra_move:
+            return (capture_bonus + 100, 1)  # urgency
+        else:
+            return (capture_bonus, 0)  
+            # prioritize capture and return
+        
+    # Try all non-empty moves
+    best_move = -1
+    best_score = -1
+    extra_move_choice = -1
+    capture_count = 0
+    
+    for i in range(6):
+        if you[i] > 0:  # legal move  
+            score, extra = simulate_move(you, opponent, i)
+            # Must have positive score or at least extra move or capture
+            if score > best_score or extra_move_choice == -1: 
+                # Preference on overwrite: prioritize extra move, then captures
+                if extra == 1:  # extra move is very valuable  
+                    return i
+                elif score > best_score:
+                    best_score = score
+                    best_move = i
+                elif extra == 0 and best_move == -1:
+                    best_move = i
+                    
+            # Optional: return with thorough evaluation
+    if best_move != -1:
+        return best_move
+    
+    # Fallback if all are bad
+    # This case should never occur on well-formed problem statement  
+    for i in range(6):
+        if you[i] > 0:
+            return i
+    
+    return 0  # defensive, though impossible if move is legal
+</code>

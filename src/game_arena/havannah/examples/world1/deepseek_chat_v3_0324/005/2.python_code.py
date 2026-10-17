@@ -1,0 +1,157 @@
+
+import numpy as np
+from collections import deque
+from functools import lru_cache
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    N = 15
+    corners = [(0, 0), (0, N//2), (0, N-1), (N-1, 0), (N-1, N//2), (N-1, N-1)]
+    edges = {
+        'top': [(0, col) for col in range(1, N-1)],
+        'bottom': [(N-1, col) for col in range(1, N-1)],
+        'left': [(row, 0) for row in range(1, N-1)],
+        'right': [(row, N-1) for row in range(1, N-1)],
+        'top_left': [(row, col) for row in range(1, N//2) for col in range(1, N//2) if row + col == N//2],
+        'top_right': [(row, col) for row in range(1, N//2) for col in range(N//2+1, N-1) if row == col - N//2],
+        'bottom_left': [(row, col) for row in range(N//2+1, N-1) for col in range(1, N//2) if row - N//2 == col],
+        'bottom_right': [(row, col) for row in range(N//2+1, N-1) for col in range(N//2+1, N-1) if row + col == N-1 + N//2]
+    }
+    
+    all_edges = [pt for edge in edges.values() for pt in edge]
+    occupied = set(me + opp)
+    
+    # Get all adjacent cells in hexagonal grid
+    @lru_cache(maxsize=None)
+    def get_neighbors(row, col):
+        neighbors = []
+        if row > 0:
+            neighbors.append((row-1, col))  # top
+        if row < N-1:
+            neighbors.append((row+1, col))  # bottom
+        if col > 0:
+            neighbors.append((row, col-1))  # left
+        if col < N-1:
+            neighbors.append((row, col+1))  # right
+        # Diagonal neighbors (hexagonal grid)
+        if (row + col) % 2 == 1:
+            if row > 0 and col < N-1:
+                neighbors.append((row-1, col+1))
+            if row < N-1 and col > 0:
+                neighbors.append((row+1, col-1))
+        else:
+            if row > 0 and col > 0:
+                neighbors.append((row-1, col-1))
+            if row < N-1 and col < N-1:
+                neighbors.append((row+1, col+1))
+        return neighbors
+    
+    # Check if position forms a winning ring
+    def is_ring(stones, last_move):
+        if last_move in corners or last_move in all_edges:
+            return False
+        visited = set()
+        queue = deque([last_move])
+        visited.add(last_move)
+        while queue:
+            current = queue.popleft()
+            for nr, nc in get_neighbors(current[0], current[1]):
+                if (nr, nc) in stones and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        # Check if we have at least 6 stones and form a loop
+        if len(visited) < 6:
+            return False
+        # Simple check for ring (improve this with more sophisticated algorithm)
+        return True
+    
+    def is_bridge(stones):
+        connected_corners = set()
+        for corner in corners:
+            if corner in stones:
+                for c in connected_corners:
+                    if connected(corner, c, stones):
+                        return True
+                connected_corners.add(corner)
+        return False
+    
+    def connected(p1, p2, stones):
+        visited = set()
+        queue = deque([p1])
+        visited.add(p1)
+        while queue:
+            current = queue.popleft()
+            if current == p2:
+                return True
+            for nr, nc in get_neighbors(current[0], current[1]):
+                if (nr, nc) in stones and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        return False
+    
+    def is_fork(stones):
+        connected_edges = set()
+        for edge_name, edge_points in edges.items():
+            for stone in stones:
+                if stone in edge_points:
+                    connected_edges.add(edge_name)
+                    break
+        return len(connected_edges) >= 3
+    
+    # Check if winning move exists for me
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c] and (r, c) not in occupied:
+                new_me = me.copy() + [(r, c)]
+                if is_ring(new_me, (r, c)) or is_bridge(new_me) or is_fork(new_me):
+                    return (r, c)
+    
+    # Check if opponent has winning move in next turn
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c] and (r, c) not in occupied:
+                new_opp = opp.copy() + [(r, c)]
+                if is_ring(new_opp, (r, c)) or is_bridge(new_opp) or is_fork(new_opp):
+                    return (r, c)
+    
+    # If no immediate threats, implement strategic placement
+    # Strategy 1: Prioritize center for maximum flexibility
+    if not me and not opp and valid_mask[7][7]:
+        return (7, 7)
+    
+    # Strategy 2: Build connections between stones
+    best_score = -1
+    best_move = None
+    
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c] and (r, c) not in occupied:
+                score = 0
+                
+                # Score based on proximity to my stones
+                for my_r, my_c in me:
+                    dist = max(abs(r - my_r), abs(c - my_c))
+                    if dist == 0:
+                        continue
+                    score += 1 / dist
+                
+                # Score based on central position
+                dist_to_center = ((r - 7)**2 + (c - 7)**2)**0.5
+                score += (14 - dist_to_center) / 5
+                
+                # Bonus for edges and corners
+                if (r, c) in corners:
+                    score += 2
+                elif (r, c) in all_edges:
+                    score += 1
+                
+                # Bonus for creating potential connections
+                neighbors = get_neighbors(r, c)
+                for nr, nc in neighbors:
+                    if (nr, nc) in me:
+                        score += 0.5
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+    
+    return best_move if best_move is not None else next((r, c) for r in range(N) for c in range(N) if valid_mask[r][c] and (r, c) not in occupied)

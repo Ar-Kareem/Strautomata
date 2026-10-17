@@ -1,0 +1,208 @@
+**Strategy**
+
+The game is a tiny 6 × 6 “Knight‑through” where each side has at most 12 knights.
+A move is a chess‑knight L‑shape (one step sideways, two steps **forward**).  
+* White advances towards row 6, Black towards row 1.  
+* A move that lands on the opposite back‑rank wins immediately.
+
+Because the branching factor is tiny (≈ 24 legal moves at the start and it shrinks as pieces disappear) a short‑depth minimax search with a very simple evaluation is fast enough and gives a strong policy.
+
+**Key ingredients**
+
+| Component | Choice |
+|-----------|--------|
+| Move generation | For the side to move generate every forward knight jump (dx = ±1, dy = +2 for White, –2 for Black) that stays inside the board and does not land on a friendly piece. |
+| Immediate win | If any generated move reaches the opposite back‑rank we play it straight away – no search needed. |
+| Search | Depth‑3 minimax (our move → opponent move → our move) with α‑β pruning. |
+| Evaluation of a leaf | `score = (sum of distances of opponent pieces) – (sum of distances of our pieces)`.  Distance for a white piece = `6‑row`, for a black piece = `row‑1`.  A smaller total distance means a piece is closer to the goal, therefore the difference is larger when we are ahead.  Capturing a piece is implicitly rewarded because it removes an opponent distance from the sum. |
+| Tie‑breaking | The first move that attains the maximal minimax value is returned.  The move generator already yields moves in the order they appear in the state, which is usually the order of the input facts, so the policy is deterministic. |
+
+All operations are on a small dictionary `board[(col_index,row_int)] = "white"|"black"` and copying this dictionary for each search node is cheap ( ≤ 12 entries).
+
+The policy follows the required API:
+
+```python
+def policy(state: list[list[object]], role: str) -> str:
+```
+
+and returns a move in the exact Stanford syntax, e.g. `move(a,1,b,3)`.
+
+---
+
+<code>
+import copy
+from typing import Dict, List, Tuple
+
+# ------------------------------------------------------------
+#  Global constants
+# ------------------------------------------------------------
+COLS = 6
+COL_IDX_TO_LETTER = [chr(ord('a') + i) for i in range(COLS)]
+LETTER_TO_IDX = {c: i for i, c in enumerate(COL_IDX_TO_LETTER)}
+GOAL_ROW = {"white": 6, "black": 1}
+FORWARD_DELTA = {"white": 2, "black": -2}
+
+# ------------------------------------------------------------
+#  Helper functions
+# ------------------------------------------------------------
+def opponent(role: str) -> str:
+    return "black" if role == "white" else "white"
+
+
+def parse_board(state: List[List]) -> Dict[Tuple[int, int], str]:
+    """Convert the list of cell facts into a dict {(col_idx,row_int): colour}."""
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            col_str, row_str, colour = prop[1], prop[2], prop[3]
+            col_idx = LETTER_TO_IDX[col_str]
+            row_int = int(row_str)
+            board[(col_idx, row_int)] = colour
+    return board
+
+
+def generate_moves(board: Dict[Tuple[int, int], str], player: str) -> List[Tuple[int, int, int, int]]:
+    """All legal forward‑knight jumps for `player`.  Returns list of (src_col,src_row,tgt_col,tgt_row)."""
+    forward = FORWARD_DELTA[player]
+    moves = []
+    for (col, row), colour in board.items():
+        if colour != player:
+            continue
+        for dx in (-1, 1):
+            tgt_col = col + dx
+            tgt_row = row + forward
+            if 0 <= tgt_col < COLS and 1 <= tgt_row <= 6:
+                tgt_key = (tgt_col, tgt_row)
+                tgt_colour = board.get(tgt_key)
+                if tgt_colour is None or tgt_colour != player:
+                    moves.append((col, row, tgt_col, tgt_row))
+    return moves
+
+
+def apply_move(board: Dict[Tuple[int, int], str],
+               move: Tuple[int, int, int, int]) -> Dict[Tuple[int, int], str]:
+    """Return a new board after performing the given move."""
+    src_col, src_row, tgt_col, tgt_row = move
+    new_board = dict(board)
+    piece = new_board[(src_col, src_row)]
+    # remove captured piece (if any)
+    new_board.pop((tgt_col, tgt_row), None)
+    # move the piece
+    del new_board[(src_col, src_row)]
+    new_board[(tgt_col, tgt_row)] = piece
+    return new_board
+
+
+def evaluate(board: Dict[Tuple[int, int], str], role: str) -> int:
+    """Simple heuristic: larger is better for `role`.
+    Score = (sum of distances of opponent) - (sum of distances of player).
+    Distance = rows still to travel to the opposite rank."""
+    opp = opponent(role)
+    our_sum = 0
+    opp_sum = 0
+    for (col, row), colour in board.items():
+        if colour == "white":
+            dist = 6 - row
+        else:  # black
+            dist = row - 1
+        if colour == role:
+            our_sum += dist
+        else:
+            opp_sum += dist
+    return opp_sum - our_sum
+
+
+def minimax(board: Dict[Tuple[int, int], str],
+            role: str,
+            depth: int,
+            alpha: float,
+            beta: float,
+            maximizing: bool) -> float:
+    """Alpha‑beta minimax search. `role` is the original player (maximiser)."""
+    if depth == 0:
+        return evaluate(board, role)
+
+    player = role if maximizing else opponent(role)
+    moves = generate_moves(board, player)
+
+    if not moves:
+        # No legal moves – the side to move loses immediately.
+        return -10000 if maximizing else 10000
+
+    if maximizing:
+        value = -float('inf')
+        for move in moves:
+            new_board = apply_move(board, move)
+            val = minimax(new_board, role, depth - 1, alpha, beta, False)
+            if val > value:
+                value = val
+            if value > alpha:
+                alpha = value
+            if beta <= alpha:
+                break
+        return value
+    else:
+        value = float('inf')
+        for move in moves:
+            new_board = apply_move(board, move)
+            val = minimax(new_board, role, depth - 1, alpha, beta, True)
+            if val < value:
+                value = val
+            if value < beta:
+                beta = value
+            if beta <= alpha:
+                break
+        return value
+
+
+# ------------------------------------------------------------
+#  Public policy API
+# ------------------------------------------------------------
+def policy(state: List[List], role: str) -> str:
+    """
+    Choose the best legal move for `role` in the given `state`.
+    Returns a move string like 'move(a,1,b,3)'.
+    """
+    board = parse_board(state)
+
+    # -----------------------------------------------------------------
+    # 1. Generate all legal moves for the current side.
+    # -----------------------------------------------------------------
+    legal_moves = generate_moves(board, role)
+    if not legal_moves:
+        # Should never happen in a real game, but returning a dummy avoids disqualification.
+        return "move(a,1,b,3)"
+
+    # -----------------------------------------------------------------
+    # 2. Immediate winning move ?
+    # -----------------------------------------------------------------
+    goal_row = GOAL_ROW[role]
+    for move in legal_moves:
+        _, _, _, tgt_row = move
+        if tgt_row == goal_row:
+            src_c, src_r, tgt_c, tgt_r = move
+            return f"move({COL_IDX_TO_LETTER[src_c]},{src_r},{COL_IDX_TO_LETTER[tgt_c]},{tgt_r})"
+
+    # -----------------------------------------------------------------
+    # 3. Depth‑3 minimax search (with α‑β) to pick the best move.
+    # -----------------------------------------------------------------
+    depth = 3
+    best_score = -float('inf')
+    best_move = None
+    alpha = -float('inf')
+    beta = float('inf')
+
+    for move in legal_moves:
+        new_board = apply_move(board, move)
+        score = minimax(new_board, role, depth - 1, alpha, beta, False)
+        if score > best_score:
+            best_score = score
+            best_move = move
+            alpha = max(alpha, score)
+
+    # -----------------------------------------------------------------
+    # 4. Return the chosen move in Stanford syntax.
+    # -----------------------------------------------------------------
+    src_c, src_r, tgt_c, tgt_r = best_move
+    return f"move({COL_IDX_TO_LETTER[src_c]},{src_r},{COL_IDX_TO_LETTER[tgt_c]},{tgt_r})"
+</code>

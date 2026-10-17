@@ -1,0 +1,41 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def is_win(r: int, c: int, marker: int) -> bool:
+        # Check row
+        if sum(1 for cell in board[r] if cell == marker) == 3 and board[r][c] == 0:
+            return True
+        # Check column
+        if sum(1 for i in range(4) if board[i][c] == marker) == 3 and board[r][c] == 0:
+            return True
+        # Check main diagonal
+        if r == c and sum(board[i][i] == marker for i in range(4)) == 3 and board[r][c] == 0:
+            return True
+        # Check anti-diagonal
+        if r + c == 3 and sum(board[i][3-i] == marker for i in range(4)) == 3 and board[r][c] == 0:
+            return True
+        return False
+
+    empty = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+
+    # Check for winning move
+    for r, c in empty:
+        if is_win(r, c, 1):
+            return (r, c)
+
+    # Block opponent's winning move
+    for r, c in empty:
+        if is_win(r, c, -1):
+            return (r, c)
+
+    # Prefer center, corners, then edges in specific order
+    preferred_order = [
+        (1,1), (1,2), (2,1), (2,2),
+        (0,0), (0,3), (3,0), (3,3),
+        (0,1), (0,2), (1,0), (1,3),
+        (2,0), (2,3), (3,1), (3,2)
+    ]
+    for r, c in preferred_order:
+        if board[r][c] == 0:
+            return (r, c)
+
+    return empty[0]  # fallback

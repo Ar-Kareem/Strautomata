@@ -1,0 +1,88 @@
+The strategy for this policy is a simple, fast Go heuristic: it always plays a legal move, favors captures heavily, avoids suicide, prefers moves that give more liberties, fights near enemy stones, and slightly prefers the center. It simulates each legal move with basic capture rules (no ko), scores them, and picks the best.
+
+<code>
+from collections import deque
+
+SIZE = 19
+
+def neighbors(r, c):
+    for dr, dc in ((1,0),(-1,0),(0,1),(0,-1)):
+        nr, nc = r+dr, c+dc
+        if 1 <= nr <= SIZE and 1 <= nc <= SIZE:
+            yield nr, nc
+
+def group_and_libs(board, r, c):
+    color = board[r-1][c-1]
+    q = deque()
+    q.append((r,c))
+    visited = set([(r,c)])
+    group = []
+    libs = set()
+    while q:
+        x, y = q.popleft()
+        group.append((x,y))
+        for nx, ny in neighbors(x,y):
+            v = board[nx-1][ny-1]
+            if v == 0:
+                libs.add((nx,ny))
+            elif v == color and (nx,ny) not in visited:
+                visited.add((nx,ny))
+                q.append((nx,ny))
+    return group, libs
+
+def simulate_move(board, r, c, my_color=1, opp_color=2):
+    # assumes (r,c) empty
+    b = [row[:] for row in board]
+    b[r-1][c-1] = my_color
+    captured = 0
+    visited = set()
+    for nx, ny in neighbors(r,c):
+        if b[nx-1][ny-1] == opp_color and (nx,ny) not in visited:
+            grp, libs = group_and_libs(b, nx, ny)
+            visited.update(grp)
+            if len(libs) == 0:
+                for gx, gy in grp:
+                    b[gx-1][gy-1] = 0
+                captured += len(grp)
+    # check suicide
+    grp, libs = group_and_libs(b, r, c)
+    if len(libs) == 0:
+        return None  # illegal
+    return b, captured, len(libs)
+
+def policy(me, opponent):
+    board = [[0]*SIZE for _ in range(SIZE)]
+    for r,c in me:
+        if 1 <= r <= SIZE and 1 <= c <= SIZE:
+            board[r-1][c-1] = 1
+    for r,c in opponent:
+        if 1 <= r <= SIZE and 1 <= c <= SIZE:
+            board[r-1][c-1] = 2
+
+    best_score = -10**9
+    best_move = None
+    center = 10
+
+    for r in range(1, SIZE+1):
+        for c in range(1, SIZE+1):
+            if board[r-1][c-1] != 0:
+                continue
+            sim = simulate_move(board, r, c)
+            if sim is None:
+                continue
+            b2, captured, libs = sim
+            # score heuristic
+            adj_opp = sum(1 for nx, ny in neighbors(r,c) if board[nx-1][ny-1] == 2)
+            dist = abs(r-center) + abs(c-center)
+            score = captured*100 + libs*2 + adj_opp*3 + (10 - dist)
+            # avoid self-atari
+            if libs <= 1 and captured == 0:
+                score -= 20
+            if score > best_score:
+                best_score = score
+                best_move = (r,c)
+
+    if best_move is None:
+        return (0,0)
+    return best_move
+</code>

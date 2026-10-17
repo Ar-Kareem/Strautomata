@@ -1,0 +1,368 @@
+
+import time
+import math
+import random
+
+# ------------------------------------------------------------------------------
+# DSU Class for fast component tracking
+# ------------------------------------------------------------------------------
+class DSU:
+    def __init__(self, n):
+        self.parent = list(range(n))
+        self.rank = [0] * n
+        # Bitmasks for Havannah structures
+        self.corners = [0] * n 
+        self.edges = [0] * n   
+
+    def find(self, i):
+        root = i
+        while root != self.parent[root]:
+            root = self.parent[root]
+        
+        # Path compression
+        curr = i
+        while curr != root:
+            nxt = self.parent[curr]
+            self.parent[curr] = root
+            curr = nxt
+        return root
+
+    def union(self, i, j):
+        root_i = self.find(i)
+        root_j = self.find(j)
+        if root_i != root_j:
+            # Union by rank
+            if self.rank[root_i] < self.rank[root_j]:
+                root_i, root_j = root_j, root_i
+            self.parent[root_j] = root_i
+            if self.rank[root_i] == self.rank[root_j]:
+                self.rank[root_i] += 1
+            
+            # Merge properties
+            self.corners[root_i] |= self.corners[root_j]
+            self.edges[root_i] |= self.edges[root_j]
+            return True
+        return False
+
+    def get_props(self, i):
+        root = self.find(i)
+        return self.corners[root], self.edges[root]
+
+# ------------------------------------------------------------------------------
+# Board Analysis & Caching
+# ------------------------------------------------------------------------------
+_CACHE = {}
+
+def get_neighbors(r, c):
+    """
+    Generates neighbor coordinates based on 'odd-q' vertical hex layout
+    where odd columns are shifted upwards relative to even columns.
+    """
+    # Vertical neighbors are always the same
+    yield (r - 1, c)
+    yield (r + 1, c)
+    
+    # Horizontal/Diagonal neighbors depend on column parity
+    if c % 2 == 0:
+        # Even Col: (r, c-1), (r+1, c-1) ...
+        yield (r, c - 1)
+        yield (r + 1, c - 1)
+        yield (r, c + 1)
+        yield (r + 1, c + 1)
+    else:
+        # Odd Col: (r, c-1), (r-1, c-1) ...
+        yield (r, c - 1)
+        yield (r - 1, c - 1)
+        yield (r, c + 1)
+        yield (r - 1, c + 1)
+
+def analyze_board(valid_mask_tuple):
+    """
+    Precomputes the adjacency graph, corners, and edges of the board.
+    """
+    rows = len(valid_mask_tuple)
+    cols = len(valid_mask_tuple[0])
+    
+    valid_cells = []
+    cell_to_id = {}
+    id_to_cell = []
+    
+    # 1. Map valid (r,c) to linear IDs
+    for r in range(rows):
+        for c in range(cols):
+            if valid_mask_tuple[r][c]:
+                idx = len(valid_cells)
+                cell_to_id[(r,c)] = idx
+                id_to_cell.append((r,c))
+                valid_cells.append((r,c))
+    
+    n_cells = len(valid_cells)
+    adj = [[] for _ in range(n_cells)]
+    degrees = [0] * n_cells
+    
+    # 2. Build Adjacency Graph
+    for idx, (r, c) in enumerate(valid_cells):
+        for nr, nc in get_neighbors(r, c):
+            if 0 <= nr < rows and 0 <= nc < cols:
+                if valid_mask_tuple[nr][nc]:
+                    if (nr, nc) in cell_to_id:
+                        n_idx = cell_to_id[(nr, nc)]
+                        adj[idx].append(n_idx)
+                        degrees[idx] += 1
+    
+    # 3. Identify Boundary, Corners, and Edges
+    # Boundary: cells with < 6 neighbors
+    boundary = []
+    corners = []
+    
+    for idx in range(n_cells):
+        if degrees[idx] < 6:
+            boundary.append(idx)
+            # Heuristic: Corners have degree 2 or 3 in valid graph
+            if degrees[idx] <= 3:
+                corners.append(idx)
+
+    corners_set = set(corners)
+    
+    # Edge Identification: Boundary cells minus corners form disconnected lines
+    edge_assignment = {} # cell_id -> edge_bitmask
+    
+    # Filter boundary to exclude corners
+    pure_edges = [b for b in boundary if b not in corners_set]
+    visited = set()
+    edge_counter = 0
+    
+    # Find connected components of pure edges
+    for start_node in pure_edges:
+        if start_node not in visited:
+            q = [start_node]
+            visited.add(start_node)
+            component = []
+            while q:
+                cur = q.pop(0)
+                component.append(cur)
+                # Traverse neighbors that are also in pure_edges
+                for n in adj[cur]:
+                    # To be in same edge segment, must be boundary and not corner
+                    if n in visited: continue
+                    if degrees[n] < 6 and n not in corners_set:
+                        visited.add(n)
+                        q.append(n)
+            
+            # Assign a unique bit for this edge component
+            mask = 1 << edge_counter
+            for node in component:
+                edge_assignment[node] = mask
+            edge_counter += 1
+
+    # Map corners to unique bits (just for consistent ID)
+    # We sort to be deterministic
+    corners.sort()
+    corner_map = {cid: (1 << i) for i, cid in enumerate(corners)}
+
+    return {
+        'cell_to_id': cell_to_id,
+        'id_to_cell': id_to_cell,
+        'adj': adj,
+        'corners_set': corners_set,
+        'corner_map': corner_map,
+        'edge_map': edge_assignment,
+        'num_cells': n_cells
+    }
+
+# ------------------------------------------------------------------------------
+# Main Policy Function
+# ------------------------------------------------------------------------------
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    # 1. Retrieve/Compute Board Topology
+    vm_tuple = tuple(tuple(row) for row in valid_mask)
+    if vm_tuple not in _CACHE:
+        _CACHE[vm_tuple] = analyze_board(vm_tuple)
+        
+    bdata = _CACHE[vm_tuple]
+    cell_to_id = bdata['cell_to_id']
+    id_to_cell = bdata['id_to_cell']
+    adj = bdata['adj']
+    corners_set = bdata['corners_set']
+    corner_map = bdata['corner_map']
+    edge_map = bdata['edge_map']
+    n_cells = bdata['num_cells']
+    
+    # 2. Setup Current State
+    state = [0] * n_cells # 0: empty, 1: me, 2: opp
+    me_ids = [cell_to_id[p] for p in me if p in cell_to_id]
+    opp_ids = [cell_to_id[p] for p in opp if p in cell_to_id]
+    
+    for i in me_ids: state[i] = 1
+    for i in opp_ids: state[i] = 2
+    
+    empties = [i for i in range(n_cells) if state[i] == 0]
+    if not empties:
+        return (0, 0) # Should not happen
+
+    # --------------------------------------------------------------------------
+    # Helper: Check Winning Moves
+    # --------------------------------------------------------------------------
+    def find_winning_moves(player_ids, candidate_moves):
+        # Build base DSU for the player
+        dsu = DSU(n_cells)
+        present = set(player_ids)
+        
+        # Initialize properties for existing stones
+        for i in player_ids:
+            if i in corners_set: dsu.corners[i] = corner_map[i]
+            if i in edge_map:    dsu.edges[i] = edge_map[i]
+            
+            # Union with neighbors
+            for n in adj[i]:
+                if n in present and n < i: # optimize: unite only one way
+                    dsu.union(i, n)
+        
+        winners = []
+        for m in candidate_moves:
+            # Check what properties this move would result in
+            # without permanently modifying DSU (just look up parents)
+            c_mask = 0
+            e_mask = 0
+            
+            if m in corners_set: c_mask = corner_map[m]
+            if m in edge_map:    e_mask = edge_map[m]
+            
+            # Collect unique roots of neighbors
+            neighbor_roots = set()
+            for n in adj[m]:
+                if n in present:
+                    neighbor_roots.add(dsu.find(n))
+            
+            # Combine properties
+            for r in neighbor_roots:
+                c_mask |= dsu.corners[r]
+                e_mask |= dsu.edges[r]
+                
+            # Check Win Conditions
+            # Bridge: 2 distinct corners
+            if bin(c_mask).count('1') >= 2:
+                winners.append(m)
+                continue
+                
+            # Fork: 3 distinct edges
+            if bin(e_mask).count('1') >= 3:
+                winners.append(m)
+                continue
+            
+            # Ring: Hard to check efficiently, skipping for speed (heuristic handles connectedness)
+        
+        return winners
+
+    # --------------------------------------------------------------------------
+    # Decision Logic
+    # --------------------------------------------------------------------------
+
+    # A. Check for Immediate Win
+    wins = find_winning_moves(me_ids, empties)
+    if wins:
+        return id_to_cell[wins[0]]
+    
+    # B. Check for Immediate Loss (Block)
+    blocks = find_winning_moves(opp_ids, empties)
+    if blocks:
+        return id_to_cell[blocks[0]]
+    
+    # C. Heuristic Fallback
+    # Pre-calculate center of mass of board
+    r_sum, c_sum = 0, 0
+    for r, c in id_to_cell:
+        r_sum += r
+        c_sum += c
+    center_r = r_sum / n_cells
+    center_c = c_sum / n_cells
+    
+    # Build full DSUs to query component sizes/props
+    dsu_me = DSU(n_cells)
+    me_set = set(me_ids)
+    for i in me_ids:
+        if i in corners_set: dsu_me.corners[i] = corner_map[i]
+        if i in edge_map: dsu_me.edges[i] = edge_map[i]
+        for n in adj[i]:
+            if n in me_set and n < i: dsu_me.union(i, n)
+            
+    dsu_opp = DSU(n_cells)
+    opp_set = set(opp_ids)
+    for i in opp_ids:
+        if i in corners_set: dsu_opp.corners[i] = corner_map[i]
+        if i in edge_map: dsu_opp.edges[i] = edge_map[i]
+        for n in adj[i]:
+            if n in opp_set and n < i: dsu_opp.union(i, n)
+
+    scored_moves = []
+    
+    for m in empties:
+        r, c = id_to_cell[m]
+        score = 0.0
+        
+        # 1. Centrality
+        # Euclidean distance squared is fine
+        dist = (r - center_r)**2 + (c - center_c)**2
+        score -= dist * 0.05 # Penetrate center early
+        
+        # 2. My Connectivity
+        my_roots = set()
+        c_bits_me = 0
+        e_bits_me = 0
+        
+        for n in adj[m]:
+            if n in me_set:
+                root = dsu_me.find(n)
+                my_roots.add(root)
+                c_bits_me |= dsu_me.corners[root]
+                e_bits_me |= dsu_me.edges[root]
+        
+        # Merge benefit
+        if len(my_roots) > 0:
+            score += 1.0 # Touches own group
+            score += (len(my_roots) - 1) * 3.0 # Connects disjoint groups
+        
+        # Structure progress
+        if m in corners_set: c_bits_me |= corner_map[m]
+        if m in edge_map:    e_bits_me |= edge_map[m]
+        
+        nc = bin(c_bits_me).count('1')
+        ne = bin(e_bits_me).count('1')
+        
+        # Reward approaching win condition
+        score += nc * 5.0
+        score += ne * 2.5
+        
+        # 3. Opponent Blocking
+        opp_roots = set()
+        c_bits_opp = 0
+        e_bits_opp = 0
+        
+        for n in adj[m]:
+            if n in opp_set:
+                root = dsu_opp.find(n)
+                opp_roots.add(root)
+                c_bits_opp |= dsu_opp.corners[root]
+                e_bits_opp |= dsu_opp.edges[root]
+                
+        # Cutting/Blocking benefit
+        if len(opp_roots) > 0:
+            score += 0.5 # Next to enemy
+            score += (len(opp_roots) - 1) * 2.5 # Connects disjoint enemy groups (blocks merge)
+        
+        if m in corners_set: c_bits_opp |= corner_map[m]
+        if m in edge_map:    e_bits_opp |= edge_map[m]
+        
+        nc_opp = bin(c_bits_opp).count('1')
+        ne_opp = bin(e_bits_opp).count('1')
+        
+        if nc_opp > 0: score += nc_opp * 3.0 # Block potential Bridge
+        if ne_opp > 0: score += ne_opp * 1.5 # Block potential Fork
+        
+        scored_moves.append((score, m))
+        
+    # Sort descending
+    scored_moves.sort(key=lambda x: x[0], reverse=True)
+    
+    best_id = scored_moves[0][1]
+    return id_to_cell[best_id]

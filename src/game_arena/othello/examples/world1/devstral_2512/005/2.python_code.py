@@ -1,0 +1,247 @@
+
+import numpy as np
+import time
+
+# Directions for checking flips (8 possible directions)
+DIRECTIONS = [(-1,-1), (-1,0), (-1,1),
+              (0,-1),          (0,1),
+              (1,-1),  (1,0),  (1,1)]
+
+# Positional weights for different game phases
+OPENING_WEIGHTS = np.array([
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120]
+])
+
+MIDGAME_WEIGHTS = np.array([
+    [200, -50,  30,  10,  10,  30, -50, 200],
+    [-50, -80,  -1,  -1,  -1,  -1, -80, -50],
+    [ 30,  -1,  20,   5,   5,  20,  -1,  30],
+    [ 10,  -1,   5,   5,   5,   5,  -1,  10],
+    [ 10,  -1,   5,   5,   5,   5,  -1,  10],
+    [ 30,  -1,  20,   5,   5,  20,  -1,  30],
+    [-50, -80,  -1,  -1,  -1,  -1, -80, -50],
+    [200, -50,  30,  10,  10,  30, -50, 200]
+])
+
+ENDGAME_WEIGHTS = np.array([
+    [500, -100,  100,  50,  50,  100, -100, 500],
+    [-100, -200,  -1,  -1,  -1,  -1, -200, -100],
+    [ 100,  -1,  100,  20,  20,  100,  -1,  100],
+    [  50,  -1,  20,  20,  20,  20,  -1,   50],
+    [  50,  -1,  20,  20,  20,  20,  -1,   50],
+    [ 100,  -1,  100,  20,  20,  100,  -1,  100],
+    [-100, -200,  -1,  -1,  -1,  -1, -200, -100],
+    [500, -100,  100,  50,  50,  100, -100, 500]
+])
+
+def get_legal_moves(board, player):
+    """Return all legal moves for the given player"""
+    opponent = 1 - player
+    moves = []
+
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != -1:  # Not empty
+                continue
+
+            # Check all 8 directions
+            for dr, dc in DIRECTIONS:
+                x, y = r + dr, c + dc
+                flip_count = 0
+
+                # Move in direction while we're on opponent's pieces
+                while 0 <= x < 8 and 0 <= y < 8 and board[x][y] == opponent:
+                    x += dr
+                    y += dc
+                    flip_count += 1
+
+                # If we found our own piece and flipped at least one opponent piece
+                if 0 <= x < 8 and 0 <= y < 8 and board[x][y] == player and flip_count > 0:
+                    moves.append((r, c))
+                    break  # No need to check other directions for this position
+
+    return moves
+
+def make_move(board, player, move):
+    """Return a new board with the move applied"""
+    if move == "pass":
+        return board.copy()
+
+    r, c = move
+    new_board = board.copy()
+    opponent = 1 - player
+    new_board[r][c] = player
+
+    # Check all 8 directions for flips
+    for dr, dc in DIRECTIONS:
+        x, y = r + dr, c + dc
+        to_flip = []
+
+        # Move in direction while we're on opponent's pieces
+        while 0 <= x < 8 and 0 <= y < 8 and new_board[x][y] == opponent:
+            to_flip.append((x, y))
+            x += dr
+            y += dc
+
+        # If we found our own piece, flip all opponent pieces in between
+        if 0 <= x < 8 and 0 <= y < 8 and new_board[x][y] == player:
+            for (fx, fy) in to_flip:
+                new_board[fx][fy] = player
+
+    return new_board
+
+def evaluate_board(board, player, move_count):
+    """Evaluate the board from player's perspective"""
+    opponent = 1 - player
+
+    # Count discs
+    player_count = np.sum(board == player)
+    opponent_count = np.sum(board == opponent)
+    disc_diff = (player_count - opponent_count) * 10
+
+    # Determine game phase
+    empty_count = np.sum(board == -1)
+    if empty_count > 32:  # Opening
+        weights = OPENING_WEIGHTS
+    elif empty_count > 16:  # Midgame
+        weights = MIDGAME_WEIGHTS
+    else:  # Endgame
+        weights = ENDGAME_WEIGHTS
+
+    # Positional evaluation
+    positional = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                positional += weights[r][c]
+            elif board[r][c] == opponent:
+                positional -= weights[r][c]
+
+    # Mobility (number of legal moves)
+    player_moves = len(get_legal_moves(board, player))
+    opponent_moves = len(get_legal_moves(board, opponent))
+    mobility = (player_moves - opponent_moves) * 5
+
+    # Corner control
+    corners = [(0,0), (0,7), (7,0), (7,7)]
+    player_corners = sum(1 for (r,c) in corners if board[r][c] == player)
+    opponent_corners = sum(1 for (r,c) in corners if board[r][c] == opponent)
+    corner_value = (player_corners - opponent_corners) * 50
+
+    # Frontier discs (vulnerable discs)
+    frontier = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                # Check if any adjacent cell is empty
+                for dr, dc in DIRECTIONS:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == -1:
+                        frontier -= 1
+                        break
+            elif board[r][c] == opponent:
+                # Check if any adjacent cell is empty
+                for dr, dc in DIRECTIONS:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == -1:
+                        frontier += 1
+                        break
+
+    # Parity (who has the last move)
+    if empty_count % 2 == 1:
+        parity = 5 if player == 0 else -5
+    else:
+        parity = -5 if player == 0 else 5
+
+    # Combine all factors
+    total = disc_diff + positional + mobility + corner_value + frontier*2 + parity
+
+    return total
+
+def minimax(board, player, depth, alpha, beta, maximizing_player, start_time, time_limit=0.9):
+    """Minimax with alpha-beta pruning"""
+    if time.time() - start_time > time_limit:
+        return 0
+
+    if depth == 0:
+        return evaluate_board(board, player, 64 - np.sum(board == -1))
+
+    legal_moves = get_legal_moves(board, player if maximizing_player else 1 - player)
+
+    if not legal_moves:
+        if not get_legal_moves(board, 1 - player):
+            # Game over
+            player_count = np.sum(board == player)
+            opponent_count = np.sum(board == (1 - player))
+            return (player_count - opponent_count) * 100
+        else:
+            # Opponent can move, we pass
+            return -minimax(board, player, depth - 1, -beta, -alpha, not maximizing_player, start_time, time_limit)
+
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in legal_moves:
+            new_board = make_move(board, player, move)
+            eval = minimax(new_board, player, depth - 1, alpha, beta, False, start_time, time_limit)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            new_board = make_move(board, 1 - player, move)
+            eval = minimax(new_board, player, depth - 1, alpha, beta, True, start_time, time_limit)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """Main policy function"""
+    # Convert input to our board representation (0=empty, 1=player, 2=opponent)
+    board = np.full((8, 8), -1)
+    board[you == 1] = 1
+    board[opponent == 1] = 0
+
+    legal_moves = get_legal_moves(board, 1)
+
+    if not legal_moves:
+        return "pass"
+
+    # If only one legal move, return it immediately
+    if len(legal_moves) == 1:
+        r, c = legal_moves[0]
+        return chr(ord('a') + c) + str(r + 1)
+
+    # Iterative deepening with time management
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    start_time = time.time()
+    depth = 1
+
+    while time.time() - start_time < 0.8:  # Leave 0.2s buffer
+        current_best_score = -float('inf')
+
+        for move in legal_moves:
+            new_board = make_move(board, 1, move)
+            score = minimax(new_board, 1, depth, -float('inf'), float('inf'), False, start_time)
+
+            if score > current_best_score:
+                current_best_score = score
+                best_move = move
+                best_score = score
+
+        depth += 1
+
+    r, c = best_move
+    return chr(ord('a') + c) + str(r + 1)

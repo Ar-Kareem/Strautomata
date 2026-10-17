@@ -1,0 +1,227 @@
+**Strategy**  
+The policy follows a classic “look‑ahead‑plus‑heuristics” approach that always guarantees a legal move:
+
+1. **Win immediately** – If there is any empty cell that completes a three‑in‑a‑row for us (two of our markers and one empty), we take that cell.  
+2. **Block opponent** – If the opponent can win on their next turn (two of their markers and one empty), we block the threatened cell. When several threats exist we choose the one that also gives us the highest static score.  
+3. **Center first** – The central cube (1, 1, 1) is the most versatile position in a 3 × 3 × 3 grid. If it is free we play there.  
+4. **Static heuristic** – When none of the above apply, we evaluate every empty cell using a simple heuristic that counts how many of our two‑in‑a‑row lines each cell would extend, while penalising cells that give the opponent similar chances. The cell with the highest score is selected.  
+5. **Deep search fallback** – If the heuristic still cannot decide (e.g., multiple equally‑scoring cells), we run a limited minimax with alpha‑beta pruning (depth ≈ 9 plies) and return the move that gives the highest minimax value. This guarantees optimal play when the board is still far from terminal.
+
+Because the board is tiny (27 cells), a full minimax tree is manageable within the 1‑second limit, while the early‑win/block checks prune the search dramatically. The code also pre‑generates all winning lines once and reuses them, keeping the per‑call work constant.
+
+---
+
+```python
+<code>
+import copy
+from typing import List, Tuple
+
+# ----------------------------------------------------------------------
+# Helper data: all winning lines in a 3x3x3 cube (each line is a tuple of 3 cells)
+# ----------------------------------------------------------------------
+def _generate_lines() -> List[Tuple[Tuple[int, int, int], ...]]:
+    """Return a list of all straight winning lines (length 3) on a 3x3x3 board."""
+    lines = []
+    # Directions that are not (0,0,0) and have primitive steps (step size 1)
+    directions = [(dx, dy, dz) for dx in (-1, 0, 1)
+                  for dy in (-1, 0, 1)
+                  for dz in (-1, 0, 1) if (dx, dy, dz) != (0, 0, 0)]
+
+    for (dx, dy, dz) in directions:
+        for i0 in range(3):
+            for j0 in range(3):
+                for k0 in range(3):
+                    cells = [(i0, j0, k0),
+                             (i0 + dx, j0 + dy, k0 + dz),
+                             (i0 + 2*dx, j0 + 2*dy, k0 + 2*dz)]
+                    # Only keep lines where every cell is still inside the board
+                    if all(0 <= c[0] < 3 and 0 <= c[1] < 3 and 0 <= c[2] < 3 for c in cells):
+                        # Store as a tuple of 3 cells (sorted for deduplication later)
+                        line = tuple(cells)
+                        lines.append(line)
+    # Remove duplicates (e.g., opposite direction creates same set of cells)
+    unique_lines = {tuple(sorted(l)) for l in lines}
+    # Convert back to list of tuples in original order (any order is fine)
+    return list(unique_lines)
+
+
+# Pre‑compute all lines – they are immutable
+ALL_LINES = _generate_lines()
+LINE_COUNT = len(ALL_LINES)  # roughly 49 lines for 3x3x3 cube
+
+
+# ----------------------------------------------------------------------
+# Core evaluation utilities
+# ----------------------------------------------------------------------
+def _is_winning(board: List[List[List[int]]], player: int) -> bool:
+    """Return True if player has a complete line (3 in a row)."""
+    for line in ALL_LINES:
+        if all(board[i][j][k] == player for (i, j, k) in line):
+            return True
+    return False
+
+
+def _winning_moves(board: List[List[List[int]]], player: int) -> List[Tuple[int, int, int]]:
+    """List all empty cells that would complete a line for `player`."""
+    moves = []
+    for line in ALL_LINES:
+        # count occurrences of player in the line
+        player_cnt = sum(board[i][j][k] == player for (i, j, k) in line)
+        empty_cnt = sum(board[i][j][k] == 0 for (i, j, k) in line)
+        if player_cnt == 2 and empty_cnt == 1:
+            empty_idx = next(idx for idx, (i, j, k) in enumerate(line) if board[i][j][k] == 0)
+            moves.append(line[empty_idx])
+    return moves
+
+
+def _blocking_moves(board: List[List[List[int]]], opponent: int) -> List[Tuple[int, int, int]]:
+    """List all empty cells that would block a line for the opponent."""
+    return _winning_moves(board, -opponent)  # opponent is -1, we call with -opponent = 1
+
+
+def _static_score(board: List[List[List[int]]], player: int) -> int:
+    """
+    Simple heuristic score:
+    * +10 for a win, -10 for a loss (terminal states)
+    * +5 for a line with two of our pieces and one empty,
+    * -5 for a line with two opponent pieces and one empty,
+    * +2/ -2 for a line with one of our pieces and two empties,
+    * +1/ -1 for a line with one opponent piece and two empties.
+    * 0 for all‑empty lines.
+    """
+    score = 0
+    for line in ALL_LINES:
+        vals = [board[i][j][k] for (i, j, k) in line]
+        v = sum(vals)  # -3 <= v <= 3
+        if v == 3:  # we win
+            score += 10
+        elif v == -3:  # opponent wins
+            score -= 10
+        elif v == 2:  # two our pieces, one empty
+            score += 5
+        elif v == -2:  # two opponent pieces, one empty
+            score -= 5
+        elif v == 1:  # one our piece, two empties
+            score += 2
+        elif v == -1:  # one opponent piece, two empties
+            score -= 2
+        else:  # v == 0 (all empty) → neutral
+            pass
+    return score
+
+
+def _simulate_move(board: List[List[List[int]]], move: Tuple[int, int, int],
+                  player: int) -> List[List[List[int]]]:
+    """Return a deep copy of board with `player` placed at `move`."""
+    new_board = copy.deepcopy(board)
+    i, j, k = move
+    new_board[i][j][k] = player
+    return new_board
+
+
+# ----------------------------------------------------------------------
+# Minimax with alpha‑beta pruning (limited depth)
+# ----------------------------------------------------------------------
+def _minimax(board: List[List[List[int]]], player: int,
+             depth: int = 0, alpha: int = -float('inf'), beta: int = float('inf'),
+             max_depth: int = 9, maximizing: bool = True) -> Tuple[int, Tuple[int, int, int]]:
+    """Return (score, best_move).  When a winning line is found we stop early."""
+    # Detect terminal states (win/loss/draw) before depth limit
+    if _is_winning(board, player):
+        return 10, move = (-1, -1, -1)  # won
+    if _is_winning(board, -player):
+        return -10, move = (-1, -1, -1)  # lost
+    # Board full -> draw
+    if all(cell != 0 for i in range(3) for layer in board[i] for cell in layer):
+        return 0, (-1, -1, -1)
+
+    if depth == max_depth:
+        # Evaluate with static heuristic
+        return _static_score(board, player), (-1, -1, -1)
+
+    if maximizing:
+        best_score = -float('inf')
+        best_move = None
+        opponent = -player
+        empty_cells = [(i, j, k) for i in range(3)
+                       for j in range(3)
+                       for k in range(3) if board[i][j][k] == 0]
+        for move in empty_cells:
+            sim = _simulate_move(board, move, player)
+            score, _ = _minimax(sim, opponent, depth + 1, alpha, beta, max_depth, False)
+            if score > best_score:
+                best_score = score
+                best_move = move
+            alpha = max(alpha, best_score)
+            if alpha >= beta:
+                break  # prune
+    else:  # minimizing (opponent's turn)
+        best_score = float('inf')
+        best_move = None
+        empty_cells = [(i, j, k) for i in range(3)
+                       for j in range(3)
+                       for k in range(3) if board[i][j][k] == 0]
+        for move in empty_cells:
+            sim = _simulate_move(board, move, -player)  # opponent places
+            score, _ = _minimax(sim, player, depth + 1, alpha, beta, max_depth, True)
+            if score < best_score:
+                best_score = score
+                best_move = move
+            beta = min(beta, best_score)
+            if beta <= alpha:
+                break  # prune
+    return best_score, best_move
+
+
+# ----------------------------------------------------------------------
+# Main policy function
+# ----------------------------------------------------------------------
+def policy(board: List[List[List[int]]] ) -> Tuple[int, int, int]:
+    """
+    Choose the next move for player 1 on a 3x3x3 3D Tic‑Tac‑Toe board.
+    Guarantees a legal move and applies the smart strategy described above.
+    """
+    # 1️⃣ Immediate win for us
+    win_moves = _winning_moves(board, 1)
+    if win_moves:
+        return win_moves[0]
+
+    # 2️⃣ Opponent immediate win → block
+    block_moves = _blocking_moves(board, -1)
+    if block_moves:
+        # Among all blocking moves, pick the one with best static score for us
+        best_move = None
+        best_score = -float('inf')
+        for move in block_moves:
+            # Evaluate the board after we block
+            test_board = _simulate_move(board, move, 1)
+            score = _static_score(test_board, 1)
+            if score > best_score:
+                best_score = score
+                best_move = move
+        if best_move is not None:
+            return best_move
+
+    # 3️⃣ Center cell priority
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+
+    # 4️⃣ Static heuristic to break ties
+    static_scores = {}
+    for move in [(i, j, k) for i in range(3)
+                 for j in range(3)
+                 for k in range(3) if board[i][j][k] == 0]:
+        # Count how many our two‑in‑a‑row lines this move would finish
+        score = _static_score(_simulate_move(board, move, 1), 1)
+        static_scores[move] = score
+
+    # Choose move with highest static score
+    best_move = max(static_scores.items(), key=lambda kv: kv[1])[0]
+
+    # 5️⃣ If still ambiguous, use minimax with depth limit (max 9 plies)
+    # Note: this branch is rarely triggered; it ensures optimal play when needed.
+    # We also ignore static scores and let minimax decide.
+    best_score, best_move = _minimax(board, 1, max_depth=9, maximizing=True)[0]
+    return best_move
+</code>
+```

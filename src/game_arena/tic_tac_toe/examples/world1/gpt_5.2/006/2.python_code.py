@@ -1,0 +1,160 @@
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import List, Tuple, Optional
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the next move for 3x3 Tic Tac Toe.
+    board[r][c] in {0, 1, -1} where:
+      0 = empty, 1 = us, -1 = opponent.
+    Returns (row, col) for an empty cell.
+    """
+
+    # --- Helpers ---
+    LINES = (
+        # rows
+        ((0, 0), (0, 1), (0, 2)),
+        ((1, 0), (1, 1), (1, 2)),
+        ((2, 0), (2, 1), (2, 2)),
+        # cols
+        ((0, 0), (1, 0), (2, 0)),
+        ((0, 1), (1, 1), (2, 1)),
+        ((0, 2), (1, 2), (2, 2)),
+        # diagonals
+        ((0, 0), (1, 1), (2, 2)),
+        ((0, 2), (1, 1), (2, 0)),
+    )
+
+    def winner(b: List[List[int]]) -> int:
+        """Return 1 if we have 3-in-a-row, -1 if opponent does, else 0."""
+        for line in LINES:
+            s = b[line[0][0]][line[0][1]] + b[line[1][0]][line[1][1]] + b[line[2][0]][line[2][1]]
+            if s == 3:
+                return 1
+            if s == -3:
+                return -1
+        return 0
+
+    def legal_moves(b: List[List[int]]) -> List[Tuple[int, int]]:
+        moves = [(r, c) for r in range(3) for c in range(3) if b[r][c] == 0]
+        # Strong move ordering: center, corners, edges
+        pref = {(1, 1): 0, (0, 0): 1, (0, 2): 1, (2, 0): 1, (2, 2): 1,
+                (0, 1): 2, (1, 0): 2, (1, 2): 2, (2, 1): 2}
+        moves.sort(key=lambda rc: pref.get(rc, 3))
+        return moves
+
+    # Immediate tactics: win now, block now
+    def find_immediate(b: List[List[int]], player: int) -> Optional[Tuple[int, int]]:
+        for r, c in legal_moves(b):
+            b[r][c] = player
+            w = winner(b)
+            b[r][c] = 0
+            if w == player:
+                return (r, c)
+        return None
+
+    # Normalize board to an immutable key
+    def to_key(b: List[List[int]]) -> Tuple[int, ...]:
+        return (b[0][0], b[0][1], b[0][2],
+                b[1][0], b[1][1], b[1][2],
+                b[2][0], b[2][1], b[2][2])
+
+    def from_key(k: Tuple[int, ...]) -> List[List[int]]:
+        return [list(k[0:3]), list(k[3:6]), list(k[6:9])]
+
+    @lru_cache(maxsize=None)
+    def minimax(k: Tuple[int, ...], player: int, depth: int, alpha: int, beta: int) -> int:
+        """
+        Return score from the perspective of 'us' (player 1):
+          positive = good for us, negative = good for opponent.
+        We use depth-weighted terminal scores to prefer faster wins / slower losses.
+        """
+        b = from_key(k)
+        w = 0
+        # terminal check
+        for line in LINES:
+            s = b[line[0][0]][line[0][1]] + b[line[1][0]][line[1][1]] + b[line[2][0]][line[2][1]]
+            if s == 3:
+                w = 1
+                break
+            if s == -3:
+                w = -1
+                break
+
+        if w != 0:
+            # 10-depth gives values in [1..10] and preserves correct ordering
+            return w * (10 - depth)
+
+        moves = [(r, c) for r in range(3) for c in range(3) if b[r][c] == 0]
+        if not moves:
+            return 0  # draw
+
+        # move ordering (same as earlier)
+        pref = {(1, 1): 0, (0, 0): 1, (0, 2): 1, (2, 0): 1, (2, 2): 1,
+                (0, 1): 2, (1, 0): 2, (1, 2): 2, (2, 1): 2}
+        moves.sort(key=lambda rc: pref.get(rc, 3))
+
+        if player == 1:
+            best = -10_000
+            for r, c in moves:
+                b[r][c] = 1
+                val = minimax(to_key(b), -1, depth + 1, alpha, beta)
+                b[r][c] = 0
+                if val > best:
+                    best = val
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta:
+                    break
+            return best
+        else:
+            best = 10_000
+            for r, c in moves:
+                b[r][c] = -1
+                val = minimax(to_key(b), 1, depth + 1, alpha, beta)
+                b[r][c] = 0
+                if val < best:
+                    best = val
+                if best < beta:
+                    beta = best
+                if alpha >= beta:
+                    break
+            return best
+
+    # --- Main decision logic ---
+    # Ensure we always return a legal move string even in weird states.
+    moves0 = legal_moves(board)
+    if not moves0:
+        return (0, 0)  # no legal moves; should not happen in valid play
+
+    # 1) Win immediately if possible
+    m = find_immediate(board, 1)
+    if m is not None:
+        return m
+
+    # 2) Block opponent's immediate win
+    m = find_immediate(board, -1)
+    if m is not None:
+        return m
+
+    # 3) Otherwise, full minimax with alpha-beta + cache
+    best_move = None
+    best_score = -10_000
+    bkey = to_key(board)
+
+    # Search moves with ordering
+    for r, c in moves0:
+        board[r][c] = 1
+        score = minimax(to_key(board), -1, 1, -10_000, 10_000)
+        board[r][c] = 0
+        if score > best_score or best_move is None:
+            best_score = score
+            best_move = (r, c)
+
+    # Fallback (should never be needed)
+    if best_move is None or board[best_move[0]][best_move[1]] != 0:
+        return moves0[0]
+    return best_move

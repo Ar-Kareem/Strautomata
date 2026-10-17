@@ -1,0 +1,108 @@
+
+import random
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    import numpy as np
+    board_np = np.array(board)
+    
+    # Check for winning move
+    move = find_winning_move(board_np, 1)
+    if move:
+        return move
+    
+    # Check for blocking opponent's winning move
+    move = find_winning_move(board_np, -1)
+    if move:
+        return move
+    
+    # Check for moves that create two potential wins (forks)
+    move = find_fork_move(board_np, 1)
+    if move:
+        return move
+    
+    # Check for blocking opponent forks
+    move = find_fork_move(board_np, -1)
+    if move:
+        return move
+    
+    # Play center if available
+    center_positions = [(1,1), (1,2), (2,1), (2,2)]
+    empty_centers = [(r, c) for r, c in center_positions if board_np[r, c] == 0]
+    if empty_centers:
+        return random.choice(empty_centers)
+    
+    # Play corner if available
+    corners = [(0,0), (0,3), (3,0), (3,3)]
+    empty_corners = [(r, c) for r, c in corners if board_np[r, c] == 0]
+    if empty_corners:
+        return random.choice(empty_corners)
+    
+    # Play any available side position
+    sides = [(0,1), (0,2), (1,0), (1,3), (2,0), (2,3), (3,1), (3,2)]
+    empty_sides = [(r, c) for r, c in sides if board_np[r, c] == 0]
+    if empty_sides:
+        return random.choice(empty_sides)
+    
+    # Fallback: random empty position
+    empty_positions = [(r, c) for r in range(4) for c in range(4) if board_np[r, c] == 0]
+    return random.choice(empty_positions) if empty_positions else (0, 0)
+
+def find_winning_move(board, player):
+    """Find a move that wins the game for the given player"""
+    for r in range(4):
+        for c in range(4):
+            if board[r, c] == 0:
+                # Try placing player's piece here
+                board[r, c] = player
+                if check_win(board, player):
+                    board[r, c] = 0  # Reset board
+                    return (r, c)
+                board[r, c] = 0  # Reset board
+    return None
+
+def find_fork_move(board, player):
+    """Find a move that creates a fork (two winning threats)"""
+    for r in range(4):
+        for c in range(4):
+            if board[r, c] == 0:
+                # Try placing player's piece here
+                board[r, c] = player
+                win_count = count_winning_moves(board, player)
+                board[r, c] = 0  # Reset board
+                if win_count >= 2:
+                    return (r, c)
+    return None
+
+def count_winning_moves(board, player):
+    """Count how many winning moves player has available"""
+    count = 0
+    for r in range(4):
+        for c in range(4):
+            if board[r, c] == 0:
+                board[r, c] = player
+                if check_win(board, player):
+                    count += 1
+                board[r, c] = 0
+    return count
+
+def check_win(board, player):
+    """Check if the player has won on the board"""
+    # Check rows
+    for r in range(4):
+        if all(board[r, c] == player for c in range(4)):
+            return True
+    
+    # Check columns
+    for c in range(4):
+        if all(board[r, c] == player for r in range(4)):
+            return True
+    
+    # Check diagonals
+    if all(board[i, i] == player for i in range(4)):
+        return True
+    if all(board[i, 3-i] == player for i in range(4)):
+        return True
+    
+    return False

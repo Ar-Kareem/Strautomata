@@ -1,0 +1,100 @@
+The strategy for this policy is to use a greedy heuristic search with a depth of 1. It evaluates all legal moves available to the current player. For each move, it simulates the board state after moving the amazon and shooting the arrow. It then evaluates the resulting state using a mobility heuristic: the difference between the number of available moves for the player and the opponent. The policy selects the move that maximizes this difference, effectively attempting to maximize its own freedom of movement while restricting the opponent. This approach is computationally efficient for the 1-second limit and robustly outperforms random or weak policies on a 6x6 board.
+
+<code>
+import numpy as np
+
+def policy(board) -> str:
+    """
+    Calculates the best move for the Amazons game on a 6x6 board using a 
+    one-ply search with a mobility-based evaluation function.
+    """
+    
+    # Directions: 8 orthogonal and diagonal vectors
+    dirs = [(-1, -1), (-1, 0), (-1, 1),
+            (0, -1),           (0, 1),
+            (1, -1),  (1, 0),  (1, 1)]
+    
+    def get_moves(b, r, c):
+        """Returns a list of (row, col) reachable from (r, c) via queen moves."""
+        moves = []
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < 6 and 0 <= nc < 6:
+                if b[nr, nc] == 0:
+                    moves.append((nr, nc))
+                else:
+                    break
+                nr += dr
+                nc += dc
+        return moves
+
+    def count_mobility(b, pieces):
+        """Counts total reachable squares for a list of pieces."""
+        count = 0
+        for r, c in pieces:
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                while 0 <= nr < 6 and 0 <= nc < 6:
+                    if b[nr, nc] == 0:
+                        count += 1
+                    else:
+                        break
+                    nr += dr
+                    nc += dc
+        return count
+
+    # Identify current player's amazons (1) and opponent's amazons (2)
+    my_amazons = np.argwhere(board == 1)
+    
+    best_score = -float('inf')
+    best_move_str = None
+
+    # Iterate through each amazon we control
+    for amazon in my_amazons:
+        r1, c1 = int(amazon[0]), int(amazon[1])
+        
+        # Generate all possible destination squares for this amazon
+        destinations = get_moves(board, r1, c1)
+        
+        for r2, c2 in destinations:
+            # Create a temporary board state after the amazon moves
+            # The original square becomes empty, the destination holds the amazon
+            sim_board = board.copy()
+            sim_board[r1, c1] = 0
+            sim_board[r2, c2] = 1
+            
+            # Generate all possible arrow targets from the new position
+            arrow_targets = get_moves(sim_board, r2, c2)
+            
+            for r3, c3 in arrow_targets:
+                # Simulate the arrow shot
+                sim_board[r3, c3] = -1
+                
+                # Evaluate the resulting board state
+                # Heuristic: My Mobility - Opponent Mobility
+                current_my_amazons = np.argwhere(sim_board == 1)
+                current_opp_amazons = np.argwhere(sim_board == 2)
+                
+                my_mob = count_mobility(sim_board, current_my_amazons)
+                opp_mob = count_mobility(sim_board, current_opp_amazons)
+                
+                score = my_mob - opp_mob
+                
+                # If we can completely trap the opponent, take this move immediately
+                if opp_mob == 0:
+                    return f"{r1},{c1}:{r2},{c2}:{r3},{c3}"
+                
+                if score > best_score:
+                    best_score = score
+                    best_move_str = f"{r1},{c1}:{r2},{c2}:{r3},{c3}"
+                
+                # Undo arrow shot for the next iteration (revert to state after amazon move)
+                sim_board[r3, c3] = 0
+
+    # Fallback: If no move was found (should not happen in a valid game state), 
+    # we return a placeholder. The prompt guarantees a legal move exists if called.
+    if best_move_str is None:
+        return "0,0:0,0:0,0"
+
+    return best_move_str
+</code>

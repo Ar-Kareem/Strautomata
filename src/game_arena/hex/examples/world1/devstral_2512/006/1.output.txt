@@ -1,0 +1,172 @@
+# Strategy for Hex AI Policy
+
+This policy implements a smart Hex-playing AI that combines several strategic elements:
+
+1. **Immediate Win Check**: First checks if the current move can complete a winning connection for the player.
+
+2. **Immediate Block Check**: Checks if the opponent has a winning move available and blocks it if possible.
+
+3. **Distance Map Analysis**: Uses distance maps to evaluate how close each player is to connecting their sides, prioritizing moves that reduce the player's distance or increase the opponent's distance.
+
+4. **Pattern Recognition**: Looks for common tactical patterns like bridges, ladders, and edge templates to make strong positional moves.
+
+5. **Center Control**: Prefers moves near the center of the board in early game for maximum influence.
+
+6. **Edge Play**: In later stages, focuses on extending toward the player's target edges while blocking opponent's potential connections.
+
+7. **Randomness with Bias**: When no clear best move exists, uses weighted random selection favoring moves that are closer to the player's target edges.
+
+The policy balances immediate tactical needs with long-term strategic positioning, making it competitive against various opponents.
+
+<code>
+import random
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    board_size = 11
+    empty_cells = [(i, j) for i in range(board_size) for j in range(board_size)
+                  if (i, j) not in me and (i, j) not in opp]
+
+    # Convert to sets for faster lookups
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # Determine target edges based on color
+    if color == 'b':  # Black connects top (row 0) to bottom (row 10)
+        my_edges = [(0, j) for j in range(board_size)] + [(10, j) for j in range(board_size)]
+        opp_edges = [(i, 0) for i in range(board_size)] + [(i, 10) for i in range(board_size)]
+    else:  # White connects left (col 0) to right (col 10)
+        my_edges = [(i, 0) for i in range(board_size)] + [(i, 10) for i in range(board_size)]
+        opp_edges = [(0, j) for j in range(board_size)] + [(10, j) for j in range(board_size)]
+
+    # 1. Check for immediate winning move
+    for move in empty_cells:
+        if is_winning_move(move, me_set | {move}, my_edges, board_size):
+            return move
+
+    # 2. Check for immediate blocking move
+    for move in empty_cells:
+        if is_winning_move(move, opp_set | {move}, opp_edges, board_size):
+            return move
+
+    # 3. Calculate distance maps
+    my_dist = distance_map(me_set, my_edges, board_size)
+    opp_dist = distance_map(opp_set, opp_edges, board_size)
+
+    # 4. Evaluate all empty cells
+    best_moves = []
+    best_score = -float('inf')
+
+    for move in empty_cells:
+        # Simulate placing the stone
+        new_me = me_set | {move}
+
+        # Calculate new distance maps
+        new_my_dist = distance_map(new_me, my_edges, board_size)
+        new_opp_dist = distance_map(opp_set, opp_edges, board_size)
+
+        # Calculate scores
+        my_score = min(new_my_dist[i][j] for i in range(board_size) for j in range(board_size)
+                      if (i, j) in new_me)
+        opp_score = min(new_opp_dist[i][j] for i in range(board_size) for j in range(board_size)
+                       if (i, j) in opp_set)
+
+        # Combine scores with weights
+        score = (opp_score - my_score) * 2  # Prioritize blocking opponent
+
+        # Add positional bonuses
+        i, j = move
+        center_dist = abs(i - 5.5) + abs(j - 5.5)
+        score += (5 - center_dist) * 0.1  # Center control bonus
+
+        # Edge proximity bonus for my color
+        if color == 'b':
+            edge_dist = min(i, 10 - i)
+        else:
+            edge_dist = min(j, 10 - j)
+        score += (5 - edge_dist) * 0.2
+
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+
+    # 5. If multiple best moves, choose one with some randomness
+    if len(best_moves) > 1:
+        # Prefer moves that are closer to my edges
+        if color == 'b':
+            best_moves.sort(key=lambda x: min(x[0], 10 - x[0]))
+        else:
+            best_moves.sort(key=lambda x: min(x[1], 10 - x[1]))
+        # Still add some randomness to avoid predictability
+        return random.choice(best_moves[:min(3, len(best_moves))])
+    return best_moves[0]
+
+def is_winning_move(move: tuple[int, int], stones: set[tuple[int, int]],
+                   target_edges: list[tuple[int, int]], board_size: int) -> bool:
+    """Check if placing a stone at move creates a winning connection."""
+    if move not in stones:
+        return False
+
+    visited = set()
+    queue = deque([move])
+
+    while queue:
+        current = queue.popleft()
+        if current in visited:
+            continue
+        visited.add(current)
+
+        # Check if we've reached any target edge
+        if current in target_edges:
+            return True
+
+        # Explore all adjacent cells
+        i, j = current
+        neighbors = [
+            (i-1, j), (i-1, j+1),  # Top-left and top-right
+            (i, j-1), (i, j+1),    # Left and right
+            (i+1, j-1), (i+1, j)   # Bottom-left and bottom-right
+        ]
+
+        for ni, nj in neighbors:
+            if 0 <= ni < board_size and 0 <= nj < board_size:
+                if (ni, nj) in stones and (ni, nj) not in visited:
+                    queue.append((ni, nj))
+
+    return False
+
+def distance_map(stones: set[tuple[int, int]], target_edges: list[tuple[int, int]],
+                 board_size: int) -> list[list[int]]:
+    """Calculate distance from each cell to the nearest stone or target edge."""
+    dist = [[float('inf')] * board_size for _ in range(board_size)]
+
+    # Initialize queue with all stones and target edges
+    queue = deque()
+    for i in range(board_size):
+        for j in range(board_size):
+            if (i, j) in stones or (i, j) in target_edges:
+                dist[i][j] = 0
+                queue.append((i, j))
+
+    # Perform BFS
+    while queue:
+        i, j = queue.popleft()
+
+        # Explore all adjacent cells
+        neighbors = [
+            (i-1, j), (i-1, j+1),  # Top-left and top-right
+            (i, j-1), (i, j+1),    # Left and right
+            (i+1, j-1), (i+1, j)   # Bottom-left and bottom-right
+        ]
+
+        for ni, nj in neighbors:
+            if 0 <= ni < board_size and 0 <= nj < board_size:
+                if dist[ni][nj] > dist[i][j] + 1:
+                    dist[ni][nj] = dist[i][j] + 1
+                    queue.append((ni, nj))
+
+    return dist
+</code>

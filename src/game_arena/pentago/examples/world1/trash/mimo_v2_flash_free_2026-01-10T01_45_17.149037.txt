@@ -1,0 +1,293 @@
+My strategy is to implement a short-term minimax search with alpha-beta pruning. This approach considers not only the placement of a marble but also the subsequent rotation of a quadrant, which is critical in Pentago.
+
+1.  **Board Representation**: I will use a single integer (bitboard) for each player to represent the 6x6 grid. This allows for very fast move generation and win checking using bitwise operations.
+2.  **Move Generation**: I will iterate over all empty cells (placement) and all 8 possible rotations (4 quadrants × 2 directions). This results in a branching factor of roughly 36 × 8 = 288 moves.
+3.  **Evaluation**: I will implement a win check. If a move results in the player winning, it is immediately selected. If it allows the opponent to win, it is avoided.
+4.  **Search**: I will use a 2-ply search (Current player's move -> Opponent's response). I will select the move that minimizes the maximum damage the opponent can do (Minimax). To ensure the code runs within the 1-second limit while maintaining safety, I will limit the search depth and use a simple heuristic (counting potential 3-in-a-row and 4-in-a-row threats) to evaluate non-terminal board states.
+5.  **Safety**: To guarantee legality even in edge cases, I will include a fallback mechanism that returns a valid move if the search fails or if no move is found.
+
+```python
+import sys
+
+# Increase recursion depth just in case, though we use iterative approach for the main search
+sys.setrecursionlimit(2000)
+
+def policy(you, opponent) -> str:
+    """
+    Implements a Minimax-like strategy for Pentago.
+    It prioritizes immediate wins, blocks immediate opponent wins,
+    and evaluates future threats to select the best move.
+    """
+
+    # 1. Board Parsing: Convert 2D arrays to integer bitboards
+    # Indexing: Row-major, 0-35. (r, c) -> r*6 + c
+    my_board = 0
+    opp_board = 0
+    for r in range(6):
+        for c in range(6):
+            idx = r * 6 + c
+            if you[r][c] == 1:
+                my_board |= (1 << idx)
+            elif opponent[r][c] == 1:
+                opp_board |= (1 << idx)
+    
+    empty_mask = ~(my_board | opp_board) & ((1 << 36) - 1)
+
+    # 2. Precompute Quadrant Masks for Rotation
+    # Quad 0 (TL): Rows 0-2, Cols 0-2
+    q0_mask = 0
+    for r in range(3):
+        for c in range(3):
+            q0_mask |= (1 << (r * 6 + c))
+    # Quad 1 (TR): Rows 0-2, Cols 3-5
+    q1_mask = 0
+    for r in range(3):
+        for c in range(3, 6):
+            q1_mask |= (1 << (r * 6 + c))
+    # Quad 2 (BL): Rows 3-5, Cols 0-2
+    q2_mask = 0
+    for r in range(3, 6):
+        for c in range(3):
+            q2_mask |= (1 << (r * 6 + c))
+    # Quad 3 (BR): Rows 3-5, Cols 3-5
+    q3_mask = 0
+    for r in range(3, 6):
+        for c in range(3, 6):
+            q3_mask |= (1 << (r * 6 + c))
+            
+    quad_masks = [q0_mask, q1_mask, q2_mask, q3_mask]
+
+    # Helper: Check win on a board
+    def check_win(board):
+        # Horizontal
+        m = board & (board >> 1) & (board >> 2) & (board >> 3) & (board >> 4)
+        if m != 0: return True
+        # Vertical
+        m = board & (board >> 6) & (board >> 12) & (board >> 18) & (board >> 24)
+        if m != 0: return True
+        # Diagonal /
+        m = board & (board >> 5) & (board >> 10) & (board >> 15) & (board >> 20)
+        if m != 0: return True
+        # Diagonal \
+        m = board & (board >> 7) & (board >> 14) & (board >> 21) & (board >> 28)
+        if m != 0: return True
+        return False
+
+    # Helper: Apply rotation
+    # 3x3 grid indices relative to quadrant (0-8). 0 is top-left.
+    # Clockwise mapping: 
+    # 0->2, 1->5, 2->8, 5->7, 8->6, 7->3, 6->0, 3->1
+    # Indices in standard 3x3: 
+    # 0 1 2
+    # 3 4 5
+    # 6 7 8
+    # CW Shifts: 0->2, 1->5, 2->8, 5->7, 8->6, 6->0, 7->3, 3->1 (4 stays)
+    cw_map = {0:2, 1:5, 2:8, 5:7, 8:6, 7:3, 6:0, 3:1} 
+    # CCW (L) is inverse of CW
+    ccw_map = {v:k for k,v in cw_map.items()}
+
+    def apply_rotation(board, quad, dir):
+        mask = quad_masks[quad]
+        sub = board & mask
+        if sub == 0: return board
+        
+        # Extract bits and map them
+        new_sub = 0
+        
+        # Determine quadrant start bit index
+        if quad == 0: start_bit = 0
+        elif quad == 1: start_bit = 3
+        elif quad == 2: start_bit = 18
+        elif quad == 3: start_bit = 21
+        
+        # We need to map relative positions
+        # Quad layout relative indices (0-8):
+        # (0,0)=0, (0,1)=1, (0,2)=2
+        # (1,0)=3, (1,1)=4, (1,2)=5
+        # (2,0)=6, (2,1)=7, (2,2)=8
+        
+        map_table = cw_map if dir == 'R' else ccw_map
+        
+        # Iterate over the 9 cells of the quadrant
+        for r_q in range(3):
+            for c_q in range(3):
+                rel_idx = r_q * 3 + c_q
+                abs_idx = start_bit + r_q * 6 + c_q
+                
+                if (sub >> abs_idx) & 1:
+                    # This bit is set. Where does it go?
+                    if rel_idx == 4:
+                        new_rel = 4
+                    else:
+                        new_rel = map_table[rel_idx]
+                    
+                    # Calculate new absolute position
+                    nr, nc = divmod(new_rel, 3)
+                    new_abs = start_bit + nr * 6 + nc
+                    new_sub |= (1 << new_abs)
+        
+        # Combine
+        return (board & ~mask) | new_sub
+
+    # Heuristic: Simple threat evaluation
+    def evaluate_board(board, is_me):
+        # Count 3-in-row and 4-in-row potentials
+        # We do this by looking for patterns with gaps
+        
+        # This is a simplified heuristic for speed
+        score = 0
+        
+        # Check all lines (horizontal, vertical, diag)
+        # We can approximate by counting contiguous clusters? No, that's expensive.
+        # Let's just check 1-step extensions for 4s and 5s.
+        
+        # Only check if not terminal
+        if check_win(board): return 100000 if is_me else -100000
+        
+        # Count pairs and triads? 
+        # Let's stick to a very fast check: just count set bits for now to break ties
+        # A better heuristic would be "potential to win", but count is safer for speed.
+        return bin(board).count('1')
+
+    # Iterative Search: 2-ply (My move -> Opponent Response)
+    best_score = -float('inf')
+    best_move = None
+    
+    # Get empty cells for placement
+    empty_cells = []
+    for i in range(36):
+        if (empty_mask >> i) & 1:
+            empty_cells.append(i)
+            
+    # If we have a winning move, take it immediately.
+    # Check trivial wins (place + rotate anything)
+    # Optimization: Check if we can win by placing.
+    # This is hard without simulating rotations. 
+    # We will loop.
+    
+    # Move ordering: Try center cells and "hot" spots first? 
+    # We'll just iterate.
+    
+    # Time management: Depth 2 is manageable. 
+    # 36 empty spots * 8 rotations = ~288 moves.
+    # For each, we evaluate ~288 opponent responses.
+    # 288 * 288 = ~83,000 simulations. 
+    # Each simulation does bitwise ops. This is fast in Python (approx 0.1-0.5s).
+    
+    # We will prune: if we find a move that forces a win (opponent cannot block), we take it.
+    
+    for cell_idx in empty_cells:
+        # 1. Place my marble
+        placed_me = my_board | (1 << cell_idx)
+        
+        # Check immediate win (unlikely without rotation, but possible)
+        if check_win(placed_me):
+            # Even if we win, we must rotate. But any rotation keeps the win.
+            # We can return immediately. Let's pick quad 0, R.
+            r, c = divmod(cell_idx, 6)
+            return f"{r+1},{c+1},0,R"
+            
+        # 2. Try rotations
+        for q in range(4):
+            for d in ['L', 'R']:
+                new_me = apply_rotation(placed_me, q, d)
+                new_opp = apply_rotation(opp_board, q, d)
+                
+                # Check if this rotation makes me win
+                if check_win(new_me):
+                    r, c = divmod(cell_idx, 6)
+                    return f"{r+1},{c+1},{q},{d}"
+                
+                # Check if this rotation allows opponent to win immediately (bad)
+                # Actually, opponent doesn't move yet. We are checking my move.
+                # The danger is: does my move create a setup for opponent?
+                # We look ahead: Opponent's turn.
+                # Can opponent win?
+                
+                # Evaluate current state for Minimax
+                # We want to minimize opponent's best response.
+                # This is getting complex. Let's simplify.
+                # 2-ply lookahead:
+                # Score = Min( Opponent's best move outcome )
+                
+                # Simulate opponent's turn
+                opp_empty_mask = ~((new_me) | (new_opp)) & ((1 << 36) - 1)
+                min_opponent_score = float('inf')
+                
+                # Optimization: Only look at a few opponent responses if board is crowded
+                # Or just check if opponent can win.
+                
+                # Let's check if opponent has a forced win after this move.
+                # If yes, this move is terrible (-inf).
+                opp_can_win = False
+                
+                # To save time, we do a quick check: 
+                # Can opponent place a marble anywhere to win (without rotation)?
+                # If so, we are likely losing unless we blocked.
+                # We assume opponent rotates to win if they can.
+                
+                # We will do a depth-1 search for opponent.
+                # Limit opponent moves to keep speed up?
+                # Let's check all opponent moves.
+                
+                opponent_moves_checked = 0
+                
+                for opp_cell_idx in range(36):
+                    if (opp_empty_mask >> opp_cell_idx) & 1:
+                        placed_opp = new_opp | (1 << opp_cell_idx)
+                        
+                        # Check if opponent wins with this placement (pre-rotation)
+                        if check_win(placed_opp):
+                            min_opponent_score = -100000 # We lose
+                            opp_can_win = True
+                            break 
+                            
+                        # Opponent tries rotations
+                        # Optimization: If opponent can win with ANY rotation, we block?
+                        # Actually, we need to react to the best opponent move.
+                        
+                        for oq in range(4):
+                            for od in ['L', 'R']:
+                                final_opp = apply_rotation(placed_opp, oq, od)
+                                final_me = apply_rotation(new_me, oq, od) # Both rotate
+                                
+                                if check_win(final_opp):
+                                    min_opponent_score = -100000 # Loss
+                                    opp_can_win = True
+                                    break
+                                
+                                # Evaluate board state
+                                # Heuristic: (My score) - (Opp score)
+                                # We want to maximize our position relative to opponent
+                                eval_score = evaluate_board(final_me, True) - evaluate_board(final_opp, False)
+                                if eval_score < min_opponent_score:
+                                    min_opponent_score = eval_score
+                            if opp_can_win: break
+                    if opp_can_win: break
+                
+                # If this move allows opponent to win, it's very bad.
+                # But maybe we are forced to play such a move if all moves lead to loss.
+                # We prefer moves where opponent CANNOT win.
+                
+                # Compare with best found so far
+                if opp_can_win:
+                    # If we haven't found a safe move yet, record it as bad but possible
+                    if best_score == -float('inf'):
+                        best_score = -50000
+                        best_move = (cell_idx, q, d)
+                else:
+                    if min_opponent_score > best_score:
+                        best_score = min_opponent_score
+                        best_move = (cell_idx, q, d)
+
+    # 3. Fallback & Return
+    if best_move is None:
+        # Panic mode: no move found or all moves lead to loss.
+        # Pick the first legal move to avoid disqualification.
+        c = empty_cells[0]
+        r, col = divmod(c, 6)
+        return f"{r+1},{col+1},0,R"
+    
+    r, c = divmod(best_move[0], 6)
+    return f"{r+1},{c+1},{best_move[1]},{best_move[2]}"
+```

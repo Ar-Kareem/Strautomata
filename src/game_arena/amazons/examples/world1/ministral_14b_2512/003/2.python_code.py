@@ -1,0 +1,119 @@
+
+import numpy as np
+import random
+
+def policy(board):
+    # First, find all my amazons and opponent amazons
+    my_amazons = np.argwhere(board == 1)
+    opponent_amazons = np.argwhere(board == 2)
+
+    # Generate all legal moves
+    legal_moves = []
+    for (from_row, from_col) in my_amazons:
+        # Generate all possible moves for this amazon (queen-like)
+        possible_moves = generate_queen_moves(board, from_row, from_col)
+        for (to_row, to_col) in possible_moves:
+            # Simulate the move of the amazon to the new position
+            new_board = board.copy()
+            new_board[from_row, from_col] = 0
+            new_board[to_row, to_col] = 1
+
+            # Generate all possible arrow shots from the new position
+            possible_arrows = generate_queen_moves(new_board, to_row, to_col)
+            for (arrow_row, arrow_col) in possible_arrows:
+                # Check if the arrow does not land on an opponent's amazon or my amazon
+                if new_board[arrow_row, arrow_col] != 2 and new_board[arrow_row, arrow_col] != 1:
+                    legal_moves.append((from_row, from_col, to_row, to_col, arrow_row, arrow_col))
+
+    # If no legal moves, return None (though problem states this won't happen)
+    if not legal_moves:
+        return None
+
+    # Evaluate each legal move
+    evaluated_moves = []
+    for move in legal_moves:
+        from_row, from_col, to_row, to_col, arrow_row, arrow_col = move
+        # Simulate the move and arrow
+        new_board = board.copy()
+        new_board[from_row, from_col] = 0
+        new_board[to_row, to_col] = 1
+        new_board[arrow_row, arrow_col] = -1
+
+        # Calculate score based on how many opponent amazons are threatened
+        score = 0
+        for (op_row, op_col) in opponent_amazons:
+            # Check if the arrow is on the same row, column, or diagonal as the opponent's amazon
+            if (op_row == arrow_row or op_col == arrow_col or
+                abs(op_row - arrow_row) == abs(op_col - arrow_col)):
+                # Check if the path between the arrow and the opponent's amazon is unobstructed
+                if is_path_clear(new_board, arrow_row, arrow_col, op_row, op_col):
+                    score += 1
+
+        # Calculate additional score based on how many new squares are blocked for the opponent
+        # This is a heuristic: count how many squares are blocked for the opponent after the arrow is placed
+        blocked_squares = 0
+        for (op_row, op_col) in opponent_amazons:
+            # Generate all possible moves for the opponent's amazon
+            possible_moves_op = generate_queen_moves(new_board, op_row, op_col)
+            for (to_op_row, to_op_col) in possible_moves_op:
+                # Check if the path is blocked by the arrow
+                if is_path_clear(new_board, op_row, op_col, to_op_row, to_op_col):
+                    # Check if the arrow is on the path
+                    if (op_row == arrow_row and to_op_row == arrow_row) or \
+                       (op_col == arrow_col and to_op_col == arrow_col) or \
+                       (abs(op_row - to_op_row) == abs(op_row - arrow_row) and
+                        abs(op_col - to_op_col) == abs(op_col - arrow_col) and
+                        (to_op_row - op_row) * (arrow_row - op_row) >= 0 and
+                        (to_op_col - op_col) * (arrow_col - op_col) >= 0):
+                        blocked_squares += 1
+
+        # Calculate score based on how many new squares my amazon can move to after the move
+        new_possible_moves = generate_queen_moves(new_board, to_row, to_col)
+        flexibility_score = len(new_possible_moves)
+
+        # Total score is a combination of threat, blocked squares, and flexibility
+        total_score = score + blocked_squares * 0.5 + flexibility_score * 0.3
+
+        evaluated_moves.append((move, total_score))
+
+    # Select the move with the highest score
+    evaluated_moves.sort(key=lambda x: x[1], reverse=True)
+    best_moves = [move for move, score in evaluated_moves if score == evaluated_moves[0][1]]
+
+    # Randomly choose among the best moves
+    chosen_move = random.choice(best_moves)
+    from_row, from_col, to_row, to_col, arrow_row, arrow_col = chosen_move
+
+    # Return the move in the required format
+    return f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"
+
+def generate_queen_moves(board, row, col):
+    # Generate all possible queen-like moves from (row, col)
+    moves = []
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                 (0, -1),          (0, 1),
+                 (1, -1),  (1, 0), (1, 1)]
+
+    for dr, dc in directions:
+        r, c = row + dr, col + dc
+        while 0 <= r < 6 and 0 <= c < 6:
+            if board[r, c] == 0:
+                moves.append((r, c))
+            if board[r, c] != 0:
+                break
+            r += dr
+            c += dc
+    return moves
+
+def is_path_clear(board, from_row, from_col, to_row, to_col):
+    # Check if the path between (from_row, from_col) and (to_row, to_col) is clear
+    dr = to_row - from_row
+    dc = to_col - from_col
+    steps = max(abs(dr), abs(dc))
+
+    for i in range(1, steps + 1):
+        r = from_row + dr * i // steps if steps != 0 else from_row
+        c = from_col + dc * i // steps if steps != 0 else from_col
+        if board[r, c] != 0:
+            return False
+    return True

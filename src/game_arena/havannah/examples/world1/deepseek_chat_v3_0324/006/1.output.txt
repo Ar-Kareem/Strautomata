@@ -1,0 +1,275 @@
+# Havannah Strategy
+
+My Havannah strategy focuses on the following key principles:
+1. **Early game corner control**: Corners are important for bridges and forks
+2. **Mid-game edge expansion**: Controlling edges helps with fork wins and limits opponent options
+3. **Ring threat awareness**: Constantly checking for potential ring formations for both players
+4. **Flexible adaptation**: Shifts between offense (creating multiple threats) and defense (blocking opponent)
+
+The implementation uses:
+- **Pattern recognition**: Looking for potential wins (bridges, forks, rings)
+- **Graph connectivity**: Using BFS to assess connection strength
+- **Scoring system**: Evaluating potential moves based on strategic value
+- **Prioritization**: Focusing first on immediate wins, then blocking opponent wins, then development
+
+Here's the Python implementation:
+
+```python
+import numpy as np
+from collections import deque
+
+def policy(me, opp, valid_mask):
+    size = 15
+    corners = [(0,0), (0,size-1), (size-1,0), (size-1,size-1), 
+               (size//2,0), (size//2,size-1)] if size % 2 == 1 else []
+    
+    # Convert positions to board representation
+    board = np.zeros((size, size), dtype=int)
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opp:
+        board[r][c] = 2
+    
+    # Check all possible moves for winning ones first
+    for r in range(size):
+        for c in range(size):
+            if valid_mask[r][c]:
+                # Simulate placing our stone
+                test_board = board.copy()
+                test_board[r,c] = 1
+                
+                # Check if this move wins
+                if is_win(test_board, (r,c), 1):
+                    return (r, c)
+    
+    # Check opponent's potential winning moves and block
+    for r in range(size):
+        for c in range(size):
+            if valid_mask[r][c]:
+                # Simulate opponent placing stone
+                test_board = board.copy()
+                test_board[r,c] = 2
+                
+                if is_win(test_board, (r,c), 2):
+                    return (r, c)
+    
+    # Score potential moves based on strategic value
+    best_score = -1
+    best_move = None
+    
+    for r in range(size):
+        for c in range(size):
+            if valid_mask[r][c]:
+                score = evaluate_move(board, r, c, me, opp)
+                
+                if score > best_score or (score == best_score and best_move is None):
+                    best_score = score
+                    best_move = (r, c)
+    
+    # If no evaluated move (shouldn't happen), pick any valid
+    if best_move is None:
+        for r in range(size):
+            for c in range(size):
+                if valid_mask[r][c]:
+                    return (r, c)
+    
+    return best_move
+
+def evaluate_move(board, r, c, me, opp):
+    size = len(board)
+    score = 0
+    
+    # Positional bonuses
+    corners = [(0,0), (0,size-1), (size-1,0), (size-1,size-1)]
+    edges = []
+    
+    for i in range(size):
+        edges.append((0, i))        # top edge
+        edges.append((size-1, i))   # bottom edge
+        edges.append((i, 0))        # left edge
+        edges.append((i, size-1))   # right edge
+    
+    # Bonus for corners
+    if (r, c) in corners:
+        score += 20
+    
+    # Bonus for edges (but not corners)
+    elif (r, c) in edges and (r, c) not in corners:
+        score += 10
+    
+    # Connectivity to existing stones
+    neighbor_bonus = 3
+    for dr, dc in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (-1,-1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < size and 0 <= nc < size:
+            if board[nr][nc] == 1:  # our stone
+                score += neighbor_bonus
+            elif board[nr][nc] == 2:  # opponent stone
+                score -= 1
+    
+    # Potential for bridges, forks, rings
+    test_board = board.copy()
+    test_board[r,c] = 1
+    
+    # Score potential bridges (corner connections)
+    corners = {(0,0), (0,size-1), (size-1,0), (size-1,size-1)}
+    corner_connections = 0
+    for corner in corners:
+        if (r,c) in corners and (r,c) != corner:
+            if is_connected(test_board, (r,c), corner, 1):
+                corner_connections += 1
+    score += corner_connections * 15
+    
+    # Score potential edge connections (for forks)
+    edges_connected = count_connected_edges(test_board, (r,c), 1)
+    score += edges_connected * 10
+    
+    # Score potential ring formations
+    ring_potential = check_ring_potential(test_board, (r,c), 1)
+    score += ring_potential * 12
+    
+    return score
+
+def is_win(board, last_move, player):
+    # Check for bridge (connects two corners)
+    if is_bridge(board, last_move, player):
+        return True
+    
+    # Check for fork (connects three edges)
+    if is_fork(board, last_move, player):
+        return True
+    
+    # Check for ring (loop around one or more cells)
+    if is_ring(board, last_move, player):
+        return True
+    
+    return False
+
+def is_bridge(board, last_move, player):
+    size = len(board)
+    corners = [(0,0), (0,size-1), (size-1,0), (size-1,size-1)]
+    connected_corners = 0
+    
+    for corner in corners:
+        if last_move == corner or is_connected(board, last_move, corner, player):
+            connected_corners += 1
+            if connected_corners >= 2:
+                return True
+    return False
+
+def is_fork(board, last_move, player):
+    size = len(board)
+    edges = set()
+    
+    # Check all edge connections
+    for edge in get_edges(size):
+        if last_move in edge or is_connected(board, last_move, edge, player):
+            edges.add(get_edge_type(edge, size))
+            if len(edges) >= 3:
+                return True
+    return False
+
+def is_ring(board, last_move, player):
+    # Check for a ring structure around last_move
+    visited = set()
+    queue = deque()
+    
+    # Get all neighbors of the last move that are the same player
+    neighbors = []
+    for dr, dc in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (-1,-1)]:
+        nr, nc = last_move[0] + dr, last_move[1] + dc
+        if 0 <= nr < len(board) and 0 <= nc < len(board):
+            if board[nr][nc] == player:
+                neighbors.append((nr, nc))
+    
+    # Need at least 2 neighbors for possible ring
+    if len(neighbors) < 2:
+        return False
+    
+    # BFS to find a loop that doesn't include the center
+    start = neighbors[0]
+    queue.append((start, [start]))
+    visited.add(start)
+    
+    while queue:
+        current, path = queue.popleft()
+        
+        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (-1,-1)]:
+            nr, nc = current[0] + dr, current[1] + dc
+            if 0 <= nr < len(board) and 0 <= nc < len(board):
+                if (nr, nc) != last_move and board[nr][nc] == player:
+                    if (nr, nc) == start and len(path) >= 5:  # Minimum 6 stones for ring
+                        return True
+                    if (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        queue.append(((nr, nc), path + [(nr, nc)]))
+    
+    return False
+
+def is_connected(board, pos1, pos2, player):
+    if board[pos1[0]][pos1[1]] != player or board[pos2[0]][pos2[1]] != player:
+        return False
+    
+    visited = set()
+    queue = deque([pos1])
+    visited.add(pos1)
+    
+    while queue:
+        current = queue.popleft()
+        if current == pos2:
+            return True
+        
+        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (-1,-1)]:
+            nr, nc = current[0] + dr, current[1] + dc
+            if 0 <= nr < len(board) and 0 <= nc < len(board):
+                if board[nr][nc] == player and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+    
+    return False
+
+def count_connected_edges(board, pos, player):
+    size = len(board)
+    edges_connected = set()
+    
+    for edge in get_edges(size):
+        for point in edge:
+            if is_connected(board, pos, point, player):
+                edges_connected.add(get_edge_type(edge, size))
+    
+    return len(edges_connected)
+
+def get_edges(size):
+    edges = []
+    edges.append([(0, c) for c in range(1, size-1)])  # Top edge (excluding corners)
+    edges.append([(size-1, c) for c in range(1, size-1)])  # Bottom edge
+    edges.append([(r, 0) for r in range(1, size-1)])  # Left edge
+    edges.append([(r, size-1) for r in range(1, size-1)])  # Right edge
+    if size % 2 == 1:
+        mid = size // 2
+        edges.append([(r, 0) for r in range(mid-5, mid+6) if 0 <= r < size])  # Left-center edge
+        edges.append([(r, size-1) for r in range(mid-5, mid+6) if 0 <= r < size])  # Right-center edge
+    return edges
+
+def get_edge_type(edge, size):
+    if (0, 1) in edge:
+        return 'top'
+    elif (size-1, 1) in edge:
+        return 'bottom'
+    elif (1, 0) in edge:
+        return 'left'
+    elif (1, size-1) in edge:
+        return 'right'
+    else:
+        return 'center'
+
+def check_ring_potential(board, pos, player):
+    # Simple heuristic for ring potential by counting neighbors
+    count = 0
+    for dr, dc in [(0,1), (1,0), (0,-1), (-1,0), (1,1), (-1,-1)]:
+        nr, nc = pos[0] + dr, pos[1] + dc
+        if 0 <= nr < len(board) and 0 <= nc < len(board):
+            if board[nr][nc] == player:
+                count += 1
+    return count
+```

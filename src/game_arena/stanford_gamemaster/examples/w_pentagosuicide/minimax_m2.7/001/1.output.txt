@@ -1,0 +1,284 @@
+**Strategy Overview**
+
+The game “pentagosuicide’’ is a two‑player perfect‑information game.  
+A move consists of two mandatory sub‑actions:
+
+1. **Place** a stone of the player’s colour on any empty cell of the 6 × 6 board.  
+2. **Rotate** one of the four 3 × 3 sub‑boards (quadrants) by 90° clockwise or counter‑clockwise.
+
+A player wins as soon as after the placement or after the rotation there is a horizontal, vertical or diagonal line of five stones of his colour.
+
+The policy we implement works as follows:
+
+* **State reconstruction** – From the supplied list of facts we rebuild the 6 × 6 board and the current phase (`place` or `rotate`).  
+* **Move generation** –  
+  * In `place` phase we generate *all* possible placements (at most 36). For each placement we also generate all eight possible rotations (four quadrants × two directions) and obtain the board that results after the whole move.  
+  * In `rotate` phase we generate the eight possible rotations of the current board.  
+* **Win‑checking** – Before evaluating a board we check whether the current player or the opponent already has five‑in‑a‑row. Any move that gives the opponent an immediate win is discarded. Any move that gives the player an immediate win is accepted immediately.  
+* **Evaluation** – For non‑terminal boards we use a fast static estimator.  
+  * All 32 possible lines of length 5 (horizontal, vertical, diagonal) are pre‑computed.  
+  * For each line we count the number of own stones, opponent stones and empty cells.  
+  * A line that contains an opponent stone is *blocked* and contributes nothing.  
+  * For an open line we award points: 5‑in‑a‑row → huge bonus, 4‑in‑a‑row → 200 pts, 3‑in‑a‑row → 20 pts, 2‑in‑a‑row → 2 pts, a smaller bonus for fewer stones, plus a small credit for each empty cell (potential).  
+  * The final score of a board is *own_score – opponent_score*. This makes the heuristic both aggressive (forming own lines) and defensive (blocking opponent lines).  
+* **Decision** – The move with the highest score is chosen. Ties are broken arbitrarily.  
+
+Because we enumerate every legal placement‑rotation pair for the current player and evaluate the resulting board with the same static function, the policy is deterministic and always returns a legal action. The evaluation mimics a one‑ply search with a material‑plus‑potential heuristic, which is sufficient to beat random opponents and often defeats simpler greedy policies.
+
+The implementation follows the required API: `def policy(state: list[list[object]], role: str) -> str`.
+
+---
+
+<code>
+import copy
+from typing import List, Tuple, Optional
+
+# ----------------------------------------------------------------------
+# Global pre‑computation
+# ----------------------------------------------------------------------
+# Quadrant number -> (row_offset, col_offset) for the 6x6 board (0‑indexed)
+OFFSETS = {
+    1: (0, 0),   # top‑left
+    2: (0, 3),   # top‑right
+    3: (3, 0),   # bottom‑left
+    4: (3, 3),   # bottom‑right
+}
+
+# All 32 lines of length 5 on a 6x6 board
+LINES = []
+# horizontal
+for r in range(6):
+    for c in range(2):
+        LINES.append([(r, c + k) for k in range(5)])
+# vertical
+for r in range(2):
+    for c in range(6):
+        LINES.append([(r + k, c) for k in range(5)])
+# diagonal down‑right
+for r in range(2):
+    for c in range(2):
+        LINES.append([(r + k, c + k) for k in range(5)])
+# diagonal down‑left
+for r in range(2):
+    for c in range(4, 6):
+        LINES.append([(r + k, c - k) for k in range(5)])
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def parse_state(state: List[List[object]]) -> Tuple[List[List[Optional[str]]], Optional[str]]:
+    """Convert the list of facts into a 6x6 board and the current phase."""
+    board = [[None] * 6 for _ in range(6)]
+    phase = None
+    for fact in state:
+        if not isinstance(fact, list) or not fact:
+            continue
+        if fact[0] == 'cellholds':
+            q = int(fact[1])
+            r = int(fact[2])
+            c = int(fact[3])
+            colour = fact[4]
+            ro, co = OFFSETS[q]
+            board[ro + r - 1][co + c - 1] = colour
+        elif fact[0] == 'phase':
+            phase = fact[1]
+    return board, phase
+
+
+def empty_cells(board: List[List[Optional[str]]]) -> List[Tuple[int, int, int]]:
+    """Return list of (quadrant, row, col) for all empty cells."""
+    empties = []
+    for q in (1, 2, 3, 4):
+        ro, co = OFFSETS[q]
+        for r in range(1, 4):
+            for c in range(1, 4):
+                if board[ro + r - 1][co + c - 1] is None:
+                    empties.append((q, r, c))
+    return empties
+
+
+def rotate_board(board: List[List[Optional[str]]], quadrant: int, direction: str) -> List[List[Optional[str]]]:
+    """Return a new board after rotating the given quadrant clockwise or counter‑clockwise."""
+    new_board = [row[:] for row in board]
+    ro, co = OFFSETS[quadrant]
+    for r in range(3):
+        for c in range(3):
+            old_r, old_c = ro + r, co + c
+            if direction == 'clockwise':
+                new_r, new_c = ro + c, co + (2 - r)
+            else:  # counterclockwise
+                new_r, new_c = ro + (2 - c), co + r
+            new_board[new_r][new_c] = board[old_r][old_c]
+    return new_board
+
+
+def check_win(board: List[List[Optional[str]]], colour: str) -> bool:
+    """Return True if there is a line of five stones of the given colour."""
+    for (dr, dc) in [(0, 1), (1, 0), (1, 1), (1, -1)]:
+        for r in range(6):
+            for c in range(6):
+                if board[r][c] != colour:
+                    continue
+                # must fit entirely inside the board for a length‑5 line
+                if dr == 0 and c > 1:
+                    continue
+                if dc == 0 and r > 1:
+                    continue
+                if dr == 1 and dc == 1 and (r > 1 or c > 1):
+                    continue
+                if dr == 1 and dc == -1 and (r > 1 or c < 4):
+                    continue
+                ok = True
+                for k in range(1, 5):
+                    nr, nc = r + k * dr, c + k * dc
+                    if board[nr][nc] != colour:
+                        ok = False
+                        break
+                if ok:
+                    return True
+    return False
+
+
+def compute_score(board: List[List[Optional[str]]], colour: str) -> float:
+    """Simple line‑based heuristic for a given colour."""
+    opponent = 'black' if colour == 'red' else 'red'
+    score = 0.0
+    for line in LINES:
+        n_self = n_opp = n_empty = 0
+        for (r, c) in line:
+            cell = board[r][c]
+            if cell == colour:
+                n_self += 1
+            elif cell == opponent:
+                n_opp += 1
+            else:
+                n_empty += 1
+        if n_opp > 0:
+            continue  # blocked line
+        if n_self == 5:
+            score += 1e8
+        elif n_self == 4:
+            score += 200
+        elif n_self == 3:
+            score += 20
+        elif n_self == 2:
+            score += 2
+        else:
+            score += n_self * 0.5
+        score += n_empty * 0.1  # slight bonus for potential
+    return score
+
+
+def evaluate_board(board: List[List[Optional[str]]], colour: str) -> float:
+    """Return own score minus opponent score."""
+    opponent = 'black' if colour == 'red' else 'red'
+    return compute_score(board, colour) - compute_score(board, opponent)
+
+
+# ----------------------------------------------------------------------
+# Move generation & decision helpers
+# ----------------------------------------------------------------------
+ROTATIONS = [(q, d) for q in (1, 2, 3, 4) for d in ('clockwise', 'counterclockwise')]
+
+
+def best_place_and_rotation(board: List[List[Optional[str]]], role: str) -> Tuple[Optional[Tuple[int, int, int]], Optional[Tuple[int, str]]]:
+    """Return (place, rotation) that maximises the static evaluation.
+    place is (quadrant, row, col); rotation is (quadrant, direction)."""
+    opponent = 'black' if role == 'red' else 'red'
+    best_score = -float('inf')
+    best_place = None
+    best_rot = None
+
+    empties = empty_cells(board)
+    if not empties:
+        return None, None
+
+    for q, r, c in empties:
+        # apply placement
+        new_board = [row[:] for row in board]
+        ro, co = OFFSETS[q]
+        new_board[ro + r - 1][co + c - 1] = role
+
+        # immediate win after placement?
+        if check_win(new_board, role):
+            # winning straight away – any rotation is fine
+            return (q, r, c), (1, 'clockwise')
+
+        # try all rotations
+        for q_rot, direction in ROTATIONS:
+            after_rot = rotate_board(new_board, q_rot, direction)
+
+            # opponent win after this rotation -> discard
+            if check_win(after_rot, opponent):
+                continue
+
+            # own win after rotation
+            if check_win(after_rot, role):
+                return (q, r, c), (q_rot, direction)
+
+            # static evaluation
+            sc = evaluate_board(after_rot, role)
+            if sc > best_score:
+                best_score = sc
+                best_place = (q, r, c)
+                best_rot = (q_rot, direction)
+
+    # fallback (should rarely happen)
+    if best_place is None:
+        best_place = empties[0]
+        best_rot = (1, 'clockwise')
+    return best_place, best_rot
+
+
+def best_rotation(board: List[List[Optional[str]]], role: str) -> Tuple[int, str]:
+    """Choose the best rotation for the current player."""
+    opponent = 'black' if role == 'red' else 'red'
+    best_score = -float('inf')
+    best_rot = None
+
+    for q_rot, direction in ROTATIONS:
+        after_rot = rotate_board(board, q_rot, direction)
+
+        # opponent win after rotation -> illegal
+        if check_win(after_rot, opponent):
+            continue
+
+        # own win -> best possible
+        if check_win(after_rot, role):
+            return q_rot, direction
+
+        sc = evaluate_board(after_rot, role)
+        if sc > best_score:
+            best_score = sc
+            best_rot = (q_rot, direction)
+
+    # fallback (should never be needed)
+    if best_rot is None:
+        best_rot = (1, 'clockwise')
+    return best_rot
+
+
+# ----------------------------------------------------------------------
+# Policy required by the arena
+# ----------------------------------------------------------------------
+def policy(state: List[List[object]], role: str) -> str:
+    """
+    Return a legal move for the given role in the current state.
+    The state is a list of Stanford propositions.
+    """
+    board, phase = parse_state(state)
+
+    if phase == 'place':
+        place, rot = best_place_and_rotation(board, role)
+        if place is None:
+            # No legal placement – fall back (should not occur)
+            return "place(1,1,1)"
+        q, r, c = place
+        return f"place({q},{r},{c})"
+    elif phase == 'rotate':
+        q, direction = best_rotation(board, role)
+        return f"rotate({q},{direction})"
+    else:
+        # Unexpected phase – default action
+        return "place(1,1,1)"
+</code>

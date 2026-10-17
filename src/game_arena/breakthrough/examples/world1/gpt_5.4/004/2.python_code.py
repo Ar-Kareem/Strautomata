@@ -1,0 +1,349 @@
+
+from __future__ import annotations
+
+import time
+from typing import List, Tuple
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+INF = 10**9
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Move:
+    start = time.perf_counter()
+    TIME_LIMIT = 0.92
+
+    my_set = set(me)
+    opp_set = set(opp)
+
+    direction = 1 if color == 'w' else -1
+    goal_row = 7 if color == 'w' else 0
+    opp_goal_row = 0 if color == 'w' else 7
+
+    def in_bounds(r: int, c: int) -> bool:
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def legal_moves(my_pieces: set[Tuple[int, int]], op_pieces: set[Tuple[int, int]], side: str) -> List[Move]:
+        d = 1 if side == 'w' else -1
+        moves: List[Move] = []
+        occupied = my_pieces | op_pieces
+
+        # Move ordering is important; generate promising moves first.
+        winning = []
+        captures = []
+        quiet = []
+
+        goal = 7 if side == 'w' else 0
+
+        for r, c in my_pieces:
+            nr = r + d
+            if not (0 <= nr < 8):
+                continue
+
+            # straight
+            if (nr, c) not in occupied:
+                mv = ((r, c), (nr, c))
+                if nr == goal:
+                    winning.append(mv)
+                else:
+                    quiet.append(mv)
+
+            # diagonals
+            for nc in (c - 1, c + 1):
+                if 0 <= nc < 8:
+                    dest = (nr, nc)
+                    if dest not in my_pieces:
+                        mv = ((r, c), dest)
+                        if nr == goal:
+                            winning.append(mv)
+                        elif dest in op_pieces:
+                            captures.append(mv)
+                        elif dest not in occupied:
+                            quiet.append(mv)
+
+        def quiet_key(mv: Move):
+            (_, _), (tr, tc) = mv
+            advance = tr if side == 'w' else (7 - tr)
+            center = -abs(tc - 3.5)
+            return (advance, center)
+
+        captures.sort(key=lambda mv: capture_priority(mv, my_pieces, op_pieces, side), reverse=True)
+        quiet.sort(key=quiet_key, reverse=True)
+        return winning + captures + quiet
+
+    def capture_priority(mv: Move, my_pieces: set[Tuple[int, int]], op_pieces: set[Tuple[int, int]], side: str):
+        (_, _), (tr, tc) = mv
+        captured_advanced = tr if side == 'w' else (7 - tr)
+        center = -abs(tc - 3.5)
+        return (captured_advanced, center)
+
+    def apply_move(my_pieces: set[Tuple[int, int]], op_pieces: set[Tuple[int, int]], mv: Move):
+        (fr, fc), (tr, tc) = mv
+        new_my = set(my_pieces)
+        new_op = set(op_pieces)
+        new_my.remove((fr, fc))
+        if (tr, tc) in new_op:
+            new_op.remove((tr, tc))
+        new_my.add((tr, tc))
+        return new_op, new_my  # swap perspective for next player
+
+    def is_win_for_side(my_pieces: set[Tuple[int, int]], op_pieces: set[Tuple[int, int]], side: str) -> bool:
+        if not op_pieces:
+            return True
+        gr = 7 if side == 'w' else 0
+        for r, _ in my_pieces:
+            if r == gr:
+                return True
+        return False
+
+    def opponent_can_win_next(my_pieces: set[Tuple[int, int]], op_pieces: set[Tuple[int, int]], side: str) -> bool:
+        # side is current player; check if opponent has immediate winning move after current position
+        opp_side = 'b' if side == 'w' else 'w'
+        opp_moves = legal_moves(op_pieces, my_pieces, opp_side)
+        if not opp_moves:
+            return False
+        target_row = 0 if opp_side == 'b' else 7
+        for _, (tr, _tc) in opp_moves:
+            if tr == target_row:
+                return True
+        for mv in opp_moves:
+            nmy, nop = apply_move(op_pieces, my_pieces, mv)
+            # apply_move swaps perspective, so resulting "nop" are opponent original pieces after move
+            # Immediate win by capturing all pieces:
+            if not nmy:
+                return True
+        return False
+
+    def immediate_winning_moves(my_pieces: set[Tuple[int, int]], op_pieces: set[Tuple[int, int]], side: str) -> List[Move]:
+        moves = legal_moves(my_pieces, op_pieces, side)
+        wins = []
+        for mv in moves:
+            (_, _), (tr, _tc) = mv
+            if tr == (7 if side == 'w' else 0):
+                wins.append(mv)
+            else:
+                new_opp, new_me = apply_move(my_pieces, op_pieces, mv)
+                if not new_opp:
+                    wins.append(mv)
+        return wins
+
+    def piece_progress(r: int, side: str) -> int:
+        return r if side == 'w' else 7 - r
+
+    def evaluate(my_pieces: set[Tuple[int, int]], op_pieces: set[Tuple[int, int]], side: str) -> int:
+        opp_side = 'b' if side == 'w' else 'w'
+
+        if is_win_for_side(my_pieces, op_pieces, side):
+            return INF // 2
+        if is_win_for_side(op_pieces, my_pieces, opp_side):
+            return -INF // 2
+
+        score = 0
+
+        # Material
+        score += 140 * (len(my_pieces) - len(op_pieces))
+
+        # Advancement and best runner
+        my_adv = [piece_progress(r, side) for r, _ in my_pieces]
+        op_adv = [piece_progress(r, opp_side) for r, _ in op_pieces]
+        score += 18 * (sum(my_adv) - sum(op_adv))
+        if my_adv:
+            score += 55 * max(my_adv)
+        if op_adv:
+            score -= 55 * max(op_adv)
+
+        # Centrality
+        score += sum(8 - int(abs(c - 3.5) * 2) for _, c in my_pieces)
+        score -= sum(8 - int(abs(c - 3.5) * 2) for _, c in op_pieces)
+
+        occupied = my_pieces | op_pieces
+
+        # Threats and vulnerabilities
+        my_goal = 7 if side == 'w' else 0
+        op_goal = 0 if side == 'w' else 7
+        d = 1 if side == 'w' else -1
+        od = -d
+
+        my_immediate = 0
+        op_immediate = 0
+        my_safe_passers = 0
+        op_safe_passers = 0
+        my_hanging = 0
+        op_hanging = 0
+
+        op_attacks = set()
+        for r, c in op_pieces:
+            nr = r + od
+            if 0 <= nr < 8:
+                if c - 1 >= 0:
+                    op_attacks.add((nr, c - 1))
+                if c + 1 < 8:
+                    op_attacks.add((nr, c + 1))
+
+        my_attacks = set()
+        for r, c in my_pieces:
+            nr = r + d
+            if 0 <= nr < 8:
+                if c - 1 >= 0:
+                    my_attacks.add((nr, c - 1))
+                if c + 1 < 8:
+                    my_attacks.add((nr, c + 1))
+
+        for r, c in my_pieces:
+            nr = r + d
+            if 0 <= nr < 8:
+                if nr == my_goal:
+                    if (nr, c) not in occupied or (nr, c - 1) in op_pieces if c - 1 >= 0 else False or (nr, c + 1) in op_pieces if c + 1 < 8 else False:
+                        my_immediate += 1
+                if (r, c) in op_attacks:
+                    my_hanging += 1
+
+            # Safe passer heuristic: no opposing piece ahead on adjacent files
+            safe = True
+            for rr, cc in op_pieces:
+                if (side == 'w' and rr > r) or (side == 'b' and rr < r):
+                    if abs(cc - c) <= 1:
+                        safe = False
+                        break
+            if safe:
+                my_safe_passers += 1 + piece_progress(r, side)
+
+        for r, c in op_pieces:
+            nr = r + od
+            if 0 <= nr < 8:
+                if nr == op_goal:
+                    if (nr, c) not in occupied or (nr, c - 1) in my_pieces if c - 1 >= 0 else False or (nr, c + 1) in my_pieces if c + 1 < 8 else False:
+                        op_immediate += 1
+                if (r, c) in my_attacks:
+                    op_hanging += 1
+
+            safe = True
+            for rr, cc in my_pieces:
+                if (opp_side == 'w' and rr > r) or (opp_side == 'b' and rr < r):
+                    if abs(cc - c) <= 1:
+                        safe = False
+                        break
+            if safe:
+                op_safe_passers += 1 + piece_progress(r, opp_side)
+
+        score += 180 * my_immediate
+        score -= 220 * op_immediate
+        score += 14 * op_hanging
+        score -= 14 * my_hanging
+        score += 10 * my_safe_passers
+        score -= 12 * op_safe_passers
+
+        # Mobility
+        my_moves = len(legal_moves(my_pieces, op_pieces, side))
+        op_moves = len(legal_moves(op_pieces, my_pieces, opp_side))
+        score += 3 * (my_moves - op_moves)
+
+        return score
+
+    def search(my_pieces: set[Tuple[int, int]], op_pieces: set[Tuple[int, int]], side: str,
+               depth: int, alpha: int, beta: int) -> int:
+        if time.perf_counter() - start > TIME_LIMIT:
+            raise TimeoutError
+
+        opp_side = 'b' if side == 'w' else 'w'
+
+        if is_win_for_side(my_pieces, op_pieces, side):
+            return INF // 2 - (6 - depth)
+        if is_win_for_side(op_pieces, my_pieces, opp_side):
+            return -INF // 2 + (6 - depth)
+
+        if depth == 0:
+            return evaluate(my_pieces, op_pieces, side)
+
+        moves = legal_moves(my_pieces, op_pieces, side)
+        if not moves:
+            return -INF // 2 + (6 - depth)
+
+        best = -INF
+        for mv in moves:
+            next_my, next_op = apply_move(my_pieces, op_pieces, mv)
+            val = -search(next_my, next_op, opp_side, depth - 1, -beta, -alpha)
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return best
+
+    moves = legal_moves(my_set, opp_set, color)
+
+    # Absolute safety: always return some legal move.
+    if not moves:
+        # Should not happen in Breakthrough normal play, but safeguard anyway.
+        return ((me[0][0], me[0][1]), (me[0][0], me[0][1]))
+
+    # 1. Immediate win.
+    wins = immediate_winning_moves(my_set, opp_set, color)
+    if wins:
+        return wins[0]
+
+    # 2. Filter out moves that allow opponent immediate win, if possible.
+    safe_moves = []
+    for mv in moves:
+        next_opp, next_me = apply_move(my_set, opp_set, mv)
+        if not opponent_can_win_next(next_me, next_opp, color):
+            safe_moves.append(mv)
+
+    candidate_moves = safe_moves if safe_moves else moves
+
+    # 3. Iterative deepening alpha-beta.
+    best_move = candidate_moves[0]
+    best_score = -INF
+
+    # Prefer moves with better static eval before deeper search.
+    ordered = []
+    opp_color = 'b' if color == 'w' else 'w'
+    for mv in candidate_moves:
+        next_opp, next_me = apply_move(my_set, opp_set, mv)
+        sc = -evaluate(next_opp, next_me, opp_color)
+        # bonus for capture and advancement
+        (_, _), (tr, tc) = mv
+        bonus = 0
+        if (tr, tc) in opp_set:
+            bonus += 30
+        bonus += piece_progress(tr, color) * 4
+        bonus += 4 - abs(tc - 3.5)
+        ordered.append((sc + bonus, mv))
+    ordered.sort(reverse=True, key=lambda x: x[0])
+    candidate_moves = [mv for _, mv in ordered]
+
+    max_depth = 1
+    try:
+        while True:
+            if time.perf_counter() - start > TIME_LIMIT:
+                break
+            current_best = candidate_moves[0]
+            current_best_score = -INF
+            alpha = -INF
+            beta = INF
+
+            for mv in candidate_moves:
+                next_opp, next_me = apply_move(my_set, opp_set, mv)
+                val = -search(next_opp, next_me, opp_color, max_depth - 1, -beta, -alpha)
+                if val > current_best_score:
+                    current_best_score = val
+                    current_best = mv
+                if val > alpha:
+                    alpha = val
+
+            best_move = current_best
+            best_score = current_best_score
+
+            # Reorder by principal variation guess
+            candidate_moves = [best_move] + [m for m in candidate_moves if m != best_move]
+            max_depth += 1
+            if max_depth > 6:
+                break
+    except TimeoutError:
+        pass
+
+    # 4. Final legality check fallback.
+    if best_move in moves:
+        return best_move
+    return moves[0]

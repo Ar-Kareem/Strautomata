@@ -1,0 +1,102 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # Ship lengths
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # Count how many of each ship we've sunk
+    hit_count = np.sum(board_np == 1)
+    sunk_ships = []  # This is an approximation - in reality we'd need to track this
+    
+    # For this implementation, let's assume all ships still exist
+    remaining_ships = ship_lengths.copy()
+    
+    # Check if we're in target mode (hunting a hit ship)
+    if np.any(board_np == 1):  # There are hits
+        # Get all hit positions
+        hit_positions = [(i, j) for i in range(10) for j in range(10) if board_np[i, j] == 1]
+        
+        # For each hit, check adjacent cells for potential targets
+        for hit_row, hit_col in hit_positions:
+            # Check adjacent cells (up, down, left, right)
+            directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            candidates = []
+            
+            for dr, dc in directions:
+                new_row, new_col = hit_row + dr, hit_col + dc
+                
+                # Check if the adjacent cell is within bounds and not yet fired at
+                if (0 <= new_row < 10 and 0 <= new_col < 10 and 
+                    board_np[new_row, new_col] == 0):
+                    candidates.append((new_row, new_col))
+            
+            # If there are candidates, choose one
+            if candidates:
+                # Prefer to continue in the same direction if there's already a pattern
+                # Simple approach: just return the first valid candidate
+                return candidates[0]
+    
+    # Hunt mode - use probability-based targeting
+    # Calculate probabilities for each cell
+    probabilities = np.zeros((10, 10))
+    
+    # For each remaining ship length, calculate possible placements
+    for ship_len in remaining_ships:
+        # Horizontal placements
+        for row in range(10):
+            for col in range(10 - ship_len + 1):
+                # Check if this ship placement is valid (no misses or sunk ships in the way)
+                valid = True
+                for i in range(ship_len):
+                    if board_np[row, col + i] == -1:  # Miss
+                        valid = False
+                        break
+                if valid:
+                    # Add probability to each cell in this placement
+                    for i in range(ship_len):
+                        if board_np[row, col + i] == 0:  # Unknown
+                            probabilities[row, col + i] += 1
+        
+        # Vertical placements
+        for col in range(10):
+            for row in range(10 - ship_len + 1):
+                # Check if this ship placement is valid
+                valid = True
+                for i in range(ship_len):
+                    if board_np[row + i, col] == -1:  # Miss
+                        valid = False
+                        break
+                if valid:
+                    # Add probability to each cell in this placement
+                    for i in range(ship_len):
+                        if board_np[row + i, col] == 0:  # Unknown
+                            probabilities[row + i, col] += 1
+    
+    # Find the cell with the highest probability that hasn't been fired at
+    max_prob = -1
+    best_cell = None
+    
+    for row in range(10):
+        for col in range(10):
+            if board_np[row, col] == 0:  # Unknown cell
+                if probabilities[row, col] > max_prob:
+                    max_prob = probabilities[row, col]
+                    best_cell = (row, col)
+    
+    # If we found a cell with probability > 0, return it
+    if best_cell is not None:
+        return best_cell
+    
+    # Fallback: just find any unknown cell (should not happen in normal gameplay)
+    for row in range(10):
+        for col in range(10):
+            if board_np[row, col] == 0:
+                return (row, col)
+    
+    # This should never happen if the game is implemented correctly
+    raise ValueError("No valid move found")

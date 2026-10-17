@@ -1,0 +1,134 @@
+The strategy for this policy is a multi-faceted approach to selecting the best chess move from a list of legal options. It prioritizes the following objectives, roughly in order of importance:
+
+1. **Checkmate:** If a move leads to immediate checkmate, select that move.
+2. **Material Gain:** Evaluate each move to see if it captures an opponent's piece. Prioritize captures of higher-value pieces (Queen > Rook > Bishop/Knight > Pawn). Account for possible recaptures.
+3. **King Safety:** Consider moves that improve king safety such as castling, moving the king away from threats, or interposing pieces to block attacks.
+4. **Threats:** Identify any immediate threats posed by the opponent. Prioritize moves that block these threats or capture the attacking piece.
+5. **Piece Activity/Development:** Favour moves that improve the activity of pieces, particularly knights and bishops. Developing pieces to more central squares is often advantageous.
+6. **Positional Considerations:** Consider moves that improve pawn structure, control key squares, or open lines for rooks.
+7. **Randomization**: If multiple moves appear equally good, select one randomly to introduce diversity.
+
+This strategy balances tactical and strategic considerations and should provide a strong level of play.
+
+```python
+import chess
+import random
+
+def evaluate_move(board, move, to_play):
+    """
+    Evaluate a move based on material gain, king safety, and other factors.
+    This is a simplified evaluation function.
+    """
+    score = 0
+
+    # Material gain
+    if move.is_capture():
+        piece_value = {
+            chess.PAWN: 1,
+            chess.KNIGHT: 3,
+            chess.BISHOP: 3,
+            chess.ROOK: 5,
+            chess.QUEEN: 9,
+            chess.KING: 0,  # King captures are rare and complex
+        }
+        captured_piece = board.piece_at(move.to_square).piece_type
+        score += piece_value[captured_piece]
+
+        # Account for recaptures (very basic)
+        board.push(move)
+        if board.is_attacked(move.to_square, not board.turn):
+             score -= 0.5 * piece_value[captured_piece]
+        board.pop()
+
+    # King safety (very basic)
+    if board.king(to_play == 'white') in [move.from_square, move.to_square]:
+        score -= 0.5  #moving the king is often slightly negative unless castling
+
+    if move.is_castling:
+        score += 2  # Castling is good for king safety
+
+    # Piece activity
+    piece = board.piece_at(move.from_square)
+    if piece and piece.piece_type in [chess.KNIGHT, chess.BISHOP]:
+      if move.to_square in [chess.D4, chess.E4, chess.D5, chess.E5]:
+         score += 0.5 # Central squares good for activity
+
+    return score
+
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    """
+    Select the best move from the list of legal moves.
+
+    Args:
+        pieces: A dictionary of the pieces on the board.
+        to_play: The color of the player to move.
+        legal_moves: A list of legal moves.
+
+    Returns:
+        The best move from the list of legal moves.
+    """
+
+    board = chess.Board()
+    board.clear()
+
+    for square, piece in pieces.items():
+        square_index = chess.parse_square(square)
+        piece_type = piece[1]
+        color = piece[0]
+
+        if piece_type == 'K': piece_type = chess.KING
+        elif piece_type == 'Q': piece_type = chess.QUEEN
+        elif piece_type == 'R': piece_type = chess.ROOK
+        elif piece_type == 'B': piece_type = chess.BISHOP
+        elif piece_type == 'N': piece_type = chess.KNIGHT
+        elif piece_type == 'P': piece_type = chess.PAWN
+        else : continue
+
+        if color == 'w': color = chess.WHITE
+        else: color = chess.BLACK
+            
+        board.set_piece_at(square_index, chess.Piece(piece_type, color))
+
+    if to_play == 'white':
+        board.turn = chess.WHITE
+        opponent = chess.BLACK
+    else:
+        board.turn = chess.BLACK
+        opponent = chess.WHITE
+    
+    # Check for checkmate moves
+    for move_str in legal_moves:
+        try:
+            move = board.parse_uci(move_str)
+            board.push(move)
+            if board.is_checkmate():
+                board.pop()
+                return move_str
+            board.pop()
+        except ValueError:
+            continue  # ignore illegal moves that may be in the list due to edge cases
+
+    # Evaluate each move
+    move_evaluations = []
+    for move_str in legal_moves:
+        try:
+            move = board.parse_uci(move_str)
+            move_evaluations.append((move_str, evaluate_move(board, move, to_play)))
+        except ValueError: # catch illegal moves.
+            move_evaluations.append((move_str, float('-inf')))  # Arbitrarily penalize invalid moves
+
+    # Select the best move based on evaluation
+    best_move = None
+    best_evaluation = float('-inf')  # Initialize to negative infinity
+
+    for move_str, evaluation in move_evaluations:
+        if evaluation > best_evaluation:
+            best_evaluation = evaluation
+            best_move = move_str
+
+    if best_move is None: # If no move was better than initial, pick at random (should never happen though)
+        return random.choice(legal_moves)
+
+    return best_move
+```

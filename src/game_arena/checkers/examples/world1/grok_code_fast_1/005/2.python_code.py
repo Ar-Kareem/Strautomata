@@ -1,0 +1,123 @@
+
+from copy import deepcopy
+import math
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    my_m = set(my_men)
+    my_k = set(my_kings)
+    opp_m = set(opp_men)
+    opp_k = set(opp_kings)
+    
+    moves = get_moves(my_m, my_k, opp_m, opp_k, color)
+    if not moves:
+        return None  # Should not happen, but a fallback
+    
+    opp_color = 'w' if color == 'b' else 'b'
+    best_move = None
+    best_eval = -math.inf
+    for move in moves:
+        new_my_m, new_my_k, new_opp_m, new_opp_k = apply_move(my_m, my_k, opp_m, opp_k, move, color)
+        eval_score = minimax(new_my_m, new_my_k, new_opp_m, new_opp_k, opp_color, 3, False, -math.inf, math.inf)
+        if eval_score > best_eval:
+            best_eval = eval_score
+            best_move = move
+    return best_move
+
+def minimax(my_m, my_k, opp_m, opp_k, player_color, depth, maximizing, alpha, beta):
+    if depth == 0 or not my_m and not my_k or not opp_m and not opp_k:
+        return evaluate(my_m, my_k, opp_m, opp_k)
+    
+    moves = get_moves(my_m, my_k, opp_m, opp_k, player_color)
+    if maximizing:
+        max_eval = -math.inf
+        for move in moves:
+            new_my_m, new_my_k, new_opp_m, new_opp_k = apply_move(my_m, my_k, opp_m, opp_k, move, player_color)
+            opp_color = 'w' if player_color == 'b' else 'b'
+            eval_score = minimax(new_my_m, new_my_k, new_opp_m, new_opp_k, opp_color, depth - 1, False, alpha, beta)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = math.inf
+        for move in moves:
+            new_my_m, new_my_k, new_opp_m, new_opp_k = apply_move(my_m, my_k, opp_m, opp_k, move, player_color)
+            opp_color = 'w' if player_color == 'b' else 'b'
+            eval_score = minimax(new_my_m, new_my_k, new_opp_m, new_opp_k, opp_color, depth - 1, True, alpha, beta)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate(my_m, my_k, opp_m, opp_k):
+    my_score = len(my_m) + 1.5 * len(my_k)
+    opp_score = len(opp_m) + 1.5 * len(opp_k)
+    return my_score - opp_score
+
+def get_moves(my_m, my_k, opp_m, opp_k, color):
+    all_my = my_m | my_k
+    all_opp = opp_m | opp_k
+    non_captures = []
+    captures = []
+    
+    # Define directions: kings all, men forward only
+    def get_dirs(is_king):
+        if is_king:
+            return [(-1,-1), (-1,1), (1,-1), (1,1)]
+        else:
+            if color == 'w':
+                return [(-1,-1), (-1,1)]
+            else:
+                return [(1,-1), (1,1)]
+    
+    for r, c in all_my:
+        is_king = (r, c) in my_k
+        dirs = get_dirs(is_king)
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in all_my and (nr, nc) not in all_opp:
+                # Non-capture move
+                non_captures.append(((r, c), (nr, nc)))
+            # Check for capture
+            jnr, jnc = nr + dr, nc + dc
+            if 0 <= jnr < 8 and 0 <= jnc < 8 and (nr, nc) in all_opp and (jnr, jnc) not in all_my and (jnr, jnc) not in all_opp:
+                captures.append(((r, c), (jnr, jnc)))
+    
+    # If captures are possible, only return those (mandatory)
+    return captures if captures else non_captures
+
+def apply_move(my_m, my_k, opp_m, opp_k, move, color):
+    fr, fc = move[0]
+    tr, tc = move[1]
+    new_my_m = my_m.copy()
+    new_my_k = my_k.copy()
+    new_opp_m = opp_m.copy()
+    new_opp_k = opp_k.copy()
+    
+    is_king = (fr, fc) in new_my_k
+    if is_king:
+        new_my_k.remove((fr, fc))
+    else:
+        new_my_m.remove((fr, fc))
+    
+    # Check if capture (distance == 2 in both row and col)
+    is_capture = abs(tr - fr) == 2 and abs(tc - fc) == 2
+    if is_capture:
+        mid_r, mid_c = (fr + tr) // 2, (fc + tc) // 2
+        if (mid_r, mid_c) in new_opp_m:
+            new_opp_m.remove((mid_r, mid_c))
+        elif (mid_r, mid_c) in new_opp_k:
+            new_opp_k.remove((mid_r, mid_c))
+    
+    # Place piece at destination
+    if not is_king:
+        if tr == (7 if color == 'w' else 0):  # Kinging row
+            new_my_k.add((tr, tc))
+        else:
+            new_my_m.add((tr, tc))
+    else:
+        new_my_k.add((tr, tc))
+    
+    return new_my_m, new_my_k, new_opp_m, new_opp_k

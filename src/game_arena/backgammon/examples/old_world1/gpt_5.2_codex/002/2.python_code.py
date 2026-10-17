@@ -1,0 +1,195 @@
+
+import copy
+from typing import List, Tuple, Union
+
+def policy(state: dict) -> str:
+    dice = state.get('dice', [])
+    if not dice:
+        return "H:P,P"
+
+    # Prepare dice orders
+    orders = []
+    if len(dice) == 1:
+        orders = [([dice[0]], 'H')]
+    else:
+        d1, d2 = dice
+        if d1 == d2:
+            orders = [([d1, d2], 'H')]
+        else:
+            high = max(d1, d2)
+            low = min(d1, d2)
+            orders = [([high, low], 'H'), ([low, high], 'L')]
+
+    all_sequences = []
+    for dice_order, letter in orders:
+        seqs = gen_sequences(state, dice_order)
+        for seq, end_state in seqs:
+            all_sequences.append((seq, end_state, letter, dice_order))
+
+    if not all_sequences:
+        return "H:P,P"
+
+    # Enforce max moves rule
+    max_moves = max(count_moves(seq) for seq, _, _, _ in all_sequences)
+    all_sequences = [x for x in all_sequences if count_moves(x[0]) == max_moves]
+
+    # Enforce "higher die if only one move possible"
+    if len(dice) == 2 and dice[0] != dice[1] and max_moves == 1:
+        high = max(dice)
+        # check if any sequence uses higher die
+        def uses_high(seq, letter):
+            # if order H, first die is high; if order L, second die is high
+            if letter == 'H':
+                return seq[0] != 'P'
+            else:
+                return len(seq) > 1 and seq[1] != 'P'
+        any_high = any(uses_high(seq, letter) for seq, _, letter, _ in all_sequences)
+        if any_high:
+            all_sequences = [x for x in all_sequences if uses_high(x[0], x[2])]
+
+    # Choose best by heuristic
+    best = None
+    best_score = -1e18
+    for seq, end_state, letter, dice_order in all_sequences:
+        score = evaluate(end_state)
+        if score > best_score:
+            best_score = score
+            best = (seq, letter)
+
+    seq, letter = best
+    # Format output
+    if len(dice) == 1:
+        from1 = format_from(seq[0] if seq else 'P')
+        return f"{letter}:{from1},P"
+    else:
+        # ensure two entries
+        if len(seq) < 2:
+            seq = seq + ['P'] * (2 - len(seq))
+        from1 = format_from(seq[0])
+        from2 = format_from(seq[1])
+        return f"{letter}:{from1},{from2}"
+
+def count_moves(seq: List[Union[int,str]]) -> int:
+    return sum(1 for s in seq if s != 'P')
+
+def format_from(x: Union[int,str]) -> str:
+    if x == 'B' or x == 'P':
+        return x
+    return f"A{x}"
+
+def gen_sequences(state: dict, dice_order: List[int]) -> List[Tuple[List[Union[int,str]], dict]]:
+    if not dice_order:
+        return [([], clone_state(state))]
+    die = dice_order[0]
+    starts = legal_starts(state, die)
+    sequences = []
+    if starts:
+        for s in starts:
+            new_state = apply_move(state, s, die)
+            for seq, end_state in gen_sequences(new_state, dice_order[1:]):
+                sequences.append(([s] + seq, end_state))
+    else:
+        for seq, end_state in gen_sequences(state, dice_order[1:]):
+            sequences.append((['P'] + seq, end_state))
+    return sequences
+
+def legal_starts(state: dict, die: int) -> List[Union[int,str]]:
+    my_bar = state['my_bar']
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+
+    if my_bar > 0:
+        dest = 24 - die
+        if dest < 0:
+            return []
+        if opp_pts[dest] >= 2:
+            return []
+        return ['B']
+
+    starts = []
+    for i in range(24):
+        if my_pts[i] <= 0:
+            continue
+        dest = i - die
+        if dest >= 0:
+            if opp_pts[dest] <= 1:
+                starts.append(i)
+        else:
+            if can_bear_off(state, i, die):
+                starts.append(i)
+    return starts
+
+def can_bear_off(state: dict, from_idx: int, die: int) -> bool:
+    if state['my_bar'] > 0:
+        return False
+    # all checkers in home board 0..5
+    for i in range(6, 24):
+        if state['my_pts'][i] > 0:
+            return False
+    if from_idx > 5:
+        return False
+    dist = from_idx + 1
+    if die == dist:
+        return True
+    if die > dist:
+        # allow if no checkers on higher points
+        for i in range(from_idx + 1, 6):
+            if state['my_pts'][i] > 0:
+                return False
+        return True
+    return False
+
+def apply_move(state: dict, start: Union[int,str], die: int) -> dict:
+    st = clone_state(state)
+    if start == 'P':
+        return st
+    if start == 'B':
+        st['my_bar'] -= 1
+        dest = 24 - die
+    else:
+        st['my_pts'][start] -= 1
+        dest = start - die
+
+    if dest >= 0:
+        # handle hit
+        if st['opp_pts'][dest] == 1:
+            st['opp_pts'][dest] = 0
+            st['opp_bar'] += 1
+        st['my_pts'][dest] += 1
+    else:
+        # bearing off
+        st['my_off'] += 1
+    return st
+
+def clone_state(state: dict) -> dict:
+    return {
+        'my_pts': state['my_pts'][:],
+        'opp_pts': state['opp_pts'][:],
+        'my_bar': state['my_bar'],
+        'opp_bar': state['opp_bar'],
+        'my_off': state['my_off'],
+        'opp_off': state['opp_off'],
+        'dice': state['dice'][:]
+    }
+
+def evaluate(state: dict) -> float:
+    score = 0.0
+    score += state['my_off'] * 100.0
+    score -= state['opp_off'] * 80.0
+    score += state['opp_bar'] * 20.0
+    score -= state['my_bar'] * 20.0
+
+    made = 0
+    blots = 0
+    pip = state['my_bar'] * 25
+    for i in range(24):
+        c = state['my_pts'][i]
+        if c >= 2:
+            made += 1
+        elif c == 1:
+            blots += 1
+        pip += c * (i + 1)
+    score += made * 3.0
+    score -= blots * 1.0
+    score -= pip * 0.5
+    return score

@@ -1,0 +1,29 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Collect all cells with hits
+    hits = [ (r, c) for r in range(10) for c in range(10) if board[r][c] == 1 ]
+    
+    candidates = set()
+    # Check adjacent cells if there are hits
+    for r, c in hits:
+        # Check left, right, up, down
+        if c > 0 and board[r][c-1] == 0:
+            candidates.add((r, c-1))
+        if c < 9 and board[r][c+1] == 0:
+            candidates.add((r, c+1))
+        if r > 0 and board[r-1][c] == 0:
+            candidates.add((r-1, c))
+        if r < 9 and board[r+1][c] == 0:
+            candidates.add((r+1, c))
+    
+    # If there are candidates, sort and return first (row-major)
+    if candidates:
+        candidates = sorted(candidates)
+        return candidates[0]
+    
+    # Grid search row-major if no candidates
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    return (9, 9)  # Fallback (should never happen)

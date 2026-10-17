@@ -1,0 +1,258 @@
+
+import numpy as np
+import time
+
+def policy(you, opponent) -> str:
+    you = [[you[r][c] for c in range(6)] for r in range(6)]
+    opponent = [[opponent[r][c] for c in range(6)] for r in range(6)]
+    
+    # Convert to bitboards (36 bits)
+    def to_bits(board):
+        b = 0
+        for r in range(6):
+            for c in range(6):
+                if board[r][c]:
+                    b |= 1 << (r * 6 + c)
+        return b
+    
+    me_bits = to_bits(you)
+    op_bits = to_bits(opponent)
+    
+    # Precompute win lines (all sets of 5 in a row)
+    win_lines = []
+    for r in range(6):
+        for c in range(2):
+            line = 0
+            for i in range(5):
+                line |= 1 << (r * 6 + c + i)
+            win_lines.append(line)
+    for c in range(6):
+        for r in range(2):
+            line = 0
+            for i in range(5):
+                line |= 1 << ((r + i) * 6 + c)
+            win_lines.append(line)
+    for r in range(2):
+        for c in range(2):
+            line = 0
+            for i in range(5):
+                line |= 1 << ((r + i) * 6 + c + i)
+            win_lines.append(line)
+    for r in range(2):
+        for c in range(4, 6):
+            line = 0
+            for i in range(5):
+                line |= 1 << ((r + i) * 6 + c - i)
+            win_lines.append(line)
+    
+    def has_win(bits):
+        for line in win_lines:
+            if bits & line == line:
+                return True
+        return False
+    
+    # Quadrant definitions (row_start, col_start)
+    quad_defs = [(0, 0), (0, 3), (3, 0), (3, 3)]
+    
+    # Precompute rotation mappings for each quadrant
+    def make_rot_maps():
+        rot_maps = {}
+        for q in range(4):
+            rs, cs = quad_defs[q]
+            cells = []
+            for r in range(3):
+                for c in range(3):
+                    cells.append(rs + r, )
+            # CW rotation: (r,c) -> (c, 2-r)
+            # For the 3x3: position (r,c) maps to (c, 2-r)
+            cw_from = []
+            cw_to = []
+            ccw_from = []
+            ccw_to = []
+            for r in range(3):
+                for c in range(3):
+                    fr = rs + r
+                    fc = cs + c
+                    # CW: new_r = c, new_c = 2-r
+                    tr_cw = rs + c
+                    tc_cw = cs + 2 - r
+                    cw_from.append(fr * 6 + fc)
+                    cw_to.append(tr_cw * 6 + tc_cw)
+                    # CCW: new_r = 2-c, new_c = r
+                    tr_ccw = rs + 2 - c
+                    tc_ccw = cs + r
+                    ccw_from.append(fr * 6 + fc)
+                    ccw_to.append(tr_ccw * 6 + tc_ccw)
+            rot_maps[(q, 'R')] = (cw_from, cw_to)
+            rot_maps[(q, 'L')] = (ccw_from, ccw_to)
+        return rot_maps
+    
+    rot_maps = make_rot_maps()
+    
+    # Precompute bit masks for quadrants
+    quad_masks = []
+    for q in range(4):
+        rs, cs = quad_defs[q]
+        mask = 0
+        for r in range(3):
+            for c in range(3):
+                mask |= 1 << ((rs + r) * 6 + cs + c)
+        quad_masks.append(mask)
+    
+    def apply_rotation(bits, q, d):
+        frm, to = rot_maps[(q, d)]
+        qmask = quad_masks[q]
+        outside = bits & ~qmask
+        new_q = 0
+        inside = bits & qmask
+        for i in range(9):
+            if inside & (1 << frm[i]):
+                new_q |= 1 << to[i]
+        return outside | new_q
+    
+    def get_empty(me, op):
+        occupied = me | op
+        empties = []
+        for i in range(36):
+            if not (occupied & (1 << i)):
+                empties.append(i)
+        return empties
+    
+    # Evaluation: count partial lines
+    # Precompute sub-lines of length 2,3,4 from win_lines
+    def evaluate(me, op):
+        if has_win(me):
+            if has_win(op):
+                return 0  # draw
+            return 100000
+        if has_win(op):
+            return -100000
+        
+        score = 0
+        for line in win_lines:
+            me_count = bin(me & line).count('1')
+            op_count = bin(op & line).count('1')
+            if op_count == 0 and me_count > 0:
+                if me_count == 4:
+                    score += 500
+                elif me_count == 3:
+                    score += 50
+                elif me_count == 2:
+                    score += 5
+                else:
+                    score += 1
+            elif me_count == 0 and op_count > 0:
+                if op_count == 4:
+                    score -= 400
+                elif op_count == 3:
+                    score -= 40
+                elif op_count == 2:
+                    score -= 4
+                else:
+                    score -= 1
+        
+        # Center bonus
+        center_cells = [14, 15, 20, 21]  # (2,2),(2,3),(3,2),(3,3)
+        for cc in center_cells:
+            if me & (1 << cc):
+                score += 3
+            if op & (1 << cc):
+                score -= 3
+        
+        return score
+    
+    rotations = [(q, d) for q in range(4) for d in ['L', 'R']]
+    
+    start_time = time.time()
+    time_limit = 0.85
+    
+    empties = get_empty(me_bits, op_bits)
+    
+    # Generate all moves and check for immediate wins
+    best_move = None
+    best_score = -999999
+    
+    # First pass: check for winning moves
+    for pos in empties:
+        new_me = me_bits | (1 << pos)
+        for q, d in rotations:
+            rm = apply_rotation(new_me, q, d)
+            ro = apply_rotation(op_bits, q, d)
+            if has_win(rm):
+                if not has_win(ro):
+                    r, c = divmod(pos, 6)
+                    return f"{r+1},{c+1},{q},{d}"
+    
+    # If many empties, just do 1-ply eval
+    def score_move(pos, q, d):
+        new_me = me_bits | (1 << pos)
+        rm = apply_rotation(new_me, q, d)
+        ro = apply_rotation(op_bits, q, d)
+        return evaluate(rm, ro)
+    
+    # Try minimax with depth 1 (opponent response)
+    moves = []
+    for pos in empties:
+        new_me = me_bits | (1 << pos)
+        for q, d in rotations:
+            rm = apply_rotation(new_me, q, d)
+            ro = apply_rotation(op_bits, q, d)
+            s = evaluate(rm, ro)
+            moves.append((s, pos, q, d, rm, ro))
+    
+    moves.sort(key=lambda x: -x[0])
+    
+    # Depth-2 search on top moves
+    top_n = min(len(moves), 30 if len(empties) > 20 else 50)
+    best_score = -999999
+    best_move_info = (moves[0][1], moves[0][2], moves[0][3])
+    
+    for s, pos, q, d, rm, ro in moves[:top_n]:
+        if time.time() - start_time > time_limit:
+            break
+        if s <= -100000:
+            continue
+        if s >= 100000:
+            best_move_info = (pos, q, d)
+            break
+        
+        # Opponent's best response
+        opp_empties = get_empty(rm, ro)
+        worst = 999999
+        for opos in opp_empties:
+            if time.time() - start_time > time_limit:
+                break
+            new_op = ro | (1 << opos)
+            best_opp = -999999
+            for oq, od in rotations:
+                orm = apply_rotation(rm, oq, od)
+                oop = apply_rotation(new_op, oq, od)
+                es = evaluate(orm, oop)
+                if es > best_opp:
+                    best_opp = es
+                # Opponent wants to minimize our score, so they pick min
+            if -best_opp < worst:
+                worst = -best_opp
+            # Actually opponent minimizes our eval
+            opp_score = -best_opp  # not right
+        # Rethink: evaluate is from our perspective. Opponent picks move minimizing evaluate.
+            if best_opp < worst:
+                worst = best_opp
+        # Hmm let me just use 1-ply for opponent
+        worst2 = 999999
+        for opos in opp_empties[:15]:
+            new_op = ro | (1 << opos)
+            for oq, od in rotations:
+                orm = apply_rotation(rm, oq, od)
+                oop = apply_rotation(new_op, oq, od)
+                es = evaluate(orm, oop)
+                if es < worst2:
+                    worst2 = es
+        
+        if worst2 > best_score:
+            best_score = worst2
+            best_move_info = (pos, q, d)
+    
+    pos, q, d = best_move_info
+    r, c = divmod(pos, 6)
+    return f"{r+1},{c+1},{q},{d}"

@@ -1,0 +1,71 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Create a 19x19 board representation
+    board = [[0] * 19 for _ in range(19)]
+    for r, c in me:
+        board[r-1][c-1] = 1
+    for r, c in opponent:
+        board[r-1][c-1] = 2
+    
+    # Directions for adjacent cells
+    directions = [(1,0), (-1,0), (0,1), (0,-1)]
+    
+    # Check if a stone has any liberties
+    def has_liberty(r, c):
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                if board[nr][nc] == 0:
+                    return True
+        return False
+    
+    # Check if a move is legal (no self-capture)
+    def is_legal_move(r, c):
+        board[r-1][c-1] = 1
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                if board[nr][nc] != 0:
+                    if not has_liberty(nr, nc):
+                        board[r-1][c-1] = 0
+                        return False
+        board[r-1][c-1] = 0
+        return True
+    
+    # Check for captured opponent stones
+    def check_captures(r, c):
+        captures = 0
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                if board[nr][nc] == 2:
+                    if not has_liberty(nr, nc):
+                        captures += 1
+        return captures
+    
+    # Evaluate move quality
+    def evaluate_move(r, c):
+        captures = check_captures(r, c)
+        empty_count = 0
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                if board[nr][nc] == 0:
+                    empty_count += 1
+        return captures * 10 + empty_count
+    
+    # Find best move
+    best_score = -1
+    best_move = (0, 0)
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r-1][c-1] != 0:
+                continue
+            if not is_legal_move(r, c):
+                continue
+            score = evaluate_move(r, c)
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+    
+    return (best_move, {})

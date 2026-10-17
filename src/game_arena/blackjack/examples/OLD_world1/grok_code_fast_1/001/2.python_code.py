@@ -1,0 +1,43 @@
+
+import math
+import random
+import numpy as np
+
+all_ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+def get_value(hand, T):
+    total = 0
+    num_aces = 0
+    for c in hand:
+        if c == 'A':
+            num_aces += 1
+        elif c in ['J', 'Q', 'K']:
+            total += 10
+        else:
+            total += int(c)
+    total += 11 * num_aces
+    while total > T and num_aces > 0:
+        total -= 10
+        num_aces -= 1
+    return total
+
+def policy(hand: list[str], target: int) -> str:
+    current_v = get_value(hand, target)
+    if current_v >= target or current_v == 0:  # if hand is empty, probably stay or something, but assume not
+        return "STAY"
+    remaining = [r for r in all_ranks if r not in hand]
+    if not remaining:
+        return "STAY"
+    good = 0
+    bad = 0
+    for card in remaining:
+        temp_hand = hand + [card]
+        new_v = get_value(temp_hand, target)
+        if new_v > target:
+            bad += 1
+        else:
+            good += 1
+    if bad == 0 or good > bad:
+        return "HIT"
+    else:
+        return "STAY"

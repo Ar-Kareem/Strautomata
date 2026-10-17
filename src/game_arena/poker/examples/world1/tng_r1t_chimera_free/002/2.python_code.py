@@ -1,0 +1,64 @@
+
+import numpy as np
+
+def evaluate_hand_strength(private_card, public_cards):
+    if not public_cards:
+        return private_card['rank']
+    
+    all_cards = [private_card] + public_cards
+    ranks = [card['rank'] for card in all_cards]
+    suits = [card['suit'] for card in all_cards]
+    
+    rank_counts = {}
+    suit_counts = {}
+    for r in ranks:
+        rank_counts[r] = rank_counts.get(r, 0) + 1
+    for s in suits:
+        suit_counts[s] = suit_counts.get(s, 0) + 1
+    
+    max_rank_count = max(rank_counts.values(), default=0)
+    max_suit_count = max(suit_counts.values(), default=0)
+    sorted_ranks = sorted(ranks)
+    straight = False
+    for i in range(len(sorted_ranks) - 4):
+        if sorted_ranks[i+4] - sorted_ranks[i] == 4:
+            straight = True
+            break
+    
+    if max_rank_count >= 4:
+        return 8  # Four of a kind
+    if max_rank_count == 3 and (len(rank_counts) == 2 or 2 in rank_counts.values()):
+        return 7  # Full house
+    if max_suit_count >= 5:
+        return 6  # Flush
+    if straight:
+        return 5  # Straight
+    if max_rank_count == 3:
+        return 4  # Three of a kind
+    pair_count = list(rank_counts.values()).count(2)
+    if pair_count >= 2:
+        return 3  # Two pairs
+    if pair_count == 1:
+        return 2  # One pair
+    return 1  # High card
+
+def policy(state):
+    private_card = state['private_cards'][0]
+    public_cards = state['public_cards']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    
+    strength = evaluate_hand_strength(private_card, public_cards)
+    high_card_preflop = private_card['rank'] >= 10
+    
+    if strength >= 7 and 'all-in' in allowed_actions:
+        return 'all-in'
+    if (strength >= 5 or (not public_cards and high_card_preflop)) and 'raise' in allowed_actions:
+        return 'raise'
+    if to_call == 0 and 'call' in allowed_actions:
+        return 'call'
+    if to_call > 0:
+        pot_odds = to_call / (state['pot'] + to_call)
+        if (strength >= 3 and pot_odds < 0.5) or (strength >= 2 and pot_odds < 0.3):
+            return 'call' if 'call' in allowed_actions else 'fold'
+    return 'fold' if 'fold' in allowed_actions else 'call'

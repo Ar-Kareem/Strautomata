@@ -1,0 +1,446 @@
+```python
+import sys
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Implements a minimax agent with alpha-beta pruning for the game of Kalah.
+    Uses Iterative Deepening Search (IDS) to maximize search depth within the
+    time limit, with a strict time cutoff (approx 0.9s) to prevent timeouts.
+    """
+    
+    # --- Configuration ---
+    MAX_DEPTH = 40  # Theoretical max search limit (seed count in start)
+    NUM_HOUSES = 6
+    
+    # Determine strict time limit (approx 0.9s to leave margin for overhead)
+    start_time = 0.0
+    try:
+        # Use high-resolution timer if available
+        start_time = time.perf_counter()
+    except NameError:
+        import time
+        start_time = time.time()
+    
+    def get_time():
+        try:
+            return time.perf_counter()
+        except NameError:
+            return time.time()
+
+    # --- Helper Functions ---
+
+    def get_moves(board, is_you):
+        """Returns list of valid move indices (0-5)."""
+        start = 0 if is_you else 0
+        end = 6
+        return [i for i in range(start, end) if board[i] > 0]
+
+    def is_game_over(board, player_houses):
+        """Check if the player whose houses are passed has no seeds."""
+        for i in range(NUM_HOUSES):
+            if player_houses[i] > 0:
+                return False
+        return True
+
+    def evaluate_simple(board):
+        """
+        Heuristic evaluation function.
+        Returns score from the perspective of the current player (MAX node).
+        Positive score is good for the current player.
+        """
+        my_score = board[6]
+        opp_score = board[13]
+        
+        # Difference in scores is the primary component
+        score_diff = my_score - opp_score
+        
+        # Calculate seeds remaining on board
+        my_seeds = sum(board[i] for i in range(NUM_HOUSES))
+        opp_seeds = sum(board[i] for i in range(7, 13))
+        
+        # Priority 1: Score difference
+        # Priority 2: Potential for extra moves (seeds in hand)
+        
+        # We add a weight to the seeds on the board, heavily biased by who gets to move.
+        # However, inside the search loop, the perspective flips.
+        # The heuristic usually just looks at material advantage.
+        
+        # Simple material count difference (including store)
+        # If we are winning by a large margin, we might want to trade seeds to end the game.
+        
+        # To encourage capturing and extra moves, we add a small bonus for having seeds in play
+        # that can be maneuvered. But raw score diff is usually dominant.
+        
+        return score_diff * 100 + (my_seeds - opp_seeds)
+
+    def alpha_beta(board, depth, alpha, beta, is_you_turn):
+        """
+        Minimax search with alpha-beta pruning.
+        board: list of 14 ints
+        depth: remaining depth
+        alpha: best value for max player
+        beta: best value for min player
+        is_you_turn: boolean
+        Returns evaluation value.
+        """
+        
+        # Check terminal state
+        # If it's MY turn, check if I have moves. If not, I clear my seeds to store.
+        # If it's OPP turn, check if they have moves.
+        
+        # However, the recursive logic usually handles "moves" generation. 
+        # If moves list is empty, it's a terminal condition.
+        
+        my_houses = board[:6]
+        opp_houses = board[7:13]
+        
+        if is_game_over(my_houses if is_you_turn else opp_houses, my_houses if is_you_turn else opp_houses):
+            # If one side runs out of seeds, the game ends immediately.
+            # The current player (whose turn it is) is usually the one who just captured or caused this.
+            # The OTHER player (the one who has seeds) takes them.
+            # Wait, rule: "The other player moves all remaining seeds into their store."
+            # This happens immediately when one side is empty. It is not a turn.
+            
+            # Calculate final score
+            my_final = board[6] + sum(my_houses)
+            opp_final = board[13] + sum(opp_houses)
+            
+            # If I am winning
+            if my_final > opp_final:
+                return 100000 + (my_final - opp_final)
+            elif opp_final > my_final:
+                return -100000 - (opp_final - my_final)
+            else:
+                return 0 # Draw
+
+        if depth == 0:
+            return evaluate_simple(board)
+
+        # Time Check
+        if get_time() > start_time + 0.85: # 0.85s safety buffer
+            return evaluate_simple(board)
+
+        if is_you_turn:
+            max_eval = -float('inf')
+            # Generate moves (must be in order 0..5 for deterministic policy)
+            moves = get_moves(board, True)
+            if not moves: 
+                # Should be caught by game_over, but just in case
+                return evaluate_simple(board)
+            
+            for move in moves:
+                # Simulate Move
+                next_board = board[:]
+                seeds = next_board[move]
+                next_board[move] = 0
+                
+                curr_idx = move
+                # Distribution loop
+                while seeds > 0:
+                    curr_idx += 1
+                    if curr_idx == 6: # My store
+                        if seeds == 1: # Last seed
+                            next_board[6] += 1
+                            seeds -= 1
+                            # Extra Move: Do not change turn
+                            eval_val = alpha_beta(next_board, depth - 1, alpha, beta, True)
+                            max_eval = max(max_eval, eval_val)
+                            alpha = max(alpha, max_eval)
+                            if beta <= alpha:
+                                break # Prune
+                            continue
+                        else:
+                            next_board[6] += 1
+                            seeds -= 1
+                            continue
+                    elif curr_idx == 13: # Opponent Store (Skip)
+                        curr_idx = -1 # Will become 0
+                        continue
+                    elif curr_idx >= 14: # Wrap around
+                        curr_idx = 0
+                    
+                    # Normal House
+                    if seeds == 1:
+                        # Check Capture
+                        if curr_idx <= 5: # My house
+                            was_empty = next_board[curr_idx] == 0
+                            next_board[curr_idx] += 1
+                            seeds -= 1
+                            
+                            if was_empty:
+                                opp_idx = 5 - curr_idx
+                                if next_board[7 + opp_idx] > 0: # Opponent house has seeds
+                                    # Capture!
+                                    captured = next_board[7 + opp_idx] + 1 # Opp seeds + the seed just dropped
+                                    next_board[7 + opp_idx] = 0
+                                    next_board[6] += captured
+                                    # After capture, turn switches (usually) or keeps (if capture lands in store)? 
+                                    # Capture lands in store, so turn switches.
+                                    # BUT wait. We need to check if capture causes game over?
+                                    # We will recurse.
+                                    eval_val = alpha_beta(next_board, depth - 1, alpha, beta, False)
+                                    max_eval = max(max_eval, eval_val)
+                                    alpha = max(alpha, max_eval)
+                                    if beta <= alpha: break
+                                else:
+                                    # No capture, normal turn switch
+                                    eval_val = alpha_beta(next_board, depth - 1, alpha, beta, False)
+                                    max_eval = max(max_eval, eval_val)
+                                    alpha = max(alpha, max_eval)
+                                    if beta <= alpha: break
+                            else:
+                                # Did not land in empty house, normal turn switch
+                                eval_val = alpha_beta(next_board, depth - 1, alpha, beta, False)
+                                max_eval = max(max_eval, eval_val)
+                                alpha = max(alpha, max_eval)
+                                if beta <= alpha: break
+                        else:
+                            # Landed in opponent house, normal turn switch
+                            next_board[curr_idx] += 1
+                            eval_val = alpha_beta(next_board, depth - 1, alpha, beta, False)
+                            max_eval = max(max_eval, eval_val)
+                            alpha = max(alpha, max_eval)
+                            if beta <= alpha: break
+                        seeds -= 1
+                    else:
+                        # Not last seed
+                        next_board[curr_idx] += 1
+                        seeds -= 1
+            return max_eval
+
+        else: # Opponent's turn (Min Node)
+            min_eval = float('inf')
+            # Opponent moves are typically 0..5 on their side (indices 7..12)
+            # We map their local indices 0..5 to global 7..12
+            moves = get_moves(board[7:13], True) # Get valid indices 0..5 relative
+            if not moves:
+                return evaluate_simple(board)
+                
+            for move_rel in moves:
+                move = move_rel + 7 # Global index
+                next_board = board[:]
+                seeds = next_board[move]
+                next_board[move] = 0
+                
+                curr_idx = move
+                while seeds > 0:
+                    curr_idx += 1
+                    if curr_idx == 13: # Opponent Store
+                        if seeds == 1:
+                            next_board[13] += 1
+                            seeds -= 1
+                            # Extra move for opponent
+                            eval_val = alpha_beta(next_board, depth - 1, alpha, beta, False)
+                            min_eval = min(min_eval, eval_val)
+                            beta = min(beta, min_eval)
+                            if beta <= alpha:
+                                break
+                            continue
+                        else:
+                            next_board[13] += 1
+                            seeds -= 1
+                            continue
+                    elif curr_idx == 6: # My Store (Skip)
+                        curr_idx = -1
+                        continue
+                    elif curr_idx >= 14:
+                        curr_idx = 0
+                    
+                    if seeds == 1:
+                        if curr_idx >= 7 and curr_idx <= 12: # Opponent house
+                            was_empty = next_board[curr_idx] == 0
+                            next_board[curr_idx] += 1
+                            seeds -= 1
+                            
+                            if was_empty:
+                                opp_idx = 5 - (curr_idx - 7)
+                                if next_board[opp_idx] > 0:
+                                    captured = next_board[opp_idx] + 1
+                                    next_board[opp_idx] = 0
+                                    next_board[13] += captured
+                                    eval_val = alpha_beta(next_board, depth - 1, alpha, beta, True)
+                                    min_eval = min(min_eval, eval_val)
+                                    beta = min(beta, min_eval)
+                                    if beta <= alpha: break
+                                else:
+                                    eval_val = alpha_beta(next_board, depth - 1, alpha, beta, True)
+                                    min_eval = min(min_eval, eval_val)
+                                    beta = min(beta, min_eval)
+                                    if beta <= alpha: break
+                            else:
+                                eval_val = alpha_beta(next_board, depth - 1, alpha, beta, True)
+                                min_eval = min(min_eval, eval_val)
+                                beta = min(beta, min_eval)
+                                if beta <= alpha: break
+                        else:
+                            next_board[curr_idx] += 1
+                            eval_val = alpha_beta(next_board, depth - 1, alpha, beta, True)
+                            min_eval = min(min_eval, eval_val)
+                            beta = min(beta, min_eval)
+                            if beta <= alpha: break
+                        seeds -= 1
+                    else:
+                        next_board[curr_idx] += 1
+                        seeds -= 1
+            return min_eval
+
+    # --- Root Level Logic (Iterative Deepening) ---
+    
+    best_score = -float('inf')
+    best_move = -1
+    
+    # Get immediate legal moves
+    legal_moves = get_moves(you, True)
+    
+    # If only one move, return it immediately
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+        
+    # If multiple moves, search
+    board = you + opponent
+    
+    # Perform Iterative Deepening
+    # We start at depth 1 and increase until time runs out
+    depth = 1
+    while True:
+        # Check time before starting a new depth iteration
+        if get_time() > start_time + 0.85:
+            break
+            
+        current_depth_best_move = -1
+        current_depth_best_score = -float('inf')
+        
+        # Move ordering: Try moves that look promising first (Simple: Lower index first, 
+        # usually houses with more seeds are better, but not always. 
+        # Let's sort by seed count descending to improve alpha-beta pruning)
+        
+        # Create list of (move, seed_count)
+        move_candidates = [(m, you[m]) for m in legal_moves]
+        # Sort by seed count descending. Tie-break by index (stable sort)
+        # Note: In Kalah, more seeds often implies better options, but not always.
+        # We will try standard order 0..5 for stability, but we can do this:
+        # move_candidates.sort(key=lambda x: (-x[1], x[0]))
+        # Actually, standard 0..5 order is safest for deterministic behavior unless we have a strong heuristic.
+        
+        # Use standard order 0..5
+        for move in legal_moves:
+            # Pruning at root: if we already found a winning move, stop?
+            # We want the best move. 
+            # We can skip moves if we are sure they are bad, but without searching we don't know.
+            # Just search all at current depth.
+            
+            # Simulate Move for Root
+            # We need a sim function that returns the board state and flags (extra turn, etc)
+            # But to keep code compact, we can inline the simulation or use a helper.
+            
+            # Let's reuse the logic inside alpha_beta but for the root.
+            # However, alpha_beta returns the score, we need to handle the "extra turn" 
+            # and "capture" logic at the root as well to get the correct next state.
+            
+            # To save space and complexity, we will simply call a wrapper that returns the next board state
+            # and a flag indicating if it's a "Bonus Turn" (which at root means we evaluate depth-1 on same turn)
+            
+            # Simulate
+            next_board = board[:]
+            seeds = next_board[move]
+            next_board[move] = 0
+            curr_idx = move
+            extra_turn = False
+            
+            while seeds > 0:
+                curr_idx += 1
+                if curr_idx == 6:
+                    if seeds == 1:
+                        next_board[6] += 1
+                        seeds -= 1
+                        extra_turn = True
+                        continue
+                    else:
+                        next_board[6] += 1
+                        seeds -= 1
+                        continue
+                elif curr_idx == 13:
+                    curr_idx = -1
+                    continue
+                elif curr_idx >= 14:
+                    curr_idx = 0
+                
+                if seeds == 1:
+                    if curr_idx <= 5:
+                        was_empty = next_board[curr_idx] == 0
+                        next_board[curr_idx] += 1
+                        seeds -= 1
+                        if was_empty:
+                            opp_idx = 5 - curr_idx
+                            if next_board[7 + opp_idx] > 0:
+                                captured = next_board[7 + opp_idx] + 1
+                                next_board[7 + opp_idx] = 0
+                                next_board[6] += captured
+                                # Capture lands in store -> Switch turn
+                                # But wait, if it lands in store, does it trigger extra move? 
+                                # The rule says "If last seed lands in you[6], get another move".
+                                # Capture puts seeds in you[6]. But capture is special.
+                                # Standard Mancala rules: Capture places seeds in store, then turn switches.
+                                # However, if the capture happens, the seeds are moved to store. 
+                                # The turn usually switches regardless of capture, unless capture lands in store AND that is considered a "last seed in store".
+                                # The prompt says: "If the last seed lands in you[6]... get another move".
+                                # Capture logic: "move them into you[6]". 
+                                # Does this count as "landing"? Usually yes.
+                                # BUT standard Mancala rules usually treat capture as an event that puts seeds in store, but turn passes.
+                                # However, the prompt says: 
+                                # 1. Capture condition check. 
+                                # 2. Move them into you[6].
+                                # If this puts the total count in store? No, it adds seeds.
+                                # The specific wording: "If the last seed lands in one of your houses... capture... and move them into you[6]".
+                                # The "last seed" initially landed in the house. 
+                                # So extra move rule applies to the seed landing in the house? No.
+                                # It applies to landing in the store.
+                                # So usually, capture does NOT give an extra move. 
+                                # However, some variants do. We will assume standard: Turn switches after capture.
+                                extra_turn = False 
+                        else:
+                            extra_turn = False
+                    else:
+                        extra_turn = False
+                else:
+                    next_board[curr_idx] += 1
+                    seeds -= 1
+            
+            # Now evaluate this move
+            if extra_turn:
+                # We get another turn, so recurse with same turn
+                score = alpha_beta(next_board, depth - 1, -float('inf'), float('inf'), True)
+            else:
+                # Opponent turn
+                score = alpha_beta(next_board, depth - 1, -float('inf'), float('inf'), False)
+            
+            if score > current_depth_best_score:
+                current_depth_best_score = score
+                current_depth_best_move = move
+                
+            # Root pruning optimization:
+            # If we find a score that is very high (e.g., guaranteed win), we might stop early.
+            # But to be safe, we check all moves at this depth.
+            # We can use alpha-beta at root? Yes, if we order moves.
+            # We can't easily do alpha-beta at root without passing alpha/beta down.
+            # But we can do simple optimization:
+            if score > 99990: # Found a win
+                return move
+        
+        # Update best move for this depth
+        best_move = current_depth_best_move
+        best_score = current_depth_best_score
+        
+        # Increment depth
+        depth += 1
+        
+        # Hard cutoff
+        if depth > MAX_DEPTH:
+            break
+
+    if best_move == -1:
+        # Fallback
+        return legal_moves[0]
+        
+    return best_move
+```

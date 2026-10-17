@@ -1,0 +1,182 @@
+<thinking>
+We are playing 3D Tic Tac Toe on a 3x3x3 board. The board is represented as a 3D list: board[z][x][y], where z is the depth (0: front, 2: back), x is the row (0: top, 2: bottom), and y is the column (0: left, 2: right). Each cell contains 0 (empty), 1 (our piece), or -1 (opponent's piece).
+
+The function `policy(board)` must return a tuple (z, x, y) of an empty cell to place our piece.
+
+Strategy:
+1. **Check for a winning move**: If we can place our piece (1) to complete a line (any of the 49 winning lines), we take it.
+2. **Check for a blocking move**: If the opponent can win on their next move, we block by placing our piece in the cell that would complete their winning line.
+3. **Heuristic scoring for remaining moves**: For each empty cell, we score it based on how it contributes to potential winning lines. We consider all lines passing through the cell and assign points based on the number of our pieces and opponent pieces already in those lines (avoiding lines where the opponent has two pieces, as we would have blocked them in step 2). The scoring is:
+   - +3 if the line has one of our pieces and none of the opponent's (high priority for creating two-in-a-row).
+   - +1 if the line has no pieces (neutral, but we want to start building lines).
+   - -1 if the line has one opponent piece (we avoid giving the opponent an immediate advantage).
+   - 0 if the line has one of each (neutral, but not immediately threatening).
+
+We choose the empty cell with the highest score. If multiple cells have the same score, we prioritize the center of the board, then face centers, then corners, then edge centers (a fixed order).
+
+Precomputation of winning lines:
+The 49 winning lines are generated as follows:
+- Rows in each layer (vary y, fixed x and z): 3 layers * 3 rows = 9 lines.
+- Columns in each layer (vary x, fixed y and z): 3 layers * 3 columns = 9 lines.
+- Vertical columns (vary z, fixed x and y): 3 * 3 = 9 lines.
+- Diagonals in xy-planes (fixed z): 2 per layer * 3 layers = 6 lines.
+- Diagonals in xz-planes (fixed y): 2 per layer * 3 layers = 6 lines.
+- Diagonals in yz-planes (fixed x): 2 per layer * 3 layers = 6 lines.
+- Space diagonals: 4 lines (through the cube center).
+
+We generate these lines programmatically to avoid hardcoding.
+
+Implementation details:
+- We iterate over each empty cell in the board.
+- For winning/blocking checks, we only consider lines containing the cell and check if two other cells in the line are ours (for winning) or opponent's (for blocking).
+- For scoring, we consider all lines containing the cell and sum the scores for each line (with the rules above).
+
+Priority order for ties:
+1. Center of the cube: (1,1,1)
+2. Face centers: (0,1,1), (2,1,1), (1,0,1), (1,2,1), (1,1,0), (1,1,2)
+3. Corners: (0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)
+4. Edge centers: (1,0,0), (1,2,0), (0,1,0), (2,1,0), (1,0,2), (1,2,2), (0,1,2), (2,1,2), (0,0,1), (0,2,1), (2,0,1), (2,2,1)
+
+If no cell is found in steps 1 and 2, we compute scores for all empty cells and choose the best. If multiple cells have the same score, we use the priority order to break ties.
+
+Note: The board is 3x3x3, so we assume the input is always valid.
+
+Let's code accordingly.
+</thinking>
+
+<code>
+# Precompute all 49 winning lines for 3D Tic Tac Toe
+def generate_winning_lines():
+    lines = []
+    # Rows in each layer (vary y, fixed x and z)
+    for z in range(3):
+        for x in range(3):
+            line = [(z, x, y) for y in range(3)]
+            lines.append(line)
+    # Columns in each layer (vary x, fixed y and z)
+    for z in range(3):
+        for y in range(3):
+            line = [(z, x, y) for x in range(3)]
+            lines.append(line)
+    # Vertical columns (vary z, fixed x and y)
+    for x in range(3):
+        for y in range(3):
+            line = [(z, x, y) for z in range(3)]
+            lines.append(line)
+    # Diagonals in xy-planes (fixed z)
+    for z in range(3):
+        # Main diagonal: x=y
+        line = [(z, i, i) for i in range(3)]
+        lines.append(line)
+        # Anti-diagonal: x+y=2
+        line = [(z, i, 2-i) for i in range(3)]
+        lines.append(line)
+    # Diagonals in xz-planes (fixed y)
+    for y in range(3):
+        # Main diagonal: x=z
+        line = [(i, i, y) for i in range(3)]
+        lines.append(line)
+        # Anti-diagonal: x+z=2
+        line = [(2-i, i, y) for i in range(3)]
+        lines.append(line)
+    # Diagonals in yz-planes (fixed x)
+    for x in range(3):
+        # Main diagonal: y=z
+        line = [(i, x, i) for i in range(3)]
+        lines.append(line)
+        # Anti-diagonal: y+z=2
+        line = [(i, x, 2-i) for i in range(3)]
+        lines.append(line)
+    # Space diagonals
+    lines.append([(0,0,0), (1,1,1), (2,2,2)])
+    lines.append([(0,0,2), (1,1,1), (2,2,0)])
+    lines.append([(0,2,0), (1,1,1), (2,0,2)])
+    lines.append([(0,2,2), (1,1,1), (2,0,0)])
+    return lines
+
+WINNING_LINES = generate_winning_lines()
+
+# Priority order for breaking ties (center, face centers, corners, edge centers)
+PRIORITY_ORDER = [
+    (1,1,1),
+    (0,1,1), (2,1,1), (1,0,1), (1,2,1), (1,1,0), (1,1,2),
+    (0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2),
+    (1,0,0), (1,2,0), (0,1,0), (2,1,0), (1,0,2), (1,2,2), (0,1,2), (2,1,2), 
+    (0,0,1), (0,2,1), (2,0,1), (2,2,1)
+]
+
+def policy(board):
+    # Find all empty cells
+    empty_cells = []
+    for z in range(3):
+        for x in range(3):
+            for y in range(3):
+                if board[z][x][y] == 0:
+                    empty_cells.append((z, x, y))
+    
+    # Step 1: Check for a winning move
+    for (z, x, y) in empty_cells:
+        for line in WINNING_LINES:
+            if (z, x, y) in line:
+                our_count = 0
+                for (zz, xx, yy) in line:
+                    if (zz, xx, yy) == (z, x, y):
+                        continue
+                    if board[zz][xx][yy] == 1:
+                        our_count += 1
+                if our_count == 2:
+                    return (z, x, y)
+    
+    # Step 2: Check for a blocking move
+    for (z, x, y) in empty_cells:
+        for line in WINNING_LINES:
+            if (z, x, y) in line:
+                opp_count = 0
+                for (zz, xx, yy) in line:
+                    if (zz, xx, yy) == (z, x, y):
+                        continue
+                    if board[zz][xx][yy] == -1:
+                        opp_count += 1
+                if opp_count == 2:
+                    return (z, x, y)
+    
+    # Step 3: Heuristic scoring for remaining moves
+    scores = {}
+    for (z, x, y) in empty_cells:
+        score = 0
+        for line in WINNING_LINES:
+            if (z, x, y) in line:
+                our_count = 0
+                opp_count = 0
+                for (zz, xx, yy) in line:
+                    if (zz, xx, yy) == (z, x, y):
+                        continue
+                    if board[zz][xx][yy] == 1:
+                        our_count += 1
+                    elif board[zz][xx][yy] == -1:
+                        opp_count += 1
+                # Skip lines that would have been winning/blocking (handled in steps 1 and 2)
+                if our_count == 2 or opp_count == 2:
+                    continue
+                if our_count == 1 and opp_count == 0:
+                    score += 3
+                elif our_count == 0 and opp_count == 0:
+                    score += 1
+                elif our_count == 0 and opp_count == 1:
+                    score -= 1
+                # If our_count==1 and opp_count==1, we skip (add 0)
+        scores[(z, x, y)] = score
+    
+    # If no cell has a positive score, choose the highest score (could be negative) or the first in priority order?
+    # We'll choose the cell with the highest score. If multiple, break ties by priority order.
+    max_score = max(scores.values()) if scores else -10**9
+    candidate_cells = [cell for cell, score in scores.items() if score == max_score]
+    
+    # If there are multiple candidates, choose the first one in the priority order that is in the candidate list.
+    for priority_cell in PRIORITY_ORDER:
+        if priority_cell in candidate_cells:
+            return priority_cell
+    
+    # Fallback: return the first empty cell (should not happen if empty_cells is not empty)
+    return empty_cells[0] if empty_cells else (0,0,0)
+</code>

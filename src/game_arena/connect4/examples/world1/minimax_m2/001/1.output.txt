@@ -1,0 +1,257 @@
+<thinking>
+To solve this problem, we need to implement a targeting policy for a Connect 4 game on a 6x7 grid. The policy function should determine the best column to drop a disc in for the current player (represented by 1s) to maximize their chances of winning. The opponent's discs are represented by -1s, and empty cells are 0s. The objective is to form a line of four consecutive discs horizontally, vertically, or diagonally.
+
+### Approach
+1. **Problem Analysis**: The game involves a 6x7 grid where players take turns dropping discs into columns. The discs fall to the lowest available cell in the chosen column. The challenge is to evaluate the current board state and determine the optimal move for the current player.
+
+2. **Key Insight**: The solution involves a depth-limited minimax algorithm with alpha-beta pruning to efficiently explore possible moves. The board is evaluated using a heuristic scoring function that considers potential winning lines (horizontal, vertical, diagonal) for both the current player and the opponent.
+
+3. **Algorithm Selection**: 
+   - **Minimax Algorithm**: The algorithm alternates between maximizing (current player's move) and minimizing (opponent's move) phases. This helps in exploring future moves and anticipating the opponent's responses.
+   - **Alpha-Beta Pruning**: This optimization technique reduces the number of nodes explored in the minimax tree by pruning branches that cannot possibly improve the final result.
+   - **Heuristic Evaluation**: The board is evaluated by checking all possible four-in-a-row patterns (lines) and assigning scores based on the number of current player's discs and the opponent's discs in each line.
+
+4. **Complexity Analysis**: 
+   - The minimax algorithm explores up to 7 columns at each level, leading to a worst-case complexity of O(7^d) for depth d. For depth 2, this is manageable (49 states).
+   - Each evaluation involves checking 69 potential lines (horizontal, vertical, diagonal), making it efficient enough to run within the time constraint.
+
+### Solution Code
+```python
+def policy(board):
+    # Precomputed list of lines for efficient evaluation
+    lines = []
+    # Horizontal lines
+    for i in range(6):
+        for j in range(4):
+            lines.append([(i, j), (i, j+1), (i, j+2), (i, j+3)])
+    # Vertical lines
+    for j in range(7):
+        for i in range(3):
+            lines.append([(i, j), (i+1, j), (i+2, j), (i+3, j)])
+    # Diagonal down-right
+    for i in range(3):
+        for j in range(4):
+            lines.append([(i, j), (i+1, j+1), (i+2, j+2), (i+3, j+3)])
+    # Diagonal up-right
+    for i in range(3, 6):
+        for j in range(4):
+            lines.append([(i, j), (i-1, j+1), (i-2, j+2), (i-3, j+3)])
+    
+    # Helper function to get available columns
+    def get_available_columns(board):
+        available = []
+        for col in range(7):
+            # Check if the column is not full
+            if board[0][col] == 0:
+                available.append(col)
+        return available
+    
+    # Helper function to simulate a move
+    def make_move(board, col, player):
+        new_board = [row[:] for row in board]
+        for row in range(5, -1, -1):
+            if new_board[row][col] == 0:
+                new_board[row][col] = player
+                break
+        return new_board
+    
+    # Evaluation function to score the board
+    def evaluate(board):
+        for line in lines:
+            count_current = 0
+            count_opponent = 0
+            for (i, j) in line:
+                cell = board[i][j]
+                if cell == 1:
+                    count_current += 1
+                elif cell == -1:
+                    count_opponent += 1
+            if count_current == 4:
+                return 100000
+            if count_opponent == 4:
+                return -100000
+        
+        score = 0
+        for line in lines:
+            count_current = 0
+            count_opponent = 0
+            for (i, j) in line:
+                cell = board[i][j]
+                if cell == 1:
+                    count_current += 1
+                elif cell == -1:
+                    count_opponent += 1
+            if count_current == 3:
+                score += 1000
+            elif count_current == 2:
+                score += 30
+            elif count_current == 1:
+                score += 10
+            if count_opponent == 3:
+                score -= 1000
+            elif count_opponent == 2:
+                score -= 30
+            elif count_opponent == 1:
+                score -= 10
+        return score
+    
+    # Minimax function with alpha-beta pruning
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        if depth == 0:
+            return evaluate(board)
+        available_columns = get_available_columns(board)
+        if maximizing_player:
+            max_eval = -float('inf')
+            for col in available_columns:
+                new_board = make_move(board, col, 1)
+                eval_score = minimax(new_board, depth-1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in available_columns:
+                new_board = make_move(board, col, -1)
+                eval_score = minimax(new_board, depth-1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Main logic to select the best move
+    available_columns = get_available_columns(board)
+    best_col = None
+    best_score = -float('inf')
+    for col in available_columns:
+        new_board = make_move(board, col, 1)
+        score = minimax(new_board, 1, -float('inf'), float('inf'), False)
+        if score > best_score:
+            best_score = score
+            best_col = col
+    return best_col
+```
+
+### Explanation
+1. **Precomputed Lines**: The `lines` list stores all possible four-in-a-row patterns (horizontal, vertical, diagonal) on the board for efficient evaluation.
+2. **Available Columns**: The function `get_available_columns` identifies columns that are not full (i.e., the top cell is empty).
+3. **Move Simulation**: The `make_move` function simulates a move by placing a disc in the lowest available cell of the specified column.
+4. **Board Evaluation**: The `evaluate` function scores the board by checking each line for potential winning patterns. It assigns high scores for near wins and deducts scores for the opponent's near wins.
+5. **Minimax with Alpha-Beta Pruning**: The `minimax` function explores possible moves to a depth of 2 (current player's move followed by the opponent's response), using alpha-beta pruning to optimize performance. The maximizing player's goal is to maximize the score, while the minimizing player aims to minimize it.
+6. **Optimal Move Selection**: The policy function iterates over available columns, simulates each move, evaluates the resulting board using minimax, and selects the column with the highest score.
+
+This approach efficiently balances exploration and exploitation to determine the best move in the Connect 4 game, leveraging heuristic evaluation and minimax optimization for strategic decision-making.
+</thinking>
+
+<code>
+def policy(board):
+    lines = []
+    # Horizontal lines
+    for i in range(6):
+        for j in range(4):
+            lines.append([(i, j), (i, j+1), (i, j+2), (i, j+3)])
+    # Vertical lines
+    for j in range(7):
+        for i in range(3):
+            lines.append([(i, j), (i+1, j), (i+2, j), (i+3, j)])
+    # Diagonal down-right
+    for i in range(3):
+        for j in range(4):
+            lines.append([(i, j), (i+1, j+1), (i+2, j+2), (i+3, j+3)])
+    # Diagonal up-right
+    for i in range(3, 6):
+        for j in range(4):
+            lines.append([(i, j), (i-1, j+1), (i-2, j+2), (i-3, j+3)])
+    
+    def get_available_columns(board):
+        available = []
+        for col in range(7):
+            if board[0][col] == 0:
+                available.append(col)
+        return available
+    
+    def make_move(board, col, player):
+        new_board = [row[:] for row in board]
+        for row in range(5, -1, -1):
+            if new_board[row][col] == 0:
+                new_board[row][col] = player
+                break
+        return new_board
+    
+    def evaluate(board):
+        for line in lines:
+            count_current = 0
+            count_opponent = 0
+            for (i, j) in line:
+                cell = board[i][j]
+                if cell == 1:
+                    count_current += 1
+                elif cell == -1:
+                    count_opponent += 1
+            if count_current == 4:
+                return 100000
+            if count_opponent == 4:
+                return -100000
+        
+        score = 0
+        for line in lines:
+            count_current = 0
+            count_opponent = 0
+            for (i, j) in line:
+                cell = board[i][j]
+                if cell == 1:
+                    count_current += 1
+                elif cell == -1:
+                    count_opponent += 1
+            if count_current == 3:
+                score += 1000
+            elif count_current == 2:
+                score += 30
+            elif count_current == 1:
+                score += 10
+            if count_opponent == 3:
+                score -= 1000
+            elif count_opponent == 2:
+                score -= 30
+            elif count_opponent == 1:
+                score -= 10
+        return score
+    
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        if depth == 0:
+            return evaluate(board)
+        available_columns = get_available_columns(board)
+        if maximizing_player:
+            max_eval = -float('inf')
+            for col in available_columns:
+                new_board = make_move(board, col, 1)
+                eval_score = minimax(new_board, depth-1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for col in available_columns:
+                new_board = make_move(board, col, -1)
+                eval_score = minimax(new_board, depth-1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    available_columns = get_available_columns(board)
+    best_col = None
+    best_score = -float('inf')
+    for col in available_columns:
+        new_board = make_move(board, col, 1)
+        score = minimax(new_board, 1, -float('inf'), float('inf'), False)
+        if score > best_score:
+            best_score = score
+            best_col = col
+    return best_col
+</code>

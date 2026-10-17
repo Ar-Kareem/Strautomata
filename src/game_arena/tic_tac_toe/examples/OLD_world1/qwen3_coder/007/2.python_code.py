@@ -1,0 +1,64 @@
+
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # Check if we can win in one move
+    move = find_winning_move(board_np, 1)
+    if move:
+        return move
+    
+    # Check if we need to block opponent's winning move
+    move = find_winning_move(board_np, -1)
+    if move:
+        return move
+    
+    # Try to take the center if available
+    if board_np[1, 1] == 0:
+        return (1, 1)
+    
+    # Try to take a corner
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for row, col in corners:
+        if board_np[row, col] == 0:
+            return (row, col)
+    
+    # Take any available side
+    sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for row, col in sides:
+        if board_np[row, col] == 0:
+            return (row, col)
+    
+    # Should never reach here, but just in case
+    for i in range(3):
+        for j in range(3):
+            if board_np[i, j] == 0:
+                return (i, j)
+
+def find_winning_move(board: np.ndarray, player: int) -> Optional[Tuple[int, int]]:
+    """Find a winning move for the given player, or None if there isn't one."""
+    # Check rows
+    for i in range(3):
+        if sum(board[i, :]) == 2 * player and np.count_nonzero(board[i, :] == 0) == 1:
+            return (i, np.where(board[i, :] == 0)[0][0])
+    
+    # Check columns
+    for j in range(3):
+        if sum(board[:, j]) == 2 * player and np.count_nonzero(board[:, j] == 0) == 1:
+            return (np.where(board[:, j] == 0)[0][0], j)
+    
+    # Check diagonals
+    diag1_sum = sum([board[i, i] for i in range(3)])
+    if diag1_sum == 2 * player and np.count_nonzero([board[i, i] == 0 for i in range(3)]) == 1:
+        idx = [i for i in range(3) if board[i, i] == 0][0]
+        return (idx, idx)
+    
+    diag2_sum = sum([board[i, 2-i] for i in range(3)])
+    if diag2_sum == 2 * player and np.count_nonzero([board[i, 2-i] == 0 for i in range(3)]) == 1:
+        idx = [i for i in range(3) if board[i, 2-i] == 0][0]
+        return (idx, 2-idx)
+    
+    return None

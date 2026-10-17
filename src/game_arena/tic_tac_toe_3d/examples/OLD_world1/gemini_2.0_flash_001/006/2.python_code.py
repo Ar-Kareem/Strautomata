@@ -1,0 +1,97 @@
+
+import numpy as np
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Chooses the next move for a 3x3x3 3D Tic Tac Toe game.
+
+    Args:
+        board: A 3x3x3 list of lists containing 0 (empty), 1 (you), and -1 (opponent).
+
+    Returns:
+        A tuple of three integers 0-2 indicating the empty cell you choose.
+    """
+
+    # Convert the board to a NumPy array for easier manipulation
+    board = np.array(board)
+
+    # 1. Check for winning moves
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i, j, k] == 0:
+                    # Simulate the move
+                    board[i, j, k] = 1
+
+                    # Check if it's a winning move
+                    if check_win(board, 1):
+                        board[i, j, k] = 0  # Reset the board
+                        return (i, j, k)
+
+                    # Reset the board
+                    board[i, j, k] = 0
+
+    # 2. Block opponent's winning moves
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i, j, k] == 0:
+                    # Simulate the move
+                    board[i, j, k] = -1
+
+                    # Check if it's a winning move for the opponent
+                    if check_win(board, -1):
+                        board[i, j, k] = 0  # Reset the board
+                        return (i, j, k)
+
+                    # Reset the board
+                    board[i, j, k] = 0
+
+    # 3. Choose a random empty cell (prioritize center if available)
+    if board[1, 1, 1] == 0:
+        return (1, 1, 1)
+
+    empty_cells = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i, j, k] == 0:
+                    empty_cells.append((i, j, k))
+
+    if empty_cells:
+        return empty_cells[0]  # Return the first available cell
+
+    # Should not reach here if the board is not full and a move is possible.
+    return (0, 0, 0)
+
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """
+    Checks if the given player has won the game.
+    """
+    # Check rows, columns, and depth
+    for i in range(3):
+        for j in range(3):
+            if np.all(board[i, j, :] == player) or \
+               np.all(board[i, :, j] == player) or \
+               np.all(board[:, i, j] == player):
+                return True
+
+    # Check diagonals in each 2D plane
+    for i in range(3):
+        if np.all(np.diag(board[i, :, :]) == player) or \
+           np.all(np.diag(np.fliplr(board[i, :, :])) == player) or \
+           np.all(np.diag(board[:, i, :]) == player) or \
+           np.all(np.diag(np.fliplr(board[:, i, :])) == player) or \
+           np.all(np.diag(board[:, :, i]) == player) or \
+           np.all(np.diag(np.fliplr(board[:, :, i])) == player):
+            return True
+
+    # Check the 4 main 3D diagonals
+    if (board[0, 0, 0] == player and board[1, 1, 1] == player and board[2, 2, 2] == player) or \
+       (board[0, 0, 2] == player and board[1, 1, 1] == player and board[2, 2, 0] == player) or \
+       (board[0, 2, 0] == player and board[1, 1, 1] == player and board[2, 0, 2] == player) or \
+       (board[0, 2, 2] == player and board[1, 1, 1] == player and board[2, 0, 0] == player):
+        return True
+
+    return False

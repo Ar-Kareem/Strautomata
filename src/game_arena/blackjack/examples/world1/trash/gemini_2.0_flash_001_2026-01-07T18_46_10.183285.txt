@@ -1,0 +1,102 @@
+<thinking>
+Let's start by outlining the known information.
+- Target T: Fixed integer between 10 and 30.
+- Deck: Single suit of 13 cards A, 2-10, J, Q, K
+- Card Values: 2-10 -> Face value, J, Q, K -> 10, A -> 11 (<= T) or 1 (> T)
+- Actions: "HIT", "STAY"
+- Win Conditions: Opponent busts, or closest to T without busting.
+- Lose Condition: Busting.
+
+The core logic needs to be to calculate the hand value, and determine when to HIT or STAY.
+The basic policy revolves around staying when the hand is close to the target, and hitting when far away. I need to evaluate the hand value, and decide whether taking a "HIT" will make it risk going above target, or not.
+
+The hand evaluation function is:
+1. Initialize the hand value to 0.
+2. For each card, add the card's value to hand value.
+3. To determine Ace value if hand + 11 <= target: A = 11 else A = 1.
+
+Now, a basic policy implementation:
+1. If hand_value < T - 7 then HIT.
+2. Else STAY.
+
+This policy can be improved.
+Let's consider probabilities. The deck is 13 cards. Knowing information about your current hand does not change the distribution of what is likely to be pulled next. The average value of the cards in the deck is roughly 6.
+A more robust way would be to look at current_hand and calculate the chance of busting if "HIT". Based on that chance, HIT if the chance is low enough, and STAY otherwise. The probability calculation is probably too complex for a fast policy though.
+
+A more informed calculation could try and consider the card distribution and how the probability of drawing higher numbers versus lower numbers changes as you consider T.
+- If T is low, it is riskier to draw because the proportion of "high" valued cards is greater.
+- If T is high, it is less risky to draw since the hand can reach it using different valued cards.
+
+Also, opponent's behavior is not directly observable. We need to assume the opponent uses an independent strategy (i.e. their cards are based on a separate draw).
+
+A policy improvement:
+1. Calculate hand value, `hand_value`.
+2. If `hand_value` >= `target`, return "STAY" (as you should never be in this state, this acts as a fail-safe)
+3. Define a risk threshold `risk_threshold`.
+4. If `target - hand_value > 10`: "HIT"
+5. Else:
+    Consider a risk calculation:
+    Prob(bust) = num_cards_that_bust / 13. But since the cards in your hand have been removed, this distorts this calculation.
+    Instead, just set the `risk_threshold` to adjust the behavior.
+    If `hand_value > target - 5`: STAY
+    Else: HIT
+
+Let's make the risk threshold a function of target. Lower target implies lower risk.
+
+Refinement:
+Instead of just using a simple constant threshold to stay, a more adaptive approach considers the score needed and the likelihood of drawing cards that will push over the target. Consider the target range. A target near 10 should be treated very conservatively, while a target near 30 allows for more risks. This can be accomplished by dynamically adjusting the hit threshold based on the target.
+
+Final Policy:
+1. Calculate the `hand_value` of your hand.
+2. Define a `hit_threshold` which depends on target. A lower target implies higher hit threshold, a higher target implies lower hit threshold.
+3. if `hand_value` >= `target`: STAY
+4. If `hand_value` < `hit_threshold`: HIT, else STAY.
+```python
+import random
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    A policy for a simplified Blackjack-like game.
+
+    Args:
+        hand: The list of strings representing the cards you currently hold.
+        target: The integer T you are trying to approach.
+
+    Returns:
+        "HIT" if you want to draw the next card, "STAY" otherwise.
+    """
+
+    def calculate_hand_value(hand: list[str], target: int) -> int:
+        """Calculates the value of the hand."""
+        hand_value = 0
+        ace_count = 0
+        for card in hand:
+            if card.isdigit():
+                hand_value += int(card)
+            elif card in ("J", "Q", "K"):
+                hand_value += 10
+            elif card == "A":
+                ace_count += 1
+                hand_value += 11
+
+        while hand_value > target and ace_count > 0:
+            hand_value -= 10
+            ace_count -= 1
+
+        return hand_value
+
+    hand_value = calculate_hand_value(hand, target)
+
+    if hand_value >= target:
+        return "STAY"
+
+    # Define a dynamic hit threshold based on the target.
+    # The higher the target, the more willing we are to hit.
+    # The lower the target, the less willing we are to hit.
+    hit_threshold = target - 7 + (target - 10) // 5 
+
+    if hand_value < hit_threshold:
+        return "HIT"
+    else:
+        return "STAY"
+```

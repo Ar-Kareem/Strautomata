@@ -1,0 +1,53 @@
+
+import random
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    # Generate all legal moves
+    legal_moves = []
+    for r in range(5):
+        for c in range(6):
+            if you[r][c] != 1:
+                continue
+            # Check up
+            if r > 0 and opponent[r-1][c] == 1:
+                legal_moves.append((r, c, 'U'))
+            # Check down
+            if r < 4 and opponent[r+1][c] == 1:
+                legal_moves.append((r, c, 'D'))
+            # Check left
+            if c > 0 and opponent[r][c-1] == 1:
+                legal_moves.append((r, c, 'L'))
+            # Check right
+            if c < 5 and opponent[r][c+1] == 1:
+                legal_moves.append((r, c, 'R'))
+    
+    # Evaluate each move's score (number of adjacent my pieces to target)
+    def get_score(r, c, dir):
+        # Determine target cell
+        r2, c2 = r, c
+        if dir == 'U':
+            r2 -= 1
+        elif dir == 'D':
+            r2 += 1
+        elif dir == 'L':
+            c2 -= 1
+        elif dir == 'R':
+            c2 += 1
+        
+        score = 0
+        # Check four neighbors of target cell
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r2 + dr, c2 + dc
+            if 0 <= nr < 5 and 0 <= nc < 6:
+                if you[nr][nc] == 1:
+                    score += 1
+        return score
+    
+    scores = [get_score(r, c, dir) for (r, c, dir) in legal_moves]
+    max_score = max(scores) if scores else 0
+    best_moves = [legal_moves[i] for i in range(len(legal_moves)) if scores[i] == max_score]
+    
+    # Randomly select among best moves
+    random.shuffle(best_moves)
+    r, c, dir = best_moves[0]
+    return f'{r},{c},{dir}'

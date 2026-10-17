@@ -1,0 +1,117 @@
+
+import sys
+
+sys.setrecursionlimit(10000)
+
+def has_won(board, player: int) -> bool:
+    n = 3
+    # Axis-parallel lines
+    # Parallel to x
+    for z in range(n):
+        for y in range(n):
+            if all(board[z][y][x] == player for x in range(n)):
+                return True
+    # Parallel to y
+    for z in range(n):
+        for x in range(n):
+            if all(board[z][y][x] == player for y in range(n)):
+                return True
+    # Parallel to z
+    for y in range(n):
+        for x in range(n):
+            if all(board[z][y][x] == player for z in range(n)):
+                return True
+    # Planar diagonals XY (fixed z)
+    for z in range(n):
+        if all(board[z][y][y] == player for y in range(n)):
+            return True
+        if all(board[z][2 - y][y] == player for y in range(n)):
+            return True
+    # Planar diagonals XZ (fixed y)
+    for y in range(n):
+        if all(board[z][y][z] == player for z in range(n)):
+            return True
+        if all(board[z][y][2 - z] == player for z in range(n)):
+            return True
+    # Planar diagonals YZ (fixed x)
+    for x in range(n):
+        if all(board[z][z][x] == player for z in range(n)):
+            return True
+        if all(board[z][2 - z][x] == player for z in range(n)):
+            return True
+    # Space diagonals
+    if all(board[z][z][z] == player for z in range(n)):
+        return True
+    if all(board[z][z][2 - z] == player for z in range(n)):
+        return True
+    if all(board[z][2 - z][z] == player for z in range(n)):
+        return True
+    if all(board[z][2 - z][2 - z] == player for z in range(n)):
+        return True
+    return False
+
+positions = sorted(
+    [(z, y, x) for z in range(3) for y in range(3) for x in range(3)],
+    key=lambda m: abs(m[0] - 1) + abs(m[1] - 1) + abs(m[2] - 1)
+)
+
+def alphabeta(board, player: int, alpha, beta, remaining: int, depth: int):
+    if has_won(board, 1):
+        return 1000 - depth
+    if has_won(board, -1):
+        return depth - 1000
+    if remaining == 0:
+        return 0
+    # Depth limit for early game
+    if depth > 12:
+        # Simple heuristic
+        my_count = sum(1 for z in range(3) for y in range(3) for x in range(3) if board[z][y][x] == 1)
+        opp_count = sum(1 for z in range(3) for y in range(3) for x in range(3) if board[z][y][x] == -1)
+        return (my_count - opp_count) * 10 - depth
+
+    if player == 1:  # maximizing
+        value = -float('inf')
+        for mz, my, mx in positions:
+            if board[mz][my][mx] == 0:
+                board[mz][my][mx] = 1
+                score = alphabeta(board, -1, alpha, beta, remaining - 1, depth + 1)
+                board[mz][my][mx] = 0
+                value = max(value, score)
+                alpha = max(alpha, score)
+                if alpha >= beta:
+                    break
+        return value
+    else:  # minimizing
+        value = float('inf')
+        for mz, my, mx in positions:
+            if board[mz][my][mx] == 0:
+                board[mz][my][mx] = -1
+                score = alphabeta(board, 1, alpha, beta, remaining - 1, depth + 1)
+                board[mz][my][mx] = 0
+                value = min(value, score)
+                beta = min(beta, score)
+                if alpha >= beta:
+                    break
+        return value
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    moves = [pos for pos in positions if board[pos[0]][pos[1]][pos[2]] == 0]
+    if not moves:
+        # No moves, return dummy (should not happen)
+        return (0, 0, 0)
+
+    best_score = -float('inf')
+    best_move = moves[0]
+
+    # Root move ordering already good via positions
+    for move in moves:
+        z, y, x = move
+        board[z][y][x] = 1
+        score = alphabeta(board, -1, -float('inf'), float('inf'), len(moves) - 1, 0)
+        board[z][y][x] = 0
+        if score > best_score:
+            best_score = score
+            best_move = move
+        if best_score >= 900:  # Winning move found
+            break
+    return best_move

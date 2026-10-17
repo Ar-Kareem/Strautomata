@@ -1,0 +1,224 @@
+The implemented policy uses a minimax search with alpha-beta pruning to explore possible future moves. It evaluates board states by counting potential winning lines (threats), favors the central cell (which participates in many lines) and always prioritizes an immediate win or a required block over positional heuristics. The search depth is limited to keep runtime below the 1 s limit while still providing strong play.
+
+```python
+# 3D Tic‑Tac‑Toe policy
+# Uses a shallow minimax search with alpha‑beta pruning, immediate win/block
+# detection, and a simple heuristic that values threats and central control.
+
+# ----------------------------------------------------------------------
+# 1.  Pre‑compute all winning lines (49 lines of three cells each)
+# ----------------------------------------------------------------------
+LINES = []
+
+# Axis‑aligned lines (27)
+for i in range(3):
+    for j in range(3):
+        LINES.append([(i, j, k) for k in range(3)])          # vary k
+for i in range(3):
+    for k in range(3):
+        LINES.append([(i, j, k) for j in range(3)])          # vary j
+for j in range(3):
+    for k in range(3):
+        LINES.append([(i, j, k) for i in range(3)])          # vary i
+
+# Face diagonals (18)
+for i in range(3):
+    LINES.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+    LINES.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+for j in range(3):
+    LINES.append([(0, j, 0), (1, j, 1), (2, j, 2)])
+    LINES.append([(0, j, 2), (1, j, 1), (2, j, 0)])
+for k in range(3):
+    LINES.append([(0, 0, k), (1, 1, k), (2, 2, k)])
+    LINES.append([(0, 2, k), (1, 1, k), (2, 0, k)])
+
+# Space diagonals (4)
+LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+LINES.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+
+# ----------------------------------------------------------------------
+# 2.  Helper functions
+# ----------------------------------------------------------------------
+def _empty_cells(board):
+    """Return a list of all empty (i,j,k) cells."""
+    empty = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    empty.append((i, j, k))
+    return empty
+
+def _copy(board):
+    """Create a fresh 3‑deep copy of the board."""
+    return [[[board[i][j][k] for k in range(3)] for j in range(3)] for i in range(3)]
+
+def _apply(board, move, player):
+    """Return a new board with `player` placed at `move`."""
+    new_board = _copy(board)
+    i, j, k = move
+    new_board[i][j][k] = player
+    return new_board
+
+def _check_win(board, player):
+    """True if `player` (1 or –1) has a line of three."""
+    target = 3 * player
+    for line in LINES:
+        s = 0
+        for (i, j, k) in line:
+            s += board[i][j][k]
+            if s != target and s != target - player:  # early exit not needed, kept for clarity
+                continue
+        if s == target:
+            return True
+    return False
+
+def _immediate_wins(board, player):
+    """Return a list of cells that would give `player` an immediate win."""
+    moves = []
+    target = 2 * player
+    for line in LINES:
+        s = 0
+        for (i, j, k) in line:
+            s += board[i][j][k]
+        if s == target:
+            # exactly one empty cell in this line
+            for (i, j, k) in line:
+                if board[i][j][k] == 0:
+                    moves.append((i, j, k))
+                    break
+    return moves
+
+# ----------------------------------------------------------------------
+# 3.  Evaluation heuristic
+# ----------------------------------------------------------------------
+INF = 10 ** 9
+
+def _evaluate(board):
+    """
+    Static evaluation from the viewpoint of player 1.
+    Large positive   – player 1 has won,
+    large negative   – player ‑1 has won,
+    otherwise        – threats and central control.
+    """
+    if _check_win(board, 1):
+        return INF
+    if _check_win(board, -1):
+        return -INF
+
+    score = 0
+    for line in LINES:
+        s = 0
+        for (i, j, k) in line:
+            s += board[i][j][k]
+
+        if s == 2:                # two player 1 marks → threat
+            score += 100
+        elif s == -2:             # two opponent marks → danger
+            score -= 100
+        elif s == 1:              # single player 1 mark
+            score += 1
+        elif s == -1:             # single opponent mark
+            score -= 1
+        # s == 0 yields no contribution.
+
+    # Central cell bonus – it participates in many lines.
+    centre = board[1][1][1]
+    if centre == 1:
+        score += 10
+    elif centre == -1:
+        score -= 10
+
+    return score
+
+# ----------------------------------------------------------------------
+# 4.  Minimax with alpha‑beta
+# ----------------------------------------------------------------------
+def _minimax(board, depth, alpha, beta, maximizing):
+    """
+    Returns (value, move) for the current board.
+    `depth` counts remaining plies (a move by one player = one ply).
+    """
+    # Terminal nodes.
+    if depth == 0:
+        return _evaluate(board), None
+
+    if _check_win(board, 1):
+        return INF, None
+    if _check_win(board, -1):
+        return -INF, None
+
+    empty = _empty_cells(board)
+    if not empty:                     # draw
+        return 0, None
+
+    if maximizing:                     # player 1's turn
+        best_val = -INF
+        best_move = None
+        for move in empty:
+            new_board = _apply(board, move, 1)
+            # If the move already wins, stop searching.
+            if _check_win(new_board, 1):
+                return INF, move
+            val, _ = _minimax(new_board, depth - 1, alpha, beta, False)
+            if val > best_val:
+                best_val = val
+                best_move = move
+            alpha = max(alpha, best_val)
+            if alpha >= beta:        # opponent can force a win somewhere else
+                break
+        return best_val, best_move
+    else:                             # opponent's turn (player ‑1)
+        best_val = INF
+        best_move = None
+        for move in empty:
+            new_board = _apply(board, move, -1)
+            if _check_win(new_board, -1):
+                return -INF, move
+            val, _ = _minimax(new_board, depth - 1, alpha, beta, True)
+            if val < best_val:
+                best_val = val
+                best_move = move
+            beta = min(beta, best_val)
+            if beta <= alpha:
+                break
+        return best_val, best_move
+
+# ----------------------------------------------------------------------
+# 5.  Policy entry point
+# ----------------------------------------------------------------------
+def policy(board):
+    """
+    Return the next move for player 1 (value 1) on the given 3‑layer board.
+    The move is a tuple (i, j, k) with each index 0‑2.
+    """
+    # 1. Immediate win – always take it.
+    win_moves = _immediate_wins(board, 1)
+    if win_moves:
+        return win_moves[0]
+
+    # 2. Immediate block – if the opponent threatens to win, block the first threat.
+    opp_win_moves = _immediate_wins(board, -1)
+    if opp_win_moves:
+        # Try to block; if several threats exist we can only block one.
+        return opp_win_moves[0]
+
+    # 3. If the centre is free it is generally a strong move.
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+
+    # 4. Perform a shallow minimax search (depth depends on remaining cells).
+    empty_count = len(_empty_cells(board))
+    # With many cells left a depth of 3 is safe; with fewer cells we can go deeper.
+    depth = 4 if empty_count <= 12 else 3
+
+    _, move = _minimax(board, depth, -INF, INF, True)
+
+    # Fallback – should never happen, but guarantees a legal move.
+    if move is None:
+        move = _empty_cells(board)[0]
+
+    return move
+```

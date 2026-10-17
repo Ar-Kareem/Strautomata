@@ -1,0 +1,97 @@
+
+import numpy as np
+
+def check_win(board):
+    # Check rows, cols, and diagonals for a 5-in-a-row
+    for r in range(6):
+        for c in range(2):
+            if np.all(board[r, c:c+5] == 1): return True
+    for c in range(6):
+        for r in range(2):
+            if np.all(board[r:r+5, c] == 1): return True
+    for r in range(2):
+        for c in range(2):
+            if np.all(np.diag(board[r:r+5, c:c+5]) == 1): return True
+            if np.all(np.diag(np.fliplr(board[r:r+5, c:c+5])) == 1): return True
+    return False
+
+def rotate_quadrant(board, quad, direction):
+    new_board = board.copy()
+    r_start, c_start = (quad // 2) * 3, (quad % 2) * 3
+    sub = board[r_start:r_start+3, c_start:c_start+3]
+    if direction == 'R':
+        new_board[r_start:r_start+3, c_start:c_start+3] = np.rot90(sub, -1)
+    else:
+        new_board[r_start:r_start+3, c_start:c_start+3] = np.rot90(sub, 1)
+    return new_board
+
+def score_board(me, opp):
+    # Heuristic: count 2s, 3s, 4s in a row and center control
+    score = 0
+    # Simple center weighting
+    center_mask = np.array([
+        [0,0,0,0,0,0],
+        [0,1,1,1,1,0],
+        [0,1,2,2,1,0],
+        [0,1,2,2,1,0],
+        [0,1,1,1,1,0],
+        [0,0,0,0,0,0]
+    ])
+    score += np.sum(me * center_mask) * 2
+    score -= np.sum(opp * center_mask) * 2
+    return score
+
+def policy(you, opponent) -> str:
+    my_board = np.array(you)
+    opp_board = np.array(opponent)
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    possible_moves = []
+    for r in range(6):
+        for c in range(6):
+            if my_board[r][c] == 0 and opp_board[r][c] == 0:
+                for q in range(4):
+                    for d in ['L', 'R']:
+                        possible_moves.append((r, c, q, d))
+
+    # Fast shuffling for variety if scores are tied
+    import random
+    random.shuffle(possible_moves)
+
+    for r, c, q, d in possible_moves:
+        # Simulate placement
+        temp_me = my_board.copy()
+        temp_me[r, c] = 1
+        
+        # Simulate rotation
+        next_me = rotate_quadrant(temp_me, q, d)
+        next_opp = rotate_quadrant(opp_board, q, d)
+        
+        # Check immediate win
+        if check_win(next_me):
+            # If it's a win for us, but also a win for opponent (draw), keep searching
+            # unless it's our only move. But prioritized win first.
+            if not check_win(next_opp):
+                return f"{r+1},{c+1},{q},{d}"
+            else:
+                move_score = 0 # Draw
+        else:
+            # Check if we blocked an opponent win (lookahead-ish)
+            if check_win(next_opp):
+                move_score = -1000
+            else:
+                move_score = score_board(next_me, next_opp)
+        
+        if move_score > best_score:
+            best_score = move_score
+            best_move = (r, c, q, d)
+
+    if best_move:
+        r, c, q, d = best_move
+        return f"{r+1},{c+1},{q},{d}"
+    
+    # Fallback (should not happen given problem constraints)
+    r, c, q, d = possible_moves[0]
+    return f"{r+1},{c+1},{q},{d}"

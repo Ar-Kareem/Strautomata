@@ -1,0 +1,330 @@
+The strategy for this policy is to play **tactically perfect where it matters** and **strategically strong elsewhere**:
+
+1. **Precompute all 49 winning lines** in 3×3×3 (rows, columns, pillars, face diagonals, and space diagonals).
+2. On each move:
+   - Take an **immediate win** if available.
+   - Otherwise **block any immediate opponent win**.
+3. If no forced 1-ply tactics exist, run an **iterative-deepening alpha-beta negamax** search with:
+   - A strong heuristic evaluation based on line potential (open lines, 2-in-a-row threats, etc.).
+   - **Move ordering** that prioritizes (a) wins/blocks, then (b) high “line participation” cells (center/corners), then (c) heuristic-improving moves.
+   - A **time budget** (~0.95s) so it always returns a legal move.
+
+<code>
+import time
+from typing import List, Tuple, Optional, Dict
+
+# ---------------------------
+# Precompute winning lines
+# ---------------------------
+
+def _all_lines_3x3x3():
+    lines = []
+
+    # Helpers
+    def idx(i, j, k):
+        return i * 9 + j * 3 + k
+
+    # Rows in k direction (within each i,j plane row)
+    for i in range(3):
+        for j in range(3):
+            lines.append([idx(i, j, 0), idx(i, j, 1), idx(i, j, 2)])
+
+    # Columns in j direction (within each i,k plane column)
+    for i in range(3):
+        for k in range(3):
+            lines.append([idx(i, 0, k), idx(i, 1, k), idx(i, 2, k)])
+
+    # Pillars in i direction (vertical through layers)
+    for j in range(3):
+        for k in range(3):
+            lines.append([idx(0, j, k), idx(1, j, k), idx(2, j, k)])
+
+    # Face diagonals on each i-layer (j,k plane)
+    for i in range(3):
+        lines.append([idx(i, 0, 0), idx(i, 1, 1), idx(i, 2, 2)])
+        lines.append([idx(i, 0, 2), idx(i, 1, 1), idx(i, 2, 0)])
+
+    # Face diagonals on each j-slice (i,k plane)
+    for j in range(3):
+        lines.append([idx(0, j, 0), idx(1, j, 1), idx(2, j, 2)])
+        lines.append([idx(0, j, 2), idx(1, j, 1), idx(2, j, 0)])
+
+    # Face diagonals on each k-slice (i,j plane)
+    for k in range(3):
+        lines.append([idx(0, 0, k), idx(1, 1, k), idx(2, 2, k)])
+        lines.append([idx(0, 2, k), idx(1, 1, k), idx(2, 0, k)])
+
+    # 4 space diagonals
+    lines.append([idx(0, 0, 0), idx(1, 1, 1), idx(2, 2, 2)])
+    lines.append([idx(0, 0, 2), idx(1, 1, 1), idx(2, 2, 0)])
+    lines.append([idx(0, 2, 0), idx(1, 1, 1), idx(2, 0, 2)])
+    lines.append([idx(0, 2, 2), idx(1, 1, 1), idx(2, 0, 0)])
+
+    return lines
+
+
+LINES = _all_lines_3x3x3()
+
+# Cell participation count (center and key cells get higher naturally)
+CELL_LINE_COUNT = [0] * 27
+for ln in LINES:
+    for p in ln:
+        CELL_LINE_COUNT[p] += 1
+
+
+def _flatten(board: List[List[List[int]]]) -> List[int]:
+    flat = [0] * 27
+    t = 0
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                flat[t] = board[i][j][k]
+                t += 1
+    return flat
+
+
+def _unflatten_idx(p: int) -> Tuple[int, int, int]:
+    i = p // 9
+    r = p % 9
+    j = r // 3
+    k = r % 3
+    return (i, j, k)
+
+
+def _check_winner(flat: List[int]) -> int:
+    # returns 1 if we win, -1 if opponent wins, 0 otherwise
+    for ln in LINES:
+        s = flat[ln[0]] + flat[ln[1]] + flat[ln[2]]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+
+def _legal_moves(flat: List[int]) -> List[int]:
+    return [i for i, v in enumerate(flat) if v == 0]
+
+
+def _static_eval(flat: List[int]) -> int:
+    """
+    Heuristic evaluation from '1' perspective.
+    Higher is better for 1, lower is better for -1.
+    """
+    winner = _check_winner(flat)
+    if winner == 1:
+        return 10**9
+    if winner == -1:
+        return -10**9
+
+    # Line-based potential scoring
+    # Values tuned to heavily reward creating/blocking 2-in-a-row threats.
+    score = 0
+    for ln in LINES:
+        a, b, c = flat[ln[0]], flat[ln[1]], flat[ln[2]]
+        cnt1 = (a == 1) + (b == 1) + (c == 1)
+        cntm1 = (a == -1) + (b == -1) + (c == -1)
+        if cnt1 and cntm1:
+            continue  # blocked line
+        if cnt1:
+            if cnt1 == 1:
+                score += 2
+            elif cnt1 == 2:
+                score += 25
+        elif cntm1:
+            if cntm1 == 1:
+                score -= 2
+            elif cntm1 == 2:
+                score -= 30  # slightly stronger defense bias
+
+    # Small positional preference (center is naturally high due to line counts)
+    # Add for our pieces, subtract for opponent.
+    for p, v in enumerate(flat):
+        if v == 1:
+            score += CELL_LINE_COUNT[p]
+        elif v == -1:
+            score -= CELL_LINE_COUNT[p]
+
+    return score
+
+
+def _find_immediate_win(flat: List[int], player: int) -> Optional[int]:
+    # Return a move index that wins immediately for 'player', else None.
+    for ln in LINES:
+        vals = [flat[ln[0]], flat[ln[1]], flat[ln[2]]]
+        if vals.count(player) == 2 and vals.count(0) == 1:
+            empty_pos = ln[vals.index(0)]
+            return empty_pos
+    return None
+
+
+def _ordered_moves(flat: List[int], player: int) -> List[int]:
+    """
+    Strong move ordering:
+    1) immediate win
+    2) immediate block
+    3) otherwise: prioritize high line participation + heuristic delta
+    """
+    moves = _legal_moves(flat)
+    if not moves:
+        return []
+
+    win_move = _find_immediate_win(flat, player)
+    if win_move is not None and win_move in moves:
+        # Still include others after; alpha-beta benefits from full ordering.
+        moves.remove(win_move)
+        return [win_move] + moves
+
+    block_move = _find_immediate_win(flat, -player)
+    # We'll rank blocks highly, but keep full sorting.
+
+    base = _static_eval(flat)
+
+    scored = []
+    for m in moves:
+        # Quick tactical tags
+        tactical = 0
+        if m == block_move:
+            tactical += 10_000
+
+        # Positional importance
+        pos = CELL_LINE_COUNT[m] * 30
+
+        # Heuristic delta (very cheap 1-ply eval)
+        flat[m] = player
+        delta = _static_eval(flat) - base
+        flat[m] = 0
+
+        scored.append((tactical + pos + delta, m))
+
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+
+def _negamax(
+    flat: List[int],
+    depth: int,
+    alpha: int,
+    beta: int,
+    player: int,
+    end_time: float,
+    tt: Dict[Tuple[Tuple[int, ...], int, int], int],
+) -> int:
+    # Time check
+    if time.perf_counter() >= end_time:
+        raise TimeoutError
+
+    key = (tuple(flat), depth, player)
+    if key in tt:
+        return tt[key]
+
+    winner = _check_winner(flat)
+    if winner != 0:
+        val = winner * (10**9 - (9 - depth))  # prefer faster wins
+        tt[key] = val if player == 1 else -val
+        return tt[key]
+
+    moves = _legal_moves(flat)
+    if not moves:
+        tt[key] = 0
+        return 0
+
+    if depth <= 0:
+        val = _static_eval(flat) * player
+        tt[key] = val
+        return val
+
+    best = -10**18
+    # Move ordering is critical for pruning.
+    for m in _ordered_moves(flat, player):
+        flat[m] = player
+        val = -_negamax(flat, depth - 1, -beta, -alpha, -player, end_time, tt)
+        flat[m] = 0
+
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    tt[key] = best
+    return best
+
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    flat = _flatten(board)
+    moves = _legal_moves(flat)
+    if not moves:
+        # Shouldn't happen in valid gameplay; return a legal-looking default.
+        return (0, 0, 0)
+
+    # 1) Immediate win
+    m = _find_immediate_win(flat, 1)
+    if m is not None and flat[m] == 0:
+        return _unflatten_idx(m)
+
+    # 2) Immediate block
+    m = _find_immediate_win(flat, -1)
+    if m is not None and flat[m] == 0:
+        return _unflatten_idx(m)
+
+    # Iterative deepening alpha-beta negamax within a time budget
+    start = time.perf_counter()
+    end_time = start + 0.95
+
+    # Depth schedule: deeper late-game
+    empties = len(moves)
+    if empties > 20:
+        max_depth = 3
+    elif empties > 14:
+        max_depth = 4
+    elif empties > 10:
+        max_depth = 5
+    elif empties > 7:
+        max_depth = 7
+    else:
+        max_depth = 9  # near endgame, go deeper
+
+    ordered_root = _ordered_moves(flat, 1)
+    best_move = ordered_root[0]  # guaranteed legal fallback
+    best_score = -10**18
+
+    tt: Dict[Tuple[Tuple[int, ...], int, int], int] = {}
+
+    for depth in range(1, max_depth + 1):
+        if time.perf_counter() >= end_time:
+            break
+
+        cur_best_move = best_move
+        cur_best_score = -10**18
+
+        try:
+            for m in ordered_root:
+                if time.perf_counter() >= end_time:
+                    raise TimeoutError
+
+                flat[m] = 1
+                val = -_negamax(flat, depth - 1, -10**18, 10**18, -1, end_time, tt)
+                flat[m] = 0
+
+                if val > cur_best_score:
+                    cur_best_score = val
+                    cur_best_move = m
+
+        except TimeoutError:
+            # Keep the best from the last fully completed depth
+            break
+
+        best_move, best_score = cur_best_move, cur_best_score
+
+        # If we found a forced win, no need to search further
+        if best_score > 10**8:
+            break
+
+    # Ensure legality
+    if flat[best_move] != 0:
+        # Fallback to first legal move
+        best_move = _legal_moves(flat)[0]
+    return _unflatten_idx(best_move)
+</code>

@@ -1,0 +1,203 @@
+# Strategy
+
+This Go policy implements a simplified Monte Carlo Tree Search (MCTS) approach combined with basic board evaluation heuristics to determine the best move. The strategy focuses on:
+
+1. **Liberty Calculation**: For each potential move, we calculate liberties (empty adjacent points) to ensure we don't make suicidal moves and to identify captures.
+
+2. **Capture Priority**: We prioritize moves that can capture opponent stones immediately.
+
+3. **Expansion Priority**: We look for moves that expand our territory while limiting opponent's expansion.
+
+4. **Random Simulations**: For promising moves, we perform quick random playouts to estimate move quality.
+
+5. **Edge and Corner Play**: We slightly favor edge and corner moves early in the game as they are easier to secure.
+
+6. **Pass Avoidance**: We only pass if no legal moves are available (though this should never happen in Go).
+
+The policy balances between immediate tactical considerations (captures) and strategic positioning, while staying within the 1-second time constraint.
+
+<code>
+import random
+import time
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    start_time = time.time()
+    board_size = 19
+    all_stones = set(me + opponent)
+    
+    # Generate all possible legal moves
+    legal_moves = []
+    for i in range(1, board_size + 1):
+        for j in range(1, board_size + 1):
+            if (i, j) not in all_stones:
+                legal_moves.append((i, j))
+    
+    if not legal_moves:
+        return (0, 0)  # pass if no legal moves (shouldn't happen in Go)
+    
+    # Prefer center in early game
+    if len(me) + len(opponent) < 20:
+        center = (10, 10)
+        if center in legal_moves:
+            return center
+    
+    # Check for immediate captures
+    for move in legal_moves:
+        captured = get_captured_stones(opponent, move, me)
+        if captured:
+            return move
+    
+    # Check if opponent can be captured in next move
+    for move in legal_moves:
+        new_me = me + [move]
+        for adj in get_adjacent(move, board_size):
+            if adj in opponent:
+                group = find_group(adj, opponent, new_me)
+                if len(get_liberties(group, new_me, board_size)) == 0:
+                    return move
+    
+    # Evaluate moves using simple heuristics and random playouts
+    move_scores = defaultdict(int)
+    max_simulations = min(100, len(legal_moves))  # Limit simulations due to time
+    
+    for move in random.sample(legal_moves, min(max_simulations, len(legal_moves))):
+        if time.time() - start_time > 0.8:  # leave some time for final decision
+            break
+            
+        # Basic heuristic score
+        score = 0
+        
+        # Prefer edges and corners in early-mid game
+        if len(me) + len(opponent) < 100:
+            if move[0] in (1, 19) or move[1] in (1, 19):
+                score += 1
+            if (move[0] in (1, 19) and move[1] in (1, 19)):
+                score += 2
+        
+        # Check liberties
+        liberties = len(get_liberties([move], opponent, board_size))
+        score += liberties * 0.5
+        
+        # Check opponent's response liberties
+        new_opponent = opponent + [move]
+        for adj in get_adjacent(move, board_size):
+            if adj in me:
+                group = find_group(adj, me, new_opponent)
+                opp_liberties = len(get_liberties(group, new_opponent, board_size))
+                score += (4 - opp_liberties) * 0.5  # prefer reducing opponent's liberties
+        
+        # Add some random playout results
+        playout_score = quick_playout(me + [move], opponent, board_size, start_time)
+        score += playout_score
+        
+        move_scores[move] = score
+    
+    # Return move with highest score
+    best_move = max(move_scores.items(), key=lambda x: x[1])[0]
+    return best_move
+
+def get_adjacent(point, board_size):
+    i, j = point
+    adjacent = []
+    if i > 1:
+        adjacent.append((i - 1, j))
+    if i < board_size:
+        adjacent.append((i + 1, j))
+    if j > 1:
+        adjacent.append((i, j - 1))
+    if j < board_size:
+        adjacent.append((i, j + 1))
+    return adjacent
+
+def find_group(point, stones, opponent_stones):
+    visited = set()
+    group = []
+    opponent_set = set(opponent_stones)
+    to_visit = [point]
+    
+    while to_visit:
+        p = to_visit.pop()
+        if p in visited or p not in stones:
+            continue
+        visited.add(p)
+        group.append(p)
+        for adj in get_adjacent(p, 19):
+            if adj not in opponent_set and adj not in visited:
+                to_visit.append(adj)
+    return group
+
+def get_liberties(group, opponent_stones, board_size):
+    liberties = set()
+    opponent_set = set(opponent_stones)
+    for stone in group:
+        for adj in get_adjacent(stone, board_size):
+            if adj not in opponent_set and adj not in group:
+                liberties.add(adj)
+    return liberties
+
+def get_captured_stones(opponent, move, me):
+    captured = []
+    opponent_set = set(opponent)
+    me_set = set(me + [move])
+    
+    for adj in get_adjacent(move, 19):
+        if adj in opponent_set:
+            group = find_group(adj, opponent, me_set)
+            if len(get_liberties(group, me_set, 19)) == 0:
+                captured.extend(group)
+    return list(set(captured))
+
+def quick_playout(me, opponent, board_size, start_time, max_moves=20):
+    me_set = set(me)
+    opponent_set = set(opponent)
+    all_stones = me_set.union(opponent_set)
+    score = 0
+    
+    for _ in range(max_moves):
+        if time.time() - start_time > 0.9:
+            break
+            
+        # Alternate between players
+        if len(me) + len(opponent) + _ % 2 == 0:
+            current_player = me_set
+            other_player = opponent_set
+        else:
+            current_player = opponent_set
+            other_player = me_set
+            
+        # Find legal moves
+        legal_moves = []
+        for i in range(1, board_size + 1):
+            for j in range(1, board_size + 1):
+                if (i, j) not in all_stones:
+                    legal_moves.append((i, j))
+        
+        if not legal_moves:
+            break
+            
+        # Make random move
+        move = random.choice(legal_moves)
+        all_stones.add(move)
+        current_player.add(move)
+        
+        # Check captures
+        captured = set()
+        for adj in get_adjacent(move, board_size):
+            if adj in other_player:
+                group = find_group(adj, other_player, current_player)
+                if len(get_liberties(group, current_player, board_size)) == 0:
+                    captured.update(group)
+        
+        for stone in captured:
+            all_stones.remove(stone)
+            other_player.remove(stone)
+        
+        # Simple score: stones captured minus stones lost
+        if current_player is me_set:
+            score += len(captured)
+        else:
+            score -= len(captured)
+    
+    return score / max_moves  # normalize score
+</code>

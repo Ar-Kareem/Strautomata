@@ -1,0 +1,257 @@
+I will implement a move-selection policy for the game of Amazons on a 6x6 board. The strategy involves generating all legal moves, calculating a territory map for both players, and selecting the move that maximizes the difference in territory size (our territory minus opponent's territory) while potentially trying to reduce the total number of legal moves for the opponent.
+
+### Strategy Overview
+
+1.  **Legal Move Generation**:
+    *   Iterate through all squares to find our Amazons (`1`).
+    *   For each Amazon, generate all valid Queen moves (orthogonal and diagonal) to empty squares (`0`).
+    *   For each landing square, generate all valid Queen shots to empty squares (considering the Amazon has moved to the landing square and the from-square is empty).
+    *   Store moves as tuples `(from, to, arrow)`.
+
+2.  **Territory Evaluation**:
+    *   Implement a helper function `calculate_territory_map` that computes the control/influence of each player.
+    *   We define "territory" as the set of all empty squares that a player can reach with a Queen move without passing through any obstacles (opponent Amazons, arrows, or board edges), starting from any of their Amazons.
+    *   This is essentially finding all connected empty squares reachable from player Amazons in the 8 directions.
+    *   We count the number of squares `our_count` and `opponent_count`.
+
+3.  **Move Selection**:
+    *   Simulate the state change for each legal move.
+    *   Calculate the territory scores for the new board state.
+    *   Assign a score to the move: `score = (new_our_count - new_opponent_count) * 1000 - total_moves_after_move`.
+    *   The large multiplier prioritizes territory control. Subtracting the opponent's potential moves (if easy to calculate) serves as a tie-breaker to restrict the opponent's mobility.
+    *   Select the move with the highest score.
+
+4.  **Output**:
+    *   Format the chosen move as "r1,c1:r2,c2:r3,c3".
+    *   Return the string.
+
+### Implementation
+
+```python
+import numpy as np
+
+def policy(board) -> str:
+    """
+    Selects a move for Amazons on a 6x6 board.
+    Strategy: 
+    1. Generate all legal moves.
+    2. Evaluate moves based on territory control (reachability) and opponent mobility.
+    3. Return the best move.
+    """
+    
+    # Ensure board is a numpy array (handle potential list input gracefully)
+    if not isinstance(board, np.ndarray):
+        board = np.array(board)
+        
+    rows, cols = 6, 6
+    our_piece = 1
+    opp_piece = 2
+    empty = 0
+    arrow = -1
+
+    # --- Helper Functions ---
+
+    def get_queen_moves(start_r, start_c, b):
+        """Returns list of (r, c) reachable by queen move from start on board b."""
+        moves = []
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+        
+        for dr, dc in directions:
+            r, c = start_r + dr, start_c + dc
+            while 0 <= r < rows and 0 <= c < cols:
+                if b[r, c] != empty:
+                    break  # Blocked by piece or arrow
+                moves.append((r, c))
+                r += dr
+                c += dc
+        return moves
+
+    def get_all_legal_moves(b):
+        """Generates all legal moves for the current player."""
+        legal_moves = []
+        
+        # Find our amazons
+        our_amazons = []
+        for r in range(rows):
+            for c in range(cols):
+                if b[r, c] == our_piece:
+                    our_amazons.append((r, c))
+        
+        if not our_amazons:
+            return []
+            
+        for (fr, fc) in our_amazons:
+            # 1. Generate move destinations
+            # Temporarily treat the starting square as empty to allow calculating moves
+            temp_b = b.copy()
+            temp_b[fr, fc] = empty
+            
+            to_moves = get_queen_moves(fr, fc, temp_b)
+            
+            for (tr, tc) in to_moves:
+                # 2. Generate arrow shots from the destination
+                # The board now has: amazon moved to (tr, tc), (fr, fc) is empty
+                shot_b = temp_b.copy()
+                shot_b[tr, tc] = our_piece
+                
+                arrow_moves = get_queen_moves(tr, tc, shot_b)
+                
+                for (ar, ac) in arrow_moves:
+                    legal_moves.append(((fr, fc), (tr, tc), (ar, ac)))
+                    
+        return legal_moves
+
+    def calculate_territory_map(b, player_piece):
+        """
+        Calculates a territory map based on reachable empty squares.
+        Returns the count of reachable empty squares for the player.
+        """
+        # Find player positions
+        starts = []
+        for r in range(rows):
+            for c in range(cols):
+                if b[r, c] == player_piece:
+                    starts.append((r, c))
+        
+        if not starts:
+            return 0
+            
+        visited = set()
+        queue = list(starts)
+        visited.update(starts) # Mark starts as visited to avoid reprocessing
+        
+        count = 0
+        
+        # BFS-like expansion for each direction from each node is complex.
+        # Simpler approach: For every empty square, check if it is reachable 
+        # from ANY player amazon in a straight line without obstacles.
+        # Since the board is small (36 squares), this is efficient enough.
+        
+        empty_squares = []
+        for r in range(rows):
+            for c in range(cols):
+                if b[r, c] == empty:
+                    empty_squares.append((r, c))
+        
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+        
+        territory_count = 0
+        
+        for (er, ec) in empty_squares:
+            is_territory = False
+            # Check if reachable from any player amazon
+            for (sr, sc) in starts:
+                # If same row, col, or diagonal
+                if er == sr or ec == sc or abs(er - sr) == abs(ec - sc):
+                    # Check line of sight
+                    dr = 0 if er == sr else (1 if er > sr else -1)
+                    dc = 0 if ec == sc else (1 if ec > sc else -1)
+                    
+                    cr, cc = sr + dr, sc + dc
+                    clear = True
+                    while (cr, cc) != (er, ec):
+                        if b[cr, cc] != empty:
+                            clear = False
+                            break
+                        cr += dr
+                        cc += dc
+                    
+                    if clear:
+                        is_territory = True
+                        break
+            
+            if is_territory:
+                territory_count += 1
+                
+        return territory_count
+
+    # --- Main Logic ---
+
+    # 1. Get all legal moves
+    legal_moves = get_all_legal_moves(board)
+    
+    if not legal_moves:
+        # Should not happen per prompt, but safety net
+        return "0,0:0,0:0,0" 
+
+    best_score = -float('inf')
+    best_move = legal_moves[0]
+    
+    # Calculate current territory to compare delta
+    # current_our = calculate_territory_map(board, our_piece)
+    # current_opp = calculate_territory_map(board, opp_piece)
+    
+    # We want to maximize our territory and minimize opponent territory in the next state.
+    
+    for (fr, fc), (tr, tc), (ar, ac) in legal_moves:
+        # Simulate the move
+        sim_board = board.copy()
+        
+        # Move amazon
+        sim_board[fr, fc] = empty
+        sim_board[tr, tc] = our_piece
+        
+        # Shoot arrow
+        sim_board[ar, ac] = arrow
+        
+        # Evaluate the new state
+        our_terr = calculate_territory_map(sim_board, our_piece)
+        opp_terr = calculate_territory_map(sim_board, opp_piece)
+        
+        # Calculate opponent's moves for tie-breaking (minimize opponent options)
+        # This is expensive, so we might skip it if we have many moves or just rely on territory.
+        # However, a simple heuristic is to just prefer moves that kill squares.
+        # Let's stick to Territory Delta as the primary factor.
+        
+        # Score: (OurTerr - OppTerr). 
+        # To break ties, we could count how many moves WE have in the new state (mobility).
+        # Let's calculate our mobility in the new state (simple count).
+        # This is "move ordering" essentially. 
+        # If we want to be aggressive, we might penalize moves that give opponent lots of space.
+        # But simply maximizing (OurTerr - OppTerr) usually works well.
+        
+        # Let's add a small heuristic for move safety: prefer moves where we don't land next to opponent if possible?
+        # No, territory is king.
+        
+        # Tie breaker: Minimize Opponent Moves (if calculation is fast)
+        # Since 6x6 is small, we can afford a bit more.
+        
+        # Let's calculate number of squares we "save" or reduce from opponent?
+        # Just maximizing Territory Diff is the core of Amazon AI.
+        
+        score = (our_terr * 100 - opp_terr * 100)
+        
+        # Tie breaker: Maximize our mobility in new state (more options next turn)
+        # Let's estimate mobility by counting empty squares reachable from our new position?
+        # Or just count total legal moves for us in the new state (expensive).
+        # Let's just use a simple distance heuristic or just let the territory diff handle it.
+        
+        if score > best_score:
+            best_score = score
+            best_move = ((fr, fc), (tr, tc), (ar, ac))
+        elif score == best_score:
+            # Tie breaking: prefer moves that land closer to center? Or fewer opponent moves?
+            # Let's calculate opponent mobility count roughly.
+            # It is very expensive to generate all legal moves for opponent.
+            # Instead, let's prefer moves that leave the opponent with fewer reachable squares.
+            # We already have opp_terr.
+            # If scores are equal, let's try to maximize our own mobility in the new state.
+            
+            # Calculate our mobility in new state
+            # Reuse territory logic but strictly for empty squares?
+            # Our territory logic includes squares we can reach. That IS our mobility influence.
+            # If scores are equal, we are likely close. 
+            # Let's add a random component if we really need it, but deterministic is safer.
+            # We can compare lexicographically: prefer moves that destroy more squares (arrow location)?
+            # Or prefer moves that bring us closer to the center of the board (2.5, 2.5)?
+            
+            curr_dist = (fr - 2.5)**2 + (fc - 2.5)**2
+            new_dist = (tr - 2.5)**2 + (tc - 2.5)**2
+            # If equal score, prefer moving towards center (smaller dist)
+            if new_dist < curr_dist:
+                 best_move = ((fr, fc), (tr, tc), (ar, ac))
+
+    # Format the output
+    (fr, fc), (tr, tc), (ar, ac) = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+```

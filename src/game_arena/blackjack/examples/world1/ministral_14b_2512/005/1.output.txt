@@ -1,0 +1,71 @@
+### Strategy for this Policy
+
+The strategy I'll implement is a **dynamic threshold-based policy** that balances risk and reward. The core idea is to **stay** when the current hand value is close enough to the target (within a dynamic threshold that depends on the remaining cards and their potential values), and **hit** otherwise. The threshold is calculated based on:
+
+1. **Current hand value** relative to the target.
+2. **Remaining cards** in the deck (to estimate the probability of drawing high-value cards).
+3. **Avoiding busting** while maximizing the chance of getting closer to the target.
+
+Key rules:
+- If the current hand value is **exactly equal to the target**, always `STAY`.
+- If the current hand value is **greater than the target**, you've already busted (since the game rules imply you stop drawing when exceeding the target), so this case is handled implicitly.
+- If the current hand value is **less than the target**, calculate a dynamic threshold:
+  - The threshold is set to `target - remaining_cards_advantage`, where `remaining_cards_advantage` is a heuristic based on the remaining cards (e.g., if many high-value cards are left, you can afford to hit more aggressively).
+  - If the current hand value is within this threshold of the target, `STAY`; otherwise, `HIT`.
+
+The heuristic for `remaining_cards_advantage` is:
+- Count the number of high-value cards (10, J, Q, K) remaining in the deck (since you start with a full deck, this is `4 - len([c for c in hand if c in {"10", "J", "Q", "K"}])`).
+- The threshold is adjusted by a factor of this count (e.g., `threshold = target - (remaining_high_cards * 2)`).
+
+This ensures the policy is adaptive to the remaining deck composition and avoids overcommitting when the target is close.
+
+---
+
+### Python Source Code
+```python
+def policy(hand: list[str], target: int) -> str:
+    # Calculate current hand value
+    def calculate_value(h):
+        value = 0
+        aces = 0
+        for card in h:
+            if card == "A":
+                aces += 1
+                value += 11
+            elif card in {"J", "Q", "K", "10"}:
+                value += 10
+            else:
+                value += int(card)
+        # Adjust for aces if needed
+        while value > target and aces > 0:
+            value -= 10
+            aces -= 1
+        return value
+
+    current_value = calculate_value(hand)
+
+    # If already busted or at target, stay
+    if current_value >= target:
+        return "STAY"
+
+    # Count remaining high cards (10, J, Q, K) in the deck
+    # Since the deck starts full, subtract the ones already in hand
+    high_cards = {"10", "J", "Q", "K"}
+    remaining_high = 4 - len([c for c in hand if c in high_cards])
+
+    # Dynamic threshold: stay if within (target - remaining_high * 2)
+    threshold = target - (remaining_high * 2)
+    if current_value >= threshold:
+        return "STAY"
+    else:
+        return "HIT"
+```
+
+### Explanation:
+1. **Hand Value Calculation**: The `calculate_value` function computes the current hand value, treating aces as 11 unless the hand exceeds the target (in which case aces are treated as 1).
+2. **Bust Check**: If the current value is >= target, return `"STAY"` (you've either hit the target or busted).
+3. **Remaining High Cards**: Count how many high-value cards (10, J, Q, K) are left in the deck (since you start with a full deck, this is `4 - count_in_hand`).
+4. **Dynamic Threshold**: The threshold is set to `target - (remaining_high * 2)`. If the current value is within this threshold, `STAY`; otherwise, `HIT`. This ensures you don't overcommit when the target is close and high cards are scarce.
+5. **Legal Move Guarantee**: The policy always returns `"HIT"` or `"STAY"`, never violating the rules.
+
+This strategy is designed to be **adaptive** and **risk-aware**, balancing aggression (hitting) when the deck favors you (many high cards left) and caution (staying) when the target is near.

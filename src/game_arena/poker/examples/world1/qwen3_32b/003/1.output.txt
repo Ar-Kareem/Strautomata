@@ -1,0 +1,120 @@
+The strategy for this policy is to evaluate the strength of the current hand based on Texas Hold'em rules, considering all possible 5-card combinations from the available private and public cards. The hand strength is then used to determine whether to raise, call, or fold, depending on the pot odds and the allowed actions. The policy prioritizes raising with strong hands (flush or better), calling if the pot odds are favorable, and folding otherwise, with specific adjustments for early-game constraints and bluffing considerations.
+
+<code>
+import itertools
+
+def policy(state):
+    private = state['private_cards']
+    public = state['public_cards']
+    all_cards = private + public
+    
+    n_all_cards = len(all_cards)
+    best_rank = None
+    
+    if n_all_cards >= 5:
+        all_combinations = list(itertools.combinations(all_cards, 5))
+        for combo in all_combinations:
+            ranks = sorted([c['rank'] for c in combo], reverse=True)
+            suits = [c['suit'] for c in combo]
+            flush = len(set(suits)) == 1
+            straight = False
+            high_card = ranks[0]
+            
+            unique_ranks = sorted(list(set(ranks)), reverse=True)
+            if len(unique_ranks) == 5:
+                if unique_ranks[0] - unique_ranks[4] == 4:
+                    straight = True
+                elif set(unique_ranks) == {14, 5, 4, 3, 2}:
+                    straight = True
+                    high_card = 5
+                    ranks = [5, 4, 3, 2, 1]
+            
+            rank_counts = {}
+            for r in ranks:
+                rank_counts[r] = rank_counts.get(r, 0) + 1
+            
+            if flush and straight:
+                if high_card == 5:
+                    current_rank = (8, 5)
+                else:
+                    current_rank = (8, high_card)
+            elif 4 in rank_counts.values():
+                four_rank = [r for r in rank_counts if rank_counts[r] == 4][0]
+                kicker = [r for r in rank_counts if rank_counts[r] == 1][0]
+                current_rank = (7, four_rank, kicker)
+            elif 3 in rank_counts.values() and 2 in rank_counts.values():
+                three_rank = [r for r in rank_counts if rank_counts[r] == 3][0]
+                pair_rank = [r for r in rank_counts if rank_counts[r] == 2][0]
+                current_rank = (6, three_rank, pair_rank)
+            elif flush:
+                current_rank = (5, ranks)
+            elif straight:
+                current_rank = (4, high_card)
+            elif 3 in rank_counts.values():
+                three_rank = [r for r in rank_counts if rank_counts[r] == 3][0]
+                kickers = sorted([r for r in rank_counts if rank_counts[r] == 1], reverse=True)
+                current_rank = (3, three_rank, kickers)
+            elif list(rank_counts.values()).count(2) == 2:
+                pairs = sorted([r for r in rank_counts if rank_counts[r] == 2], reverse=True)
+                kicker = [r for r in rank_counts if rank_counts[r] == 1][0]
+                current_rank = (2, pairs[0], pairs[1], kicker)
+            elif 2 in rank_counts.values():
+                pair_rank = [r for r in rank_counts if rank_counts[r] == 2][0]
+                kickers = sorted([r for r in rank_counts if rank_counts[r] == 1], reverse=True)
+                current_rank = (1, pair_rank, kickers)
+            else:
+                current_rank = (0, ranks)
+            
+            if best_rank is None or current_rank > best_rank:
+                best_rank = current_rank
+        category = best_rank[0] if best_rank is not None else 0
+    else:
+        category = 0
+
+    category_to_strength = {
+        8: 0.95,
+        7: 0.90,
+        6: 0.80,
+        5: 0.70,
+        4: 0.60,
+        3: 0.40,
+        2: 0.25,
+        1: 0.10,
+        0: 0.05
+    }
+    win_prob = category_to_strength.get(category, 0.05)
+    
+    allowed = state['allowed_actions'].copy()
+    if 'fold' in allowed and state['pot'] == 100:
+        allowed.remove('fold')
+    
+    if 'raise' in allowed:
+        if category >= 5:
+            return 'raise'
+        elif category == 4:
+            to_call = state['to_call']
+            if to_call > 0:
+                pot_odds = (state['pot'] + to_call) / to_call
+                required_win_prob = 1 / (pot_odds + 1)
+                if win_prob > required_win_prob + 0.1:
+                    return 'raise'
+    if 'all-in' in allowed and category >= 5:
+        return 'all-in'
+    
+    to_call = state['to_call']
+    if to_call == 0:
+        if 'call' in allowed:
+            return 'call'
+    else:
+        pot_odds = (state['pot'] + to_call) / to_call
+        required_win_prob = 1 / (pot_odds + 1)
+        if win_prob > required_win_prob and 'call' in allowed:
+            return 'call'
+        elif 'fold' in allowed:
+            return 'fold'
+    
+    if 'call' in allowed:
+        return 'call'
+    else:
+        return 'fold'
+</code>

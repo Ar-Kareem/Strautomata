@@ -1,0 +1,459 @@
+
+from __future__ import annotations
+
+from typing import Dict, List, Tuple, Set, Optional
+import numpy as np
+import random
+
+BOARD_N = 19
+BOARD_SZ = BOARD_N * BOARD_N
+
+# Precompute neighbors for each point index [0..360]
+_NEIGHBORS: List[Tuple[int, ...]] = []
+for idx in range(BOARD_SZ):
+    r, c = divmod(idx, BOARD_N)
+    ns = []
+    if r > 0:
+        ns.append(idx - BOARD_N)
+    if r + 1 < BOARD_N:
+        ns.append(idx + BOARD_N)
+    if c > 0:
+        ns.append(idx - 1)
+    if c + 1 < BOARD_N:
+        ns.append(idx + 1)
+    _NEIGHBORS.append(tuple(ns))
+
+# Opening points (0-indexed)
+_STAR_POINTS = [
+    (3, 3), (3, 15), (15, 3), (15, 15),  # 4-4
+    (2, 3), (3, 2), (2, 15), (3, 16), (15, 2), (16, 3), (15, 16), (16, 15),  # near 3-4/4-3
+    (9, 9),  # center
+]
+
+
+def _rc_to_idx(rc: Tuple[int, int]) -> int:
+    r, c = rc
+    return (r - 1) * BOARD_N + (c - 1)
+
+
+def _idx_to_rc(idx: int) -> Tuple[int, int]:
+    r, c = divmod(idx, BOARD_N)
+    return (r + 1, c + 1)
+
+
+def _board_hash(board: np.ndarray) -> int:
+    # board is np.int8, shape (361,)
+    return hash(board.tobytes())
+
+
+def _get_group_and_liberties(board: np.ndarray, start: int, color: int, visited: Optional[np.ndarray] = None):
+    """
+    Returns (stones_list, liberties_set_of_indices).
+    visited: optional boolean array length 361 to mark stones visited for this color in outer traversals.
+    """
+    stack = [start]
+    stones: List[int] = []
+    libs: Set[int] = set()
+
+    if visited is not None:
+        visited[start] = True
+
+    while stack:
+        p = stack.pop()
+        stones.append(p)
+        for n in _NEIGHBORS[p]:
+            v = board[n]
+            if v == 0:
+                libs.add(n)
+            elif v == color:
+                if visited is not None:
+                    if not visited[n]:
+                        visited[n] = True
+                        stack.append(n)
+                else:
+                    # local search: use a temporary mark via a python set
+                    # (but we avoid this branch in hot paths)
+                    stack.append(n)
+    return stones, libs
+
+
+def _compute_groups(board: np.ndarray, color: int):
+    """
+    Returns list of tuples: (stones_list, liberties_set)
+    """
+    visited = np.zeros(BOARD_SZ, dtype=np.bool_)
+    groups = []
+    pts = np.flatnonzero(board == color)
+    for p in pts:
+        if not visited[p]:
+            stones, libs = _get_group_and_liberties(board, int(p), color, visited)
+            groups.append((stones, libs))
+    return groups
+
+
+def _simulate_move(board: np.ndarray, move: int, forbidden_hash: Optional[int] = None):
+    """
+    Simulate placing our stone (color=+1) at index 'move'.
+    Returns (legal, new_board, captured_count, opp_atari_adj, my_libs_after, connected_adj_count, is_eye_fill, new_hash)
+    """
+    if move < 0:
+        # pass handled separately
+        h = _board_hash(board)
+        return True, board, 0, 0, 999, 0, False, h
+
+    if board[move] != 0:
+        return False, board, 0, 0, 0, 0, False, 0
+
+    newb = board.copy()
+    newb[move] = 1
+
+    captured = 0
+    # Capture any adjacent opponent groups that lost all liberties.
+    checked = set()
+    for n in _NEIGHBORS[move]:
+        if newb[n] == -1 and n not in checked:
+            stones, libs = _get_group_and_liberties_local(newb, n, -1)
+            checked.update(stones)
+            if len(libs) == 0:
+                captured += len(stones)
+                for s in stones:
+                    newb[s] = 0
+
+    # Check suicide (after captures)
+    my_stones, my_libs = _get_group_and_liberties_local(newb, move, 1)
+    if len(my_libs) == 0:
+        return False, board, 0, 0, 0, 0, False, 0
+
+    # Simple-ko check: disallow recreating the board after our previous move
+    nh = _board_hash(newb)
+    if forbidden_hash is not None and nh == forbidden_hash:
+        return False, board, 0, 0, 0, 0, False, 0
+
+    # Count adjacent opponent groups put into atari (only those adjacent to move, cheap heuristic)
+    opp_atari_adj = 0
+    checked2 = set()
+    for n in _NEIGHBORS[move]:
+        if newb[n] == -1 and n not in checked2:
+            stones, libs = _get_group_and_liberties_local(newb, n, -1)
+            checked2.update(stones)
+            if len(libs) == 1:
+                opp_atari_adj += 1
+
+    connected_adj = 0
+    for n in _NEIGHBORS[move]:
+        if newb[n] == 1:
+            connected_adj += 1
+
+    # Eye-fill heuristic (avoid filling solid eyes when not capturing)
+    is_eye_fill = False
+    if captured == 0:
+        all_my_or_edge = True
+        any_opp_adj = False
+        for n in _NEIGHBORS[move]:
+            if newb[n] == -1:
+                any_opp_adj = True
+                all_my_or_edge = False
+                break
+            if newb[n] != 1:
+                all_my_or_edge = False
+        if all_my_or_edge and not any_opp_adj:
+            is_eye_fill = True
+
+    return True, newb, captured, opp_atari_adj, len(my_libs), connected_adj, is_eye_fill, nh
+
+
+def _get_group_and_liberties_local(board: np.ndarray, start: int, color: int):
+    """
+    Local BFS without global visited array, optimized using a python set for seen.
+    Used in per-move simulation.
+    """
+    stack = [start]
+    seen = {start}
+    stones: List[int] = []
+    libs: Set[int] = set()
+
+    while stack:
+        p = stack.pop()
+        stones.append(p)
+        for n in _NEIGHBORS[p]:
+            v = board[n]
+            if v == 0:
+                libs.add(n)
+            elif v == color and n not in seen:
+                seen.add(n)
+                stack.append(n)
+    return stones, libs
+
+
+def _positional_score(idx: int, total_stones: int) -> float:
+    r, c = divmod(idx, BOARD_N)
+    # Early: prefer corners/side frameworks; later: prefer centerish influence.
+    if total_stones < 30:
+        # reward being near (3,3), (3,15), (15,3), (15,15) in 0-index, i.e., 4-4 points
+        corners = [(3, 3), (3, 15), (15, 3), (15, 15)]
+        d2 = min((r - rr) ** 2 + (c - cc) ** 2 for rr, cc in corners)
+        # small preference for sides over pure center early
+        edge_dist = min(r, c, 18 - r, 18 - c)
+        return 18.0 - 1.2 * d2 - 0.4 * edge_dist
+    elif total_stones < 120:
+        # midgame: balance
+        center_d2 = (r - 9) ** 2 + (c - 9) ** 2
+        edge_dist = min(r, c, 18 - r, 18 - c)
+        return 10.0 - 0.25 * center_d2 + 0.15 * (4 - min(edge_dist, 4))
+    else:
+        # endgame: small preference for moves near existing boundaries (edges) to close territory
+        edge_dist = min(r, c, 18 - r, 18 - c)
+        center_d2 = (r - 9) ** 2 + (c - 9) ** 2
+        return 6.0 + 0.8 * (6 - min(edge_dist, 6)) - 0.1 * center_d2
+
+
+def _generate_candidates(board: np.ndarray, me_idx: List[int], opp_idx: List[int],
+                         my_atari_libs: Set[int], opp_atari_libs: Set[int]) -> List[int]:
+    empties = np.flatnonzero(board == 0)
+    total = len(me_idx) + len(opp_idx)
+
+    # Opening: pick star points if board is empty-ish.
+    if total < 2:
+        cands = []
+        for rr, cc in _STAR_POINTS:
+            idx = rr * BOARD_N + cc
+            if board[idx] == 0:
+                cands.append(idx)
+        if cands:
+            return cands
+        return [int(e) for e in empties]
+
+    stones = me_idx + opp_idx
+    cand_set: Set[int] = set()
+
+    # Always include urgent atari liberties (both attack/defense) if empty.
+    for p in list(my_atari_libs) + list(opp_atari_libs):
+        if 0 <= p < BOARD_SZ and board[p] == 0:
+            cand_set.add(p)
+
+    # Include points within manhattan distance 2 of any stone.
+    for s in stones:
+        sr, sc = divmod(s, BOARD_N)
+        for dr in (-2, -1, 0, 1, 2):
+            rr = sr + dr
+            if not (0 <= rr < BOARD_N):
+                continue
+            rem = 2 - abs(dr)
+            for dc in range(-rem, rem + 1):
+                cc = sc + dc
+                if 0 <= cc < BOARD_N:
+                    idx = rr * BOARD_N + cc
+                    if board[idx] == 0:
+                        cand_set.add(idx)
+
+    # If still small, include star points (common good shapes).
+    if len(cand_set) < 25:
+        for rr, cc in _STAR_POINTS:
+            idx = rr * BOARD_N + cc
+            if board[idx] == 0:
+                cand_set.add(idx)
+
+    # If still empty (rare), allow any empty.
+    if not cand_set:
+        return [int(e) for e in empties]
+
+    # Cap list size for speed.
+    cands = list(cand_set)
+    if len(cands) > 120:
+        # keep those closest to any stone as more relevant
+        stones_set = set(stones)
+
+        def prox_cost(p: int) -> int:
+            # minimal manhattan distance to any stone within 6 (approx)
+            pr, pc = divmod(p, BOARD_N)
+            best = 999
+            # sample a few stones for speed if huge
+            sample = stones if len(stones) <= 80 else stones[:: max(1, len(stones)//80)]
+            for s in sample:
+                sr, sc = divmod(s, BOARD_N)
+                d = abs(pr - sr) + abs(pc - sc)
+                if d < best:
+                    best = d
+                    if best == 1:
+                        break
+            return best
+
+        cands.sort(key=prox_cost)
+        cands = cands[:120]
+    return cands
+
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    # Build board
+    board = np.zeros(BOARD_SZ, dtype=np.int8)
+    me_idx = [_rc_to_idx(rc) for rc in me]
+    opp_idx = [_rc_to_idx(rc) for rc in opponent]
+    for p in me_idx:
+        board[p] = 1
+    for p in opp_idx:
+        board[p] = -1
+
+    total_stones = len(me_idx) + len(opp_idx)
+
+    forbidden_hash = memory.get("last_my_board_hash", None)
+
+    # Compute atari information on current board
+    my_groups = _compute_groups(board, 1)
+    opp_groups = _compute_groups(board, -1)
+
+    my_atari_libs: Set[int] = set()
+    for stones, libs in my_groups:
+        if len(libs) == 1:
+            my_atari_libs |= set(libs)
+
+    opp_atari_libs: Set[int] = set()
+    opp_atari_groups = []
+    for stones, libs in opp_groups:
+        if len(libs) == 1:
+            opp_atari_libs |= set(libs)
+            opp_atari_groups.append((stones, next(iter(libs))))
+
+    # Tactical priority 1: capture opponent groups in atari (if legal and really captures)
+    best_move = None
+    best_score = -1e18
+    for stones, lib in opp_atari_groups:
+        if board[lib] != 0:
+            continue
+        legal, newb, captured, _, my_libs, conn, eye, nh = _simulate_move(board, lib, forbidden_hash)
+        if not legal:
+            continue
+        if captured < len(stones):
+            # Not actually capturing (ko/snapback complications) - deprioritize
+            base = 1000 * captured
+        else:
+            base = 5000 + 1200 * captured
+        # Avoid self-atari unless huge gain
+        if my_libs == 1 and captured == 0:
+            base -= 800
+        base += 15 * conn
+        base += _positional_score(lib, total_stones)
+        if base > best_score:
+            best_score = base
+            best_move = lib
+
+    if best_move is not None:
+        # Update memory with hash after our chosen move
+        legal, newb, *_rest, nh = _simulate_move(board, best_move, forbidden_hash)
+        new_mem = dict(memory)
+        new_mem["last_my_board_hash"] = nh
+        new_mem["seed"] = int(new_mem.get("seed", 0)) or 1234567
+        return _idx_to_rc(best_move), new_mem
+
+    # Tactical priority 2: save our groups in atari (play their liberty if legal)
+    if my_atari_libs:
+        for lib in list(my_atari_libs):
+            if board[lib] != 0:
+                continue
+            legal, newb, captured, opp_atari_adj, my_libs, conn, eye, nh = _simulate_move(board, lib, forbidden_hash)
+            if not legal:
+                continue
+            score = 3000  # urgency bonus
+            score += 1000 * captured
+            score += 80 * opp_atari_adj
+            score += 20 * conn
+            if my_libs == 1 and captured == 0:
+                score -= 500
+            if eye:
+                score -= 200
+            score += _positional_score(lib, total_stones)
+            if score > best_score:
+                best_score = score
+                best_move = lib
+
+        if best_move is not None:
+            legal, newb, *_rest, nh = _simulate_move(board, best_move, forbidden_hash)
+            new_mem = dict(memory)
+            new_mem["last_my_board_hash"] = nh
+            new_mem["seed"] = int(new_mem.get("seed", 0)) or 1234567
+            return _idx_to_rc(best_move), new_mem
+
+    # General play: evaluate a candidate set
+    candidates = _generate_candidates(board, me_idx, opp_idx, my_atari_libs, opp_atari_libs)
+
+    # Deterministic noise for tie-breaking (but changes with position)
+    seed = int(memory.get("seed", 1234567))
+    rnd = random.Random(seed ^ (_board_hash(board) & 0xFFFFFFFF))
+
+    best_move = None
+    best_score = -1e18
+
+    for mv in candidates:
+        if board[mv] != 0:
+            continue
+        legal, newb, captured, opp_atari_adj, my_libs, conn, eye, nh = _simulate_move(board, mv, forbidden_hash)
+        if not legal:
+            continue
+
+        score = 0.0
+        # Captures are strongest
+        score += 1100.0 * captured
+
+        # Creating pressure
+        score += 90.0 * opp_atari_adj
+
+        # Connect / strengthen
+        score += 10.0 * conn
+
+        # Immediate defense/attack liberties (heuristic)
+        if mv in opp_atari_libs:
+            score += 250.0
+        if mv in my_atari_libs:
+            score += 400.0
+
+        # Avoid self-atari
+        if my_libs == 1 and captured == 0:
+            score -= 350.0
+        elif my_libs == 2 and captured == 0:
+            score -= 30.0
+
+        # Avoid filling solid eyes in calm positions
+        if eye:
+            score -= 120.0
+
+        # Positional component
+        score += _positional_score(mv, total_stones)
+
+        # Small preference for playing next to opponent stones (fighting/efficiency)
+        adj_opp = 0
+        for n in _NEIGHBORS[mv]:
+            if board[n] == -1:
+                adj_opp += 1
+        score += 6.0 * adj_opp
+
+        # Tie-break noise
+        score += rnd.uniform(-0.25, 0.25)
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    if best_move is None:
+        # As a fallback, play any legal move; else pass.
+        empties = np.flatnonzero(board == 0)
+        for mv in empties:
+            mv = int(mv)
+            legal, newb, captured, opp_atari_adj, my_libs, conn, eye, nh = _simulate_move(board, mv, forbidden_hash)
+            if legal:
+                new_mem = dict(memory)
+                new_mem["last_my_board_hash"] = nh
+                new_mem["seed"] = int(new_mem.get("seed", 0)) or 1234567
+                return _idx_to_rc(mv), new_mem
+
+        # No legal moves: pass
+        nh = _board_hash(board)
+        new_mem = dict(memory)
+        new_mem["last_my_board_hash"] = nh
+        new_mem["seed"] = int(new_mem.get("seed", 0)) or 1234567
+        return (0, 0), new_mem
+
+    # Update memory with the board after our move (for simple-ko prevention next turn)
+    legal, newb, *_rest, nh = _simulate_move(board, best_move, forbidden_hash)
+    new_mem = dict(memory)
+    new_mem["last_my_board_hash"] = nh
+    new_mem["seed"] = seed  # keep stable
+    return _idx_to_rc(best_move), new_mem

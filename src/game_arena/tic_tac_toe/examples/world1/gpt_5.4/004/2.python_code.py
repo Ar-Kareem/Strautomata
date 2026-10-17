@@ -1,0 +1,117 @@
+
+from functools import lru_cache
+
+# Preferred move order for tie-breaking: center, corners, then edges.
+PREFERRED_MOVES = [
+    (1, 1),
+    (0, 0), (0, 2), (2, 0), (2, 2),
+    (0, 1), (1, 0), (1, 2), (2, 1),
+]
+
+
+def _winner(board_tuple):
+    # Returns 1 if we have won, -1 if opponent has won, 0 otherwise.
+    lines = []
+
+    # Rows
+    for r in range(3):
+        lines.append((board_tuple[r][0], board_tuple[r][1], board_tuple[r][2]))
+    # Cols
+    for c in range(3):
+        lines.append((board_tuple[0][c], board_tuple[1][c], board_tuple[2][c]))
+    # Diagonals
+    lines.append((board_tuple[0][0], board_tuple[1][1], board_tuple[2][2]))
+    lines.append((board_tuple[0][2], board_tuple[1][1], board_tuple[2][0]))
+
+    for line in lines:
+        s = sum(line)
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+
+def _legal_moves(board_tuple):
+    moves = []
+    for move in PREFERRED_MOVES:
+        r, c = move
+        if board_tuple[r][c] == 0:
+            moves.append(move)
+    return moves
+
+
+def _make_move(board_tuple, r, c, player):
+    board = [list(row) for row in board_tuple]
+    board[r][c] = player
+    return tuple(tuple(row) for row in board)
+
+
+@lru_cache(maxsize=None)
+def _solve(board_tuple, turn):
+    """
+    Returns the game-theoretic value from this position with the given turn:
+    1  => forced win for us
+    0  => forced draw
+    -1 => forced loss for us
+    """
+    w = _winner(board_tuple)
+    if w != 0:
+        return w
+
+    moves = _legal_moves(board_tuple)
+    if not moves:
+        return 0
+
+    if turn == 1:
+        # Our turn: maximize outcome
+        best = -2
+        for r, c in moves:
+            nxt = _make_move(board_tuple, r, c, 1)
+            val = _solve(nxt, -1)
+            if val > best:
+                best = val
+            if best == 1:
+                break
+        return best
+    else:
+        # Opponent turn: minimize our outcome
+        best = 2
+        for r, c in moves:
+            nxt = _make_move(board_tuple, r, c, -1)
+            val = _solve(nxt, 1)
+            if val < best:
+                best = val
+            if best == -1:
+                break
+        return best
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert to immutable structure for caching/analysis.
+    board_tuple = tuple(tuple(int(cell) for cell in row) for row in board)
+
+    # Gather legal moves safely.
+    legal = _legal_moves(board_tuple)
+    if not legal:
+        # Should not happen in a valid game state, but return a valid in-range tuple.
+        return (0, 0)
+
+    # Choose the move with highest minimax value.
+    best_move = legal[0]
+    best_val = -2
+
+    for r, c in legal:
+        nxt = _make_move(board_tuple, r, c, 1)
+        val = _solve(nxt, -1)
+        if val > best_val:
+            best_val = val
+            best_move = (r, c)
+
+    # Safety: ensure chosen move is legal.
+    br, bc = best_move
+    if 0 <= br < 3 and 0 <= bc < 3 and board[br][bc] == 0:
+        return best_move
+
+    # Fallback: always return some legal move.
+    return legal[0]

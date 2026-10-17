@@ -1,0 +1,76 @@
+### Strategy for Chess Policy
+
+The implemented policy for move selection is based on a heuristic evaluation that prioritizes the following in order:
+
+1. **Checkmate**: Moves that lead to checkmate are prioritized. However, without a full chess engine, explicit checkmate detection is omitted, relying on material and safety considerations to cover most cases.
+2. **Material Gain**: Captures and promotions that result in material gain are evaluated. En passant captures are treated as capturing a pawn (value 1). Promotion gains are calculated as the value of the promoted piece minus the pawn's value.
+3. **Castling**: Castling moves are given a small bonus for improving king safety.
+4. **Center Control**: Moves targeting central squares (d3, d4, d5, d6, e3, e4, e5, e6) receive a minor bonus to encourage occupying central positions.
+
+Moves are scored based on:
+- Material change: Sum of captured piece values and promotion upgrades.
+- Bonuses: +0.2 for castling, +0.1 for targeting central squares.
+- The move with the highest score is selected. Ties are broken by the first encountered in the legal moves list.
+
+This approach efficiently balances material gain, king safety, and central control within the 1-second execution constraint.
+
+```python
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # Define piece values: King=0, Queen=9, Rook=5, Bishop=3, Knight=3, Pawn=1
+    piece_value = {'K': 0, 'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+    # Define central squares for bonus scoring
+    center_squares = {'d3', 'd4', 'd5', 'd6', 'e3', 'e4', 'e5', 'e6'}
+    
+    best_score = -1
+    best_move = None
+    
+    for move in legal_moves:
+        # Clean move string: remove trailing check/mate symbols
+        clean_move = move.rstrip('+#')
+        
+        # Check for castling
+        if clean_move == 'O-O' or clean_move == 'O-O-O':
+            score = 0.2  # Bonus for castling
+        else:
+            # Parse move for capture and promotion
+            is_capture = 'x' in clean_move
+            
+            # Parse target square and promotion piece
+            if '=' in clean_move:
+                parts = clean_move.split('=', 1)  # Split only on first '='
+                target_square = parts[0][-2:]      # Last 2 chars of first part
+                promotion_piece = parts[1]
+            else:
+                target_square = clean_move[-2:]    # Last 2 chars
+                promotion_piece = None
+            
+            # Calculate material change
+            material_change = 0.0
+            if is_capture:
+                # Check if target square has a piece
+                if target_square in pieces:
+                    captured_piece = pieces[target_square]
+                    piece_type = captured_piece[1]  # Piece type (color+type)
+                    material_change += piece_value[piece_type]
+                else:
+                    # En passant: captures pawn
+                    material_change += 1  # Pawn value
+            
+            if promotion_piece is not None:
+                # Promotion gain: promoted piece value minus pawn value
+                material_change += (piece_value[promotion_piece] - 1)
+            
+            # Add bonus for central squares
+            bonus = 0.0
+            if target_square in center_squares:
+                bonus += 0.1
+            
+            score = material_change + bonus
+        
+        # Update best move if score is higher
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+```

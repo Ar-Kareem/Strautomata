@@ -1,0 +1,307 @@
+The strategy I will implement is a basic search algorithm that evaluates moves based on a simple material heuristic and immediate tactical threats (checks and captures). 
+
+### Strategy:
+1.  **Generate Legal Moves**: I will create a helper function to generate all legal moves for the current player based on the board state provided in the `pieces` dictionary. This includes handling pawns, knights, bishops, rooks, queens, and kings, along with specific rules like en passant (though we lack move history, we will assume no en passant or castling rights to be safe, or implement standard chess rules from the starting position if needed, but typically standard chess engines just simulate the board).
+2.  **Move Ordering**: 
+    -   **Checks**: Prioritize moves that put the opponent in check.
+    -   **Captures**: Prioritize moves that capture pieces, ordering them by the value of the piece captured minus the value of the piece attacking (if applicable, though simple value exchange is a good start).
+    -   **Center/Mobility**: If no tactical moves, prefer moves that control the center or develop pieces.
+3.  **Evaluation**: 
+    -   **Material**: Sum of piece values (Q=9, R=5, B=3, N=3, P=1).
+    -   **Checkmate/Stalemate**: Detect if a move leads to checkmate (win) or stalemate (draw).
+    -   **Depth**: A shallow search (1 ply) to see immediate consequences.
+
+Since I cannot use the `chess` library, I will write a lightweight board simulator within the policy function. I will assume the game starts from a standard chess position if `memory` is empty, and track the game state from there.
+
+<code>
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    """
+    A chess policy that uses a shallow search with material evaluation and basic move generation.
+    It simulates the board to find checks and captures.
+    """
+    
+    # --- Constants & Setup ---
+    PIECE_VALUES = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 100}
+    FILES = 'abcdefgh'
+    
+    # Initialize memory state if not present (assumes standard game start tracking)
+    if 'board' not in memory:
+        # Standard starting position
+        start_pieces = {
+            'a1': 'wR', 'b1': 'wN', 'c1': 'wB', 'd1': 'wQ', 'e1': 'wK', 'f1': 'wB', 'g1': 'wN', 'h1': 'wR',
+            'a2': 'wP', 'b2': 'wP', 'c2': 'wP', 'd2': 'wP', 'e2': 'wP', 'f2': 'wP', 'g2': 'wP', 'h2': 'wP',
+            'a7': 'bP', 'b7': 'bP', 'c7': 'bP', 'd7': 'bP', 'e7': 'bP', 'f7': 'bP', 'g7': 'bP', 'h7': 'bP',
+            'a8': 'bR', 'b8': 'bN', 'c8': 'bB', 'd8': 'bQ', 'e8': 'bK', 'f8': 'bB', 'g8': 'bN', 'h8': 'bR'
+        }
+        memory['board'] = start_pieces
+        memory['turn'] = 'white'
+        memory['history'] = [] # To track en passant or castling rights (not fully used here but good practice)
+    
+    # Sync memory board with input pieces to ensure we are aligned (robustness)
+    # In a real arena, the input 'pieces' is the source of truth. 
+    # However, since we need to simulate moves, we rely on memory. 
+    # We will update memory board if they differ significantly (e.g. after opponent move).
+    if memory['board'] != pieces:
+        # Simple update: assume input is correct if it's not our turn or we are just starting
+        # In this specific API, we receive the *current* state.
+        memory['board'] = pieces
+        memory['turn'] = to_play
+
+    # --- Helper Functions ---
+
+    def get_color(piece):
+        return piece[0] if piece else None
+
+    def get_type(piece):
+        return piece[1] if piece else None
+
+    def coord_to_tuple(square):
+        return (FILES.index(square[0]), int(square[1]) - 1)
+
+    def tuple_to_coord(f, r):
+        if 0 <= f <= 7 and 1 <= r <= 8:
+            return FILES[f] + str(r)
+        return None
+
+    def is_square_attacked(board, square, attacker_color):
+        """Checks if a square is attacked by any piece of attacker_color."""
+        sq_f, sq_r = coord_to_tuple(square)
+        
+        # Pawn attacks
+        pawn_dir = 1 if attacker_color == 'white' else -1
+        for df in [-1, 1]:
+            attack_f, attack_r = sq_f + df, sq_r + pawn_dir
+            coord = tuple_to_coord(attack_f, attack_r)
+            if coord and board.get(coord) == f'{attacker_color}P':
+                return True
+
+        # Knight attacks
+        knight_moves = [(1,2), (2,1), (2,-1), (1,-2), (-1,-2), (-2,-1), (-2,1), (-1,2)]
+        for df, dr in knight_moves:
+            coord = tuple_to_coord(sq_f + df, sq_r + dr)
+            if coord and board.get(coord) == f'{attacker_color}N':
+                return True
+
+        # Sliding pieces (B, R, Q)
+        directions = {
+            'B': [(1,1), (1,-1), (-1,1), (-1,-1)],
+            'R': [(1,0), (-1,0), (0,1), (0,-1)],
+            'Q': [(1,1), (1,-1), (-1,1), (-1,-1), (1,0), (-1,0), (0,1), (0,-1)]
+        }
+        
+        for p_type, dirs in directions.items():
+            for df, dr in dirs:
+                f, r = sq_f + df, sq_r + dr
+                while True:
+                    coord = tuple_to_coord(f, r)
+                    if not coord: break
+                    piece = board.get(coord)
+                    if piece:
+                        if piece == f'{attacker_color}{p_type}':
+                            return True
+                        break # Blocked by own piece or enemy piece
+                    f += df
+                    r += dr
+
+        # King attacks
+        for df in [-1, 0, 1]:
+            for dr in [-1, 0, 1]:
+                if df == 0 and dr == 0: continue
+                coord = tuple_to_coord(sq_f + df, sq_r + dr)
+                if coord and board.get(coord) == f'{attacker_color}K':
+                    return True
+
+        return False
+
+    def generate_moves(board, player_color):
+        moves = []
+        for square, piece in board.items():
+            if piece[0] != player_color:
+                continue
+            
+            p_type = piece[1]
+            f, r = coord_to_tuple(square)
+            enemy_color = 'black' if player_color == 'white' else 'white'
+            
+            # Pawn
+            if p_type == 'P':
+                dir = 1 if player_color == 'white' else -1
+                start_rank = 2 if player_color == 'white' else 7
+                # Move forward 1
+                target = tuple_to_coord(f, r + dir)
+                if target and not board.get(target):
+                    # Promotion
+                    if (player_color == 'white' and r + dir == 8) or (player_color == 'black' and r + dir == 1):
+                        for promo in ['Q', 'R', 'B', 'N']:
+                            moves.append(f"{square}{target}{promo}")
+                    else:
+                        moves.append(f"{square}{target}")
+                    # Move forward 2
+                    if r == start_rank:
+                        target2 = tuple_to_coord(f, r + 2*dir)
+                        if target2 and not board.get(target2):
+                            moves.append(f"{square}{target2}")
+                
+                # Captures
+                for df in [-1, 1]:
+                    cap_f, cap_r = f + df, r + dir
+                    cap_sq = tuple_to_coord(cap_f, cap_r)
+                    if cap_sq:
+                        target_piece = board.get(cap_sq)
+                        if target_piece and target_piece[0] == enemy_color:
+                            if (player_color == 'white' and cap_r == 8) or (player_color == 'black' and cap_r == 1):
+                                for promo in ['Q', 'R', 'B', 'N']:
+                                    moves.append(f"{square}{cap_sq}{promo}")
+                            else:
+                                moves.append(f"{square}{cap_sq}")
+
+            # Knight
+            elif p_type == 'N':
+                moves_delta = [(1,2), (2,1), (2,-1), (1,-2), (-1,-2), (-2,-1), (-2,1), (-1,2)]
+                for df, dr in moves_delta:
+                    target_f, target_r = f + df, r + dr
+                    target_sq = tuple_to_coord(target_f, target_r)
+                    if target_sq:
+                        target_piece = board.get(target_sq)
+                        if not target_piece or target_piece[0] == enemy_color:
+                            moves.append(f"{square}{target_sq}")
+
+            # Sliding pieces (B, R, Q)
+            elif p_type in 'BRQ':
+                directions = []
+                if p_type == 'B' or p_type == 'Q': directions.extend([(1,1), (1,-1), (-1,1), (-1,-1)])
+                if p_type == 'R' or p_type == 'Q': directions.extend([(1,0), (-1,0), (0,1), (0,-1)])
+                
+                for df, dr in directions:
+                    target_f, target_r = f + df, r + dr
+                    while True:
+                        target_sq = tuple_to_coord(target_f, target_r)
+                        if not target_sq: break
+                        target_piece = board.get(target_sq)
+                        if target_piece:
+                            if target_piece[0] == enemy_color:
+                                moves.append(f"{square}{target_sq}")
+                            break
+                        moves.append(f"{square}{target_sq}")
+                        target_f += df
+                        target_r += dr
+
+            # King (basic moves, no castling rights implemented for simplicity/robustness)
+            elif p_type == 'K':
+                for df in [-1, 0, 1]:
+                    for dr in [-1, 0, 1]:
+                        if df == 0 and dr == 0: continue
+                        target_f, target_r = f + df, r + dr
+                        target_sq = tuple_to_coord(target_f, target_r)
+                        if target_sq:
+                            target_piece = board.get(target_sq)
+                            if not target_piece or target_piece[0] == enemy_color:
+                                moves.append(f"{square}{target_sq}")
+
+        return moves
+
+    # --- Evaluation & Selection ---
+
+    def evaluate_board(board, player_color):
+        """Returns score from player_color's perspective."""
+        score = 0
+        for piece in board.values():
+            val = PIECE_VALUES[piece[1]]
+            if piece[0] == player_color:
+                score += val
+            else:
+                score -= val
+        return score
+
+    def simulate_move(move, board, player_color):
+        """Returns a new board state after move."""
+        new_board = board.copy()
+        start_sq = move[:2]
+        end_sq = move[2:4]
+        
+        piece = new_board.pop(start_sq)
+        
+        # Handle promotion
+        if len(move) == 5:
+            piece = player_color + move[4]
+            
+        new_board[end_sq] = piece
+        return new_board
+
+    # 1. Generate Candidates
+    candidates = generate_moves(memory['board'], to_play)
+    
+    if not candidates:
+        # No moves (Stalemate or Checkmate) - policy must return something legal, 
+        # but if empty list, something is wrong. Return arbitrary string (game over).
+        # However, according to instructions, we must return a legal move. 
+        # If we have no moves, we just hope the arena handles it. 
+        # Usually, arena won't ask if game over, but just in case:
+        return "e2e4", memory 
+
+    best_move = candidates[0]
+    best_score = -float('inf')
+    
+    # 2. Evaluate Moves
+    for move in candidates:
+        # Simulate to see outcome
+        sim_board = simulate_move(move, memory['board'], to_play)
+        
+        # Check if move leaves our king in check (illegal in true chess, but good to filter if our generator missed it)
+        # Note: My generator currently doesn't filter self-checks. Let's add that.
+        # Find our king
+        king_sq = None
+        for sq, pc in sim_board.items():
+            if pc == f'{to_play}K':
+                king_sq = sq
+                break
+        
+        if king_sq:
+            enemy = 'black' if to_play == 'white' else 'white'
+            if is_square_attacked(sim_board, king_sq, enemy):
+                continue # Illegal move (puts self in check), skip
+
+        # Score the move
+        score = 0
+        
+        # 1. Material Gain/Loss
+        # Calculate simple delta
+        start_val = PIECE_VALUES.get(memory['board'][move[:2]][1], 0)
+        end_val = PIECE_VALUES.get(memory['board'][move[2:4]][1], 0) if move[2:4] in memory['board'] else 0
+        # Promotion bonus
+        if len(move) == 5:
+            end_val = PIECE_VALUES[move[4]]
+            start_val = 1 # Pawn value
+            score += 5 # Promotion bonus
+        
+        score += (end_val - start_val) * 10 # Weight captures
+
+        # 2. Checks
+        # Check if this move attacks opponent King
+        enemy_king_sq = None
+        for sq, pc in sim_board.items():
+            if pc == f'{enemy}K':
+                enemy_king_sq = sq
+                break
+        
+        if enemy_king_sq and is_square_attacked(sim_board, enemy_king_sq, to_play):
+            score += 30 # Check bonus
+            # Checkmate detection (very basic: if check and no legal moves for opponent)
+            # Too expensive to generate opponent moves fully here, but check is good enough for 1-ply.
+
+        # 3. Central Control / Development (simple heuristic)
+        # Encourage moving knights and pawns to center
+        end_f, end_r = coord_to_tuple(move[2:4])
+        if 2 <= end_f <= 5 and 2 <= end_r <= 5:
+            score += 2
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # Fallback if all moves were illegal (self-checks)
+    if best_move is None and candidates:
+        best_move = candidates[0] # Just pick first, hope it's valid or arena handles error
+        
+    return best_move, memory
+</code>

@@ -1,0 +1,155 @@
+## Strategy
+
+My strategy implements a Go policy with the following key components:
+
+1. **Capture detection**: Prioritize capturing opponent stones by finding moves that would remove their liberties.
+
+2. **Self-preservation**: Avoid moves that would put my own groups in atari, and prioritize saving my groups that are in atari.
+
+3. **Influence-based evaluation**: Score moves based on territorial influence, proximity to existing stones, and strategic board positions.
+
+4. **Liberty counting**: Properly count liberties for groups using flood-fill to identify connected components.
+
+5. **Ko and suicide avoidance**: Don't play illegal moves (suicide moves or moves that would repeat board state).
+
+6. **Opening strategy**: Prefer star points and strategic corners/sides in the opening.
+
+7. **Move prioritization**: Rank moves by: captures > saving own groups > extending > territory > influence.
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(me, opponent):
+    BOARD_SIZE = 19
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+
+    def neighbors(r, c):
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                yield nr, nc
+
+    def get_group(r, c, stone_set):
+        group = set()
+        queue = deque([(r, c)])
+        group.add((r, c))
+        while queue:
+            cr, cc = queue.popleft()
+            for nr, nc in neighbors(cr, cc):
+                if (nr, nc) in stone_set and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    queue.append((nr, nc))
+        return group
+
+    def get_liberties(group, my_stones, opp_stones):
+        libs = set()
+        for r, c in group:
+            for nr, nc in neighbors(r, c):
+                if (nr, nc) not in my_stones and (nr, nc) not in opp_stones:
+                    libs.add((nr, nc))
+        return libs
+
+    def would_capture(r, c, my_stones, opp_stones):
+        captured = set()
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_stones:
+                grp = get_group(nr, nc, opp_stones)
+                libs = get_liberties(grp, opp_stones, my_stones | {(r,c)})
+                if len(libs) == 0:
+                    captured |= grp
+        return captured
+
+    def is_suicide(r, c, my_stones, opp_stones):
+        caps = would_capture(r, c, my_stones, opp_stones)
+        if caps:
+            return False
+        new_my = my_stones | {(r, c)}
+        grp = get_group(r, c, new_my)
+        libs = get_liberties(grp, new_my, opp_stones)
+        return len(libs) == 0
+
+    def score_move(r, c):
+        if (r, c) in occupied:
+            return -1e9
+        if is_suicide(r, c, me_set, opp_set):
+            return -1e9
+
+        score = 0.0
+        caps = would_capture(r, c, me_set, opp_set)
+        score += len(caps) * 50
+
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_set:
+                grp = get_group(nr, nc, opp_set)
+                libs = get_liberties(grp, opp_set, me_set | {(r,c)})
+                if len(libs) == 1:
+                    score += 20
+                elif len(libs) == 2:
+                    score += 5
+
+        new_me = me_set | {(r, c)} | caps
+        new_opp = opp_set - caps
+        grp = get_group(r, c, new_me)
+        libs = get_liberties(grp, new_me, new_opp)
+        if len(libs) == 1:
+            score -= 30
+        elif len(libs) == 2:
+            score -= 5
+        score += min(len(libs), 6) * 2
+
+        dr = min(r, BOARD_SIZE+1-r)
+        dc = min(c, BOARD_SIZE+1-c)
+        edge = min(dr, dc)
+        if edge <= 1:
+            score -= 3
+        elif edge <= 3:
+            score += 1
+
+        for sr, sc in me:
+            d = abs(sr-r)+abs(sc-c)
+            if 2 <= d <= 4:
+                score += 3
+            elif d == 1:
+                score += 1
+        for sr, sc in opponent:
+            d = abs(sr-r)+abs(sc-c)
+            if d <= 2:
+                score += 2
+
+        if len(me) < 6:
+            star = {4,10,16}
+            if r in star and c in star:
+                score += 8
+
+        score += np.random.normal(0, 0.5)
+        return score
+
+    best_score = -1e18
+    best_move = (0, 0)
+    candidates = set()
+    for sr, sc in list(me) + list(opponent):
+        for dr in range(-3, 4):
+            for dc in range(-3, 4):
+                nr, nc = sr+dr, sc+dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                    candidates.add((nr, nc))
+    if not candidates:
+        candidates = {(4,4),(4,16),(16,4),(16,16),(10,10),(4,10),(10,4),(16,10),(10,16)}
+
+    for r, c in candidates:
+        s = score_move(r, c)
+        if s > best_score:
+            best_score = s
+            best_move = (r, c)
+
+    if best_score < -1e8:
+        for r in range(1, BOARD_SIZE+1):
+            for c in range(1, BOARD_SIZE+1):
+                if (r,c) not in occupied and not is_suicide(r,c,me_set,opp_set):
+                    return (r, c)
+        return (0, 0)
+    return best_move
+</code>

@@ -1,0 +1,67 @@
+
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Weighted positional matrix (corners=100, corner-adjacent=-50, edges=10, etc.)
+    weights = np.array([
+        [100, -50, 10,  5,  5, 10, -50, 100],
+        [-50, -50, -5, -5, -5, -5, -50, -50],
+        [10,  -5,  3,  3,  3,  3,  -5, 10],
+        [5,   -5,  3,  1,  1,  3,  -5,  5],
+        [5,   -5,  3,  1,  1,  3,  -5,  5],
+        [10,  -5,  3,  3,  3,  3,  -5, 10],
+        [-50, -50, -5, -5, -5, -5, -50, -50],
+        [100, -50, 10,  5,  5, 10, -50, 100]
+    ])
+    
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),           (0, 1),
+                  (1, -1),  (1, 0),  (1, 1)]
+    
+    legal_moves = []  # (r, c, flips)
+    
+    # Find all legal moves
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                total_flips = 0
+                valid = False
+                for dr, dc in directions:
+                    nr, nc = r + dr, c + dc
+                    temp_flips = 0
+                    # Check if next cell in direction is opponent's
+                    if 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr][nc] == 1:
+                        temp_flips += 1
+                        nr += dr
+                        nc += dc
+                        # Continue along direction
+                        while 0 <= nr < 8 and 0 <= nc < 8:
+                            if opponent[nr][nc] == 1:
+                                temp_flips += 1
+                            elif you[nr][nc] == 1:
+                                valid = True
+                                total_flips += temp_flips
+                                break
+                            else:  # Empty cell
+                                break
+                            nr += dr
+                            nc += dc
+                if valid:
+                    legal_moves.append((r, c, total_flips))
+    
+    if not legal_moves:
+        return "pass"
+    
+    # Select move with highest score (positional weight + 10% of flips)
+    best_score = -float('inf')
+    best_move = None
+    for r, c, flips in legal_moves:
+        score = weights[r][c] + 0.1 * flips
+        if score > best_score or (score == best_score and best_move is None):
+            best_score = score
+            best_move = (r, c)
+    
+    # Convert to algebraic notation (e.g., (3,0) -> 'a4')
+    col_char = chr(ord('a') + best_move[1])
+    row_num = str(best_move[0] + 1)
+    return f"{col_char}{row_num}"

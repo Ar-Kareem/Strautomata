@@ -1,0 +1,292 @@
+<thinking>
+Let me analyze this Blackjack-like game:
+
+1. Each player has their own 13-card deck (A, 2-10, J, Q, K)
+2. Target T is between 10 and 30
+3. Card values: 2-10 face value, J/Q/K = 10, A = 11 if hand ≤ T, else 1
+4. Goal: Get as close to T as possible without going over (busting)
+
+Key considerations:
+- I know which cards I've already drawn (from `hand`)
+- The remaining cards in my deck are known
+- I need to decide whether hitting gives me a good expected outcome
+
+Strategy approach:
+1. Calculate my current hand value
+2. Calculate the probability distribution of outcomes if I hit
+3. Use expected value or probability of winning to decide
+
+Since I don't know the opponent's strategy or state, I should focus on:
+- Not busting
+- Getting close to target
+
+Let me think about the optimal strategy:
+
+For a simplified approach, I can use a threshold-based policy similar to standard Blackjack:
+- If my current value is low enough that any card won't bust me, hit
+- If my current value is close enough to target, stay
+- Otherwise, calculate expected value of hitting vs staying
+
+Let me implement a more sophisticated approach:
+1. Calculate current hand value
+2. Determine remaining cards in my deck
+3. Calculate probability of busting if I hit
+4. Calculate expected final value if I stay vs if I hit (with optimal future play)
+
+This is essentially a dynamic programming problem. Given my current hand and remaining deck, what's the optimal policy?
+
+Let me implement a recursive solution with memoization:
+- State: current hand value, whether I have a "soft" ace (one that can become 1), remaining cards
+- For each state, compute expected value of staying vs hitting
+
+Actually, let me simplify. The key insight is:
+- If I stay, my value is fixed
+- If I hit, I might bust or improve my position
+
+The opponent's strategy is unknown, but assuming they play optimally or similarly, I should focus on maximizing my expected final value (without busting).
+
+Let me implement a simulation-based or exact calculation approach:
+
+```python
+def policy(hand: list[str], target: int) -> str:
+    # Calculate hand value
+    def card_value(card, soft=True):
+        if card in ['J', 'Q', 'K']:
+            return 10
+        elif card == 'A':
+            return 11 if soft else 1
+        else:
+            return int(card)
+    
+    def hand_value(cards):
+        total = sum(card_value(c) for c in cards)
+        aces = cards.count('A')
+        while total > target and aces > 0:
+            total -= 10
+            aces -= 1
+        return total
+    
+    current_value = hand_value(hand)
+    
+    if current_value >= target:
+        return "STAY"
+    
+    # Remaining cards
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = [c for c in all_cards if c not in hand]
+    
+    # Calculate expected value if we hit
+    # ... need to think about this more carefully
+```
+
+Actually, for a good policy, I should think about what threshold to stay at. In standard Blackjack with target 21, the dealer typically stays at 17+. 
+
+For this game with variable target T, a reasonable heuristic might be:
+- Stay if current value >= T - k for some small k
+- The value of k might depend on the remaining deck composition
+
+Let me think about the expected improvement from hitting. If current value is V and I hit:
+- I bust if the drawn card value > T - V
+- Otherwise I improve by the card value
+
+Given the deck composition (values 1-10 with face cards worth 10), the average card value is about (1+2+...+10+10+10+10)/13 ≈ 7.
+
+So roughly, if V < T - 7, hitting is likely beneficial on average.
+
+But we need to be more precise. Let me compute the exact probabilities for remaining cards.
+
+I'll implement an optimal policy using dynamic programming / recursion:
+
+```python
+def policy(hand: list[str], target: int) -> str:
+    from functools import lru_cache
+    
+    def hand_value(cards):
+        total = 0
+        aces = 0
+        for c in cards:
+            if c in ['J', 'Q', 'K']:
+                total += 10
+            elif c == 'A':
+                total += 11
+                aces += 1
+            else:
+                total += int(c)
+        while total > target and aces > 0:
+            total -= 10
+            aces -= 1
+        return total
+    
+    current = hand_value(hand)
+    if current >= target:
+        return "STAY"
+    
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = tuple(c for c in all_cards if c not in hand)
+    
+    # Recursive computation of expected best score
+    @lru_cache(maxsize=None)
+    def best_expected(value, aces, remaining_cards):
+        if value > target:
+            return -1  # Bust
+        if not remaining_cards:
+            return value
+        
+        # Option 1: Stay
+        stay_value = value
+        
+        # Option 2: Hit - compute expected value
+        hit_values = []
+        for i, card in enumerate(remaining_cards):
+            new_remaining = remaining_cards[:i] + remaining_cards[i+1:]
+            if card in ['J', 'Q', 'K']:
+                cv = 10
+                new_aces = aces
+            elif card == 'A':
+                cv = 11
+                new_aces = aces + 1
+            else:
+                cv = int(card)
+                new_aces = aces
+            new_val = value + cv
+            # Adjust for aces
+            while new_val > target and new_aces > 0:
+                new_val -= 10
+                new_aces -= 1
+            
+            result = best_expected(new_val, new_aces, new_remaining)
+            hit_values.append(result)
+        
+        hit_expected = sum(hit_values) / len(hit_values)
+        
+        return max(stay_value, hit_expected)
+    
+    # Determine current action
+    # If hitting has better expected value, hit
+    ...
+```
+
+Wait, I need to return "HIT" or "STAY" based on whether hitting improves expected value over staying.
+
+Let me refine this:
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    from functools import lru_cache
+    
+    def get_card_value(card):
+        if card in ['J', 'Q', 'K']:
+            return 10
+        elif card == 'A':
+            return 11  # Will adjust later
+        else:
+            return int(card)
+    
+    def compute_hand_value(cards):
+        total = 0
+        aces = 0
+        for c in cards:
+            if c == 'A':
+                total += 11
+                aces += 1
+            elif c in ['J', 'Q', 'K']:
+                total += 10
+            else:
+                total += int(c)
+        while total > target and aces > 0:
+            total -= 10
+            aces -= 1
+        return total, aces
+    
+    current_value, current_aces = compute_hand_value(hand)
+    
+    if current_value >= target:
+        return "STAY"
+    
+    if current_value > target:  # Already busted (shouldn't happen)
+        return "STAY"
+    
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = tuple(sorted(c for c in all_cards if c not in hand))
+    
+    # Use DP to compute optimal expected score from any state
+    # State: (current_value, aces_as_11, remaining_cards_tuple)
+    # Returns: expected best achievable score (or -infinity if bust)
+    
+    @lru_cache(maxsize=None)
+    def optimal_expected(value, aces, remaining_cards):
+        if value > target:
+            return -1000  # Busted - very bad
+        
+        if not remaining_cards:
+            return value  # No more cards to draw
+        
+        # Option 1: Stay with current value
+        stay_score = value
+        
+        # Option 2: Hit and continue optimally
+        total_hit_score = 0
+        n = len(remaining_cards)
+        
+        for i, card in enumerate(remaining_cards):
+            new_remaining = remaining_cards[:i] + remaining_cards[i+1:]
+            
+            if card == 'A':
+                card_val = 11
+                new_aces = aces + 1
+            elif card in ['J', 'Q', 'K']:
+                card_val = 10
+                new_aces = aces
+            else:
+                card_val = int(card)
+                new_aces = aces
+            
+            new_value = value + card_val
+            
+            # Adjust aces if over target
+            while new_value > target and new_aces > 0:
+                new_value -= 10
+                new_aces -= 1
+            
+            total_hit_score += optimal_expected(new_value, new_aces, new_remaining)
+        
+        hit_expected = total_hit_score / n
+        
+        return max(stay_score, hit_expected)
+    
+    # Now decide: should we hit or stay?
+    stay_score = current_value
+    
+    # Calculate expected score if we hit
+    total_hit_score = 0
+    n = len(remaining)
+    
+    for i, card in enumerate(remaining):
+        new_remaining = remaining[:i] + remaining[i+1:]
+        
+        if card == 'A':
+            card_val = 11
+            new_aces = current_aces + 1
+        elif card in ['J', 'Q', 'K']:
+            card_val = 10
+            new_aces = current_aces
+        else:
+            card_val = int(card)
+            new_aces = current_aces
+        
+        new_value = current_value + card_val
+        
+        while new_value > target and new_aces > 0:
+            new_value -= 10
+            new_aces -= 1
+        
+        total_hit_score += optimal_expected(new_value, new_aces, new_remaining)
+    
+    hit_expected = total_hit_score / n
+    
+    if hit_expected > stay_score:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

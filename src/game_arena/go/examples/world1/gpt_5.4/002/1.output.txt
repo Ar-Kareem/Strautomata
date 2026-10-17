@@ -1,0 +1,237 @@
+The strategy for this policy is a fast tactical Go bot with strict legality handling.
+
+Core ideas:
+1. Always return a legal move.
+2. Reconstruct the board from `me` and `opponent`.
+3. Generate legal moves under normal Go capture/suicide rules.
+4. Prioritize urgent tactics:
+   - play any move that immediately captures the most opponent stones,
+   - otherwise defend our own groups in atari,
+   - otherwise prefer moves adjacent to stones, especially central ones.
+5. Use a lightweight positional evaluation so it runs comfortably within the time limit.
+6. If no legal move exists, return pass `(0, 0)`.
+
+This policy is stronger than random because it understands captures, self-atari avoidance, local defense, and basic shape/centrality preferences, while remaining efficient and robust.
+
+<code>
+from typing import List, Tuple, Set, Dict
+
+BOARD_SIZE = 19
+DIRECTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    board = [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    for r, c in me:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r - 1][c - 1] = 1
+    for r, c in opponent:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r - 1][c - 1] = 2
+
+    empties = [(r, c) for r in range(BOARD_SIZE) for c in range(BOARD_SIZE) if board[r][c] == 0]
+    if not empties:
+        return (0, 0)
+
+    # Cache groups/liberties for current board
+    groups, group_id = compute_groups(board)
+
+    legal_moves = []
+    tactical_moves = []
+
+    for r, c in empties:
+        if not is_legal_move(board, r, c, 1):
+            continue
+
+        capture_count = immediate_capture_count(board, r, c, 1, groups, group_id)
+
+        # Estimate if move defends our adjacent atari groups
+        defend_score = 0
+        for nr, nc in neighbors(r, c):
+            if board[nr][nc] == 1:
+                gid = group_id[nr][nc]
+                if gid is not None and len(groups[gid]["libs"]) == 1:
+                    defend_score += len(groups[gid]["stones"])
+
+        score = evaluate_move(board, r, c, capture_count, defend_score)
+        legal_moves.append((score, r, c))
+        tactical_moves.append((capture_count, defend_score, score, r, c))
+
+    if not legal_moves:
+        return (0, 0)
+
+    # Highest priority: biggest capture
+    tactical_moves.sort(reverse=True)
+    best_capture, best_defend, _, br, bc = tactical_moves[0]
+    if best_capture > 0:
+        return (br + 1, bc + 1)
+
+    # Next: defend meaningful atari groups
+    if best_defend > 0:
+        return (br + 1, bc + 1)
+
+    # Otherwise best heuristic move
+    legal_moves.sort(reverse=True)
+    _, r, c = legal_moves[0]
+    return (r + 1, c + 1)
+
+
+def neighbors(r: int, c: int):
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+            yield nr, nc
+
+
+def compute_groups(board):
+    group_id = [[None] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    groups = []
+    gid = 0
+
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            color = board[r][c]
+            if color == 0 or group_id[r][c] is not None:
+                continue
+
+            stack = [(r, c)]
+            group_id[r][c] = gid
+            stones = []
+            libs = set()
+
+            while stack:
+                sr, sc = stack.pop()
+                stones.append((sr, sc))
+                for nr, nc in neighbors(sr, sc):
+                    if board[nr][nc] == 0:
+                        libs.add((nr, nc))
+                    elif board[nr][nc] == color and group_id[nr][nc] is None:
+                        group_id[nr][nc] = gid
+                        stack.append((nr, nc))
+
+            groups.append({
+                "color": color,
+                "stones": stones,
+                "libs": libs,
+            })
+            gid += 1
+
+    return groups, group_id
+
+
+def immediate_capture_count(board, r, c, color, groups, group_id):
+    opp = 3 - color
+    captured = set()
+    for nr, nc in neighbors(r, c):
+        if board[nr][nc] == opp:
+            gid = group_id[nr][nc]
+            if gid is not None and len(groups[gid]["libs"]) == 1 and (r, c) in groups[gid]["libs"]:
+                for s in groups[gid]["stones"]:
+                    captured.add(s)
+    return len(captured)
+
+
+def is_legal_move(board, r, c, color):
+    if board[r][c] != 0:
+        return False
+
+    test = [row[:] for row in board]
+    test[r][c] = color
+    opp = 3 - color
+
+    # Capture adjacent opponent groups with no liberties
+    seen = set()
+    for nr, nc in neighbors(r, c):
+        if test[nr][nc] == opp and (nr, nc) not in seen:
+            stones, libs = get_group_and_liberties(test, nr, nc)
+            seen.update(stones)
+            if len(libs) == 0:
+                for sr, sc in stones:
+                    test[sr][sc] = 0
+
+    # Check own group has liberties after captures
+    stones, libs = get_group_and_liberties(test, r, c)
+    return len(libs) > 0
+
+
+def get_group_and_liberties(board, r, c):
+    color = board[r][c]
+    stack = [(r, c)]
+    seen = {(r, c)}
+    stones = []
+    libs = set()
+
+    while stack:
+        sr, sc = stack.pop()
+        stones.append((sr, sc))
+        for nr, nc in neighbors(sr, sc):
+            if board[nr][nc] == 0:
+                libs.add((nr, nc))
+            elif board[nr][nc] == color and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                stack.append((nr, nc))
+    return stones, libs
+
+
+def evaluate_move(board, r, c, capture_count, defend_score):
+    score = 0.0
+
+    # Tactical priorities
+    score += 1000 * capture_count
+    score += 300 * defend_score
+
+    # Prefer moves near existing stones to avoid nonsense opening spam
+    adj_me = 0
+    adj_opp = 0
+    diag_me = 0
+    diag_opp = 0
+
+    for nr, nc in neighbors(r, c):
+        if board[nr][nc] == 1:
+            adj_me += 1
+        elif board[nr][nc] == 2:
+            adj_opp += 1
+
+    for dr in (-1, 1):
+        for dc in (-1, 1):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                if board[nr][nc] == 1:
+                    diag_me += 1
+                elif board[nr][nc] == 2:
+                    diag_opp += 1
+
+    score += 18 * adj_me
+    score += 14 * adj_opp
+    score += 4 * diag_me
+    score += 3 * diag_opp
+
+    # Centrality preference, but not too strong
+    center = 9
+    manhattan = abs(r - center) + abs(c - center)
+    score += max(0, 14 - manhattan)
+
+    # Star points / good opening structure
+    stars = {(3, 3), (3, 9), (3, 15), (9, 3), (9, 9), (9, 15), (15, 3), (15, 9), (15, 15)}
+    if (r, c) in stars:
+        score += 6
+
+    # Avoid filling own eye-like spaces unless tactical
+    if capture_count == 0:
+        own_neighbors = 0
+        empty_neighbors = 0
+        opp_neighbors = 0
+        for nr, nc in neighbors(r, c):
+            if board[nr][nc] == 1:
+                own_neighbors += 1
+            elif board[nr][nc] == 0:
+                empty_neighbors += 1
+            else:
+                opp_neighbors += 1
+        if own_neighbors >= 3 and opp_neighbors == 0:
+            score -= 40
+
+    # Slight tiebreak by deterministic board order toward center-ish top-left preference
+    score -= 0.001 * (r * BOARD_SIZE + c)
+    return score
+</code>

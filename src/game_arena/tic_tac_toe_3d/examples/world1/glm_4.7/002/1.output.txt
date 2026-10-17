@@ -1,0 +1,208 @@
+The strategy for this policy uses a multi-tiered approach:
+
+1. **Immediate Win**: If I can complete a line on this turn, I take it.
+2. **Block Opponent's Win**: If the opponent can win on their next turn, I block them.
+3. **Control Center**: The center position (1,1,1) is part of 13 winning lines, making it the most strategic position.
+4. **Create Forks**: Identify positions that create multiple winning threats simultaneously.
+5. **Block Opponent's Forks**: Prevent the opponent from creating multiple winning threats.
+6. **Heuristic Evaluation**: Score remaining positions based on positional value (center > corners > edges), threats created, and threats blocked.
+
+This approach ensures optimal play while maintaining fast execution within the 1-second time limit. The evaluation function efficiently scores each potential move without requiring deep lookahead.
+
+<code>
+import numpy as np
+import random
+
+def policy(board):
+    """Smart policy for 3x3x3 Tic Tac Toe using heuristic evaluation"""
+    board_np = np.array(board, dtype=np.int8)
+    
+    # Get all empty cells
+    empty_cells = [(i, j, k) for i in range(3) for j in range(3) for k in range(3) if board_np[i, j, k] == 0]
+    
+    # If no empty cells, return default
+    if not empty_cells:
+        return (0, 0, 0)
+    
+    # Priority 1: Win immediately
+    for cell in empty_cells:
+        board_np[cell] = 1
+        if check_win(board_np, 1):
+            board_np[cell] = 0
+            return cell
+        board_np[cell] = 0
+    
+    # Priority 2: Block opponent's immediate win
+    for cell in empty_cells:
+        board_np[cell] = -1
+        if check_win(board_np, -1):
+            board_np[cell] = 0
+            return cell
+        board_np[cell] = 0
+    
+    # Priority 3: Take center if available (strongest position - part of 13 winning lines)
+    if (1, 1, 1) in empty_cells:
+        return (1, 1, 1)
+    
+    # Priority 4: Create fork (multiple winning threats)
+    for cell in empty_cells:
+        board_np[cell] = 1
+        threats = count_threats(board_np, 1)
+        board_np[cell] = 0
+        if threats >= 2:
+            return cell
+    
+    # Priority 5: Block opponent's fork
+    for cell in empty_cells:
+        board_np[cell] = -1
+        threats = count_threats(board_np, -1)
+        board_np[cell] = 0
+        if threats >= 2:
+            return cell
+    
+    # Priority 6: Evaluate each move and pick the best
+    best_score = -float('inf')
+    best_move = empty_cells[0]
+    
+    for cell in empty_cells:
+        score = evaluate_move(board_np, cell)
+        if score > best_score:
+            best_score = score
+            best_move = cell
+        elif score == best_score:
+            if random.random() < 0.5:
+                best_move = cell
+    
+    return best_move
+
+
+def evaluate_move(board, cell):
+    """Evaluate the strategic value of a move"""
+    score = 0
+    i, j, k = cell
+    
+    # Position value based on strategic importance
+    if i == 1 and j == 1 and k == 1:
+        score += 100  # Center - most valuable
+    elif (i in [0, 2] and j in [0, 2] and k in [0, 2]):
+        score += 50  # Corners
+    else:
+        score += 20  # Edge and face centers
+    
+    # Threat creation value
+    board[cell] = 1
+    score += count_threats(board, 1) * 100
+    board[cell] = 0
+    
+    # Blocking value (preventing opponent threats)
+    board[cell] = -1
+    score += count_threats(board, -1) * 90
+    board[cell] = 0
+    
+    return score
+
+
+def count_threats(board, player):
+    """Count lines where player has 2 pieces and can win on next move"""
+    count = 0
+    for line in get_all_lines():
+        values = [board[cell] for cell in line]
+        my_count = values.count(player)
+        empty_count = values.count(0)
+        opp_count = values.count(-player)
+        
+        if my_count == 2 and empty_count == 1 and opp_count == 0:
+            count += 1
+    return count
+
+
+def check_win(board, player):
+    """Check if player has won the game"""
+    n = 3
+    
+    # Lines along x-axis
+    for j in range(n):
+        for k in range(n):
+            if all(board[i, j, k] == player for i in range(n)):
+                return True
+    
+    # Lines along y-axis
+    for i in range(n):
+        for k in range(n):
+            if all(board[i, j, k] == player for j in range(n)):
+                return True
+    
+    # Lines along z-axis
+    for i in range(n):
+        for j in range(n):
+            if all(board[i, j, k] == player for k in range(n)):
+                return True
+    
+    # 2D diagonals in yz-planes
+    for i in range(n):
+        if all(board[i, j, j] == player for j in range(n)):
+            return True
+        if all(board[i, j, n-1-j] == player for j in range(n)):
+            return True
+    
+    # 2D diagonals in xz-planes
+    for j in range(n):
+        if all(board[i, j, i] == player for i in range(n)):
+            return True
+        if all(board[i, j, n-1-i] == player for i in range(n)):
+            return True
+    
+    # 2D diagonals in xy-planes
+    for k in range(n):
+        if all(board[i, i, k] == player for i in range(n)):
+            return True
+        if all(board[i, n-1-i, k] == player for i in range(n)):
+            return True
+    
+    # 3D space diagonals (4 main diagonals through the cube)
+    if all(board[i, i, i] == player for i in range(n)):
+        return True
+    if all(board[i, i, n-1-i] == player for i in range(n)):
+        return True
+    if all(board[i, n-1-i, i] == player for i in range(n)):
+        return True
+    if all(board[i, n-1-i, n-1-i] == player for i in range(n)):
+        return True
+    
+    return False
+
+
+def get_all_lines():
+    """Get all 49 winning lines in 3x3x3 Tic Tac Toe"""
+    n = 3
+    lines = []
+    
+    # Lines along each axis (27 lines total)
+    for i in range(n):
+        for j in range(n):
+            lines.append([(i, j, k) for k in range(n)])  # z-axis lines
+        for k in range(n):
+            lines.append([(i, j, k) for j in range(n)])  # y-axis lines
+    for j in range(n):
+        for k in range(n):
+            lines.append([(i, j, k) for i in range(n)])  # x-axis lines
+    
+    # 2D diagonals (18 lines total)
+    for i in range(n):
+        lines.append([(i, j, j) for j in range(n)])
+        lines.append([(i, j, n-1-j) for j in range(n)])
+    for j in range(n):
+        lines.append([(i, j, i) for i in range(n)])
+        lines.append([(i, j, n-1-i) for i in range(n)])
+    for k in range(n):
+        lines.append([(i, i, k) for i in range(n)])
+        lines.append([(i, n-1-i, k) for i in range(n)])
+    
+    # 3D space diagonals (4 lines total)
+    lines.append([(i, i, i) for i in range(n)])
+    lines.append([(i, i, n-1-i) for i in range(n)])
+    lines.append([(i, n-1-i, i) for i in range(n)])
+    lines.append([(i, n-1-i, n-1-i) for i in range(n)])
+    
+    return lines
+</code>

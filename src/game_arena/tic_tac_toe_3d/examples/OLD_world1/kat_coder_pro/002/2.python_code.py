@@ -1,0 +1,204 @@
+
+import numpy as np
+from typing import Tuple, List, Optional
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Returns the next move for 3x3x3 3D Tic Tac Toe using minimax with alpha-beta pruning.
+    
+    Args:
+        board: 3x3x3 list of lists containing 0 (empty), 1 (you), -1 (opponent)
+    
+    Returns:
+        tuple[int, int, int]: (z, y, x) coordinates of the chosen empty cell
+    """
+    
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Get all empty cells
+    empty_cells = [(z, y, x) for z in range(3) for y in range(3) for x in range(3) 
+                   if board_array[z, y, x] == 0]
+    
+    if not empty_cells:
+        return (0, 0, 0)  # Should not happen if called correctly
+    
+    # If first move, take center
+    if len(empty_cells) == 27:
+        return (1, 1, 1)
+    
+    # If second move and center is empty, take it
+    if len(empty_cells) == 26 and board_array[1, 1, 1] == 0:
+        return (1, 1, 1)
+    
+    # Use minimax to find the best move
+    best_move = None
+    best_value = -np.inf
+    
+    for move in empty_cells:
+        # Try the move
+        board_array[move] = 1
+        # Evaluate the resulting position for the opponent
+        value = minimax(board_array, 0, False, -np.inf, np.inf)
+        board_array[move] = 0  # Undo the move
+        
+        if value > best_value:
+            best_value = value
+            best_move = move
+    
+    return best_move
+
+def minimax(board: np.ndarray, depth: int, is_maximizing: bool, alpha: float, beta: float) -> float:
+    """
+    Minimax algorithm with alpha-beta pruning for 3D Tic Tac Toe.
+    
+    Args:
+        board: Current board state
+        depth: Current search depth
+        is_maximizing: True if maximizing player's turn, False for minimizing
+        alpha: Alpha value for pruning
+        beta: Beta value for pruning
+    
+    Returns:
+        float: Evaluation score of the position
+    """
+    
+    # Check for terminal states
+    winner = check_winner(board)
+    if winner == 1:  # AI wins
+        return 100 - depth
+    elif winner == -1:  # Opponent wins
+        return depth - 100
+    elif len([(z, y, x) for z in range(3) for y in range(3) for x in range(3) 
+              if board[z, y, x] == 0]) == 0:  # Draw
+        return 0
+    
+    # Depth limit
+    if depth >= 3:
+        return evaluate_position(board)
+    
+    empty_cells = [(z, y, x) for z in range(3) for y in range(3) for x in range(3) 
+                   if board[z, y, x] == 0]
+    
+    if is_maximizing:
+        max_eval = -np.inf
+        for move in empty_cells:
+            board[move] = 1
+            eval_score = minimax(board, depth + 1, False, alpha, beta)
+            board[move] = 0
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = np.inf
+        for move in empty_cells:
+            board[move] = -1
+            eval_score = minimax(board, depth + 1, True, alpha, beta)
+            board[move] = 0
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def check_winner(board: np.ndarray) -> Optional[int]:
+    """
+    Check if there's a winner on the board.
+    
+    Returns:
+        1 if AI wins, -1 if opponent wins, 0 if draw, None if game continues
+    """
+    # Check all possible lines (27 in total for 3x3x3)
+    lines = get_all_lines()
+    
+    for line in lines:
+        values = [board[pos] for pos in line]
+        if all(v == 1 for v in values):
+            return 1
+        elif all(v == -1 for v in values):
+            return -1
+    
+    return None
+
+def get_all_lines() -> List[List[Tuple[int, int, int]]]:
+    """
+    Generate all possible winning lines in 3x3x3 3D Tic Tac Toe.
+    There are 49 total lines.
+    """
+    lines = []
+    
+    # 27 lines in 3 directions (x, y, z)
+    # Lines parallel to x-axis
+    for z in range(3):
+        for y in range(3):
+            lines.append([(z, y, 0), (z, y, 1), (z, y, 2)])
+    
+    # Lines parallel to y-axis
+    for z in range(3):
+        for x in range(3):
+            lines.append([(z, 0, x), (z, 1, x), (z, 2, x)])
+    
+    # Lines parallel to z-axis
+    for y in range(3):
+        for x in range(3):
+            lines.append([(0, y, x), (1, y, x), (2, y, x)])
+    
+    # 18 diagonal lines on faces
+    # Face diagonals on xy planes (front, middle, back)
+    for z in range(3):
+        lines.append([(z, 0, 0), (z, 1, 1), (z, 2, 2)])
+        lines.append([(z, 0, 2), (z, 1, 1), (z, 2, 0)])
+    
+    # Face diagonals on xz planes (top, middle, bottom)
+    for y in range(3):
+        lines.append([(0, y, 0), (1, y, 1), (2, y, 2)])
+        lines.append([(2, y, 0), (1, y, 1), (0, y, 2)])
+    
+    # Face diagonals on yz planes (left, middle, right)
+    for x in range(3):
+        lines.append([(0, 0, x), (1, 1, x), (2, 2, x)])
+        lines.append([(2, 0, x), (1, 1, x), (0, 2, x)])
+    
+    # 4 main space diagonals through the center
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    lines.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+    
+    return lines
+
+def evaluate_position(board: np.ndarray) -> float:
+    """
+    Heuristic evaluation of the board position.
+    
+    Returns:
+        float: Score where positive favors AI, negative favors opponent
+    """
+    score = 0
+    lines = get_all_lines()
+    
+    for line in lines:
+        values = [board[pos] for pos in line]
+        
+        # Count pieces and empty cells
+        ai_pieces = sum(1 for v in values if v == 1)
+        opponent_pieces = sum(1 for v in values if v == -1)
+        empty_cells = sum(1 for v in values if v == 0)
+        
+        # Evaluate based on potential
+        if opponent_pieces == 0:
+            # AI has potential to win this line
+            if ai_pieces == 2:
+                score += 10  # Very good - one move from winning
+            elif ai_pieces == 1:
+                score += 1   # Good - starts a line
+        elif ai_pieces == 0:
+            # Opponent has potential to win this line
+            if opponent_pieces == 2:
+                score -= 10  # Very bad - opponent one move from winning
+            elif opponent_pieces == 1:
+                score -= 1   # Bad - opponent starts a line
+    
+    return score

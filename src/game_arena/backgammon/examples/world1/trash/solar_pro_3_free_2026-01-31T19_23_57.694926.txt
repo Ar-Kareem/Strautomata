@@ -1,0 +1,171 @@
+**Strategy for this policy**
+
+The policy implements a fast “greedy‑with‑priority” backgammon move generator that:
+
+* **Always respects the bar priority** – if you have any checkers on the bar you must use a die for a re‑entry before any other move. If a die cannot re‑enter (blocked destination) we try to use it for a board move; if even that is impossible we pass the die.
+
+* **Uses a simple immediate‑pip heuristic** – each legal move is evaluated by the reduction in your own pip count plus a large capture bonus when the destination is an opponent blot, plus a small “new‑blot” reward for moving onto an empty point.
+
+* **Prioritises the higher die** – the move string order is always `H` (high die first) unless only the lower die can be played; in that case we return `L` to obey the rule “play the higher die when possible”.
+
+* **Handles bearing‑off correctly** – bearing‑off is allowed only when *all* your checkers are already on your home board (points 0‑5). It yields a strong pip reduction equal to the point value.
+
+The candidate generation loops over at most a few dozen source points, computes the immediate score, and then evaluates the two‑dice combination (including the mandatory bar move when you have bar checkers) to pick the best legal pair. The whole routine runs in well under a millisecond on a modern CPU.
+
+---
+
+<code style="display: block;">
+import math
+
+def policy(state: dict) -> str:
+    """Return a legal move string in the format `<ORDER>:<FROM1>,<FROM2>`."""
+    dice = sorted(state['dice'], reverse=True)  # H‑die then L‑die
+    high_die, low_die = dice[0], dice[1]
+
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+
+    # ------------------------------------------------------------------
+    # Helper functions
+    # ------------------------------------------------------------------
+    def is_bar_move(src):
+        return src == 'B'
+
+    def compute_dest_from_bar(die):
+        # When re‑entering from the bar, the destination is 24‑die (indices 23..18)
+        return 24 - die
+
+    def eval_move(src_pt: int, die: int, is_bar: bool) -> (str, int, bool):
+        """
+        Returns (source_token, score, is_bar). Score is:
+        - pip reduction (high die = die, bearing‑off = src_pt)
+        - +2000 if we hit a blot (opp_pts[dest]==1)
+        - +10 if we land on an empty point (opp_pts[dest]==0)
+        """
+        src_token = None
+        if is_bar:
+            src_token = 'B'
+            dest = compute_dest_from_bar(die)
+            pip_red = die
+            if opp_pts[dest] == 1:
+                return ('B', die + 2000, True)
+            else:
+                return ('B', die, True)
+        else:
+            # Board move
+            src_token = f"A{src_pt}"
+            # Determine destination
+            dest = src_pt - die
+            if dest < 0:  # bearing‑off
+                # Bearing‑off allowed only when the whole board is already in home board
+                if any(my_pts[i] > 0 for i in range(6, 24)):
+                    return (None, -float('inf'), False)   # illegal
+                pip_red = src_pt
+                # Hitting a blot while bearing‑off is impossible, but opponent may already have a blot on home point
+                # We give a tiny reward if they have none, otherwise nothing.
+                if opp_pts[src_pt] == 0:
+                    return (src_token, src_pt + 1, False)
+                else:  # opp_pts[src_pt]==1 (opponent blot) – still legal to bear off
+                    return (src_token, src_pt, False)
+            else:  # forward move
+                if opp_pts[dest] >= 2:
+                    return (None, -float('inf'), False)  # blocked – illegal
+                pip_red = die
+                capture = 2000 if opp_pts[dest] == 1 else 0
+                new_blot = 10 if opp_pts[dest] == 0 else 0
+                return (src_token, pip_red + capture + new_blot, False)
+
+    # ------------------------------------------------------------------
+    # Candidate generation
+    # ------------------------------------------------------------------
+    # Candidate lists: each entry is (source_token, score, is_bar)
+    candidates_high = []
+    candidates_low = []
+
+    # Helper: generate board candidates for a given die value
+    def gen_board_candidates(die):
+        cand = []
+        for src in range(24):
+            if my_pts[src] == 0:
+                continue
+            if src < 6 and any(my_pts[i] > 0 for i in range(6, 24)):
+                # Not all checkers in home board → bearing‑off illegal
+                continue
+            src_token = f"A{src}"
+            # Destination
+            dest = src - die
+            if dest < 0:  # bearing off
+                pip_red = src
+                # Only allowed when whole board already home
+                if any(my_pts[i] > 0 for i in range(6, 24)):
+                    continue
+                if opp_pts[src] == 0:
+                    cand.append((src_token, src + 1, False))
+                else:  # opp_pts[src]==1 (opponent blot) – still legal
+                    cand.append((src_token, src, False))
+            else:  # forward move
+                if opp_pts[dest] >= 2:
+                    continue
+                pip_red = die
+                capture = 2000 if opp_pts[dest] == 1 else 0
+                new_blot = 10 if opp_pts[dest] == 0 else 0
+                cand.append((src_token, pip_red + capture + new_blot, False))
+        return cand
+
+    # High die candidates
+    cand_high = gen_board_candidates(high_die)
+    if my_bar > 0:
+        bar_dest = compute_dest_from_bar(high_die)
+        if 0 <= bar_dest < 24 and opp_pts[bar_dest] <= 1:
+            cand_high.append(('B', high_die + 2000 if opp_pts[bar_dest]==1 else high_die, True))
+
+    # Low die candidates
+    cand_low = gen_board_candidates(low_die)
+    if my_bar > 0:
+        bar_dest = compute_dest_from_bar(low_die)
+        if 0 <= bar_dest < 24 and opp_pts[bar_dest] <= 1:
+            cand_low.append(('B', low_die + 2000 if opp_pts[bar_dest]==1 else low_die, True))
+
+    # If a candidate list is empty, we are forced to pass that die
+    def add_pass(lst):
+        lst.append(('P', 0, False))
+
+    if not cand_high:
+        add_pass(candidates_high)
+    if not cand_low:
+        add_pass(candidates_low)
+
+    # ------------------------------------------------------------------
+    # Search for the best combination respecting bar priority
+    # ------------------------------------------------------------------
+    best_score = -float('inf')
+    best_move = None
+    best_order = 'H'   # default order
+
+    # Enumerate all reasonable combos (including passes only when forced)
+    for src0, score0, is0 in candidates_high:
+        for src1, score1, is1 in candidates_low:
+            # Must obey the bar rule if we have bar checkers
+            if my_bar > 0 and not (is0 or is1):
+                continue   # no bar move – illegal
+            # Must not pass a die when there is a legal move for it
+            if src0 == 'P' and len(candidates_high) > 0:
+                continue
+            if src1 == 'P' and len(candidates_low) > 0:
+                continue
+
+            total = score0 + score1
+            order = 'H' if src0 != 'P' else 'L'   # high die first unless we only used low die
+            if total > best_score:
+                best_score = total
+                best_move = (src0, src1, order)
+
+    if best_move is None:
+        # Nothing playable – full pass
+        return "H:P,P"
+
+    src0, src1, order = best_move
+    return f"{order}:{src0},{src1}"
+</code>

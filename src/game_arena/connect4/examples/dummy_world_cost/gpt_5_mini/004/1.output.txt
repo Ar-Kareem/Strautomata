@@ -1,0 +1,213 @@
+Strategy: This policy first checks for immediate winning moves and immediate opponent threats and blocks them. If none, it uses a depth-limited minimax with alpha-beta pruning (depth 6) and a heuristic evaluation (counts 4-cell windows, values 3-in-a-row and 2-in-a-row, and favors center column control). Moves are ordered center-out to speed pruning. A transposition cache is used to reduce repeated work. The policy always returns a legal, non-full column index.
+
+<code>
+import copy
+import math
+from functools import lru_cache
+
+ROWS = 6
+COLS = 7
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Choose a column (0-6) to drop a disc for the current player (encoded as 1).
+    """
+    # Defensive copy
+    bd = [list(r) for r in board]
+
+    def valid_moves(b):
+        return [c for c in range(COLS) if b[0][c] == 0]
+
+    def make_move(b, col, piece):
+        # returns new board after dropping piece (1 or -1) in column col
+        nb = [list(r) for r in b]
+        for r in range(ROWS - 1, -1, -1):
+            if nb[r][col] == 0:
+                nb[r][col] = piece
+                return nb
+        return None  # column full
+
+    def is_full(b):
+        return all(b[0][c] != 0 for c in range(COLS))
+
+    def check_win_player(b, player):
+        # Check horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                if all(b[r][c + i] == player for i in range(4)):
+                    return True
+        # Check vertical
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                if all(b[r + i][c] == player for i in range(4)):
+                    return True
+        # Check positive diagonal (/)
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                if all(b[r - i][c + i] == player for i in range(4)):
+                    return True
+        # Check negative diagonal (\)
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                if all(b[r + i][c + i] == player for i in range(4)):
+                    return True
+        return False
+
+    def evaluate_window(window):
+        # window: list of 4 values
+        score = 0
+        my_count = window.count(1)
+        opp_count = window.count(-1)
+        empty_count = window.count(0)
+
+        if my_count == 4:
+            score += 100000
+        elif my_count == 3 and empty_count == 1:
+            score += 100
+        elif my_count == 2 and empty_count == 2:
+            score += 10
+
+        if opp_count == 4:
+            score -= 100000
+        elif opp_count == 3 and empty_count == 1:
+            score -= 90
+        elif opp_count == 2 and empty_count == 2:
+            score -= 8
+
+        return score
+
+    def evaluate_board(b):
+        score = 0
+        # Center column preference
+        center_col = [b[r][COLS // 2] for r in range(ROWS)]
+        score += center_col.count(1) * 6
+        score -= center_col.count(-1) * 6
+
+        # Horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                window = [b[r][c + i] for i in range(4)]
+                score += evaluate_window(window)
+        # Vertical
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                window = [b[r + i][c] for i in range(4)]
+                score += evaluate_window(window)
+        # Positive diagonal (/)
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                window = [b[r - i][c + i] for i in range(4)]
+                score += evaluate_window(window)
+        # Negative diagonal (\)
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [b[r + i][c + i] for i in range(4)]
+                score += evaluate_window(window)
+
+        return score
+
+    # Quick legal moves
+    moves = valid_moves(bd)
+    if not moves:
+        # No legal moves (full) - return 0 to be safe (should rarely happen)
+        return 0
+
+    # Move ordering: center-out preference
+    center = COLS // 2
+    preferred_order = sorted(moves, key=lambda c: abs(c - center))
+
+    # 1) Immediate winning move
+    for c in preferred_order:
+        nb = make_move(bd, c, 1)
+        if nb is not None and check_win_player(nb, 1):
+            return c
+
+    # 2) Block opponent immediate win(s)
+    opponent_threats = []
+    for c in preferred_order:
+        nb = make_move(bd, c, -1)
+        if nb is not None and check_win_player(nb, -1):
+            opponent_threats.append(c)
+    if len(opponent_threats) == 1:
+        return opponent_threats[0]
+    elif len(opponent_threats) >= 2:
+        # Multiple threats: no single block; try to play a winning move (already checked), else play center-most legal.
+        return preferred_order[0]
+
+    # Minimax with alpha-beta
+    MAX_DEPTH = 6
+
+    # Transposition cache: map (tuple(flattened board), depth, maximizing) -> score
+    transposition = {}
+
+    def board_key(b):
+        return tuple(item for row in b for item in row)
+
+    def minimax(b, depth, alpha, beta, maximizing):
+        key = (board_key(b), depth, maximizing)
+        if key in transposition:
+            return transposition[key]
+
+        if check_win_player(b, 1):
+            return 1000000
+        if check_win_player(b, -1):
+            return -1000000
+        valid = valid_moves(b)
+        if depth == 0 or not valid:
+            val = evaluate_board(b)
+            transposition[key] = val
+            return val
+
+        if maximizing:
+            value = -math.inf
+            # Order moves center-out
+            ordered = sorted(valid, key=lambda c: abs(c - center))
+            for c in ordered:
+                nb = make_move(b, c, 1)
+                if nb is None:
+                    continue
+                score = minimax(nb, depth - 1, alpha, beta, False)
+                if score > value:
+                    value = score
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            transposition[key] = value
+            return value
+        else:
+            value = math.inf
+            ordered = sorted(valid, key=lambda c: abs(c - center))
+            for c in ordered:
+                nb = make_move(b, c, -1)
+                if nb is None:
+                    continue
+                score = minimax(nb, depth - 1, alpha, beta, True)
+                if score < value:
+                    value = score
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            transposition[key] = value
+            return value
+
+    # Choose best move by exploring first level moves
+    best_score = -math.inf
+    best_col = preferred_order[0]
+    for c in preferred_order:
+        nb = make_move(bd, c, 1)
+        if nb is None:
+            continue
+        score = minimax(nb, MAX_DEPTH - 1, -math.inf, math.inf, False)
+        # Prefer faster wins: if move leads to immediate win, return quickly (already checked)
+        if score > best_score:
+            best_score = score
+            best_col = c
+
+    # Final safety: ensure returned column is legal
+    if bd[0][best_col] != 0:
+        for c in range(COLS):
+            if bd[0][c] == 0:
+                return c
+        return 0
+    return best_col
+</code>

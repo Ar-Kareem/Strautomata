@@ -1,0 +1,159 @@
+The strategy for this policy is to find all possible legal moves and select the one that results in the fewest connected components for the AI's pieces after the move. Ties in component count are resolved by preferring moves that capture an opponent's piece. This approach encourages the AI to connect its pieces into a single contiguous group, which is the game objective, while also removing enemy pieces when advantageous.
+
+<code>
+from collections import deque
+
+def policy(board):
+    legal_moves = []
+
+    # Generate all legal moves
+    for from_r in range(8):
+        for from_c in range(8):
+            if board[from_r][from_c] != 1:
+                continue
+
+            # Horizontal line
+            m_horizontal = sum(1 for col in range(8) if board[from_r][col] != 0)
+            for drc, dcc in [(0, -1), (0, 1)]:
+                dest_r = from_r + drc * m_horizontal
+                dest_c = from_c + dcc * m_horizontal
+                if 0 <= dest_r < 8 and 0 <= dest_c < 8:
+                    valid = True
+                    for i in range(1, m_horizontal):
+                        step_r = from_r + drc * i
+                        step_c = from_c + dcc * i
+                        if not (0 <= step_r < 8 and 0 <= step_c < 8):
+                            valid = False
+                            break
+                        if board[step_r][step_c] == -1:
+                            valid = False
+                            break
+                    if valid and board[dest_r][dest_c] != 1:
+                        legal_moves.append((from_r, from_c, dest_r, dest_c))
+
+            # Vertical line
+            m_vertical = sum(1 for row in range(8) if board[row][from_c] != 0)
+            for drc, dcc in [(-1, 0), (1, 0)]:
+                dest_r = from_r + drc * m_vertical
+                dest_c = from_c + dcc * m_vertical
+                if 0 <= dest_r < 8 and 0 <= dest_c < 8:
+                    valid = True
+                    for i in range(1, m_vertical):
+                        step_r = from_r + drc * i
+                        step_c = from_c + dcc * i
+                        if not (0 <= step_r < 8 and 0 <= step_c < 8):
+                            valid = False
+                            break
+                        if board[step_r][step_c] == -1:
+                            valid = False
+                            break
+                    if valid and board[dest_r][dest_c] != 1:
+                        legal_moves.append((from_r, from_c, dest_r, dest_c))
+
+            # Left diagonal (from r - c)
+            k = from_r - from_c
+            line_cells_left = []
+            for row in range(8):
+                col = row - k
+                if 0 <= col < 8:
+                    line_cells_left.append((row, col))
+            m_left = sum(1 for x, y in line_cells_left if board[x][y] != 0)
+            for drc, dcc in [(-1, -1), (1, 1)]:
+                dest_r = from_r + drc * m_left
+                dest_c = from_c + dcc * m_left
+                if 0 <= dest_r < 8 and 0 <= dest_c < 8:
+                    valid = True
+                    for i in range(1, m_left):
+                        step_r = from_r + drc * i
+                        step_c = from_c + dcc * i
+                        if not (0 <= step_r < 8 and 0 <= step_c < 8):
+                            valid = False
+                            break
+                        if board[step_r][step_c] == -1:
+                            valid = False
+                            break
+                    if valid and board[dest_r][dest_c] != 1:
+                        legal_moves.append((from_r, from_c, dest_r, dest_c))
+
+            # Right diagonal (from r + c)
+            k_sum = from_r + from_c
+            line_cells_right = []
+            for row in range(8):
+                col = k_sum - row
+                if 0 <= col < 8:
+                    line_cells_right.append((row, col))
+            m_right = sum(1 for x, y in line_cells_right if board[x][y] != 0)
+            for drc, dcc in [(-1, 1), (1, -1)]:
+                dest_r = from_r + drc * m_right
+                dest_c = from_c + dcc * m_right
+                if 0 <= dest_r < 8 and 0 <= dest_c < 8:
+                    valid = True
+                    for i in range(1, m_right):
+                        step_r = from_r + drc * i
+                        step_c = from_c + dcc * i
+                        if not (0 <= step_r < 8 and 0 <= step_c < 8):
+                            valid = False
+                            break
+                        if board[step_r][step_c] == -1:
+                            valid = False
+                            break
+                    if valid and board[dest_r][dest_c] != 1:
+                        legal_moves.append((from_r, from_c, dest_r, dest_c))
+
+    if not legal_moves:
+        raise ValueError("No legal moves found")
+
+    best_moves = []
+    min_components = float('inf')
+
+    # Evaluate the moves based on the number of connected components
+    for (from_r, from_c, to_r, to_c) in legal_moves:
+        new_board = [[board[r][c] for c in range(8)] for r in range(8)]
+        new_board[from_r][from_c] = 0
+        if new_board[to_r][to_c] == -1:  # Capture
+            new_board[to_r][to_c] = 1
+
+        component_count = 0
+
+        visited = [[False for _ in range(8)] for _ in range(8)]
+        for r in range(8):
+            for c in range(8):
+                if new_board[r][c] == 1 and not visited[r][c]:
+                    component_count += 1
+                    queue = deque()
+                    queue.append((r, c))
+                    visited[r][c] = True
+                    while queue:
+                        x, y = queue.popleft()
+                        for dx in (-1, 0, 1):
+                            for dy in (-1, 0, 1):
+                                if dx == 0 and dy == 0:
+                                    continue
+                                nx = x + dx
+                                ny = y + dy
+                                if 0 <= nx < 8 and 0 <= ny < 8 and new_board[nx][ny] == 1 and not visited[nx][ny]:
+                                    visited[nx][ny] = True
+                                    queue.append((nx, ny))
+
+        if component_count < min_components:
+            min_components = component_count
+            best_moves = [(from_r, from_c, to_r, to_c)]
+        elif component_count == min_components:
+            best_moves.append((from_r, from_c, to_r, to_c))
+
+    # Prefer capturing moves
+    capturing_moves = []
+    non_capturing_moves = []
+    for move in best_moves:
+        tr = move[2]
+        tc = move[3]
+        if board[tr][tc] == -1:
+            capturing_moves.append(move)
+        else:
+            non_capturing_moves.append(move)
+
+    if capturing_moves:
+        return f"{capturing_moves[0][0]},{capturing_moves[0][1]}:{capturing_moves[0][2]},{capturing_moves[0][3]}"
+    else:
+        return f"{best_moves[0][0]},{best_moves[0][1]}:{best_moves[0][2]},{best_moves[0][3]}"
+</code>

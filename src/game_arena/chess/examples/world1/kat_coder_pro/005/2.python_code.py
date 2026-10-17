@@ -1,0 +1,236 @@
+
+import random
+import re
+from typing import Dict, List, Tuple, Optional
+import numpy as np
+
+# Standard chess piece values
+PIECE_VALUES = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}  # King value is 0 for material counting
+# Piece symbols for move parsing
+PIECE_SYMBOLS = {'K': 'K', 'Q': 'Q', 'R': 'R', 'B': 'B', 'N': 'N', 'P': ''}
+
+def parse_move(move_str: str) -> Tuple[str, str, str]:
+    """
+    Parse a move string to extract source square, destination square, and promotion.
+    Handles standard moves, captures, castling, and promotions.
+    """
+    # Castling
+    if move_str in ['O-O', 'O-O-O']:
+        return move_str, move_str, ''
+    
+    # Remove check/mate symbols for parsing
+    clean_move = move_str.replace('+', '').replace('#', '')
+    
+    # Promotion
+    promotion_match = re.search(r'=([NBRQ])', clean_move)
+    promotion = promotion_match.group(1) if promotion_match else ''
+    clean_move = clean_move.replace(f'={promotion}', '')
+    
+    # Capture symbol
+    clean_move = clean_move.replace('x', '')
+    
+    # Extract squares
+    squares = re.findall(r'[a-h][1-8]', clean_move)
+    if len(squares) == 2:
+        src, dst = squares
+        return src, dst, promotion
+    return '', '', ''  # Invalid format
+
+def is_attacking(piece_square: str, target_square: str, pieces: Dict[str, str], friendly_color: str) -> bool:
+    """
+    Check if a piece on piece_square is attacking target_square.
+    Assumes the piece on piece_square belongs to the friendly_color.
+    """
+    if piece_square == target_square:
+        return False
+        
+    piece = pieces.get(piece_square, '')
+    if not piece or piece[0] != friendly_color[0].upper():
+        return False
+        
+    piece_type = piece[1]
+    fx, fy = ord(piece_square[0]) - ord('a'), int(piece_square[1]) - 1
+    tx, ty = ord(target_square[0]) - ord('a'), int(target_square[1]) - 1
+    
+    dx, dy = tx - fx, ty - fy
+    
+    # Pawn
+    if piece_type == 'P':
+        direction = 1 if friendly_color == 'white' else -1
+        return (dx == 0 and dy == direction) or (abs(dx) == 1 and dy == direction)
+        
+    # Knight
+    if piece_type == 'N':
+        return (abs(dx) == 2 and abs(dy) == 1) or (abs(dx) == 1 and abs(dy) == 2)
+        
+    # King
+    if piece_type == 'K':
+        return max(abs(dx), abs(dy)) == 1
+        
+    # Bishop / Queen (Diagonal)
+    if piece_type in ['B', 'Q']:
+        if abs(dx) == abs(dy) and abs(dx) > 0:
+            # Check path is clear
+            step_x = 1 if dx > 0 else -1
+            step_y = 1 if dy > 0 else -1
+            for i in range(1, abs(dx)):
+                if pieces.get(chr(ord('a') + fx + i*step_x) + str(fy + i*step_y + 1)):
+                    return False
+            return True
+            
+    # Rook / Queen (Orthogonal)
+    if piece_type in ['R', 'Q']:
+        if (dx == 0 or dy == 0) and (abs(dx) + abs(dy)) > 0:
+            step_x = 1 if dx > 0 else -1 if dx < 0 else 0
+            step_y = 1 if dy > 0 else -1 if dy < 0 else 0
+            for i in range(1, max(abs(dx), abs(dy))):
+                if pieces.get(chr(ord('a') + fx + i*step_x) + str(fy + i*step_y + 1)):
+                    return False
+            return True
+            
+    return False
+
+def get_attacking_pieces(target_square: str, pieces: Dict[str, str], enemy_color: str) -> List[str]:
+    """
+    Return a list of squares where enemy pieces are attacking the target square.
+    """
+    attackers = []
+    for square in pieces:
+        if is_attacking(square, target_square, pieces, enemy_color):
+            attackers.append(square)
+    return attackers
+
+def evaluate_position(pieces: Dict[str, str], to_play: str) -> float:
+    """
+    Evaluate the board position from the perspective of the player to play.
+    """
+    score = 0.0
+    color = 'white' if to_play == 'white' else 'black'
+    enemy_color = 'black' if to_play == 'white' else 'white'
+    
+    # Material balance
+    for square, piece in pieces.items():
+        value = PIECE_VALUES.get(piece[1], 0)
+        if piece[0] == color[0].upper():
+            score += value
+        else:
+            score -= value
+            
+    # Mobility (number of legal moves)
+    mobility_bonus = 0.1
+    score += mobility_bonus * len(get_legal_moves(pieces, to_play))
+    
+    # King Safety (number of attackers)
+    king_square = [sq for sq, p in pieces.items() if p == f"{color[0].upper()}K"][0]
+    attackers = get_attacking_pieces(king_square, pieces, enemy_color)
+    score -= 0.5 * len(attackers)
+    
+    return score
+
+def apply_move(pieces: Dict[str, str], move_str: str, color: str) -> Dict[str, str]:
+    """
+    Create a new board state by applying the move.
+    Handles captures, promotions, and castling.
+    """
+    new_pieces = pieces.copy()
+    src, dst, promotion = parse_move(move_str)
+    
+    if move_str == 'O-O':
+        if color == 'white':
+            new_pieces['e1'] = ''
+            new_pieces['h1'] = ''
+            new_pieces['g1'] = 'wK'
+            new_pieces['f1'] = 'wR'
+        else:
+            new_pieces['e8'] = ''
+            new_pieces['h8'] = ''
+            new_pieces['g8'] = 'bK'
+            new_pieces['f8'] = 'bR'
+        # Clean up empty squares
+        new_pieces = {k: v for k, v in new_pieces.items() if v}
+        return new_pieces
+        
+    if move_str == 'O-O-O':
+        if color == 'white':
+            new_pieces['e1'] = ''
+            new_pieces['a1'] = ''
+            new_pieces['c1'] = 'wK'
+            new_pieces['d1'] = 'wR'
+        else:
+            new_pieces['e8'] = ''
+            new_pieces['a8'] = ''
+            new_pieces['c8'] = 'bK'
+            new_pieces['d8'] = 'bR'
+        new_pieces = {k: v for k, v in new_pieces.items() if v}
+        return new_pieces
+        
+    # Regular move
+    piece = new_pieces[src]
+    new_pieces[dst] = piece
+    new_pieces[src] = ''
+    new_pieces = {k: v for k, v in new_pieces.items() if v}
+    
+    # Promotion
+    if promotion:
+        new_pieces[dst] = f"{piece[0]}{promotion}"
+        
+    return new_pieces
+
+def get_legal_moves(pieces: Dict[str, str], to_play: str) -> List[str]:
+    """
+    Generate all legal moves for the player. 
+    This is a simplified generator for the arena context.
+    """
+    # In a real implementation, this would be a full chess move generator.
+    # For the arena, we assume `legal_moves` parameter is provided.
+    # This function is a placeholder to satisfy the `evaluate_position` call.
+    return []
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str]) -> str:
+    """
+    Main policy function.
+    """
+    # If only one legal move, play it
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+        
+    # Evaluate each move
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        # Apply move
+        new_pieces = apply_move(pieces, move, to_play)
+        
+        # Check for immediate checkmate (simplified)
+        # If the opponent has no legal moves, it's checkmate
+        # For the arena, we can check if the opponent's king is captured
+        if f"{('b' if to_play == 'white' else 'w')}K" not in new_pieces.values():
+            return move
+            
+        # Evaluate position after move
+        move_score = evaluate_position(new_pieces, to_play)
+        
+        # Find opponent's best response (simplified minimax)
+        opponent_moves = get_legal_moves(new_pieces, 'black' if to_play == 'white' else 'white')
+        if not opponent_moves:
+            # Stalemate or checkmate, high score
+            score = 1000 if move_score > 0 else -1000
+        else:
+            # Evaluate opponent's best move
+            opponent_best_score = float('-inf')
+            for opp_move in opponent_moves:
+                opp_new_pieces = apply_move(new_pieces, opp_move, 'black' if to_play == 'white' else 'white')
+                opp_score = evaluate_position(opp_new_pieces, 'black' if to_play == 'white' else 'white')
+                if opp_score > opponent_best_score:
+                    opponent_best_score = opp_score
+                    
+            # Score for this move (our gain - their gain)
+            score = move_score - opponent_best_score
+            
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move
+

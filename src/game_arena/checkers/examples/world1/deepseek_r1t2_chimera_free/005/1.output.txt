@@ -1,0 +1,180 @@
+
+
+The strategy for this policy is to prioritize capturing opponent pieces when available, especially focusing on maximizing the number of captures in chains and preferring to capture kings over regular pieces. When no captures are available, the policy prioritizes moving regular pieces closer to promotion (king row) while avoiding vulnerable positions. Kings are directed toward the center for better board control. The policy also evaluates move safety by avoiding positions that are immediately capturable by the opponent. 
+
+This is achieved through:
+1. **Mandatory captures with chain optimization**: Search for all possible captures and recursively evaluate chains to select the path that captures the maximum pieces, especially kings.
+2. **Promotion-focused regular moves**: For non-capture moves, regular pieces are advanced toward their respective king rows, with immediate promotion where possible.
+3. **Positional safety**: Avoid moving pieces into squares where the opponent can immediately capture them.
+4. **Efficiency considerations**: The use of sets for fast lookups and iterative checks ensures timely execution within the 1-second constraint.
+
+<code>
+import sys
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    my_men = set(my_men)
+    my_kings = set(my_kings)
+    opp_men = set(opp_men)
+    opp_kings = set(opp_kings)
+    all_my = my_men | my_kings
+    all_opp = opp_men | opp_kings
+    occupied = all_my | all_opp
+
+    # Helper to get capture directions
+    def get_capture_dirs(is_king, color):
+        if is_king:
+            return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        elif color == 'b':
+            return [(-1, -1), (-1, 1)]
+        else:
+            return [(1, -1), (1, 1)]
+
+    # Generate all immediate captures
+    captures = []
+    for piece in all_my:
+        r, c = piece
+        is_king = piece in my_kings
+        for dr, dc in get_capture_dirs(is_king, color):
+            mid_r, mid_c = r + dr, c + dc
+            land_r, land_c = r + 2*dr, c + 2*dc
+            if 0 <= land_r < 8 and 0 <= land_c < 8:
+                if (mid_r, mid_c) in all_opp and (land_r, land_c) not in occupied:
+                    captures.append((piece, (land_r, land_c), (mid_r, mid_c)))
+
+    # Evaluate captures and chains
+    if captures:
+        best_capture = None
+        best_captures = -1
+        best_value = -1
+
+        def eval_chain(pos, my_m, my_k, opp_m, opp_k, is_king_local, count, value):
+            nonlocal best_captures, best_value, best_capture
+            dirs = get_capture_dirs(is_king_local, color)
+            found = False
+            for dr, dc in dirs:
+                mid_r, mid_c = pos[0] + dr, pos[1] + dc
+                land_r, land_c = pos[0] + 2*dr, pos[1] + 2*dc
+                if 0 <= land_r < 8 and 0 <= land_c < 8:
+                    mid_pos = (mid_r, mid_c)
+                    land_pos = (land_r, land_c)
+                    if mid_pos in (opp_m | opp_k) and land_pos not in (my_m | my_k | opp_m | opp_k):
+                        cap_king = mid_pos in opp_k
+                        new_opp_m = set(opp_m)
+                        new_opp_k = set(opp_k)
+                        if mid_pos in new_opp_m:
+                            new_opp_m.remove(mid_pos)
+                        else:
+                            new_opp_k.remove(mid_pos)
+                        new_my_m = set(my_m)
+                        new_my_k = set(my_k)
+                        if pos in new_my_m:
+                            new_my_m.remove(pos)
+                        else:
+                            new_my_k.remove(pos)
+                        new_is_king = is_king_local
+                        if not new_is_king:
+                            if (color == 'b' and land_r == 0) or (color == 'w' and land_r == 7):
+                                new_is_king = True
+                        if new_is_king:
+                            new_my_k.add(land_pos)
+                        else:
+                            new_my_m.add(land_pos)
+                        eval_chain(land_pos, new_my_m, new_my_k, new_opp_m, new_opp_k, new_is_king, count + 1, value + (3 if cap_king else 1))
+                        found = True
+            if not found:
+                if count > best_captures or (count == best_captures and value > best_value):
+                    best_captures = count
+                    best_value = value
+
+        for c in captures:
+            from_pos, land_pos, cap_pos = c
+            cap_is_king = cap_pos in opp_kings
+            init_value = 3 if cap_is_king else 1
+            new_my_m = set(my_men)
+            new_my_k = set(my_kings)
+            new_opp_m = set(opp_men)
+            new_opp_k = set(opp_kings)
+            if from_pos in new_my_m:
+                new_my_m.remove(from_pos)
+            else:
+                new_my_k.remove(from_pos)
+            new_is_king = from_pos in my_kings
+            if not new_is_king:
+                if (color == 'b' and land_pos[0] == 0) or (color == 'w' and land_pos[0] == 7):
+                    new_is_king = True
+            if new_is_king:
+                new_my_k.add(land_pos)
+            else:
+                new_my_m.add(land_pos)
+            if cap_pos in new_opp_m:
+                new_opp_m.remove(cap_pos)
+            else:
+                new_opp_k.remove(cap_pos)
+            current_best_captures = best_captures
+            current_best_value = best_value
+            best_captures = -1
+            best_value = -1
+            eval_chain(land_pos, new_my_m, new_my_k, new_opp_m, new_opp_k, new_is_king, 1, init_value)
+            if best_captures > current_best_captures or (best_captures == current_best_captures and best_value > current_best_value):
+                best_capture = (from_pos, land_pos)
+                current_best_captures = best_captures
+                current_best_value = best_value
+            best_captures = current_best_captures
+            best_value = current_best_value
+        
+        if best_capture:
+            return best_capture
+
+    # Generate regular moves
+    moves = []
+    for piece in all_my:
+        r, c = piece
+        is_king = piece in my_kings
+        dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)] if is_king else [( -1,-1), (-1,1)] if color == 'b' else [(1,-1), (1,1)]
+        for dr, dc in dirs:
+            land_r, land_c = r + dr, c + dc
+            if 0 <= land_r < 8 and 0 <= land_c < 8 and (land_r, land_c) not in occupied:
+                moves.append((piece, (land_r, land_c)))
+
+    if not moves:
+        return (next(iter(all_my)), next(iter(all_my))) if all_my else ((0,0),(0,0))
+
+    # Evaluate regular moves
+    best_move = None
+    best_score = -sys.maxsize
+    for from_pos, to_pos in moves:
+        score = 0
+        r, c = to_pos
+        is_king = from_pos in my_kings
+        # Promotion bonus
+        if not is_king:
+            if (color == 'b' and r == 0) or (color == 'w' and r == 7):
+                score += 10
+            score += (7 - r) if color == 'b' else r
+        else:
+            # Centrality bonus
+            score += 3.5 - abs(r - 3.5) + 3.5 - abs(c - 3.5)
+        # Safety penalty
+        vul = False
+        for dr, dc in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+            opp_r, opp_c = r + dr, c + dc
+            land_r, land_c = r - dr, c - dc
+            if 0 <= land_r < 8 and 0 <= land_c < 8:
+                if (opp_r, opp_c) in all_opp:
+                    cap_possible = (land_r, land_c) not in occupied
+                    if cap_possible:
+                        opp_is_king = (opp_r, opp_c) in opp_kings
+                        if opp_is_king:
+                            vul = True
+                        else:
+                            opp_color = 'w' if color == 'b' else 'b'
+                            if (opp_color == 'b' and dr == -1) or (opp_color == 'w' and dr == 1):
+                                vul = True
+                    if vul:
+                        break
+        if vul:
+            score -= 5
+        if score > best_score:
+            best_score = score
+            best_move = (from_pos, to_pos)
+    return best_move
+</code>

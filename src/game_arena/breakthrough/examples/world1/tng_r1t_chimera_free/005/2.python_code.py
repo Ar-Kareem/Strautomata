@@ -1,0 +1,76 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    direction = 1 if color == 'w' else -1
+    home_row = 7 if color == 'w' else 0
+
+    # Generate all legal moves
+    legal_moves = []
+    me_set = set(me)
+    opp_set = set(opp)
+    for (r, c) in me:
+        # Forward move
+        forward_r = r + direction
+        if 0 <= forward_r <= 7:
+            target = (forward_r, c)
+            if target not in me_set and target not in opp_set:
+                legal_moves.append(((r, c), target))
+        # Diagonal moves
+        for dc in [-1, 1]:
+            diag_r = r + direction
+            diag_c = c + dc
+            if 0 <= diag_r <= 7 and 0 <= diag_c <= 7:
+                target = (diag_r, diag_c)
+                if target in opp_set:
+                    legal_moves.append(((r, c), target))
+                elif target not in me_set:
+                    legal_moves.append(((r, c), target))
+
+    # Check for immediate win moves first
+    for move in legal_moves:
+        to_pos = move[1]
+        if to_pos[0] == home_row:
+            return move
+
+    max_score = -float('inf')
+    best_moves = []
+
+    for move in legal_moves:
+        from_pos, to_pos = move
+        to_r, to_c = to_pos
+
+        # Calculate advancement score
+        advancement = to_r if color == 'w' else (7 - to_r)
+
+        # Check capture
+        capture = 1 if to_pos in opp_set else 0
+
+        # Center control (peaks at column 3.5)
+        center = 3.5 - abs(to_c - 3.5)
+
+        # Check threat
+        threat = False
+        if color == 'w':
+            # Opponent (black) can capture from row+1
+            threat_offsets = [(to_r + 1, to_c + dc) for dc in [-1, 1]]
+        else:
+            # Opponent (white) can capture from row-1
+            threat_offsets = [(to_r - 1, to_c + dc) for dc in [-1, 1]]
+
+        for tr, tc in threat_offsets:
+            if 0 <= tr <= 7 and 0 <= tc <= 7 and (tr, tc) in opp_set:
+                threat = True
+                break
+
+        # Composite score (weights determined empirically)
+        score = 10 * advancement + 5 * capture + 1 * center - 3 * threat
+
+        if score > max_score:
+            max_score = score
+            best_moves = [move]
+        elif score == max_score:
+            best_moves.append(move)
+
+    # Random choice among best moves to avoid predictability
+    return random.choice(best_moves)

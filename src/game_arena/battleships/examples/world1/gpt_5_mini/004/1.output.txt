@@ -1,0 +1,182 @@
+<thinking>
+I will implement a robust hunt/target Battleship policy. It builds a probability heatmap by enumerating all legal ship placements (given misses) and counts how often each unknown cell is occupied across placements. When there are "hit" cells, a focused target mode tries to finish that ship first: it groups connected hits, infers orientation when possible, and probes adjacent unknown cells along the likely axis before falling back to the heatmap. If no hits exist, the hunt mode uses the heatmap but also biases toward parity (checkerboard) to efficiently find ships. Ties are broken randomly. The policy always returns an un-shot cell (0..9 integers).
+</thinking>
+<code>
+import random
+from collections import deque
+import numpy as np
+
+# Ship lengths in standard Battleship
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+
+def _find_hit_groups(board):
+    """Return list of lists of (r,c) for connected hit groups (4-neighbor)."""
+    visited = [[False]*10 for _ in range(10)]
+    groups = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1 and not visited[r][c]:
+                q = deque()
+                q.append((r,c))
+                visited[r][c] = True
+                group = []
+                while q:
+                    x,y = q.popleft()
+                    group.append((x,y))
+                    for dx,dy in ((1,0),(-1,0),(0,1),(0,-1)):
+                        nx, ny = x+dx, y+dy
+                        if 0 <= nx < 10 and 0 <= ny < 10 and not visited[nx][ny] and board[nx][ny] == 1:
+                            visited[nx][ny] = True
+                            q.append((nx,ny))
+                groups.append(group)
+    return groups
+
+def _compute_heatmap(board, ship_lengths):
+    """Compute heatmap counts for each unknown cell by enumerating valid placements."""
+    heat = np.zeros((10,10), dtype=int)
+    for L in ship_lengths:
+        # horizontal placements
+        for r in range(10):
+            for c in range(0, 10 - L + 1):
+                # check placement cells
+                placement_cells = [(r, c + i) for i in range(L)]
+                invalid = False
+                for (x,y) in placement_cells:
+                    if board[x][y] == -1:  # cannot place over a miss
+                        invalid = True
+                        break
+                if invalid:
+                    continue
+                # placement is allowed; add to heatmap for unknown/hit cells alike (we will only pick unknown later)
+                for (x,y) in placement_cells:
+                    heat[x,y] += 1
+        # vertical placements
+        for c in range(10):
+            for r in range(0, 10 - L + 1):
+                placement_cells = [(r + i, c) for i in range(L)]
+                invalid = False
+                for (x,y) in placement_cells:
+                    if board[x][y] == -1:
+                        invalid = True
+                        break
+                if invalid:
+                    continue
+                for (x,y) in placement_cells:
+                    heat[x,y] += 1
+    return heat
+
+def _choose_from_candidates(candidates, heatmap):
+    """Candidates: list of (r,c). Choose one by highest heatmap value, tie-break random."""
+    if not candidates:
+        return None
+    vals = [heatmap[r,c] for (r,c) in candidates]
+    maxv = max(vals)
+    best = [c for c,v in zip(candidates, vals) if v == maxv]
+    return random.choice(best)
+
+def policy(board):
+    """
+    board: list[list[int]] 10x10 with values 0 (unknown), -1 (miss), 1 (hit)
+    returns: (row, col) of an unknown cell to fire at
+    """
+    # Convert to numpy array for convenience
+    a = np.array(board)
+    # Basic validation and ensure we only pick unknown cells
+    unknown_coords = [(r,c) for r in range(10) for c in range(10) if board[r][c] == 0]
+    if not unknown_coords:
+        # No unknowns left; return a default valid coordinate (shouldn't happen in practice)
+        return (0,0)
+
+    # Compute heatmap by enumerating all possible placements given misses
+    heat = _compute_heatmap(board, SHIP_LENGTHS)
+
+    # Hunt/Target: if there are hits, try to finish ships first
+    hit_groups = _find_hit_groups(board)
+    if hit_groups:
+        # prefer the largest group (most urgent)
+        hit_groups.sort(key=lambda g: -len(g))
+        for group in hit_groups:
+            # derive potential targeting cells around this group
+            candidates = []
+            if len(group) >= 2:
+                # check orientation
+                rows = {r for r,c in group}
+                cols = {c for r,c in group}
+                if len(rows) == 1:
+                    # horizontal
+                    r = next(iter(rows))
+                    minc = min(c for _,c in group)
+                    maxc = max(c for _,c in group)
+                    # try extend at both ends
+                    if minc - 1 >= 0 and board[r][minc-1] == 0:
+                        candidates.append((r, minc-1))
+                    if maxc + 1 < 10 and board[r][maxc+1] == 0:
+                        candidates.append((r, maxc+1))
+                elif len(cols) == 1:
+                    # vertical
+                    c = next(iter(cols))
+                    minr = min(r for r,_ in group)
+                    maxr = max(r for r,_ in group)
+                    if minr - 1 >= 0 and board[minr-1][c] == 0:
+                        candidates.append((minr-1, c))
+                    if maxr + 1 < 10 and board[maxr+1][c] == 0:
+                        candidates.append((maxr+1, c))
+                else:
+                    # irregular shape (shouldn't occur for straight ships) - fall back to neighbors
+                    pass
+            # If no orientation or no candidates found, try any adjacent unknowns around the group's cells
+            if not candidates:
+                for (r,c) in group:
+                    for dr,dc in ((1,0),(-1,0),(0,1),(0,-1)):
+                        nr, nc = r+dr, c+dc
+                        if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                            candidates.append((nr,nc))
+            # Remove duplicates
+            candidates = list(dict.fromkeys(candidates))
+            if candidates:
+                pick = _choose_from_candidates(candidates, heat)
+                if pick is not None:
+                    return (int(pick[0]), int(pick[1]))
+        # If we have hits but couldn't find adjacent unknowns (rare), fall through to heatmap selection
+
+    # If no hits or target failed, use heatmap with parity bias for hunting
+    # Apply parity mask favoring (r+c)%2 == 0 (helps find ships efficiently)
+    # But only apply parity when there are no hits; if hits exist prefer heatmap alone
+    parity_mask = np.ones((10,10), dtype=int)
+    if not hit_groups:
+        # Use smallest ship length to choose parity spacing.
+        # For ships of length 2, parity 2 is optimal.
+        for r in range(10):
+            for c in range(10):
+                parity_mask[r,c] = 1 if ((r + c) % 2 == 0) else 0
+        # But ensure that we don't zero out all high-probability cells: multiply heat by mask+0.0001 to keep some signal
+        adjusted_heat = heat * parity_mask
+        # If adjusted_heat is all zero (possible early game if heat concentrated on parity other than mask),
+        # fall back to plain heat
+        if adjusted_heat.max() == 0:
+            adjusted_heat = heat
+    else:
+        adjusted_heat = heat
+
+    # Only consider unknown cells
+    best_val = -1
+    best_cells = []
+    for (r,c) in unknown_coords:
+        val = int(adjusted_heat[r,c])
+        if val > best_val:
+            best_val = val
+            best_cells = [(r,c)]
+        elif val == best_val:
+            best_cells.append((r,c))
+
+    if best_cells and best_val > 0:
+        choice = random.choice(best_cells)
+        return (int(choice[0]), int(choice[1]))
+    else:
+        # If heatmap gives no preference (e.g., all zeros), pick a random unknown with parity bias
+        if not hit_groups:
+            parity_unknowns = [xy for xy in unknown_coords if (xy[0] + xy[1]) % 2 == 0]
+            if parity_unknowns:
+                return random.choice(parity_unknowns)
+        return random.choice(unknown_coords)
+</code>

@@ -1,0 +1,93 @@
+
+import random
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    """
+    A policy that evaluates moves with a simple heuristic and returns the best one.
+    
+    Args:
+        pieces (dict[str, str]): Mapping of squares to piece codes.
+        to_play (str): 'white' or 'black'.
+        memory (dict): Memory dictionary (unused in this simple implementation).
+    
+    Returns:
+        tuple[str, dict]: A tuple containing the chosen move and the memory dictionary.
+    """
+    legal_moves = memory.get('legal_moves', [])
+    
+    if not legal_moves:
+        return None, memory
+    
+    # If checkmate is available, take it
+    for move in legal_moves:
+        if is_checkmate_after_move(pieces, move, to_play):
+            return move, memory
+    
+    # Evaluate all moves
+    best_score = float('-inf')
+    best_moves = []
+    
+    for move in legal_moves:
+        score = evaluate_move(pieces, move, to_play)
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+    
+    # Randomly choose among the best moves
+    chosen_move = random.choice(best_moves)
+    
+    return chosen_move, memory
+
+def is_checkmate_after_move(pieces: dict[str, str], move: str, to_play: str) -> bool:
+    """
+    Check if making this move results in checkmate.
+    This is a simplified check that does not simulate the entire game tree.
+    """
+    # In a more sophisticated implementation, we would simulate the move
+    # and check if the opponent's king is in check with no legal moves.
+    # For this simple implementation, we'll just return False.
+    return False
+
+def evaluate_move(pieces: dict[str, str], move: str, to_play: str) -> float:
+    """
+    Evaluate a move based on material gain and positional factors.
+    """
+    score = 0.0
+    
+    # Extract source and target squares
+    src = move[:2]
+    tgt = move[2:]
+    
+    # Check for capture
+    if tgt in pieces:
+        target_piece = pieces[tgt]
+        if target_piece[0] != pieces[src][0]:  # Enemy piece
+            score += get_piece_value(target_piece[1])
+    
+    # Check for pawn promotion
+    if len(move) > 4:
+        score += get_piece_value(move[-1])
+    
+    # Simple positional evaluation (center control)
+    tgt_file = tgt[0]
+    tgt_rank = tgt[1]
+    center_bonus = 0.1 if tgt_file in 'defg' and tgt_rank in '3456' else 0.0
+    score += center_bonus
+    
+    return score
+
+def get_piece_value(piece_type: str) -> float:
+    """
+    Return the value of a piece type.
+    """
+    values = {
+        'P': 1.0,
+        'N': 3.0,
+        'B': 3.0,
+        'R': 5.0,
+        'Q': 9.0,
+        'K': 0.0  # King value is not considered for material gain
+    }
+    return values.get(piece_type.upper(), 0.0)

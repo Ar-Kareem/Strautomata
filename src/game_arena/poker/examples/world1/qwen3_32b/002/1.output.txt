@@ -1,0 +1,128 @@
+The strategy for this policy is to use a combination of hand strength estimation and betting logic to make optimal decisions in Texas Hold 'em poker. The policy considers:
+
+1. **Hand strength** of the player (based on the one private card and visible community cards)
+2. **Call-to-be-invested amount** and **pot odds** to decide if it's worth it to call
+3. **Pot size** to determine the value of betting
+4. **Allowed actions** to make legal decisions
+
+The policy follows these basic decision criteria during the hand:
+
+- If the hand is weak (e.g., low card with no draw potential), it will fold unless the pot is very large.
+- If the hand is moderate (e.g., mid-value card or a draw on the early rounds), it will sometimes call and sometimes raise to gamble.
+- On the river, with all 5 public cards dealt, if the hand is strong, it will raise or go all-in to maximize value.
+- If the opponent is likely to have a strong hand, it avoids overcommitting.
+
+### Strategy Summary
+
+1. **Preflop (no public cards)**:
+   - The decision is purely based on the strength of the player’s private card.
+   - Strong cards (e.g., A, K, Q, J, 10 of high suits) will call or raise.
+   - Moderate cards may call.
+   - Weak cards will fold unless it’s to check.
+
+2. **Flop (3 public cards)**:
+   - Estimate hand strength using the 4-card combination (1 private + 3 public).
+   - Consider the chance of improving (e.g., flush or straight draw).
+   - Raise if in a good draw position or with a strong hand.
+   - Call if hand is good but not great and opponent is committed.
+
+3. **Turn (4 public cards)**:
+   - Update the hand based on the new 5-card pool.
+   - If the hand is very strong, raise or all-in.
+   - If the draw is likely to improve, call or raise.
+   - Otherwise, consider calling.
+
+4. **River (5 public cards)**:
+   - Final evaluation of hand strength.
+   - Raise or all-in if likely to win.
+   - Call if it’s only a small edge.
+   - Fold if hand is not likely to win against a strong drawing range.
+
+5. **Betting Dynamics**:
+   - If calling is equal to or less than the current stack, choose the action that maximizes EV.
+   - When raising, consider fold equity and relative hand strength.
+   - Avoid "suicidal bluffs" early on with minimal evidence.
+
+### Python Implementation
+
+<code>
+```python
+import numpy as np
+from itertools import combinations
+
+def policy(state: dict) -> str:
+    # Constants
+    private_card = state['private_cards'][0]
+    public_cards = state['public_cards']
+    pot = state['pot']
+    my_spent = state['my_spent']
+    opponent_spent = state['opponent_spent']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+
+    # Bias towards conservative play in early rounds
+    num_public = len(public_cards)
+    if to_call <= 0 and 'call' in allowed_actions:
+        return 'call'
+
+    # Estimate hand strength
+    def hand_strength(card1, card2, card3=None, card4=None, card5=None):
+        # Takes one private card and up to 5 public cards to evaluate hand strength (1 = high, 0 = very low)
+        all_cards = [card1] + (public_cards if card3 is None else [card3, card4, card5])
+        rank = private_card['rank']
+        suit = private_card['suit']
+        suits = [card['suit'] for card in all_cards]
+        suits_match = suits.count(suit) >= 2
+
+        # High card strength based on rank
+        strength = rank / 14.0  # Normalize 2-Ace to 0-1
+        if num_public == 3:
+            # On the flop, premium cards should play aggressively
+            if strength >= 0.8:  # Ace or King
+                strength += 0.1
+            if strength >= 0.7 and suits_match:
+                strength += 0.15  # Flush draw
+        elif num_public >= 4:
+            # On turn/river, all public cards are out
+            suits = [card['suit'] for card in all_cards]
+            ranks = [card['rank'] for card in all_cards]
+            for c in combinations(ranks, 2):
+                if max(c) - min(c) <= 4:  # Rough straight potential
+                    strength += 0.1
+            if suits.count(suit) >= 4:
+                strength += 0.3  # High flush potential
+            if strength >= 0.9:
+                strength += 0.1
+
+        return strength
+
+    strength = hand_strength(private_card, public_cards)
+
+    if to_call > 0 and pot > opponent_spent:
+        pot_odds = pot / to_call
+        win_chance_threshold = 0.40  # If this hand has 40%+ chance to win, consider it
+        if strength > win_chance_threshold:
+            if 'raise' in allowed_actions:
+                return 'raise'
+            elif 'all-in' in allowed_actions:
+                return 'all-in'
+            else:
+                return 'call'
+        else:
+            return 'fold'
+    elif to_call > 0 and 'call' in allowed_actions:
+        # Very low chance to win, only call if the pot is large.
+        if pot > 200 or strength > 0.7:
+            return 'call'
+        else:
+            return 'fold'
+    elif 'call' in allowed_actions:
+        return 'call'
+    elif 'all-in' in allowed_actions and strength > 0.9:
+        return 'all-in'
+    elif 'raise' in allowed_actions:
+        return 'raise'
+    else:
+        return 'call'  # Fallback in case of missing allowed_actions
+```
+</code>

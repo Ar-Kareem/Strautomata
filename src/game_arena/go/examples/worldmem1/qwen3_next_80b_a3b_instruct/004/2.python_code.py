@@ -1,0 +1,186 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Convert to sets for fast lookup
+    my_stones = set(me)
+    opponent_stones = set(opponent)
+    occupied = my_stones | opponent_stones
+
+    # Initialize memory if empty
+    if 'turn' not in memory:
+        memory['turn'] = 0
+        memory['last_move'] = None
+        memory['pattern_history'] = set()
+
+    turn = memory['turn']
+    memory['turn'] += 1
+
+    # Boundaries
+    BOARD_SIZE = 19
+    rows, cols = BOARD_SIZE, BOARD_SIZE
+
+    # Directions: up, right, down, left
+    directions = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+
+    def is_valid(r, c):
+        return 1 <= r <= rows and 1 <= c <= cols
+
+    def get_neighbors(r, c):
+        return [(r + dr, c + dc) for dr, dc in directions if is_valid(r + dr, c + dc)]
+
+    def get_liberties(group):
+        """Return set of liberties (empty adjacent points) for a group of stones."""
+        liberties = set()
+        for r, c in group:
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) not in occupied:
+                    liberties.add((nr, nc))
+        return liberties
+
+    def get_group(stone, stones_set):
+        """Get the connected group of stones containing `stone` from `stones_set`."""
+        group = set()
+        stack = [stone]
+        group.add(stone)
+        while stack:
+            r, c = stack.pop()
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in stones_set and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    stack.append((nr, nc))
+        return group
+
+    def is_suicide(r, c):
+        """Check if placing at (r, c) would be suicide (no liberties, and doesn't capture)."""
+        if (r, c) in occupied:
+            return True  # Already occupied
+        
+        # Temporarily place our stone
+        temp_occupied = occupied | {(r, c)}
+        
+        # Check liberties of the new group
+        my_group = get_group((r, c), my_stones | {(r, c)})
+        my_liberties = get_liberties(my_group)
+        
+        # If we have no liberties, check if we capture any opponent groups
+        if len(my_liberties) == 0:
+            # Check if any opponent group adjacent to (r, c) has exactly one liberty (and will be captured)
+            captured = False
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opponent_stones:
+                    opp_group = get_group((nr, nc), opponent_stones)
+                    opp_liberties = get_liberties(opp_group)
+                    # If opponent group has only one liberty and that liberty is (r, c), then capturing
+                    if len(opp_liberties) == 1 and (r, c) in opp_liberties:
+                        captured = True
+                        break
+            return not captured  # Suicide if not capturing anything
+        
+        return False
+
+    def score_move(r, c):
+        """Heuristic score for move (r, c) based on tactical and positional value."""
+        if is_suicide(r, c):
+            return -1000
+
+        score = 0
+
+        # Check if move captures opponent
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in opponent_stones:
+                opp_group = get_group((nr, nc), opponent_stones)
+                opp_liberties = get_liberties(opp_group)
+                # If opponent group has only 1 liberty and we take it, we capture!
+                if len(opp_liberties) == 1 and (r, c) in opp_liberties:
+                    score += 50  # Huge bonus for capture
+
+        # Check if move prevents opponent from capturing
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in opponent_stones:
+                opp_group = get_group((nr, nc), opponent_stones)
+                opp_liberties = get_liberties(opp_group)
+                if len(opp_liberties) == 2:  # Opponent in atari next turn?
+                    # If we fill one liberty, opponent becomes capturable next move
+                    # We defend before it's too late
+                    my_neighbors = get_neighbors(r, c)
+                    opp_adjacent = [(x, y) for x, y in my_neighbors if (x, y) in opponent_stones]
+                    for ox, oy in opp_adjacent:
+                        other_group = get_group((ox, oy), opponent_stones)
+                        other_liberties = get_liberties(other_group)
+                        # If group has 2 liberties and one is ours, we're preventing a future capture threat
+                        if len(other_liberties) == 2:
+                            # Estimate if this move blocks critical liberty
+                            score += 20
+
+        # Add bonus for liberty expansion of own groups
+        own_adjacent = [(nr, nc) for nr, nc in get_neighbors(r, c) if (nr, nc) in my_stones]
+        if own_adjacent:
+            for stone in own_adjacent:
+                my_group = get_group(stone, my_stones)
+                current_liberties = len(get_liberties(my_group))
+                
+                # New group including (r, c)
+                new_group = my_group | {(r, c)}
+                new_liberties = len(get_liberties(new_group))
+                
+                # How many new liberties do we gain?
+                improvement = new_liberties - current_liberties
+                score += improvement * 3
+
+        # Territory value: prefer center, then corners, then edges
+        center = BOARD_SIZE // 2 + 1
+        dist_to_center = abs(r - center) + abs(c - center)
+        if r in [1, 19] and c in [1, 19]:  # Corners
+            score += 15
+        elif r in [1, 19] or c in [1, 19]:  # Edges
+            score += 10
+        else:  # Middle
+            score += (19 - dist_to_center)  # Prioritize center
+
+        # Avoid repeating recent moves
+        if (r, c) == memory['last_move']:
+            score -= 10
+
+        # Check if move is in historical pattern (avoid cycles)
+        move_key = (r, c, turn % 5)  # Use modulo to avoid long memory
+        if move_key in memory['pattern_history']:
+            score -= 5
+        memory['pattern_history'].add(move_key)
+
+        return score
+
+    # List of all empty intersections
+    empty_points = [(r, c) for r in range(1, BOARD_SIZE + 1) for c in range(1, BOARD_SIZE + 1) if (r, c) not in occupied]
+
+    # If board is empty, play 4-4 in corner for standard opening
+    if len(occupied) == 0:
+        memory['last_move'] = (4, 4)
+        return (4, 4), memory
+
+    # Check for immediate capture opportunities (atari)
+    candidate_moves = []
+    for point in empty_points:
+        score = score_move(*point)
+        candidate_moves.append((score, point))
+
+    # Sort by score descending
+    candidate_moves.sort(key=lambda x: x[0], reverse=True)
+
+    # Best move
+    if candidate_moves and candidate_moves[0][0] > -100:  # Valid move found
+        best_move = candidate_moves[0][1]
+        memory['last_move'] = best_move
+        return best_move, memory
+
+    # Fallback: if all moves are suicidal or negative, pass
+    # But try one last check: is there ANY non-suicidal move?
+    for point in empty_points:
+        if not is_suicide(*point):
+            memory['last_move'] = point
+            return point, memory
+
+    # If truly no legal move, pass
+    memory['last_move'] = (0, 0)
+    return (0, 0), memory

@@ -1,0 +1,299 @@
+The strategy for this policy is:
+
+1. Always play a legal move.
+2. First check for an immediate winning move.
+3. If the opponent has an immediate winning move next turn, block it.
+4. Otherwise use alpha-beta pruned negamax search with strong move ordering:
+   - prefer the center column,
+   - search tactically dangerous moves first,
+   - use iterative deepening so the policy stays within time.
+5. Evaluate non-terminal positions with a Connect-4 heuristic:
+   - favor center control,
+   - reward lines with 2 or 3 discs plus empty spaces,
+   - heavily punish allowing the opponent similar threats.
+6. Use a fast in-place board update with undo to search efficiently.
+
+<code>
+import time
+from typing import List
+
+ROWS = 6
+COLS = 7
+CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
+
+WIN_SCORE = 10_000_000
+TIME_LIMIT = 0.90
+
+
+def policy(board: List[List[int]]) -> int:
+    # Copy so we can mutate safely during search
+    b = [row[:] for row in board]
+
+    legal = legal_moves(b)
+    if not legal:
+        return 0  # should not happen in normal play
+
+    # Immediate win
+    for c in ordered_moves(legal):
+        r = make_move(b, c, 1)
+        if is_win(b, r, c, 1):
+            undo_move(b, c, r)
+            return c
+        undo_move(b, c, r)
+
+    # Immediate block of opponent win
+    opp_wins = []
+    for c in ordered_moves(legal):
+        r = make_move(b, c, -1)
+        if is_win(b, r, c, -1):
+            opp_wins.append(c)
+        undo_move(b, c, r)
+    if opp_wins:
+        for c in ordered_moves(legal):
+            if c in opp_wins:
+                return c
+        return opp_wins[0]
+
+    # Iterative deepening alpha-beta
+    start = time.time()
+    empties = sum(cell == 0 for row in b for cell in row)
+    target_depth = 6
+    if empties <= 18:
+        target_depth = 8
+    if empties <= 12:
+        target_depth = 10
+
+    best_move = ordered_moves(legal)[0]
+
+    # If only one move, play it
+    if len(legal) == 1:
+        return legal[0]
+
+    try:
+        for depth in range(4, target_depth + 1):
+            move = search_root(b, depth, start)
+            if move is not None:
+                best_move = move
+    except TimeoutError:
+        pass
+
+    if best_move not in legal:
+        return ordered_moves(legal)[0]
+    return best_move
+
+
+def legal_moves(board: List[List[int]]) -> List[int]:
+    return [c for c in range(COLS) if board[0][c] == 0]
+
+
+def ordered_moves(moves: List[int]) -> List[int]:
+    s = set(moves)
+    return [c for c in CENTER_ORDER if c in s]
+
+
+def make_move(board: List[List[int]], col: int, player: int) -> int:
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            board[r][col] = player
+            return r
+    return -1
+
+
+def undo_move(board: List[List[int]], col: int, row: int) -> None:
+    board[row][col] = 0
+
+
+def is_win(board: List[List[int]], row: int, col: int, player: int) -> bool:
+    # 4 directions: horiz, vert, diag \, diag /
+    for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
+        count = 1
+
+        r, c = row + dr, col + dc
+        while 0 <= r < ROWS and 0 <= c < COLS and board[r][c] == player:
+            count += 1
+            r += dr
+            c += dc
+
+        r, c = row - dr, col - dc
+        while 0 <= r < ROWS and 0 <= c < COLS and board[r][c] == player:
+            count += 1
+            r -= dr
+            c -= dc
+
+        if count >= 4:
+            return True
+    return False
+
+
+def search_root(board: List[List[int]], depth: int, start: float):
+    legal = legal_moves(board)
+    moves = sort_moves(board, legal, 1)
+
+    alpha = -WIN_SCORE
+    beta = WIN_SCORE
+    best_score = -WIN_SCORE - 1
+    best_move = moves[0]
+
+    for c in moves:
+        if time.time() - start > TIME_LIMIT:
+            raise TimeoutError
+        r = make_move(board, c, 1)
+        if is_win(board, r, c, 1):
+            undo_move(board, c, r)
+            return c
+        score = -negamax(board, depth - 1, -beta, -alpha, -1, start)
+        undo_move(board, c, r)
+
+        if score > best_score:
+            best_score = score
+            best_move = c
+        if score > alpha:
+            alpha = score
+
+    return best_move
+
+
+def negamax(board: List[List[int]], depth: int, alpha: int, beta: int, player: int, start: float) -> int:
+    if time.time() - start > TIME_LIMIT:
+        raise TimeoutError
+
+    legal = legal_moves(board)
+    if not legal:
+        return 0
+
+    if depth == 0:
+        return player * evaluate(board)
+
+    # If the current player has an immediate win, prefer it strongly.
+    for c in ordered_moves(legal):
+        r = make_move(board, c, player)
+        won = is_win(board, r, c, player)
+        undo_move(board, c, r)
+        if won:
+            return WIN_SCORE - (10 - depth)
+
+    best = -WIN_SCORE
+    moves = sort_moves(board, legal, player)
+
+    for c in moves:
+        r = make_move(board, c, player)
+        if is_win(board, r, c, player):
+            score = WIN_SCORE - (10 - depth)
+        else:
+            score = -negamax(board, depth - 1, -beta, -alpha, -player, start)
+        undo_move(board, c, r)
+
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best
+
+
+def sort_moves(board: List[List[int]], moves: List[int], player: int) -> List[int]:
+    # Tactical ordering:
+    # 1) immediate wins
+    # 2) center preference / heuristic
+    scored = []
+    for c in ordered_moves(moves):
+        r = make_move(board, c, player)
+        if is_win(board, r, c, player):
+            score = 1_000_000
+        else:
+            # prefer moves that improve board value and avoid obvious opponent wins
+            score = move_quick_score(board, c, player)
+        undo_move(board, c, r)
+        scored.append((score, c))
+    scored.sort(reverse=True)
+    return [c for _, c in scored]
+
+
+def move_quick_score(board: List[List[int]], col: int, player: int) -> int:
+    # board already has player's piece played in col
+    score = 0
+
+    # Center bias
+    score -= abs(3 - col) * 3
+
+    # Penalize if opponent gets an immediate win after this move
+    opp = -player
+    for c in ordered_moves(legal_moves(board)):
+        r = make_move(board, c, opp)
+        if is_win(board, r, c, opp):
+            score -= 5000
+        undo_move(board, c, r)
+
+    # Mild heuristic on current position
+    score += player * evaluate(board)
+    return score
+
+
+def evaluate(board: List[List[int]]) -> int:
+    # Positive is good for player 1, negative for player -1
+    score = 0
+
+    # Center control
+    center_col = [board[r][3] for r in range(ROWS)]
+    score += center_col.count(1) * 6
+    score -= center_col.count(-1) * 6
+
+    # Windows of 4
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            window = [board[r][c + i] for i in range(4)]
+            score += eval_window(window)
+
+    # Vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            window = [board[r + i][c] for i in range(4)]
+            score += eval_window(window)
+
+    # Diagonal \
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r + i][c + i] for i in range(4)]
+            score += eval_window(window)
+
+    # Diagonal /
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r - i][c + i] for i in range(4)]
+            score += eval_window(window)
+
+    return score
+
+
+def eval_window(window: List[int]) -> int:
+    p1 = window.count(1)
+    p2 = window.count(-1)
+    e = window.count(0)
+
+    if p1 and p2:
+        return 0
+
+    if p1 == 4:
+        return 100000
+    if p2 == 4:
+        return -100000
+
+    if p1 == 3 and e == 1:
+        return 120
+    if p1 == 2 and e == 2:
+        return 12
+    if p1 == 1 and e == 3:
+        return 2
+
+    if p2 == 3 and e == 1:
+        return -140
+    if p2 == 2 and e == 2:
+        return -14
+    if p2 == 1 and e == 3:
+        return -2
+
+    return 0
+</code>

@@ -1,0 +1,49 @@
+
+def policy(state: dict) -> str:
+    dice = state['dice']
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    
+    # Handle bar moves first
+    if my_bar > 0:
+        sorted_dice = sorted(dice, reverse=True)
+        moves = []
+        for die in sorted_dice:
+            for point in range(6):  # Check home board points (0-5)
+                if opp_pts[point] < 2:  # Safe entry point
+                    moves.append(('H', point))
+                    break
+        if moves:
+            return f"H:B{'A{point}' if len(moves) > 1 else ''}"  # Simplified for brevity
+    
+    # Bearing off if all checkers are in home board
+    if all(my_pts[i] == 0 for i in range(6, 24)) and my_off + sum(my_pts[:6]) == 15:
+        sorted_dice = sorted(dice, reverse=True)
+        moves = []
+        for die in sorted_dice:
+            for point in range(6):
+                if die >= point + 1:
+                    moves.append(('H', point))
+                    break
+        if moves:
+            return f"H:A{moves[0][1]}{'A{moves[1][1]}' if len(moves) > 1 else ''}"
+    
+    # Move checkers to highest safe point
+    sorted_dice = sorted(dice, reverse=True)
+    moves = []
+    for die in sorted_dice:
+        for point in range(23, -1, -1):
+            if my_pts[point] > 0:
+                dest = point - die
+                if dest < 0: dest = 0
+                if opp_pts[dest] < 2:
+                    moves.append(('H', point))
+                    break
+    if moves:
+        return f"H:A{moves[0][1]}{'A{moves[1][1]}' if len(moves) > 1 else ''}"
+    
+    return "H:P,P"  # Pass if no legal moves

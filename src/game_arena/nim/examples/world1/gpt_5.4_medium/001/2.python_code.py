@@ -1,0 +1,52 @@
+
+def policy(piles: list[int]) -> str:
+    def move(i: int, take: int) -> str:
+        return f"{i},{take}"
+
+    def fallback() -> str:
+        # Safe legal move; avoid taking the last object unless forced.
+        for i, p in enumerate(piles):
+            if p > 1:
+                return move(i, 1)
+        for i, p in enumerate(piles):
+            if p == 1:
+                return move(i, 1)
+        # Terminal state should not be queried, but provide a placeholder.
+        return "0,1"
+
+    nonzero = [i for i, p in enumerate(piles) if p > 0]
+    ones = [i for i, p in enumerate(piles) if p == 1]
+    big = [i for i, p in enumerate(piles) if p > 1]
+
+    # Case 1: all nonempty piles are size 1
+    if len(big) == 0:
+        # Winning iff number of 1-heaps is even; either way, removing 1 is legal.
+        if ones:
+            return move(ones[0], 1)
+        return "0,1"
+
+    # Case 2: exactly one pile larger than 1
+    if len(big) == 1:
+        i = big[0]
+        k = len(ones)
+        # Leave opponent an odd number of 1-heaps
+        if k % 2 == 0:
+            # Reduce big pile to 1
+            return move(i, piles[i] - 1)
+        else:
+            # Remove big pile entirely
+            return move(i, piles[i])
+
+    # Case 3: at least two piles larger than 1 -> normal Nim rule
+    x = 0
+    for p in piles:
+        x ^= p
+
+    if x != 0:
+        for i, p in enumerate(piles):
+            target = p ^ x
+            if target < p:
+                return move(i, p - target)
+
+    # Theoretically losing position: return a safe legal move
+    return fallback()

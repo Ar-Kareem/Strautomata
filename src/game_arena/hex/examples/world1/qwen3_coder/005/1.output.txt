@@ -1,0 +1,139 @@
+The strategy for this policy is to prioritize moves that contribute to forming a connected path between the player's goal sides while simultaneously blocking opponent paths. The algorithm evaluates potential moves using a scoring system:
+
+1. **Winning Move Detection:** Always check if a move can immediately win the game.
+2. **Blocking:** Evaluate opponent's connectivity and block critical paths by playing adjacent to their stones, especially where they are forming strong connections.
+3. **Path Expansion:** For each possible move, simulate placing the stone and evaluate how it enhances the connectivity of our own paths using a flood-fill algorithm to estimate the progress towards connecting the goal sides.
+4. **Central Control:** Prefer moves closer to the center of the board as they tend to be more strategically flexible.
+
+The scoring function combines these factors, rewarding moves that advance our connectivity, hinder opponent's progress, and secure crucial board positions.
+
+<code>
+import collections
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    board_size = 11
+    me_set = set(me)
+    opp_set = set(opp)
+    all_filled = me_set | opp_set
+
+    def get_neighbors(r, c):
+        # Get all 6 hexagonal neighbors for a cell (r, c) on an 11x11 board
+        neighbors = []
+        # Same row
+        if c > 0:
+            neighbors.append((r, c - 1))
+        if c < board_size - 1:
+            neighbors.append((r, c + 1))
+        # Top row neighbors
+        if r > 0:
+            neighbors.append((r - 1, c))
+            if c < board_size - 1:
+                neighbors.append((r - 1, c + 1))
+        # Bottom row neighbors
+        if r < board_size - 1:
+            neighbors.append((r + 1, c))
+            if c > 0:
+                neighbors.append((r + 1, c - 1))
+        return neighbors
+
+    def is_winning_move(move, player_set, player_color):
+        # Simulate placing the move and check for win
+        temp_set = player_set | {move}
+        if player_color == 'b':  # Black connects top to bottom
+            visited = set()
+            queue = collections.deque()
+            for r, c in temp_set:
+                if r == 0:
+                    queue.append((r, c))
+                    visited.add((r, c))
+            while queue:
+                x, y = queue.popleft()
+                for nx, ny in get_neighbors(x, y):
+                    if (nx, ny) in temp_set and (nx, ny) not in visited:
+                        if nx == board_size - 1:
+                            return True
+                        queue.append((nx, ny))
+                        visited.add((nx, ny))
+        else:  # White connects left to right
+            visited = set()
+            queue = collections.deque()
+            for r, c in temp_set:
+                if c == 0:
+                    queue.append((r, c))
+                    visited.add((r, c))
+            while queue:
+                x, y = queue.popleft()
+                for nx, ny in get_neighbors(x, y):
+                    if (nx, ny) in temp_set and (nx, ny) not in visited:
+                        if ny == board_size - 1:
+                            return True
+                        queue.append((nx, ny))
+                        visited.add((nx, ny))
+        return False
+
+    def evaluate_move(move):
+        score = 0
+        # Rule 1: Check for immediate win
+        if is_winning_move(move, me_set, color):
+            return float('inf')
+        
+        # Rule 2: Block opponent's winning moves or strong connections
+        if is_winning_move(move, opp_set, 'b' if color == 'w' else 'w'):
+            score += 10000
+        # Block opponent connectivity by placing adjacent to their stones
+        opp_neighbors = set()
+        for cell in opp:
+            opp_neighbors.update(get_neighbors(*cell))
+        if move in opp_neighbors:
+            score += 50
+        
+        # Rule 3: Enhance our connectivity using a simplified flood-fill heuristic
+        temp_me = me_set | {move}
+        if color == 'b':  # Black: top to bottom
+            max_progress = 0
+            for r in range(board_size):
+                for c in range(board_size):
+                    if (r, c) in temp_me:
+                        # Estimate progress based on row position
+                        progress = r  # Higher rows are closer to goal (row 10)
+                        max_progress = max(max_progress, progress)
+            score += max_progress * 2
+        else:  # White: left to right
+            max_progress = 0
+            for r in range(board_size):
+                for c in range(board_size):
+                    if (r, c) in temp_me:
+                        # Estimate progress based on column position
+                        progress = c  # Higher cols are closer to goal (col 10)
+                        max_progress = max(max_progress, progress)
+            score += max_progress * 2
+            
+        # Rule 4: Central control - prefer center of the board
+        center = board_size // 2
+        distance_to_center = abs(move[0] - center) + abs(move[1] - center)
+        score += (board_size - distance_to_center) * 0.5
+        
+        return score
+
+    # Generate all legal moves
+    legal_moves = []
+    for r in range(board_size):
+        for c in range(board_size):
+            if (r, c) not in all_filled:
+                legal_moves.append((r, c))
+
+    # If no legal moves (shouldn't happen), play a default (will be illegal but handled by arena)
+    if not legal_moves:
+        return (0, 0)
+
+    # Find the best move
+    best_move = None
+    best_score = -1
+    for move in legal_moves:
+        score = evaluate_move(move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move
+</code>

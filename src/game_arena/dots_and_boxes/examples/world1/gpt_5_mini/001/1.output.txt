@@ -1,0 +1,199 @@
+My strategy:
+- Always take any immediate captures (edges that complete one or more boxes). If multiple capture moves are available, choose the one that captures the most boxes.
+- If no immediate capture is possible, avoid moves that hand the opponent a box on their next turn. Specifically, prefer moves that create the fewest boxes with exactly three sides filled (these would allow the opponent to capture).
+- Among equally good moves, prefer more central edges to improve flexibility, and pick deterministically so behavior is reproducible.
+- As a final fallback, pick any legal edge.
+
+This heuristic is simple but effective for a 4x4 Dots and Boxes board: it takes scoring opportunities immediately and otherwise avoids creating single-move captures for the opponent.
+
+<code>
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Return a move string 'row,col,dir' for Dots and Boxes on a 4x4 box grid.
+    horizontal, vertical, capture are 5x5 numpy arrays with values in {-1,0,1}.
+    We are the player to move (we place value 1).
+    """
+
+    # Work on copies to avoid mutating caller's arrays
+    h = np.array(horizontal, copy=False)
+    v = np.array(vertical, copy=False)
+    cap = np.array(capture, copy=False)
+
+    # Board box dimension (4x4 boxes)
+    BOX_N = 4
+
+    # Utility to check validity of a horizontal/vertical edge coordinate
+    def valid_H(r, c):
+        return 0 <= r <= BOX_N and 0 <= c < BOX_N  # r in [0..4], c in [0..3]
+
+    def valid_V(r, c):
+        return 0 <= r < BOX_N and 0 <= c <= BOX_N  # r in [0..3], c in [0..4]
+
+    # Count box sides for box at (br,bc)
+    def box_sides(h_arr, v_arr, br, bc):
+        # top horizontal at (br,bc), bottom at (br+1,bc)
+        top = 1 if h_arr[br, bc] != 0 else 0
+        bottom = 1 if h_arr[br + 1, bc] != 0 else 0
+        left = 1 if v_arr[br, bc] != 0 else 0
+        right = 1 if v_arr[br, bc + 1] != 0 else 0
+        return top + bottom + left + right
+
+    # Simulate placing an edge and return:
+    # (num_new_captured_boxes, num_boxes_with_exactly_3_sides_after_move)
+    def evaluate_move(r, c, dirc):
+        # copy arrays for simulation
+        h_sim = h.copy()
+        v_sim = v.copy()
+        cap_sim = cap.copy()
+        if dirc == 'H':
+            if not valid_H(r, c):
+                return None
+            if h_sim[r, c] != 0:
+                return None
+            h_sim[r, c] = 1
+        else:
+            if not valid_V(r, c):
+                return None
+            if v_sim[r, c] != 0:
+                return None
+            v_sim[r, c] = 1
+
+        # Count new captures: boxes that were unclaimed and now have 4 sides
+        new_captures = 0
+        # Only boxes adjacent to the played edge can be completed by this single edge,
+        # but for simplicity we check all boxes (small board cost negligible).
+        for br in range(BOX_N):
+            for bc in range(BOX_N):
+                if cap_sim[br, bc] == 0:
+                    sides_before = box_sides(h, v, br, bc)
+                    sides_after = box_sides(h_sim, v_sim, br, bc)
+                    if sides_before < 4 and sides_after == 4:
+                        new_captures += 1
+                        cap_sim[br, bc] = 1  # would be captured by us
+
+        # Count boxes that have exactly 3 sides after this move and remain unclaimed:
+        boxes_with_3 = 0
+        for br in range(BOX_N):
+            for bc in range(BOX_N):
+                if cap_sim[br, bc] == 0:
+                    if box_sides(h_sim, v_sim, br, bc) == 3:
+                        boxes_with_3 += 1
+
+        return new_captures, boxes_with_3
+
+    legal_moves = []
+
+    # Gather legal horizontal moves
+    for r in range(0, BOX_N + 1):      # 0..4
+        for c in range(0, BOX_N):      # 0..3
+            if h[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+
+    # Gather legal vertical moves
+    for r in range(0, BOX_N):          # 0..3
+        for c in range(0, BOX_N + 1):  # 0..4
+            if v[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+
+    # If somehow no legal moves found (game over or irregular), fall back to scanning full arrays
+    if not legal_moves:
+        # scan any zero in horizontal or vertical arrays and return it if valid per array bounds
+        for r in range(5):
+            for c in range(5):
+                if 0 <= r <= BOX_N and 0 <= c < BOX_N and horizontal[r, c] == 0:
+                    return f"{r},{c},H"
+                if 0 <= r < BOX_N and 0 <= c <= BOX_N and vertical[r, c] == 0:
+                    return f"{r},{c},V"
+        # As absolute last resort, pick a fixed coordinate (should not happen in normal play)
+        return "0,0,H"
+
+    # First pass: find capturing moves and pick the best (most boxes captured).
+    best_capture_moves = []
+    best_capture_count = -1
+    for (r, c, d) in legal_moves:
+        ev = evaluate_move(r, c, d)
+        if ev is None:
+            continue
+        cap_count, _ = ev
+        if cap_count > 0:
+            if cap_count > best_capture_count:
+                best_capture_count = cap_count
+                best_capture_moves = [(r, c, d)]
+            elif cap_count == best_capture_count:
+                best_capture_moves.append((r, c, d))
+
+    if best_capture_moves:
+        # If multiple, tie-break by centrality (prefer center edges) deterministically.
+        def centrality_key(move):
+            r, c, d = move
+            # For H edge we consider its center at (r, c+0.5); for V at (r+0.5, c)
+            if d == 'H':
+                y = r
+                x = c + 0.5
+            else:
+                y = r + 0.5
+                x = c
+            # center of board is at (2,2)
+            dist = abs(y - 2) + abs(x - 2)
+            return (dist, r, c, d)
+        chosen = min(best_capture_moves, key=centrality_key)
+        return f"{chosen[0]},{chosen[1]},{chosen[2]}"
+
+    # No immediate captures. Evaluate moves by number of boxes that will have exactly 3 sides after the move.
+    # We prefer minimal boxes_with_3. Tie-break by centrality as above.
+    best_moves = []
+    best_badness = None
+    eval_cache = {}
+    for (r, c, d) in legal_moves:
+        ev = evaluate_move(r, c, d)
+        if ev is None:
+            continue
+        _, boxes_with_3 = ev
+        eval_cache[(r, c, d)] = boxes_with_3
+        if best_badness is None or boxes_with_3 < best_badness:
+            best_badness = boxes_with_3
+            best_moves = [(r, c, d)]
+        elif boxes_with_3 == best_badness:
+            best_moves.append((r, c, d))
+
+    # If best_badness is 0, that means the move creates no 3-side boxes; pick among those.
+    # Otherwise we are forced to give opponent a capture; pick the least bad and most central.
+    if not best_moves:
+        # fallback to any legal move
+        chosen = legal_moves[0]
+        return f"{chosen[0]},{chosen[1]},{chosen[2]}"
+
+    def tie_break_key(move):
+        r, c, d = move
+        # centrality as before: smaller Manhattan distance to center preferred
+        if d == 'H':
+            y = r
+            x = c + 0.5
+        else:
+            y = r + 0.5
+            x = c
+        dist = abs(y - 2) + abs(x - 2)
+        # Also prefer moves that result in fewer boxes with 2 sides (promotes flexibility).
+        # Compute count of boxes with 2 sides after move (lower is slightly better).
+        # This is used only as a minor tie-breaker; computing here is cheap.
+        h_sim = h.copy()
+        v_sim = v.copy()
+        if d == 'H':
+            h_sim[r, c] = 1
+        else:
+            v_sim[r, c] = 1
+        twos = 0
+        for br in range(BOX_N):
+            for bc in range(BOX_N):
+                if cap[br, bc] == 0:
+                    s = box_sides(h_sim, v_sim, br, bc)
+                    if s == 2:
+                        twos += 1
+        # Key: prefer smaller (dist, twos), then deterministic tie breakers
+        return (dist, twos, r, c, d)
+
+    chosen = min(best_moves, key=tie_break_key)
+    return f"{chosen[0]},{chosen[1]},{chosen[2]}"
+</code>

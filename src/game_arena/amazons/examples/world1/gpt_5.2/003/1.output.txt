@@ -1,0 +1,394 @@
+The strategy for this policy is a time-bounded alpha-beta minimax search (iterative deepening up to depth 3) with strong move ordering. It prefers moves that (1) increase our queen-mobility, (2) reduce the opponent’s mobility, and (3) claim more territory via a fast “Voronoi” estimate using king-distance flood fills. Candidate moves are pruned aggressively by considering only the most promising destinations and arrow shots, while always keeping a fallback that guarantees a legal move is returned.
+
+<code>
+import numpy as np
+import time
+from collections import deque
+
+# 8 queen directions
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+INF = 10**9
+
+
+def policy(board) -> str:
+    """
+    Returns a legal move string: "fr,fc:tr,tc:ar,ac" for Amazons on 6x6.
+    board: 6x6 numpy array with {0 empty, 1 us, 2 opp, -1 arrow}
+    """
+    b = np.asarray(board, dtype=int)
+    start = time.perf_counter()
+    deadline = start + 0.95  # keep margin for arena overhead
+
+    # Root move generation (slightly broader)
+    root_moves = generate_moves_limited(b, player=1, max_moves=60, to_cap=10, arrow_cap=8)
+    if not root_moves:
+        # Exhaustive fallback
+        root_moves = generate_moves_full(b, player=1)
+        if not root_moves:
+            # Environment should not call policy here, but be robust.
+            # Return a deterministic string (may be illegal in true terminal states).
+            return "0,0:0,0:0,0"
+
+    best_move = root_moves[0]
+    best_val = -INF
+
+    # Iterative deepening
+    for depth in (1, 2, 3):
+        if time.perf_counter() >= deadline:
+            break
+        val, mv = search_root(b, depth, root_moves, deadline)
+        if mv is not None:
+            best_val = val
+            best_move = mv
+
+    fr, fc, tr, tc, ar, ac = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+
+def search_root(board, depth, moves, deadline):
+    alpha, beta = -INF, INF
+    best_val = -INF
+    best_move = None
+
+    # Order moves using quick heuristic from our perspective (higher is better)
+    ordered = sorted(moves, key=lambda m: move_heuristic(board, m, player=1), reverse=True)
+
+    for mv in ordered:
+        if time.perf_counter() >= deadline:
+            break
+        b2 = apply_move(board, mv, player=1)
+        val = minimax(b2, depth - 1, turn=2, alpha=alpha, beta=beta, deadline=deadline)
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        alpha = max(alpha, best_val)
+        if alpha >= beta:
+            break
+    return best_val, best_move
+
+
+def minimax(board, depth, turn, alpha, beta, deadline):
+    # turn: 1 (us) maximize, 2 (opp) minimize
+    if time.perf_counter() >= deadline:
+        return evaluate(board)
+
+    # Terminal / no-move detection
+    moves = generate_moves_limited(
+        board,
+        player=turn,
+        max_moves=26 if depth > 0 else 60,
+        to_cap=7 if depth > 0 else 10,
+        arrow_cap=6 if depth > 0 else 8
+    )
+    if not moves:
+        # If side to move has no legal moves, they lose.
+        return INF if turn == 2 else -INF
+
+    if depth <= 0:
+        return evaluate(board)
+
+    if turn == 1:
+        # Maximize
+        value = -INF
+        ordered = sorted(moves, key=lambda m: move_heuristic(board, m, player=1), reverse=True)
+        for mv in ordered:
+            if time.perf_counter() >= deadline:
+                break
+            b2 = apply_move(board, mv, player=1)
+            value = max(value, minimax(b2, depth - 1, 2, alpha, beta, deadline))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        # Minimize
+        value = INF
+        # For opponent, explore "bad for us" first (ascending)
+        ordered = sorted(moves, key=lambda m: move_heuristic(board, m, player=2), reverse=False)
+        for mv in ordered:
+            if time.perf_counter() >= deadline:
+                break
+            b2 = apply_move(board, mv, player=2)
+            value = min(value, minimax(b2, depth - 1, 1, alpha, beta, deadline))
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+
+def apply_move(board, mv, player):
+    fr, fc, tr, tc, ar, ac = mv
+    b2 = board.copy()
+    b2[fr, fc] = 0
+    b2[tr, tc] = player
+    b2[ar, ac] = -1
+    return b2
+
+
+def generate_moves_full(board, player):
+    moves = []
+    empt_override = None
+    for (fr, fc) in np.argwhere(board == player):
+        for (tr, tc) in ray_squares(board, fr, fc):
+            # arrow squares treat (fr,fc) as empty after move
+            empt_override = {(fr, fc)}
+            for (ar, ac) in ray_squares(board, tr, tc, empty_override=empt_override, occupied_override={(tr, tc)}):
+                moves.append((fr, fc, tr, tc, ar, ac))
+    return moves
+
+
+def generate_moves_limited(board, player, max_moves=40, to_cap=8, arrow_cap=6):
+    """
+    Limited move generator:
+    - keep best 'to' squares per amazon (to_cap),
+    - keep best 'arrow' squares per (from,to) (arrow_cap),
+    - keep top max_moves overall by heuristic ordering.
+    Always returns only legal moves.
+    """
+    opp = 2 if player == 1 else 1
+    all_moves = []
+
+    opp_positions = [tuple(p) for p in np.argwhere(board == opp)]
+    if not opp_positions:
+        opp_positions = []
+
+    for (fr, fc) in np.argwhere(board == player):
+        fr, fc = int(fr), int(fc)
+
+        # Candidate destinations
+        to_list = ray_squares(board, fr, fc)
+        if not to_list:
+            continue
+
+        # Score destination squares quickly: mobility from 'to' (with from vacated) + centrality
+        scored_to = []
+        empt_override = {(fr, fc)}
+        for (tr, tc) in to_list:
+            mob = len(ray_squares(board, tr, tc, empty_override=empt_override, occupied_override={(tr, tc)}))
+            # Centrality: prefer center
+            dc = abs(tr - 2.5) + abs(tc - 2.5)
+            scored_to.append((mob - 0.15 * dc, (tr, tc)))
+
+        scored_to.sort(reverse=True, key=lambda x: x[0])
+        best_to = [pos for _, pos in scored_to[:to_cap]]
+
+        for (tr, tc) in best_to:
+            # Candidate arrows
+            arrow_list = ray_squares(board, tr, tc, empty_override={(fr, fc)}, occupied_override={(tr, tc)})
+            if not arrow_list:
+                continue
+
+            scored_ar = []
+            for (ar, ac) in arrow_list:
+                s = arrow_heuristic(board, (fr, fc), (tr, tc), (ar, ac), opp_positions)
+                scored_ar.append((s, (ar, ac)))
+            scored_ar.sort(reverse=True, key=lambda x: x[0])
+            best_ar = [pos for _, pos in scored_ar[:arrow_cap]]
+
+            for (ar, ac) in best_ar:
+                all_moves.append((fr, fc, tr, tc, ar, ac))
+
+    if not all_moves:
+        return []
+
+    # Keep global best moves depending on player role (from our perspective):
+    # For player==1, prefer high heuristic; for player==2, prefer low heuristic.
+    reverse = True if player == 1 else False
+    all_moves.sort(key=lambda m: move_heuristic(board, m, player=player), reverse=reverse)
+    return all_moves[:max_moves]
+
+
+def ray_squares(board, r, c, empty_override=None, occupied_override=None):
+    """
+    Returns list of empty squares reachable in queen rays from (r,c).
+    empty_override: set of coords treated as empty even if occupied on board (e.g., vacated from-square).
+    occupied_override: set treated as occupied even if empty on board (e.g., the moved-to square for arrow rays).
+    """
+    if empty_override is None:
+        empty_override = set()
+    if occupied_override is None:
+        occupied_override = set()
+
+    out = []
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        while 0 <= rr < 6 and 0 <= cc < 6:
+            if (rr, cc) in occupied_override:
+                break
+            v = board[rr, cc]
+            if v != 0 and (rr, cc) not in empty_override:
+                break
+            out.append((rr, cc))
+            rr += dr
+            cc += dc
+    return out
+
+
+def has_clear_line(board, a, b, empty_override=None):
+    """
+    True if b is on a queen line from a with all intermediate squares empty (or in empty_override).
+    Doesn't require a itself to be empty.
+    """
+    if empty_override is None:
+        empty_override = set()
+    (r1, c1), (r2, c2) = a, b
+    dr = r2 - r1
+    dc = c2 - c1
+    if dr == 0 and dc == 0:
+        return True
+    # normalize direction
+    if dr == 0:
+        step = (0, 1 if dc > 0 else -1)
+    elif dc == 0:
+        step = (1 if dr > 0 else -1, 0)
+    elif abs(dr) == abs(dc):
+        step = (1 if dr > 0 else -1, 1 if dc > 0 else -1)
+    else:
+        return False
+
+    rr, cc = r1 + step[0], c1 + step[1]
+    while (rr, cc) != (r2, c2):
+        if board[rr, cc] != 0 and (rr, cc) not in empty_override:
+            return False
+        rr += step[0]
+        cc += step[1]
+    # endpoint b is allowed to be empty; caller ensures legality
+    return True
+
+
+def arrow_heuristic(board, frm, to, ar, opp_positions):
+    """
+    Quick local arrow heuristic (higher is better for us):
+    - adjacency to opponent amazon is strong,
+    - blocks lines of sight of opponent amazons,
+    - slight preference for central arrow (reduces space).
+    """
+    ar_r, ar_c = ar
+    s = 0.0
+
+    # Centrality of arrow (blocking central squares tends to be strong on 6x6)
+    s += -0.05 * (abs(ar_r - 2.5) + abs(ar_c - 2.5))
+
+    # Treat frm as empty after move for line checks
+    empty_override = {frm}
+
+    for (orow, ocol) in opp_positions:
+        d_cheb = max(abs(ar_r - orow), abs(ar_c - ocol))
+        if d_cheb == 1:
+            s += 3.5
+        elif d_cheb == 2:
+            s += 0.4
+
+        # If arrow lies on a queen line from opponent with clear path, it's likely to cut mobility
+        if has_clear_line(board, (orow, ocol), (ar_r, ar_c), empty_override=empty_override):
+            s += 1.2
+
+    # Also mildly prefer arrows that don't self-trap: keep some breathing room near 'to'
+    tr, tc = to
+    if max(abs(ar_r - tr), abs(ar_c - tc)) == 1:
+        s -= 0.15
+
+    return s
+
+
+def move_heuristic(board, mv, player):
+    """
+    Heuristic from our perspective (player==1 means mv is ours; player==2 means mv is opponent's).
+    For ordering only; must be fast-ish.
+    """
+    fr, fc, tr, tc, ar, ac = mv
+    # Base: destination mobility (with from vacated)
+    dest_mob = len(ray_squares(board, tr, tc, empty_override={(fr, fc)}, occupied_override={(tr, tc)}))
+
+    # Arrow pressure near opponent
+    opp = 2 if player == 1 else 1
+    opp_positions = [tuple(p) for p in np.argwhere(board == opp)]
+    arrow_press = arrow_heuristic(board, (fr, fc), (tr, tc), (ar, ac), opp_positions)
+
+    # Slight preference to move toward center
+    center = -0.08 * (abs(tr - 2.5) + abs(tc - 2.5))
+
+    # If player==2 (opponent move), from our perspective this heuristic should be "bad for us".
+    # We still compute the same structural score; ordering in minimax handles direction.
+    return 0.9 * dest_mob + 1.0 * arrow_press + center
+
+
+def evaluate(board):
+    """
+    Static evaluation from OUR perspective (player 1).
+    Combines:
+    - queen mobility difference,
+    - king-distance Voronoi territory estimate.
+    """
+    # Immediate mobility
+    m1 = mobility_count(board, 1)
+    m2 = mobility_count(board, 2)
+
+    # Territory (Voronoi by king distance)
+    terr = territory_voronoi_king(board)
+
+    # Weighting tuned for small board: territory is very predictive
+    return (m1 - m2) * 1.0 + terr * 2.2
+
+
+def mobility_count(board, player):
+    total = 0
+    for (r, c) in np.argwhere(board == player):
+        r, c = int(r), int(c)
+        total += len(ray_squares(board, r, c))
+    return total
+
+
+def territory_voronoi_king(board):
+    """
+    Returns territory score (#cells closer to us - #cells closer to opp), using king-step BFS distances.
+    Blockers: anything not 0 is blocked. Amazons are sources.
+    """
+    dist1 = king_bfs(board, player=1)
+    dist2 = king_bfs(board, player=2)
+
+    score = 0.0
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] != 0:
+                continue
+            d1 = dist1[r][c]
+            d2 = dist2[r][c]
+            if d1 < d2:
+                score += 1.0
+            elif d2 < d1:
+                score -= 1.0
+            elif d1 < INF and d2 < INF:
+                score += 0.0
+            else:
+                # unreachable for both: ignore
+                pass
+    return score
+
+
+def king_bfs(board, player):
+    dist = [[INF] * 6 for _ in range(6)]
+    q = deque()
+
+    for (r, c) in np.argwhere(board == player):
+        r, c = int(r), int(c)
+        dist[r][c] = 0
+        q.append((r, c))
+
+    # BFS in 8-neighborhood across empty squares only (sources can expand out)
+    while q:
+        r, c = q.popleft()
+        nd = dist[r][c] + 1
+        for dr, dc in DIRS:
+            rr, cc = r + dr, c + dc
+            if not (0 <= rr < 6 and 0 <= cc < 6):
+                continue
+            if board[rr, cc] != 0:
+                continue
+            if nd < dist[rr][cc]:
+                dist[rr][cc] = nd
+                q.append((rr, cc))
+    return dist
+</code>

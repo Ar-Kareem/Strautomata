@@ -1,0 +1,253 @@
+<thinking>
+Let me think about 3D Tic Tac Toe strategy.
+
+In a 3x3x3 Tic Tac Toe, there are winning lines in:
+1. Rows along each axis (3 directions × 9 lines each = 27 lines)
+2. Diagonals on each face (2 diagonals × 6 faces = 12 lines, but some overlap... let me recalculate)
+3. Space diagonals (4 lines through the center)
+
+Actually, let me enumerate the winning lines more carefully:
+- 27 lines along axes (9 in each of x, y, z directions)
+- 18 face diagonals (2 diagonals × 9 planes, but that's 3 planes per axis × 3 axes × 2 = 18)
+- 4 space diagonals
+
+Total: 49 winning lines
+
+Strategy:
+1. If I can win (complete a line with 3 of my pieces), do it
+2. If opponent can win, block them
+3. Otherwise, use a heuristic to find the best move
+
+For the heuristic:
+- Center (1,1,1) is most valuable - it's part of the most lines
+- Corners are next most valuable
+- Edge centers and face centers are less valuable
+
+Let me implement a minimax with alpha-beta pruning, or at least a good evaluation function.
+
+Given time constraints, I'll implement:
+1. Check for immediate wins
+2. Check for immediate blocks
+3. Evaluate positions based on how many winning lines they contribute to
+
+Let me code this:
+
+```python
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    import numpy as np
+    
+    b = np.array(board)
+    
+    # Generate all winning lines (49 total)
+    lines = []
+    
+    # Lines along each axis
+    for i in range(3):
+        for j in range(3):
+            lines.append([(i, j, k) for k in range(3)])  # z-axis
+            lines.append([(i, k, j) for k in range(3)])  # y-axis
+            lines.append([(k, i, j) for k in range(3)])  # x-axis
+    
+    # Face diagonals (on each of 9 axis-aligned planes)
+    for i in range(3):
+        # xy planes (z=i)
+        lines.append([(0, 0, i), (1, 1, i), (2, 2, i)])
+        lines.append([(0, 2, i), (1, 1, i), (2, 0, i)])
+        # xz planes (y=i)
+        lines.append([(0, i, 0), (1, i, 1), (2, i, 2)])
+        lines.append([(0, i, 2), (1, i, 1), (2, i, 0)])
+        # yz planes (x=i)
+        lines.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+        lines.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+    
+    # Space diagonals (4)
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    lines.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+    
+    def get_empty_cells():
+        return [(x, y, z) for x in range(3) for y in range(3) for z in range(3) if b[x, y, z] == 0]
+    
+    def check_line_status(line):
+        values = [b[pos] for pos in line]
+        return sum(values), values.count(0)
+    
+    # Find winning move for player
+    def find_winning_move(player):
+        for line in lines:
+            total, empty_count = check_line_status(line)
+            if total == 2 * player and empty_count == 1:
+                for pos in line:
+                    if b[pos] == 0:
+                        return pos
+        return None
+    
+    # Check if I can win
+    win_move = find_winning_move(1)
+    if win_move:
+        return win_move
+    
+    # Check if I need to block
+    block_move = find_winning_move(-1)
+    if block_move:
+        return block_move
+    
+    # Evaluate moves with heuristic
+    empty_cells = get_empty_cells()
+    
+    if not empty_cells:
+        return (0, 0, 0)  # shouldn't happen
+    
+    best_score = float('-inf')
+    best_move = empty_cells[0]
+    
+    for move in empty_cells:
+        score = 0
+        for line in lines:
+            if move in line:
+                values = [b[pos] for pos in line]
+                my_count = values.count(1)
+                opp_count = values.count(-1)
+                
+                if opp_count == 0:  # Line still available for me
+                    score += (my_count + 1) ** 2
+                if my_count == 0:  # Block opponent's potential
+                    score += opp_count ** 2 * 0.9
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+```
+
+Let me improve this with minimax for better play:
+</thinking>
+
+<code>
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    import numpy as np
+    
+    b = np.array(board)
+    
+    # Generate all 49 winning lines
+    lines = []
+    
+    # Lines along each axis (27)
+    for i in range(3):
+        for j in range(3):
+            lines.append([(i, j, k) for k in range(3)])
+            lines.append([(i, k, j) for k in range(3)])
+            lines.append([(k, i, j) for k in range(3)])
+    
+    # Face diagonals (18)
+    for i in range(3):
+        lines.append([(0, 0, i), (1, 1, i), (2, 2, i)])
+        lines.append([(0, 2, i), (1, 1, i), (2, 0, i)])
+        lines.append([(0, i, 0), (1, i, 1), (2, i, 2)])
+        lines.append([(0, i, 2), (1, i, 1), (2, i, 0)])
+        lines.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+        lines.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+    
+    # Space diagonals (4)
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    lines.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+    
+    def get_empty(board):
+        return [(x, y, z) for x in range(3) for y in range(3) for z in range(3) if board[x, y, z] == 0]
+    
+    def find_winning_move(board, player):
+        for line in lines:
+            vals = [board[p] for p in line]
+            if sum(vals) == 2 * player and vals.count(0) == 1:
+                for p in line:
+                    if board[p] == 0:
+                        return p
+        return None
+    
+    def check_winner(board):
+        for line in lines:
+            s = sum(board[p] for p in line)
+            if s == 3: return 1
+            if s == -3: return -1
+        return 0
+    
+    def evaluate(board):
+        score = 0
+        for line in lines:
+            vals = [board[p] for p in line]
+            my_c = vals.count(1)
+            op_c = vals.count(-1)
+            if op_c == 0 and my_c > 0:
+                score += 10 ** my_c
+            if my_c == 0 and op_c > 0:
+                score -= 10 ** op_c
+        return score
+    
+    def minimax(board, depth, alpha, beta, maximizing):
+        winner = check_winner(board)
+        if winner == 1: return 100000 + depth
+        if winner == -1: return -100000 - depth
+        
+        empty = get_empty(board)
+        if not empty or depth == 0:
+            return evaluate(board)
+        
+        if maximizing:
+            max_eval = float('-inf')
+            for move in empty:
+                board[move] = 1
+                ev = minimax(board, depth - 1, alpha, beta, False)
+                board[move] = 0
+                max_eval = max(max_eval, ev)
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in empty:
+                board[move] = -1
+                ev = minimax(board, depth - 1, alpha, beta, True)
+                board[move] = 0
+                min_eval = min(min_eval, ev)
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Immediate win
+    win = find_winning_move(b, 1)
+    if win: return win
+    
+    # Block opponent
+    block = find_winning_move(b, -1)
+    if block: return block
+    
+    empty = get_empty(b)
+    if not empty:
+        return (0, 0, 0)
+    
+    # Adjust depth based on empty cells
+    depth = 4 if len(empty) > 15 else 5 if len(empty) > 10 else 6
+    
+    best_move = empty[0]
+    best_val = float('-inf')
+    
+    # Prioritize center
+    if b[1, 1, 1] == 0:
+        return (1, 1, 1)
+    
+    for move in empty:
+        b[move] = 1
+        val = minimax(b, depth, float('-inf'), float('inf'), False)
+        b[move] = 0
+        if val > best_val:
+            best_val = val
+            best_move = move
+    
+    return best_move
+</code>

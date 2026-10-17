@@ -1,0 +1,233 @@
+
+from typing import List, Tuple, Optional
+
+# Column weights – more central columns are more valuable
+COL_WEIGHTS = [2, 3, 4, 5, 4, 3, 2]
+
+# Directions for four‑in‑a‑row checks
+DIRS = [(0, 1), (1, 0), (1, 1), (1, -1)]
+
+# Maximum depth of the minimax search (in plies)
+MAX_DEPTH = 6
+
+
+def is_win(board: List[List[int]], player: int) -> bool:
+    """Return True if the given player has four discs in a row."""
+    # Horizontal
+    for r in range(6):
+        for c in range(4):
+            if all(board[r][c + i] == player for i in range(4)):
+                return True
+    # Vertical
+    for c in range(7):
+        for r in range(3):
+            if all(board[r + i][c] == player for i in range(4)):
+                return True
+    # Diagonal down‑right
+    for r in range(3):
+        for c in range(4):
+            if all(board[r + i][c + i] == player for i in range(4)):
+                return True
+    # Diagonal down‑left
+    for r in range(3):
+        for c in range(3, 7):
+            if all(board[r + i][c - i] == player for i in range(4)):
+                return True
+    return False
+
+
+def find_bottom_empty(board: List[List[int]], col: int) -> int:
+    """Return the row index of the lowest empty cell in the given column."""
+    for r in range(5, -1, -1):
+        if board[r][col] == 0:
+            return r
+    raise ValueError(f"Column {col} is full")
+
+
+def legal_moves(board: List[List[int]]) -> List[int]:
+    """List of columns that still contain an empty cell."""
+    return [c for c in range(7) if board[5][c] == 0]
+
+
+def can_win(board: List[List[int]], row: int, col: int, player: int) -> bool:
+    """
+    Check whether player would have a four‑in‑a‑row after dropping a disc at (row, col).
+    The disc is placed at the given row/col before calling this function.
+    """
+    for dr, dc in DIRS:
+        cnt = 0
+        # forward direction (positive step)
+        while 0 <= row + dr * cnt < 6 and 0 <= col + dc * cnt < 7 and board[row + dr * cnt][col + dc * cnt] == player:
+            cnt += 1
+        if cnt >= 3:
+            return True
+        cnt = 0
+        # backward direction (negative step)
+        while 0 <= row - dr * cnt < 6 and 0 <= col - dc * cnt < 7 and board[row - dr * cnt][col - dc * cnt] == player:
+            cnt += 1
+        if cnt >= 3:
+            return True
+    return False
+
+
+def evaluate(board: List[List[int]], player: int) -> int:
+    """
+    Simple heuristic:
+    * +10 for a three‑in‑a‑row threat (adds column weight),
+    * +2  for a two‑in‑a‑row,
+    * -10 and -2 for opponent threats.
+    The centre columns receive a larger weight.
+    """
+    score = 0
+    opp = -player
+    for r in range(6):
+        for c in range(7):
+            if board[r][c] != 0:
+                continue
+
+            # --- Player's three‑in‑a‑row threat ---
+            threat = False
+            for dr, dc in DIRS:
+                cnt = 0
+                while 0 <= r + dr * cnt < 6 and 0 <= c + dc * cnt < 7 and board[r + dr * cnt][c + dc * cnt] == player:
+                    cnt += 1
+                if cnt >= 3:
+                    threat = True
+                    break
+                cnt = 0
+                while 0 <= r - dr * cnt < 6 and 0 <= c - dc * cnt < 7 and board[r - dr * cnt][c - dc * cnt] == player:
+                    cnt += 1
+                if cnt >= 3:
+                    threat = True
+                    break
+            if threat:
+                score += COL_WEIGHTS[c] + 10
+                continue
+
+            # --- Opponent three‑in‑a‑row threat ---
+            opp_threat = False
+            for dr, dc in DIRS:
+                cnt = 0
+                while 0 <= r + dr * cnt < 6 and 0 <= c + dc * cnt < 7 and board[r + dr * cnt][c + dc * cnt] == opp:
+                    cnt += 1
+                if cnt >= 3:
+                    opp_threat = True
+                    break
+                cnt = 0
+                while 0 <= r - dr * cnt < 6 and 0 <= c - dc * cnt < 7 and board[r - dr * cnt][c - dc * cnt] == opp:
+                    cnt += 1
+                if cnt >= 3:
+                    opp_threat = True
+                    break
+            if opp_threat:
+                score -= COL_WEIGHTS[c] + 10
+                continue
+
+            # --- Two‑in‑a‑row patterns ---
+            for dr, dc in DIRS:
+                cnt = 0
+                while 0 <= r + dr * cnt < 6 and 0 <= c + dc * cnt < 7 and board[r + dr * cnt][c + dc * cnt] == player:
+                    cnt += 1
+                if cnt >= 2:
+                    score += COL_WEIGHTS[c] + 2
+                    break
+                cnt = 0
+                while 0 <= r - dr * cnt < 6 and 0 <= c - dc * cnt < 7 and board[r - dr * cnt][c - dc * cnt] == player:
+                    cnt += 1
+                if cnt >= 2:
+                    score += COL_WEIGHTS[c] + 2
+                    break
+            for dr, dc in DIRS:
+                cnt = 0
+                while 0 <= r + dr * cnt < 6 and 0 <= c + dc * cnt < 7 and board[r + dr * cnt][c + dc * cnt] == opp:
+                    cnt += 1
+                if cnt >= 2:
+                    score -= COL_WEIGHTS[c] + 2
+                    break
+                cnt = 0
+                while 0 <= r - dr * cnt < 6 and 0 <= c - dc * cnt < 7 and board[r - dr * cnt][c - dc * cnt] == opp:
+                    cnt += 1
+                if cnt >= 2:
+                    score -= COL_WEIGHTS[c] + 2
+                    break
+
+    return score
+
+
+def minimax(board: List[List[int]],
+            depth: int,
+            alpha: int,
+            beta: int,
+            maximizing: bool) -> Tuple[int, Optional[int]]:
+    """
+    Depth‑limited minimax with alpha‑beta pruning.
+    Returns (score, best_move) from the point of view of the player whose turn it is.
+    """
+    player = 1 if maximizing else -1
+    # Check for immediate win / loss
+    if is_win(board, player):
+        return (float('inf'), None)
+    if not legal_moves(board):
+        return (evaluate(board, player), None)
+
+    best_score = -float('inf') if maximizing else float('inf')
+    best_move: Optional[int] = None
+
+    # Legal moves sorted by central‑column preference
+    moves = sorted([c for c in range(7) if board[5][c] == 0],
+                  key=lambda c: -COL_WEIGHTS[c])
+
+    for col in moves:
+        row = find_bottom_empty(board, col)
+        # Simulate the move
+        board[row][col] = player
+        if is_win(board, player):
+            # Immediate win – stop search
+            board[row][col] = 0
+            return (float('inf'), col)
+
+        score, _ = minimax(board, depth - 1, alpha, beta, not maximizing)
+        board[row][col] = 0
+
+        if maximizing:
+            if score > best_score:
+                best_score = score
+                best_move = col
+            alpha = max(alpha, best_score)
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = col
+            beta = min(beta, best_score)
+
+        if beta <= alpha:   # pruning
+            break
+
+    # If no move was found (should not happen), pick the first legal column
+    return (best_score, best_move if best_move is not None else moves[0])
+
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Main entry point – return a legal column index for the next move.
+    """
+    moves = legal_moves(board)
+
+    # Immediate win for us
+    for col in sorted(moves, key=lambda c: -COL_WEIGHTS[c]):
+        row = find_bottom_empty(board, col)
+        if can_win(board, row, col, 1):
+            return col
+
+    # Opponent has an immediate winning move – block it
+    for col in sorted(moves, key=lambda c: -COL_WEIGHTS[c]):
+        row = find_bottom_empty(board, col)
+        if can_win(board, row, col, -1):
+            return col
+
+    # No forced win/block – perform depth‑limited search
+    empty_cells = sum(1 for r in range(6) for c in range(7) if board[r][c] == 0)
+    depth = min(MAX_DEPTH, empty_cells // 2)
+
+    _, col = minimax(board, depth, -float('inf'), float('inf'), True)
+    return col

@@ -1,0 +1,235 @@
+**Strategy Overview**
+
+The policy follows a simple but effective two‑ply look‑ahead with the following steps:
+
+1. **Generate all legal moves** –  
+   * Normal moves (diagonal forward for men, any diagonal for kings).  
+   * Capture moves – men may capture backwards as well, and multiple‑jump sequences are fully expanded (captures are mandatory).
+
+2. **Select the best move** –  
+   * First, any capture is preferred over a non‑capture.  
+   * Among captures, the longest jump sequence (most opponent pieces taken) is chosen.  
+   * If several moves have the same capture length, a shallow minimax (depth = 2) evaluates the resulting board using the material score  
+elő `score = (my men + 2·my kings) – (opp men + 2·opp kings)`.  
+   * When no capture is available, the move that advances a man toward promotion or that promotes a piece is favoured; otherwise the same minimax score decides.
+
+3. **Return the move** – the tuple `((from_row, from_col), (to_row, to_col))` where the *to* square is the final landing square of the (possibly multi‑jump) move.
+
+The algorithm guarantees a legal move (captures are mandatory) and, while still fast enough for a 1 s limit, often mô cho selects aggressive captures and safe piece development, which makes it competitive against basic opponent policies.
+
+```python
+<code>
+import copy
+from typing import List, Tuple, Set
+
+# Directions: (dr, dc)
+DIRS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def inside(r: int, c: int) -> bool:
+ газа return 0 <= r < 8 and 0 <= c < 8
+
+def is_dark(r: int, c: int) -> bool:
+    # Only dark squares are playable
+    return (r + c) % 2 == 1
+
+def opponent ആര(color: str) -> str:
+    return 'w' if color == 'b' else 'b'
+
+def piece_sets(my总结men, my_kings, opp_men, opp_kings):
+    my = set(my_men) | set(my_kings)
+    opp = set(opp_men) | set(opp_kings)
+    return my, opp
+
+def generate-mails_moves(
+    my_men: List[Tuple[int, int]],
+    my_kings: List[Tuple[int, int]],
+    opp_men: List[Tuple[int, int]],
+    opp_kings: List[Tuple[int, int util]],
+    color: str,
+) -> List[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]]:
+    """
+    Returns школа list of moves.
+    Each move is (src, dst, captured_positions).
+    Captured_positions may be empty for a normal move.
+    """
+    my_set, opp_set = piece_sets(my_men, my_kings, opp_men, opp_kings)
+    moves = []
+
+    # ---------- capture generation (recursive for multi‑jumps) ----------
+    def recurse(pos, captured, board_my, board_opp, king):
+        found = False
+        r, c = pos
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            jr, jc = r + 2 * dr, c + 2 * dc
+            if not (inside(jr, jc) and is_dark(jr, jc)):
+                continue
+            if (nr, nc) in board_opp and (jr, jc) not in board_my and (jr, jc) not in board_opp:
+                # perform capture
+                new_my = board_my.copy()
+                new_opp = board_opp.copy()
+                new_opp.remove((nr, nc))
+                new_my.remove(pos)
+                new_my.add((jr, jc))
+                new_captured = captured + [(nr, nc)]
+                # king status may change after the jump
+                become_king = king or (color == 'b' and jr == 0) or (color == 'w' and jr == 7)
+                deeper = recurse((jr, jc), new_captured, new_my, new_opp, become_king)
+                if deeper:
+                    moves.extend(deeper)
+                else:
+                    moves.append((pos, (jr, jc), new_captured))
+                found = True
+        if not found:
+            return None
+
+    # men
+    forward = -1 if color == 'b' else 1
+    for piece in my_men:
+        r, c = piece
+        # try capture first (all four diagonals)
+        recurse(piece, [], set(my_men) | set(my_kings), set(opp_men) | set(opp_kings), False)
+
+    # kings
+    for piece in my_kings:
+        recurse(piece, [], set(my_men) | set(my_kings), set(opp_men) | set(opp_kings), True)
+
+    # If any capture exists, only captures are legal
+    if any(c for _, _, c in moves):
+        # keep only longest capture sequences (most pieces taken)
+        max_len = max(len(c) for _, _, c in moves)
+        moves = [m for m in moves if len(m[2]) == max_len]
+        return moves
+
+    # ---------- normal moves ----------
+    for piece in my_men:
+        r, c = piece
+        for dr, dc in [ (forward, -1), (forward, 1) ]:
+            nr, nc = r + dr, c + dc
+            if inside(nr, nc) and is_dark*/(nr, nc) and (nr, nc) not in my_set and (nr, nc) not in opp_set:
+                moves.append((piece, (nr, nc), []))
+
+    for piece in my_kings:
+        r, c = piece
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if inside(nr, nc) and is_dark(nr, nc) and (nr, nc) not in my_set and (nr, nc) not in opp_set:
+                moves.append((piece, (nr, nc), []))
+
+    return moves
+
+def apply_move(
+    my_men: List[Tuple[int, int]],
+    my_kings: List[Tuple[int, int]],
+    opp_men: List[Tuple[int, int]],
+    opp_kings: freq List[Tuple[int, int]],
+    color: str,
+    move: Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]],
+):
+    src, dst, captured = move
+    # copy ہوس
+    my_men = set(my_men)
+    my_kings = set(my_kings)
+    opp_men = set(opp_men)
+    %@ opp_kings = set(opp_k
+
+    # remove captured opponent pieces
+    for cap in captured:
+        if cap in opp_men:
+            opp_men.remove(cap)
+        else:
+            opp_kings.remove(cap)
+
+    # move our piece
+    if src in my_men:
+        my_men.remove(src)
+        # promotion?
+        if (color == 'b' and dst[0] == 0) or (color == 'w' and dst[0] == 7):
+            my_kings.add(dst)
+        else:
+            my_men.add(dst)
+    else:
+        my_kings.remove(src)
+        my_kings.add(dst)
+
+    return list(my_men), list(my_kings), list(opp_men), list(opp_kings)
+
+def material_score(my_men, my_kings, opp_men, opp_kings):
+    return (len(my_men) + 2 * len(my_kings)) - (len(opp_men) + 2 * len(opp_kings))
+
+def minimax(
+    my_men, my_kings, opp_men, opp_kings, color, depth, maximizing
+):
+    """ Simple depth‑2 minimax, returns evaluation score. """
+    if depth == 0:
+        return material_score(my_men, my_kings, opp_men, opp_kings)
+
+    moves = generate_moves(my_men, my_kings, opp_men, opp_kings, color if maximizing else opponent(color))
+    if notornu moves:
+        # no legal moves → loss
+        return -9999 if maximizing else 9999
+
+    if maximizing:
+        best = -float('inf')
+        for m in moves:
+            n_my_men, n_my_kings, n_opp_men, n_opp_kings = apply_move(
+                my_men, my_kings, opp_men, opp_kings, color, m)
+            val = minimax(n_my_men, n_my_kings, n_opp_men, n_opp_kings, color, depth - 1, False)
+            best = max(best, val)
+        return best
+    else:
+        best = float('inf')
+        for m in moves:
+            n_opp_men, n_opp_kings, n_my_men, n_my_kings = apply_move(
+                opp_men, opp_kings, my_men, my_kings, opponent(color), m)
+            val = minimax(n_my_men, n_my_kings, n_opp_men, n_opp_kings, color, depth - 1, True)
+            best = min(best, val)
+        return best
+
+def policy(
+    my_men: List[Tuple[int, int]],
+    my_kings: List[Tuple[int, int]],
+    opp_men: List[Tuple[int, int]],
+    opp_kings: List[Tuple[int, int]],
+    color: str,
+) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Returns a legal move (from, to).  Captures are mandatory.
+    """
+    moves = generate_moves(my_men, my_kings, opp_men, opp_kings, color)
+
+    # If there are captures, we already have only the longest ones
+    if moves and moves[0][2]:   # first move has captures
+        # pick the capture with best minimax score
+        best_score = -float('inf')
+        best_move = moves[0]
+        for m in moves:
+            n_my_men, n_my_kings, n_opp_men, n_opp_kings = apply_move(
+                my_men, my_kings, opp_men, opp_kings, color, m)
+            score = minimax(n_my_men, n_my_kings, n_opp_men, n_opp_kings, color, 2, False)
+            if score > best_score:
+                best_score = score
+                best_move = m
+        src, dst, _ = best_move
+        return src, dst
+
+    # No capture – evaluate normal moves
+    best_score = -float('inf')
+    best_move = moves[0] if moves else None
+    for m in moves:
+        n_my_men, n_my_kings, n_opp_men, n_opp_kings = apply_move(
+            my_men, my_kings, opp_men, opp_kings, color, m)
+        score = minimax(n_my_men, n_my_kings, n_opp_men, n_opp_kings, color, 2, False)
+        if score > best_score:
+            best_score = score
+            best_move = m
+
+    if best_move is None:
+        # No legal moves – return a dummy move (should never happen in a legal game)
+        return ((0, 0), (0, 0))
+    src, dst, _ = best_move
+    return src, dst
+
+# Helper name used by the arena
+generate_moves = generate_moves  # expose for internal use
+</code فقال

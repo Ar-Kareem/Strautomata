@@ -1,0 +1,393 @@
+My strategy is to implement a minimax algorithm with alpha-beta pruning, coupled with a sophisticated evaluation function and iterative deepening. This approach allows the AI to look several moves ahead, balancing tactical captures with strategic board control.
+
+**Key Strategic Elements:**
+1.  **Iterative Deepening:** To respect the 1-second time limit, the search depth increases incrementally. If time runs out, the best move found at the previous depth is returned.
+2.  **Evaluation Function:**
+    *   **Material Balance:** Kings are weighted significantly higher than men (e.g., 500 vs 100).
+    *   **Positional Heuristics:** Men are rewarded for advancing towards the opponent's back row (promotion). Central control is encouraged by rewarding pieces on columns 2-5.
+    *   **Safety:** Pieces adjacent to the board edges or protected by kings are safer. We penalize moving men to edges where they become trapped.
+    *   **King Mobility:** Kings are rewarded for occupying central squares to maximize mobility.
+3.  **Move Ordering:**
+    *   **Captures First:** The algorithm prioritizes capturing sequences.
+    *   **Promotion Moves:** Moves that turn a man into a king are prioritized.
+    *   **Center Control:** Non-capturing moves towards the center are ordered higher to improve alpha-beta pruning efficiency.
+4.  **Mandatory Captures:** The logic strictly enforces that if a capture is available, only capturing moves are considered valid. Within captures, the algorithm seeks the most favorable sequence (material gain and position).
+
+This policy ensures aggressive play while maintaining solid defensive structure, effectively outmaneuvering opponents in the arena.
+
+<code>
+import sys
+import time
+import copy
+
+# Constants for weights and evaluation
+KING_WEIGHT = 500
+MAN_WEIGHT = 100
+POSITION_SCORES = [
+    [4, 4, 4, 4, 4, 4, 4, 4],
+    [4, 3, 3, 3, 3, 3, 3, 4],
+    [4, 3, 2, 2, 2, 2, 3, 4],
+    [4, 3, 2, 1, 1, 2, 3, 4],
+    [4, 3, 2, 1, 1, 2, 3, 4],
+    [4, 3, 2, 2, 2, 2, 3, 4],
+    [4, 3, 3, 3, 3, 3, 3, 4],
+    [4, 4, 4, 4, 4, 4, 4, 4]
+]
+
+TIME_LIMIT = 0.9  # Seconds
+START_TIME = 0
+
+class GameState:
+    def __init__(self, my_men, my_kings, opp_men, opp_kings, color):
+        self.my_men = set(my_men)
+        self.my_kings = set(my_kings)
+        self.opp_men = set(opp_men)
+        self.opp_kings = set(opp_kings)
+        self.color = color
+        # Determine direction: 'b' moves -1 (down), 'w' moves +1 (up)
+        self.direction = 1 if color == 'w' else -1
+        
+        # Pre-calculate piece sets for fast lookup
+        self.my_pieces = self.my_men.union(self.my_kings)
+        self.opp_pieces = self.opp_men.union(self.opp_kings)
+        self.all_pieces = self.my_pieces.union(self.opp_pieces)
+
+    def get_king_dirs(self, is_my_piece):
+        # Kings move in 4 diagonal directions
+        return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    def get_man_dirs(self, is_my_piece):
+        # Men move in 2 directions based on color
+        # White (w): +1 (up), Black (b): -1 (down)
+        if is_my_piece:
+            return [(self.direction, -1), (self.direction, 1)]
+        else:
+            # Opponent moves opposite to me
+            opp_dir = -self.direction
+            return [(opp_dir, -1), (opp_dir, 1)]
+
+    def is_valid(self, r, c):
+        return 0 <= r < 8 and 0 <= c < 8
+
+    def get_moves(self, for_my_pieces=True):
+        moves = []
+        captures = []
+        
+        pieces = self.my_pieces if for_my_pieces else self.opp_pieces
+        men = self.my_men if for_my_pieces else self.opp_men
+        kings = self.my_kings if for_my_pieces else self.opp_kings
+        
+        for r, c in pieces:
+            is_king = (r, c) in kings
+            dirs = self.get_king_dirs(for_my_pieces) if is_king else self.get_man_dirs(for_my_pieces)
+            
+            for dr, dc in dirs:
+                # Normal move
+                nr, nc = r + dr, c + dc
+                if self.is_valid(nr, nc) and (nr, nc) not in self.all_pieces:
+                    # Check if this is a promotion
+                    is_promotion = False
+                    if not is_king:
+                        if (for_my_pieces and self.color == 'w' and nr == 7) or \
+                           (for_my_pieces and self.color == 'b' and nr == 0) or \
+                           (not for_my_pieces and self.color == 'w' and nr == 0) or \
+                           (not for_my_pieces and self.color == 'b' and nr == 7):
+                            is_promotion = True
+                    
+                    moves.append(((r, c), (nr, nc), is_promotion))
+                
+                # Capture move
+                jump_r, jump_c = r + 2*dr, c + 2*dc
+                if self.is_valid(jump_r, jump_c) and \
+                   (jump_r, jump_c) not in self.all_pieces and \
+                   (nr, nc) in self.opp_pieces:
+                    
+                    is_promotion = False
+                    if not is_king:
+                        if (for_my_pieces and self.color == 'w' and jump_r == 7) or \
+                           (for_my_pieces and self.color == 'b' and jump_r == 0) or \
+                           (not for_my_pieces and self.color == 'w' and jump_r == 0) or \
+                           (not for_my_pieces and self.color == 'b' and jump_r == 7):
+                            is_promotion = True
+
+                    captures.append(((r, c), (jump_r, jump_c), (nr, nc), is_promotion))
+        
+        return moves, captures
+
+    def simulate_move(self, move, is_my_move):
+        # Create a new state based on the move
+        # Move format: ((from_r, from_c), (to_r, to_c), is_promotion) for normal
+        # or ((from_r, from_c), (to_r, to_c), (captured_r, captured_c), is_promotion) for capture
+        
+        new_my_men = set(self.my_men)
+        new_my_kings = set(self.my_kings)
+        new_opp_men = set(self.opp_men)
+        new_opp_kings = set(self.opp_kings)
+        
+        src, dest = move[0], move[1]
+        is_capture = len(move) == 4
+        is_promotion = move[-1]
+        
+        # Update source piece
+        if is_my_move:
+            if src in new_my_men:
+                new_my_men.remove(src)
+            elif src in new_my_kings:
+                new_my_kings.remove(src)
+            
+            # Add to destination
+            if is_promotion:
+                new_my_kings.add(dest)
+            else:
+                # If it was a king, it stays a king even if promotion flag wasn't set (edge case logic)
+                if src in new_my_kings:
+                    new_my_kings.add(dest)
+                else:
+                    new_my_men.add(dest)
+                    
+            if is_capture:
+                captured = move[2]
+                if captured in new_opp_men: new_opp_men.remove(captured)
+                elif captured in new_opp_kings: new_opp_kings.remove(captured)
+        else:
+            # Opponent move (for simulation in recursion)
+            if src in new_opp_men:
+                new_opp_men.remove(src)
+            elif src in new_opp_kings:
+                new_opp_kings.remove(src)
+                
+            if is_promotion:
+                new_opp_kings.add(dest)
+            else:
+                if src in new_opp_kings:
+                    new_opp_kings.add(dest)
+                else:
+                    new_opp_men.add(dest)
+
+            if is_capture:
+                captured = move[2]
+                if captured in new_my_men: new_my_men.remove(captured)
+                elif captured in new_my_kings: new_my_kings.remove(captured)
+
+        return GameState(new_my_men, new_my_kings, new_opp_men, new_opp_kings, self.color)
+
+def evaluate(state, my_turn):
+    # Material Score
+    score = 0
+    score += len(state.my_men) * MAN_WEIGHT
+    score += len(state.my_kings) * KING_WEIGHT
+    score -= len(state.opp_men) * MAN_WEIGHT
+    score -= len(state.opp_kings) * KING_WEIGHT
+    
+    # Positional Score
+    # White moves up (rows increase), Black moves down (rows decrease)
+    # Men want to advance: White wants high rows, Black wants low rows
+    pos_score = 0
+    
+    # My pieces
+    for r, c in state.my_men:
+        pos_score += POSITION_SCORES[r][c]
+        # Bonus for advancement
+        if state.color == 'w':
+            pos_score += r * 2  # White wants high rows
+        else:
+            pos_score += (7 - r) * 2  # Black wants low rows
+            
+    for r, c in state.my_kings:
+        # Kings want center control (POSITION_SCORES handles this well)
+        pos_score += POSITION_SCORES[r][c]
+        # Kings also like to be mobile, being on edges is bad
+        if r == 0 or r == 7 or c == 0 or c == 7:
+            pos_score -= 5 
+
+    # Opponent pieces
+    for r, c in state.opp_men:
+        pos_score -= POSITION_SCORES[r][c]
+        if state.color == 'w':
+            pos_score -= (7 - r) * 2 # Opponent (Black) wants low rows
+        else:
+            pos_score -= r * 2 # Opponent (White) wants high rows
+            
+    for r, c in state.opp_kings:
+        pos_score -= POSITION_SCORES[r][c]
+        if r == 0 or r == 7 or c == 0 or c == 7:
+            pos_score += 5
+            
+    # Encourage capturing
+    # If I can capture, the position is generally better for me
+    _, my_captures = state.get_moves(for_my_pieces=True)
+    if my_captures:
+        pos_score += 20 * len(my_captures)
+        
+    _, opp_captures = state.get_moves(for_my_pieces=False)
+    if opp_captures:
+        pos_score -= 20 * len(opp_captures)
+
+    return score * 100 + pos_score
+
+def get_all_captures(state, is_my_turn):
+    moves, captures = state.get_moves(for_my_pieces=is_my_turn)
+    return captures
+
+def get_all_moves(state, is_my_turn):
+    moves, captures = state.get_moves(for_my_pieces=is_my_turn)
+    if captures:
+        return captures # Mandatory capture
+    return moves
+
+def sort_moves(moves):
+    # Sort moves to improve alpha-beta pruning
+    # Priority: Captures -> Promotions -> Center control -> Distance to center
+    def sort_key(move):
+        score = 0
+        is_capture = len(move) == 4
+        if is_capture:
+            score += 10000
+        
+        is_promotion = move[-1]
+        if is_promotion:
+            score += 5000
+            
+        # Center control preference
+        dest_r, dest_c = move[1]
+        score += (3 - abs(dest_r - 3.5)) * 10
+        score += (3 - abs(dest_c - 3.5)) * 10
+        
+        return -score # High score first
+
+    return sorted(moves, key=sort_key)
+
+def minimax(state, depth, alpha, beta, maximizing_player):
+    if time.time() - START_TIME > TIME_LIMIT:
+        return None # Time out signal
+
+    if depth == 0:
+        return evaluate(state, maximizing_player)
+
+    # Check terminal state (no pieces left)
+    if not state.my_pieces:
+        return -100000 # Lost
+    if not state.opp_pieces:
+        return 100000 # Won
+
+    if maximizing_player:
+        max_eval = -float('inf')
+        moves = get_all_moves(state, True)
+        moves = sort_moves(moves)
+        
+        for move in moves:
+            new_state = state.simulate_move(move, True)
+            
+            # If it's a capture, check for multi-capture (recurse immediately for same player)
+            eval_score = 0
+            if len(move) == 4: # Capture
+                # Check if another capture is available from the new position
+                _, next_captures = new_state.get_moves(for_my_pieces=True)
+                if next_captures:
+                    # Continuation of turn
+                    eval_score = minimax(new_state, depth, alpha, beta, True)
+                else:
+                    eval_score = minimax(new_state, depth - 1, alpha, beta, False)
+            else:
+                eval_score = minimax(new_state, depth - 1, alpha, beta, False)
+            
+            if eval_score is None: return None # Timeout
+            
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        moves = get_all_moves(state, False)
+        moves = sort_moves(moves)
+        
+        for move in moves:
+            new_state = state.simulate_move(move, False)
+            
+            eval_score = 0
+            if len(move) == 4:
+                _, next_captures = new_state.get_moves(for_my_pieces=False)
+                if next_captures:
+                    eval_score = minimax(new_state, depth, alpha, beta, False)
+                else:
+                    eval_score = minimax(new_state, depth - 1, alpha, beta, True)
+            else:
+                eval_score = minimax(new_state, depth - 1, alpha, beta, True)
+            
+            if eval_score is None: return None
+            
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    global START_TIME
+    START_TIME = time.time()
+    
+    initial_state = GameState(my_men, my_kings, opp_men, opp_kings, color)
+    
+    # Get all legal moves (captures mandatory)
+    raw_moves = get_all_moves(initial_state, True)
+    
+    if not raw_moves:
+        return None # Should not happen in valid game, but safe fallback
+        
+    # If only one move, take it immediately
+    if len(raw_moves) == 1:
+        move = raw_moves[0]
+        return (move[0], move[1])
+
+    # Sort moves initially for the root
+    sorted_moves = sort_moves(raw_moves)
+    best_move = sorted_moves[0]
+    
+    # Iterative Deepening
+    depth = 1
+    max_depth = 20 # Safety limit
+    
+    while depth <= max_depth:
+        if time.time() - START_TIME > TIME_LIMIT:
+            break
+            
+        current_best_move = None
+        current_best_score = -float('inf')
+        
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        for move in sorted_moves:
+            if time.time() - START_TIME > TIME_LIMIT:
+                break
+                
+            new_state = initial_state.simulate_move(move, True)
+            
+            eval_score = 0
+            if len(move) == 4:
+                _, next_captures = new_state.get_moves(for_my_pieces=True)
+                if next_captures:
+                    eval_score = minimax(new_state, depth, alpha, beta, True)
+                else:
+                    eval_score = minimax(new_state, depth - 1, alpha, beta, False)
+            else:
+                eval_score = minimax(new_state, depth - 1, alpha, beta, False)
+            
+            if eval_score is None: # Timeout during search
+                break
+                
+            if eval_score > current_best_score:
+                current_best_score = eval_score
+                current_best_move = move
+            
+            alpha = max(alpha, eval_score)
+        
+        if current_best_move and time.time() - START_TIME <= TIME_LIMIT:
+            best_move = current_best_move
+            
+        depth += 1
+
+    return (best_move[0], best_move[1])
+</code>

@@ -1,0 +1,277 @@
+The strategy for this policy is to use a Minimax algorithm with Alpha-Beta pruning to search the game tree. Given the 1-second time constraint, the search depth is dynamic based on the number of empty cells (branching factor), typically searching 2-3 plies ahead. The evaluation function scores board states based on potential winning lines (5-in-a-row, 4-in-a-row, 3-in-a-row) and control of the center. Immediate winning moves are prioritized, and moves leading to a draw are preferred over losses. Bitboard operations or numpy arrays are used for efficient state representation and move generation.
+
+```python
+import numpy as np
+import time
+import sys
+
+# Increase recursion depth just in case, though depth is limited
+sys.setrecursionlimit(2000)
+
+# Constants
+INF = 1000000
+WIN_VAL = 100000
+DRAW_VAL = 0
+
+# Precompute coordinates for the 32 possible lines of length 5 on a 6x6 board
+# Format: List of lists of (r, c) tuples
+LINES = []
+
+# Horizontal
+for r in range(6):
+    for c in range(2):
+        LINES.append([(r, c + i) for i in range(5)])
+# Vertical
+for c in range(6):
+    for r in range(2):
+        LINES.append([(r + i, c) for i in range(5)])
+# Diagonal (Top-Left to Bottom-Right)
+for r in range(2):
+    for c in range(2):
+        LINES.append([(r + i, c + i) for i in range(5)])
+# Diagonal (Top-Right to Bottom-Left)
+for r in range(2):
+    for c in range(2):
+        LINES.append([(r + i, c + 4 - i) for i in range(5)])
+
+def rotate_board(board, quad, direction):
+    """Rotates a quadrant of the board."""
+    new_board = board.copy()
+    # Quadrant mapping: 0:TL, 1:TR, 2:BL, 3:BR
+    r_start = 0 if quad < 2 else 3
+    c_start = 0 if quad % 2 == 0 else 3
+    
+    # Extract subgrid
+    subgrid = new_board[r_start:r_start+3, c_start:c_start+3].copy()
+    
+    # Rotate
+    # L = anticlockwise = 1 in np.rot90
+    # R = clockwise = -1 in np.rot90 (or 3)
+    k = 1 if direction == 'L' else -1
+    new_subgrid = np.rot90(subgrid, k)
+    
+    # Place back
+    new_board[r_start:r_start+3, c_start:c_start+3] = new_subgrid
+    return new_board
+
+def check_win(board):
+    """Checks if the given board has 5 in a row."""
+    # Check all lines
+    for line in LINES:
+        # Extract values
+        vals = board[[r for r, c in line], [c for r, c in line]]
+        if np.all(vals == 1):
+            return True
+    return False
+
+def evaluate_state(me, opp):
+    """
+    Heuristic evaluation of the board state.
+    Returns a score positive for me, negative for opponent.
+    """
+    score = 0
+    
+    for line in LINES:
+        me_indices = [i for i, (r, c) in enumerate(line) if me[r, c] == 1]
+        opp_indices = [i for i, (r, c) in enumerate(line) if opp[r, c] == 1]
+        
+        me_count = len(me_indices)
+        opp_count = len(opp_indices)
+        
+        # If opponent has pieces in line, I can't use it for 5. 
+        # If I have pieces, opponent can't use it.
+        
+        # Evaluate my potential
+        if opp_count == 0:
+            if me_count == 5: score += WIN_VAL
+            elif me_count == 4: score += 10000
+            elif me_count == 3: score += 1000
+            elif me_count == 2: score += 100
+            elif me_count == 1: score += 10
+            
+        # Evaluate opponent's potential (subtract from my score)
+        if me_count == 0:
+            if opp_count == 5: score -= WIN_VAL
+            elif opp_count == 4: score -= 10000
+            elif opp_count == 3: score -= 1000
+            elif opp_count == 2: score -= 100
+            elif opp_count == 1: score -= 10
+            
+    return score
+
+def minimax(me, opp, depth, alpha, beta, maximizing_player, start_time):
+    """Minimax algorithm with alpha-beta pruning."""
+    
+    # Time check: if we are close to limit, abort and return current eval
+    if time.time() - start_time > 0.9:
+        return evaluate_state(me, opp)
+
+    # Check terminal states
+    me_win = check_win(me)
+    opp_win = check_win(opp)
+    
+    if me_win and not opp_win:
+        return WIN_VAL
+    if opp_win and not me_win:
+        return -WIN_VAL
+    if me_win and opp_win:
+        return DRAW_VAL
+        
+    if depth == 0:
+        return evaluate_state(me, opp)
+
+    # Generate moves
+    # Only consider empty cells
+    occupied = me + opp
+    empty_cells = np.argwhere(occupied == 0)
+    
+    # Optimization: If too many empty cells, sort by heuristic or just take a subset?
+    # For safety, we iterate all. 
+    # Move ordering can significantly improve pruning. 
+    # Center control is usually good.
+    
+    # Simple heuristic for move ordering: closeness to center (2,2) and (2,3) etc
+    # Center of 6x6 is between 2,3. Dist to (2.5, 2.5)
+    center = np.array([2.5, 2.5])
+    dists = np.sum((empty_cells - center)**2, axis=1)
+    empty_cells = empty_cells[np.argsort(dists)]
+    
+    if maximizing_player:
+        max_eval = -INF
+        for r, c in empty_cells:
+            # Optimization: check time inside loop too
+            if time.time() - start_time > 0.9:
+                return evaluate_state(me, opp)
+                
+            for q in range(4):
+                for d in ['L', 'R']:
+                    # Place
+                    new_me = me.copy()
+                    new_me[r, c] = 1
+                    
+                    # Rotate
+                    new_me_rot = rotate_board(new_me, q, d)
+                    new_opp_rot = rotate_board(opp, q, d)
+                    
+                    # Recurse
+                    eval_val = minimax(new_me_rot, new_opp_rot, depth - 1, alpha, beta, False, start_time)
+                    
+                    max_eval = max(max_eval, eval_val)
+                    alpha = max(alpha, eval_val)
+                    if beta <= alpha:
+                        return max_eval
+        return max_eval
+    else:
+        min_eval = INF
+        for r, c in empty_cells:
+            if time.time() - start_time > 0.9:
+                return evaluate_state(me, opp)
+                
+            for q in range(4):
+                for d in ['L', 'R']:
+                    # Place (minimizing player places on 'opp' board relative to current perspective?
+                    # Wait, in recursion, 'me' is always the player whose turn it IS? 
+                    # No, standard minimax: 'me' in args is the board state for the player 'me' (constant perspective)
+                    # 'maximizing_player' indicates who moves.
+                    # If not maximizing, it's opponent's turn. 
+                    # So we place on 'opp' board.
+                    
+                    new_opp = opp.copy()
+                    new_opp[r, c] = 1
+                    
+                    # Rotate
+                    new_opp_rot = rotate_board(new_opp, q, d)
+                    new_me_rot = rotate_board(me, q, d)
+                    
+                    eval_val = minimax(new_me_rot, new_opp_rot, depth - 1, alpha, beta, True, start_time)
+                    
+                    min_eval = min(min_eval, eval_val)
+                    beta = min(beta, eval_val)
+                    if beta <= alpha:
+                        return min_eval
+        return min_eval
+
+def policy(you, opponent):
+    """
+    Main policy function.
+    you: 6x6 array (0/1)
+    opponent: 6x6 array (0/1)
+    Returns: "row,col,quad,dir"
+    """
+    me = np.array(you, dtype=int)
+    opp = np.array(opponent, dtype=int)
+    
+    start_time = time.time()
+    
+    occupied = me + opp
+    empty_cells = np.argwhere(occupied == 0)
+    num_empty = len(empty_cells)
+    
+    # Dynamic depth: fewer pieces = deeper search
+    # 36 cells total. 18 moves each.
+    # Depth 3 = Me->Opp->Me. 
+    # Branching factor ~ (Empty * 8).
+    # 20 empty * 8 = 160.
+    # 160^3 = 4M nodes. Too much for Python 1s.
+    # Depth 2 = Me->Opp. 160^2 = 25k nodes. Feasible.
+    
+    search_depth = 2
+    if num_empty < 10: # Endgame
+        search_depth = 3
+    elif num_empty > 25: # Opening
+        search_depth = 2
+        
+    best_move = None
+    best_score = -INF
+    
+    # Heuristic sorting for root moves
+    center = np.array([2.5, 2.5])
+    dists = np.sum((empty_cells - center)**2, axis=1)
+    sorted_indices = np.argsort(dists)
+    
+    for idx in sorted_indices:
+        r, c = empty_cells[idx]
+        
+        # Time check
+        if time.time() - start_time > 0.95:
+            break
+            
+        for q in range(4):
+            for d in ['L', 'R']:
+                # Apply Move
+                n_me = me.copy()
+                n_me[r, c] = 1
+                
+                n_me_rot = rotate_board(n_me, q, d)
+                n_opp_rot = rotate_board(opp, q, d)
+                
+                # Check for immediate win
+                if check_win(n_me_rot) and not check_win(n_opp_rot):
+                    # Output is 1-indexed
+                    return f"{r+1},{c+1},{q},{d}"
+                
+                # If draw (both win), score is 0 (or DRAW_VAL)
+                # If just regular state, search
+                me_w = check_win(n_me_rot)
+                opp_w = check_win(n_opp_rot)
+                
+                current_score = 0
+                if me_w and opp_w:
+                    current_score = DRAW_VAL
+                else:
+                    # Search from here (Depth - 1 because we made one move)
+                    # Next player is Opponent (maximizing=False)
+                    current_score = minimax(n_me_rot, n_opp_rot, search_depth - 1, -INF, INF, False, start_time)
+                
+                if current_score > best_score:
+                    best_score = current_score
+                    best_move = (r+1, c+1, q, d)
+                    
+    # Fallback if no move found (should not happen)
+    if best_move is None:
+        # Pick first empty, rotate TL Left
+        r, c = empty_cells[0]
+        return f"{r+1},{c+1},0,L"
+        
+    return f"{best_move[0]},{best_move[1]},{best_move[2]},{best_move[3]}"
+```

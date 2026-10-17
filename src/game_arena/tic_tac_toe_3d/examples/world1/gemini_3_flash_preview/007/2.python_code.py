@@ -1,0 +1,84 @@
+
+import random
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    3x3x3 Tic Tac Toe Strategy:
+    1. Look for a winning move.
+    2. Look for a move to block the opponent from winning.
+    3. Occupy the center if available.
+    4. Pick a move that contributes to the most potential winning lines.
+    """
+    
+    # Define all 49 winning lines across the 3x3x3 cube
+    lines = []
+    
+    # 1D lines (27)
+    for i in range(3):
+        for j in range(3):
+            lines.append([(i, j, k) for k in range(3)]) # x, y fixed
+            lines.append([(i, k, j) for k in range(3)]) # x, z fixed
+            lines.append([(k, i, j) for k in range(3)]) # y, z fixed
+            
+    # 2D plane diagonals (18)
+    for i in range(3):
+        lines.append([(i, j, j) for j in range(3)])
+        lines.append([(i, j, 2-j) for j in range(3)])
+        lines.append([(j, i, j) for j in range(3)])
+        lines.append([(j, i, 2-j) for j in range(3)])
+        lines.append([(j, j, i) for j in range(3)])
+        lines.append([(j, 2-j, i) for j in range(3)])
+        
+    # 3D space diagonals (4)
+    lines.append([(0,0,0), (1,1,1), (2,2,2)])
+    lines.append([(0,0,2), (1,1,1), (2,2,0)])
+    lines.append([(0,2,0), (1,1,1), (2,0,2)])
+    lines.append([(2,0,0), (1,1,1), (0,2,2)])
+
+    def get_line_sum(line):
+        return sum(board[p[0]][p[1]][p[2]] for p in line)
+
+    # 1. Win if possible
+    for line in lines:
+        if get_line_sum(line) == 2:
+            for p in line:
+                if board[p[0]][p[1]][p[2]] == 0:
+                    return p
+
+    # 2. Block opponent win
+    for line in lines:
+        if get_line_sum(line) == -2:
+            for p in line:
+                if board[p[0]][p[1]][p[2]] == 0:
+                    return p
+
+    # 3. Try to take the center
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+
+    # 4. Heuristic: Count how many potential winning lines pass through each empty cell
+    best_score = -1
+    best_move = None
+    
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == 0:
+                    empty_cells.append((x, y, z))
+
+    for cell in empty_cells:
+        score = 0
+        for line in lines:
+            if cell in line:
+                line_vals = [board[p[0]][p[1]][p[2]] for p in line]
+                # If the opponent has no pieces in this line, it's a potential win path
+                if -1 not in line_vals:
+                    score += 1
+        
+        if score > best_score:
+            best_score = score
+            best_move = cell
+            
+    return best_move if best_move else random.choice(empty_cells)
+

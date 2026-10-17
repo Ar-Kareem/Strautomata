@@ -1,0 +1,258 @@
+**Strategy**
+
+The bot uses a classic depth‑limited minimax search with α‑β pruning.  
+The evaluation function rewards:
+
+* **Material** – each own piece is worth `100` points.  
+* **Advancement** – for black the distance to the goal row 0 is `row`, for white the distance to row 7 is `7‑row`.  A smaller total distance for the player is better, so the term `(opp_distance‑my_distance) * 5` is added.
+
+Moves are ordered heuristically (captures first, then forward moves, then diagonal moves) to maximise the number of cut‑offs in the α‑β search.
+
+The search runs with iterative deepening (depth 1..6) and stops as soon as the time budget (≈ 0.9 s) is exhausted or a forced win is found.  The best move found at the deepest completed depth is returned.
+
+This combination of material‑based evaluation, forward push, and a fast α‑β search gives a solid, aggressive play that tries to reach the opponent’s home row while keeping the own pieces safe.
+
+```python
+import time
+
+# ----------------------------------------------------------------------
+# Constants
+# ----------------------------------------------------------------------
+WIN_SCORE = 1_000_000          # large enough to represent a certain win
+PIECE_WEIGHT = 100             # value of a single pawn
+DIST_WEIGHT = 5                # weight for advancement towards the goal
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def opponent_color(color: str) -> str:
+    """Return the color of the opponent."""
+    return 'w' if color == 'b' else 'b'
+
+def get_moves(board, color: str):
+    """
+    Return a list of legal moves for `color`.
+    Each move is ((from_r, from_c), (to_r, to_c)).
+    """
+    black_set, white_set = board
+    if color == 'b':
+        pieces   = black_set
+        own_set  = black_set
+        opp_set  = white_set
+        forward  = -1               # black moves towards lower row numbers
+    else:
+        pieces   = white_set
+        own_set  = white_set
+        opp_set  = black_set
+        forward  = +1               # white moves towards higher row numbers
+
+    moves = []
+    for r, c in pieces:
+        nr = r + forward
+        if nr < 0 or nr >= 8:
+            continue
+
+        # straight forward (only if the square is empty)
+        fwd = (nr, c)
+        if fwd not in black_set and fwd not in white_set:
+            moves.append(((r, c), fwd))
+
+        # diagonal forward‑left
+        nc = c - 1
+        if 0 <= nc < 8:
+            tgt = (nr, nc)
+            if tgt not in own_set:          # empty or opponent -> allowed
+                moves.append(((r, c), tgt))
+
+        # diagonal forward‑right
+        nc = c + 1
+        if 0 <= nc < 8:
+            tgt = (nr, nc)
+            if tgt not in own_set:
+                moves.append(((r, c), tgt))
+
+    return moves
+
+def apply_move(board, move, color: str):
+    """Return a new board (black_set, white_set) after playing `move`."""
+    black_set, white_set = board
+    (fr, fc), (tr, tc) = move
+
+    new_black = black_set.copy()
+    new_white = white_set.copy()
+
+    if color == 'b':
+        new_black.remove((fr, fc))
+        if (tr, tc) in new_white:          # capture
+            new_white.remove((tr, tc))
+        new_black.add((tr, tc))
+    else:
+        new_white.remove((fr, fc))
+        if (tr, tc) in new_black:
+            new_black.remove((tr, tc))
+        new_white.add((tr, tc))
+
+    return (new_black, new_white)
+
+def check_terminal(board):
+    """
+    Return (is_terminal, winner) where winner is 'b' or 'w' if the game has
+    ended, otherwise (False, None).
+    """
+    black_set, white_set = board
+
+    # a piece on the opponent’s home row ends the game immediately
+    if any(r == 0 for r, _ in black_set):
+        return (True, 'b')
+    if any(r == 7 for r, _ in white_set):
+        return (True, 'w')
+
+    # a player with no pieces left loses
+    if not black_set:
+        return (True, 'w')
+    if not white_set:
+        return (True, 'b')
+
+    return (False, None)
+
+def evaluate(board, original_player: str):
+    """Static evaluation from the point of view of `original_player`."""
+    term, winner = check_terminal(board)
+    if term:
+        return WIN_SCORE if winner == original_player else -WIN_SCORE
+
+    black_set, white_set = board
+    b_cnt = len(black_set)
+    w_cnt = len(white_set)
+
+    b_dist = sum(r for r, _ in black_set)               # distance to row 0
+    w_dist = sum((7 - r) for r, _ in white_set)          # distance to row 7
+
+    if original_player == 'b':
+        piece_score = (b_cnt - w_cnt) * PIECE_WEIGHT
+        dist_score  = (w_dist - b_dist) * DIST_WEIGHT
+    else:
+        piece_score = (w_cnt - b_cnt) * PIECE_WEIGHT
+        dist_score  = (b_dist - w_dist) * DIST_WEIGHT
+
+    return piece_score + dist_score
+
+def minimax(board, color: str, original_player: str, depth: int, alpha, beta):
+    """α‑β search returning (score, best_move)."""
+    term, winner = check_terminal(board)
+    if term:
+        return (WIN_SCORE if winner == original_player else -WIN_SCORE, None)
+
+    if depth == 0:
+        return (evaluate(board, original_player), None)
+
+    moves = get_moves(board, color)
+    if not moves:                       # no legal move -> loss for the player to move
+        return (-WIN_SCORE if color == original_player else WIN_SCORE, None)
+
+    maximizing = (color == original_player)
+    opp = opponent_color(color)
+
+    # ---- move ordering -------------------------------------------------
+    black_set, white_set = board
+    def move_key(mv):
+        (fr, fc), (tr, tc) = mv
+        score = 0
+        # capture bonus
+        if (tr, tc) in (white_set if color == 'b' else black_set):
+            score += 1000
+        # forward vs diagonal
+        if tc == fc:
+            score += 100
+        else:
+            score += 10
+        # advancement
+        if color == 'b':
+            adv = fr - tr
+        else:
+            adv = tr - fr
+        score += adv
+        return score
+
+    moves.sort(key=move_key, reverse=True)
+
+    if maximizing:
+        best_score = -float('inf')
+        best_move  = None
+        for mv in moves:
+            child_board = apply_move(board, mv, color)
+            child_score, _ = minimax(child_board, opp, original_player,
+                                     depth - 1, alpha, beta)
+            if child_score > best_score:
+                best_score = child_score
+                best_move  = mv
+                alpha = max(alpha, best_score)
+                if beta <= alpha:
+                    break
+        return (best_score, best_move)
+    else:
+        best_score = float('inf')
+        best_move  = None
+        for mv in moves:
+            child_board = apply_move(board, mv, color)
+            child_score, _ = minimax(child_board, opp, original_player,
+                                     depth - 1, alpha, beta)
+            if child_score < best_score:
+                best_score = child_score
+                best_move  = mv
+                beta = min(beta, best_score)
+                if beta <= alpha:
+                    break
+        return (best_score, best_move)
+
+def policy(me, opp, color: str):
+    """
+    Return a legal move for the player `color`.
+    `me`  – list of (r,c) belonging to the player.
+    `opp` – list of (r,c) belonging to the opponent.
+    """
+    # ----- build the board (two sets of positions) ----------------------
+    black_set = set()
+    white_set = set()
+    for r, c in me:
+        if color == 'b':
+            black_set.add((r, c))
+        else:
+            white_set.add((r, c))
+    opp_color = 'w' if color == 'b' else 'b'
+    for r, c in opp:
+        if opp_color == 'b':
+            black_set.add((r, c))
+        else:
+            white_set.add((r, c))
+    board = (black_set, white_set)
+
+    # If the game is already over we still have to return *some* legal move.
+    term, _ = check_terminal(board)
+    if term:
+        legal = get_moves(board, color)
+        return legal[0] if legal else ((0, 0), (0, 0))
+
+    legal_moves = get_moves(board, color)
+    if not legal_moves:                     # should never happen, but be safe
+        return ((0, 0), (0, 0))
+
+    # ----- iterative deepening α‑β search --------------------------------
+    start = time.time()
+    time_limit = 0.9                         # stay comfortably below 1 s
+    best_move = legal_moves[0]               # fallback
+    max_depth = 6
+
+    for depth in range(1, max_depth + 1):
+        if time.time() - start > time_limit:
+            break
+        score, move = minimax(board, color, color, depth,
+                              -float('inf'), float('inf'))
+        if move is not None:
+            best_move = move
+        # if we have found a forced win there is no need to search deeper
+        if score >= WIN_SCORE - 1:
+            break
+
+    return best_move
+```

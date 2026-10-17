@@ -1,0 +1,144 @@
+# Strategy for Dots and Boxes on 4x4 Grid
+
+My strategy for the Dots and Boxes game is based on several key principles:
+
+1. **Box Completion Avoidance**: I want to avoid creating boxes with exactly 3 sides filled (called "kneecappers"), because these allow the opponent to immediately capture the full box.
+
+2. **Box Creation**: I prefer moves that complete boxes (when possible) because they give me another turn.
+
+3. **Edge Priority**: I prioritize:
+   - Creating boxes first
+   - Avoiding kneecappers second
+   - Making moves that don't immediately give the opponent an advantage third
+
+4. **Game State Analysis**: I will:
+   - Look for opportunities to complete boxes immediately
+   - Avoid moves that create a box with 3 edges
+   - Prefer edges that keep the game balanced
+
+5. **Move Selection**: When there are multiple legal moves, I will:
+   - Try moves that complete boxes first
+   - Then try moves that avoid getting into bad positions
+   - Fall back to the first legal move
+
+6. **Special Cases**: Consider a move safe if it doesn't immediately give opponent a point. Focus on moves that maximize the number of edges I can control or maintain a strong board position.
+
+The algorithm will:
+1. Generate all legal moves
+2. Filter out moves that will create a kneecapper (3 sides filled) that gives opponent immediate points
+3. Try moves that complete boxes if available
+4. Otherwise, try moves that are generally safe
+5. Pick the first legal move from those considerations
+
+<code>
+import numpy as np
+import random
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Find all legal moves
+    legal_moves = []
+    
+    # Check horizontal edges (5x4 grid)
+    for row in range(5):
+        for col in range(4):
+            if horizontal[row, col] == 0:  # Not occupied
+                legal_moves.append((row, col, 'H'))
+    
+    # Check vertical edges (4x5 grid)
+    for row in range(4):
+        for col in range(5):
+            if vertical[row, col] == 0:  # Not occupied
+                legal_moves.append((row, col, 'V'))
+    
+    # Filter for moves that don't create a kneecapper (3 sides already filled)
+    safe_moves = []
+    for row, col, direction in legal_moves:
+        # Try to see if this edge would create a "kneecapper"
+        if direction == 'H':
+            # Check if this horizontal edge would complete any boxes (top or bottom)
+            if row > 0:  # Check top box
+                # Check if this edge would complete a 3-sided box
+                top_left = horizontal[row-1, col] != 0  # Top edge
+                top_right = horizontal[row-1, col+1] != 0  # Top edge
+                right_side = vertical[row-1, col+1] != 0  # Right edge
+                if top_left and top_right and right_side:
+                    # This would create a kneecapper
+                    continue
+                # Also check if it completes a box that's not already captured
+                if top_left and top_right and vertical[row-1, col] != 0:
+                    # This would complete the box
+                    safe_moves.append((row, col, direction, True))  # True means completion
+                else:
+                    safe_moves.append((row, col, direction, False))
+            if row < 4:  # Check bottom box (if it's not the bottom edge)
+                # Check if this edge would complete a 3-sided box
+                bottom_left = horizontal[row, col] != 0  # Bottom edge
+                bottom_right = horizontal[row, col+1] != 0  # Bottom edge
+                right_side = vertical[row, col+1] != 0  # Right edge
+                if bottom_left and bottom_right and right_side:
+                    # This would create a kneecapper
+                    continue
+                # Also check if it completes a box that's not already captured
+                if bottom_left and bottom_right and vertical[row, col] != 0:
+                    # This would complete the box
+                    safe_moves.append((row, col, direction, True))
+                else:
+                    safe_moves.append((row, col, direction, False))
+        else:  # 'V'
+            # Check if this vertical edge would complete any boxes (left or right)
+            if col > 0:  # Check left box
+                # Check if this edge would complete a 3-sided box
+                left_top = horizontal[row, col-1] != 0  # Top edge
+                left_bottom = horizontal[row+1, col-1] != 0  # Bottom edge
+                top_side = vertical[row, col-1] != 0  # Top edge
+                if left_top and left_bottom and top_side:
+                    # This would create a kneecapper
+                    continue
+                # Also check if it completes a box that's not already captured
+                if left_top and left_bottom and horizontal[row, col-1] != 0:
+                    # This would complete the box
+                    safe_moves.append((row, col, direction, True))  # True means completion
+                else:
+                    safe_moves.append((row, col, direction, False))
+            if col < 4:  # Check right box (if it's not the right edge)
+                # Check if this edge would complete a 3-sided box
+                right_top = horizontal[row, col] != 0  # Top edge
+                right_bottom = horizontal[row+1, col] != 0  # Bottom edge
+                top_side = vertical[row, col] != 0  # Top edge
+                if right_top and right_bottom and top_side:
+                    # This would create a kneecapper
+                    continue
+                # Also check if it completes a box that's not already captured
+                if right_top and right_bottom and horizontal[row, col] != 0:
+                    # This would complete the box
+                    safe_moves.append((row, col, direction, True))
+                else:
+                    safe_moves.append((row, col, direction, False))
+    
+    # Prefer moves that complete boxes
+    completion_moves = [move for move in safe_moves if move[3]]
+    if completion_moves:
+        # Pick the first completion move (this gives you another turn)
+        row, col, direction, _ = completion_moves[0]
+        return f"{row},{col},{direction}"
+    
+    # If no completion moves found, avoid kneecappers
+    # Check if any non-kneecapper moves exist
+    non_kneecapper_moves = [move for move in safe_moves if not move[3]]
+    if non_kneecapper_moves:
+        # Prefer moves that create a box (for the sake of completeness)
+        non_kneecapper_moves = [move for move in safe_moves if not move[3]]
+        # If we have moves of both types, prefer non-kneecapper but still give priority to completion
+        # This should have been handled by the earlier check already
+        row, col, direction, _ = random.choice(non_kneecapper_moves)  # Make a random safe move
+        return f"{row},{col},{direction}"
+    
+    # If no safe moves exist (should not happen if move selection was correct), choose first legal move
+    if legal_moves:
+        row, col, direction = random.choice(legal_moves)
+        return f"{row},{col},{direction}"
+    
+    # Fallback: just take the first legal move (this is a bug in the game logic, but let's handle it)
+    row, col, direction = legal_moves[0]
+    return f"{row},{col},{direction}"
+</code>

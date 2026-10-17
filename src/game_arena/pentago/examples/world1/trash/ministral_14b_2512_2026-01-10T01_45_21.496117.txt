@@ -1,0 +1,182 @@
+### Thinking Process
+
+#### Understanding Pentago
+Pentago is a two-player board game where players take turns placing a marble on an empty cell of a 6x6 grid and then rotating one of the four 3x3 quadrants (either clockwise or counter-clockwise). The goal is to be the first to get five of your marbles in a row horizontally, vertically, or diagonally after the placement and rotation.
+
+#### Key Observations
+1. **Move Format**: The move consists of placing a marble at `(row, col)` and then rotating a quadrant (`quad`) in a direction (`L` or `R`).
+2. **Legal Moves**: The placement must be on an empty cell, and the rotation must be valid (any quadrant and direction).
+3. **Win Condition**: After the move (placement + rotation), check if the current player has 5 marbles in a row in any direction.
+4. **Opponent's Move**: The opponent's marbles are also rotated when a quadrant is rotated, so the rotation can affect the opponent's potential winning lines.
+
+#### Strategy Design
+Given the complexity of Pentago, a simple but effective strategy could be:
+1. **Check for Immediate Win**: First, check if there's a move that results in a win (5-in-a-row) for the current player after placement and rotation. If such a move exists, prioritize it.
+2. **Block Opponent's Win**: If no immediate win is possible, check if the opponent has a winning move in their next turn. If so, block it by choosing a move that prevents the opponent from winning.
+3. **Random or Heuristic Move**: If neither of the above applies, choose a move that seems promising based on some heuristic (e.g., placing in the center, or choosing a quadrant that disrupts the opponent's potential lines).
+
+#### Implementation Steps
+1. **Generate All Legal Moves**: Iterate over all empty cells and all possible quadrant rotations to generate all possible moves.
+2. **Simulate Each Move**: For each move, simulate the placement and rotation, then check if the current player wins.
+3. **Check for Opponent's Win**: For each move, simulate the opponent's next move to see if they can win. If so, avoid that move.
+4. **Select Best Move**: Choose the move that either wins immediately or blocks the opponent's win. If neither, choose a random or heuristic-based move.
+
+#### Edge Cases
+- Ensure that the move is always legal (placement on empty cell, valid quadrant and direction).
+- Handle cases where multiple moves lead to a win or block the opponent's win. In such cases, prioritize moves that also disrupt the opponent's potential lines.
+
+#### Optimizations
+- Precompute potential winning lines for both players to quickly check for wins or blocks.
+- Use bitmasking or efficient data structures to represent the board and check for 5-in-a-row quickly.
+
+### Python Implementation
+
+Here's the Python code implementing the above strategy:
+
+```python
+import numpy as np
+from itertools import product
+
+def policy(you, opponent) -> str:
+    # Convert input to numpy arrays for easier manipulation
+    you_board = np.array(you)
+    opponent_board = np.array(opponent)
+
+    # Directions for checking 5-in-a-row: horizontal, vertical, diagonal (both)
+    directions = [
+        ((0, 1), (0, -1)),  # horizontal
+        ((1, 0), (-1, 0)),  # vertical
+        ((1, 1), (-1, -1)),  # diagonal down-right
+        ((1, -1), (-1, 1))   # diagonal down-left
+    ]
+
+    def is_win(board, player):
+        """Check if the player has 5-in-a-row in any direction."""
+        for dr1, dr2 in directions:
+            for r, c in product(range(6), range(6)):
+                if board[r, c] == player:
+                    # Check in direction dr1
+                    count = 1
+                    nr, nc = r + dr1[0], c + dr1[1]
+                    while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == player:
+                        count += 1
+                        nr += dr1[0]
+                        nc += dr1[1]
+                    # Check in direction dr2
+                    nr, nc = r + dr2[0], c + dr2[1]
+                    while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == player:
+                        count += 1
+                        nr += dr2[0]
+                        nc += dr2[1]
+                    if count >= 5:
+                        return True
+        return False
+
+    def apply_move(you_board, opponent_board, row, col, quad, dir):
+        """Apply the move to the boards and return the new boards."""
+        # Place the marble
+        you_board[row-1, col-1] = 1
+
+        # Define the quadrants
+        quadrants = [
+            (slice(0, 3), slice(0, 3)),  # quad 0: top-left
+            (slice(0, 3), slice(3, 6)),  # quad 1: top-right
+            (slice(3, 6), slice(0, 3)),  # quad 2: bottom-left
+            (slice(3, 6), slice(3, 6))   # quad 3: bottom-right
+        ]
+
+        # Rotate the specified quadrant
+        qr, qc = quadrants[quad]
+        quadrant = you_board[qr, qc]
+        opponent_quadrant = opponent_board[qr, qc]
+
+        if dir == 'L':
+            # Rotate 90 degrees anticlockwise
+            rotated_quadrant = np.rot90(quadrant, k=-1)
+            rotated_opponent_quadrant = np.rot90(opponent_quadrant, k=-1)
+        else:  # dir == 'R'
+            # Rotate 90 degrees clockwise
+            rotated_quadrant = np.rot90(quadrant, k=1)
+            rotated_opponent_quadrant = np.rot90(opponent_quadrant, k=1)
+
+        you_board[qr, qc] = rotated_quadrant
+        opponent_board[qr, qc] = rotated_opponent_quadrant
+
+        return you_board, opponent_board
+
+    def get_legal_moves(you_board, opponent_board):
+        """Generate all legal moves."""
+        legal_moves = []
+        # Iterate over all empty cells
+        for row in range(1, 7):
+            for col in range(1, 7):
+                if you_board[row-1, col-1] == 0 and opponent_board[row-1, col-1] == 0:
+                    # Try all quadrants and directions
+                    for quad in range(4):
+                        for dir in ['L', 'R']:
+                            legal_moves.append((row, col, quad, dir))
+        return legal_moves
+
+    legal_moves = get_legal_moves(you_board, opponent_board)
+
+    # Check for winning moves
+    winning_moves = []
+    for move in legal_moves:
+        row, col, quad, dir = move
+        new_you, new_opponent = apply_move(you_board.copy(), opponent_board.copy(), row, col, quad, dir)
+        if is_win(new_you, 1):
+            winning_moves.append(move)
+
+    if winning_moves:
+        # Choose the first winning move (or could randomize)
+        return f"{winning_moves[0][0]},{winning_moves[0][1]},{winning_moves[0][2]},{winning_moves[0][3]}"
+
+    # Check for blocking moves (opponent's potential win)
+    # Simulate opponent's move after our move
+    blocking_moves = []
+    for move in legal_moves:
+        row, col, quad, dir = move
+        new_you, new_opponent = apply_move(you_board.copy(), opponent_board.copy(), row, col, quad, dir)
+        # Now check if opponent can win in their next move
+        opponent_can_win = False
+        for opp_row in range(1, 7):
+            for opp_col in range(1, 7):
+                if new_opponent[opp_row-1, opp_col-1] == 0 and new_you[opp_row-1, opp_col-1] == 0:
+                    for opp_quad in range(4):
+                        for opp_dir in ['L', 'R']:
+                            temp_you = new_you.copy()
+                            temp_opponent = new_opponent.copy()
+                            temp_you, temp_opponent = apply_move(temp_you, temp_opponent, opp_row, opp_col, opp_quad, opp_dir)
+                            if is_win(temp_opponent, 1):
+                                opponent_can_win = True
+                                break
+                        if opponent_can_win:
+                            break
+                    if opponent_can_win:
+                        break
+                if opponent_can_win:
+                    break
+            if opponent_can_win:
+                break
+        if not opponent_can_win:
+            blocking_moves.append(move)
+
+    if blocking_moves:
+        # Choose the first blocking move (or could randomize)
+        return f"{blocking_moves[0][0]},{blocking_moves[0][1]},{blocking_moves[0][2]},{blocking_moves[0][3]}"
+
+    # If no winning or blocking moves, choose a random move
+    import random
+    return f"{random.choice(legal_moves)[0]},{random.choice(legal_moves)[1]},{random.choice(legal_moves)[2]},{random.choice(legal_moves)[3]}"
+```
+
+### Explanation of the Code
+1. **Board Representation**: The input `you` and `opponent` boards are converted to NumPy arrays for easier manipulation.
+2. **Win Check**: The `is_win` function checks if a player has 5 marbles in a row in any direction (horizontal, vertical, or diagonal).
+3. **Move Application**: The `apply_move` function simulates placing a marble and rotating a quadrant, updating both players' boards.
+4. **Legal Moves Generation**: `get_legal_moves` generates all possible legal moves by iterating over empty cells and all quadrant/direction combinations.
+5. **Winning Moves**: The code first checks if any move results in an immediate win for the current player.
+6. **Blocking Moves**: If no winning move exists, it checks if any move prevents the opponent from winning in their next turn.
+7. **Random Move**: If neither winning nor blocking moves are found, a random legal move is chosen.
+
+This strategy ensures that the AI always makes a legal move and prioritizes winning or blocking the opponent's win when possible.

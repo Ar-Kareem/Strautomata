@@ -1,0 +1,99 @@
+The strategy for this policy is to select the best move by evaluating each legal move based on a hierarchical set of criteria, prioritized as follows:
+
+1. **Checkmate Detection**: If a move results in checkmate (ends with `#`), it is immediately chosen.
+2. **Check Detection**: Prefer moves that give check (end with `+`) if no mate.
+3. **Capture Evaluation**: Prioritize captures, especially those involving high-value pieces (Queen > Rook > Bishop > Knight > Pawn), using a material gain heuristic.
+4. **Promotion Bonus**: Strongly favor pawn promotions, especially to Queen.
+5. **Castling Bonus**: Prefer castling for king safety when no better tactical move exists.
+6. **Center Control & Development**: Favor moves that go toward or control central squares (e.g., e4, d4, e5, d5), particularly for knights and bishops in the opening/middlegame.
+7. **King Safety**: Discourage moving the king early unless castling or forced by checks.
+8. **Default**: If none of the above apply, pick the first move (fallback, though the above heuristics aim to always provide better candidates).
+
+The policy uses a scoring system to rank moves and returns the highest-scoring legal move. This balances tactical sharpness with strategic soundness, enabling strong play against weaker policies while maintaining speed under the 1-second limit.
+
+<code>
+import numpy as np
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # Material value of pieces (from opponent's perspective when captured)
+    piece_value = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1, 'K': 0}
+    
+    # Color mapping
+    color_char = 'w' if to_play == 'white' else 'b'
+    opp_color_char = 'b' if to_play == 'white' else 'w'
+
+    # Central squares for development/heuristic
+    center_squares = ['d4', 'd5', 'e4', 'e5']
+
+    def evaluate_move(move: str) -> int:
+        score = 0
+
+        # 1. Check for checkmate
+        if move.endswith('#'):
+            return 10000
+
+        # 2. Check for check
+        if move.endswith('+'):
+            score += 50
+
+        # 3. Capture scoring
+        if 'x' in move:
+            # Extract captured square: last three or four characters before optional +
+            clean_move = move.replace('+', '').replace('#', '')
+            if '=' in clean_move:  # promotion with capture, e.g. Bxf8=Q
+                captured_square = clean_move.split('x')[1].split('=')[0]
+            else:
+                captured_square = clean_move.split('x')[1]
+            if captured_square in pieces:
+                captured_piece = pieces[captured_square]
+                if captured_piece[0] == opp_color_char:
+                    piece_type = captured_piece[1]
+                    score += piece_value[piece_type] * 10
+
+        # 4. Promotion bonus
+        if '=Q' in move:
+            score += 80
+        elif '=R' in move or '=B' in move or '=N' in move:
+            score += 60
+
+        # 5. Castling bonus
+        if move == 'O-O' or move == 'O-O-O':
+            score += 40
+
+        # 6. Encourage center control (especially for pawns, knights, bishops)
+        # Find destination square
+        dest_sq = None
+        clean_move = move.replace('+', '').replace('#', '').replace('x', '')
+        if clean_move.startswith('O-O'):
+            pass  # handled above
+        elif '=' in clean_move:
+            dest_sq = clean_move.split('=')[0][-2:]
+        else:
+            # Remove piece char if present (e.g. Nf3 -> f3), but keep disambiguation
+            if clean_move[0] in 'KQRBNP':
+                rest = clean_move[1:]
+            else:
+                rest = clean_move
+            # Destination is last two chars if they form a square
+            if len(rest) >= 2 and rest[-2] in 'abcdefgh' and rest[-1] in '12345678':
+                dest_sq = rest[-2:]
+        if dest_sq and dest_sq in center_squares:
+            # Bonus for pawns, knights, bishops moving to center
+            if move.startswith(('N', 'B')) or (len(move) == 2 and move.islower() == False):  # Pawn move like 'e4'
+                score += 10
+            elif move.startswith('P'):  # Explicit pawn move
+                score += 10
+
+        # 7. Discourage king moves unless castling
+        if move.startswith('K') and move not in ['O-O', 'O-O-O']:
+            score -= 5
+
+        return score
+
+    # Score all legal moves
+    scored_moves = [(move, evaluate_move(move)) for move in legal_moves]
+    # Choose move with highest score
+    best_move = max(scored_moves, key=lambda x: x[1])[0]
+
+    return best_move
+</code>

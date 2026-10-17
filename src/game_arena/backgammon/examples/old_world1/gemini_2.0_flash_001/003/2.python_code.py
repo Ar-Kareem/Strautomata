@@ -1,0 +1,129 @@
+
+import itertools
+
+def policy(state: dict) -> str:
+    """
+    Backgammon AI policy.
+
+    Args:
+        state (dict): The current game state.
+
+    Returns:
+        str: A move string in the format "<ORDER>:<FROM1>,<FROM2>".
+    """
+
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+
+    def generate_moves(dice):
+        """Generates all possible combinations of moves given the dice rolls."""
+        moves = []
+        if not dice:  # Handle the empty dice case. Returning an empty move.
+            return ['H:P,P']  # Correct Pass String
+        elif len(dice) == 1:
+            moves = [('A',), ('B',)]
+        elif len(dice) == 2 and dice[0] != dice[1]:
+             moves = [('A','B'),('B','A')]
+        elif len(dice) == 2 and dice[0] == dice[1]:
+            moves = [('A','A')]
+        return moves
+
+    def get_possible_points():
+        """returns all possible points we can start a move at"""
+        possible_points = []
+        if my_bar > 0:
+            possible_points.append("B")
+        else:
+            for i, count in enumerate(my_pts):
+                if count > 0:
+                    point = "A" + str(i)
+                    possible_points.append(point)
+        return possible_points
+
+    def is_legal_move(move_str):
+        # No proper legality validation is possible without outside resources
+        # but we can at least check the format and if the point given exists.
+        parts = move_str.split(":")
+        if len(parts) != 2:
+            return False
+
+        order = parts[0]
+        if order not in ("H","L"):
+            return False
+
+        moves = parts[1].split(",")
+        if len(moves) != 2:
+            return False
+        
+        for move in moves:
+            if move == "P":
+                continue # pass
+
+            if move == "B":
+                continue # Bar
+
+            if len(move) < 2 or move[0] != "A": # Not a Valid Move
+               return False
+            try:
+                point = int(move[1:])
+                if point < 0 or point > 23:
+                   return False # invalid point
+            except ValueError:
+                return False # Non Numerical
+
+        return True # Rough Legal Format Check is Valid.
+    
+    def find_legal_moves():
+        """Finds all valid moves for the given state and dice."""
+        legal_moves = []
+        moves = generate_moves(dice)
+        possible_points = get_possible_points()
+        
+
+        # Generate all move combinations
+
+        if len(dice) == 0: # Pass
+            return ['H:P,P'] # correct result for zero dice.
+        elif len(dice) == 1: 
+            die = dice[0]
+            for point in possible_points:
+                move_str_H = 'H:'+ point + ',P'
+                move_str_L = 'L:'+ point + ',P'
+
+                if is_legal_move(move_str_H):
+                    legal_moves.append(move_str_H)
+
+                if is_legal_move(move_str_L):
+                    legal_moves.append(move_str_L)
+            if not legal_moves:
+                legal_moves.append('H:P,P') # If no legal move exists, pass
+
+                
+        else: # Two Dice Rolls
+            die1 = dice[0]
+            die2 = dice[1]
+            for point1 in possible_points:
+                possible_points_2 = get_possible_points()
+                for point2 in possible_points_2:   
+                    move_str_H = 'H:' + point1 + ',' + point2
+                    move_str_L = 'L:' + point1 + ',' + point2
+
+                    if is_legal_move(move_str_H):
+                       legal_moves.append(move_str_H)
+                    if is_legal_move(move_str_L):
+                       legal_moves.append(move_str_L)
+            if not legal_moves: # no Legal Moves Possible
+                legal_moves.append('H:P,P')
+        return legal_moves
+
+    legal_moves = find_legal_moves()    
+    #if not legal_moves:
+        #return 'H:P,P'
+
+          # Return a move. If no legal moves, return a pass.
+    return legal_moves[0]

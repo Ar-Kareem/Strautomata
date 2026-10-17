@@ -1,0 +1,169 @@
+
+import math
+from collections import deque
+
+def policy(me, opp, valid_mask):
+    """Havannah policy."""
+    my_stones = set(me)
+    opp_stones = set(opp)
+    
+    # Get valid moves
+    valid_moves = get_valid_moves(my_stones, opp_stones, valid_mask)
+    
+    if not valid_moves:
+        return find_any_valid(valid_mask)
+    
+    # Opening
+    if len(my_stones) == 0 and (7, 7) in valid_moves:
+        return (7, 7)
+    
+    # Try to win
+    for move in valid_moves:
+        if wins(move, my_stones, valid_mask):
+            return move
+    
+    # Block opponent
+    for move in valid_moves:
+        if wins(move, opp_stones, valid_mask):
+            return move
+    
+    # Best heuristic move
+    return max(valid_moves, key=lambda m: score_move(m, my_stones, opp_stones, valid_mask))
+
+
+def get_valid_moves(my_stones, opp_stones, valid_mask):
+    moves = []
+    occupied = my_stones | opp_stones
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c] and (r, c) not in occupied:
+                moves.append((r, c))
+    return moves
+
+
+def find_any_valid(valid_mask):
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c]:
+                return (r, c)
+    return (7, 7)
+
+
+def neighbors(r, c):
+    return [(r-1,c), (r+1,c), (r-1,c-1), (r,c-1), (r,c+1), (r+1,c+1)]
+
+
+def valid_neighbors(pos, valid_mask):
+    return [p for p in neighbors(*pos) 
+            if 0 <= p[0] < 15 and 0 <= p[1] < 15 and valid_mask[p[0]][p[1]]]
+
+
+def connected(start, stones, valid_mask):
+    if start not in stones:
+        return set()
+    visited = {start}
+    queue = deque([start])
+    while queue:
+        pos = queue.popleft()
+        for n in valid_neighbors(pos, valid_mask):
+            if n in stones and n not in visited:
+                visited.add(n)
+                queue.append(n)
+    return visited
+
+
+def wins(move, stones, valid_mask):
+    new_stones = stones | {move}
+    return (has_bridge(new_stones, valid_mask) or 
+            has_fork(new_stones, valid_mask) or 
+            has_ring(new_stones, valid_mask))
+
+
+def get_corners(valid_mask):
+    return [(r,c) for r in range(15) for c in range(15) 
+            if valid_mask[r][c] and len(valid_neighbors((r,c), valid_mask)) == 2]
+
+
+def has_bridge(stones, valid_mask):
+    corners = get_corners(valid_mask)
+    in_stones = [c for c in corners if c in stones]
+    if len(in_stones) < 2:
+        return False
+    comp = connected(in_stones[0], stones, valid_mask)
+    return any(c in comp for c in in_stones[1:])
+
+
+def has_fork(stones, valid_mask):
+    edge_cells = [(r,c) for r in range(15) for c in range(15)
+                  if valid_mask[r][c] and len(valid_neighbors((r,c), valid_mask)) == 4]
+    
+    center_r, center_c = 7, 7
+    edge_sides = {}
+    for r, c in edge_cells:
+        angle = math.atan2(r - center_r, c - center_c)
+        side = int((angle + math.pi) * 3 / math.pi) % 6
+        edge_sides[(r, c)] = side
+    
+    edge_stones = [pos for pos in stones if pos in edge_cells]
+    if len(edge_stones) < 3:
+        return False
+    
+    comp = connected(edge_stones[0], stones, valid_mask)
+    touched_sides = set(edge_sides[pos] for pos in edge_stones if pos in comp)
+    
+    return len(touched_sides) >= 3
+
+
+def has_ring(stones, valid_mask):
+    if len(stones) < 6:
+        return False
+    
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c] and (r, c) not in stones:
+                if surrounded((r, c), stones, valid_mask):
+                    return True
+    return False
+
+
+def surrounded(pos, stones, valid_mask):
+    visited = {pos}
+    queue = deque([pos])
+    limit = 100
+    
+    while queue:
+        if len(visited) > limit:
+            return False
+        
+        curr = queue.popleft()
+        
+        if len(valid_neighbors(curr, valid_mask)) < 6:
+            return False
+        
+        for n in valid_neighbors(curr, valid_mask):
+            if n not in stones and n not in visited:
+                visited.add(n)
+                queue.append(n)
+    
+    return True
+
+
+def score_move(move, my_stones, opp_stones, valid_mask):
+    r, c = move
+    score = 0
+    
+    score -= (abs(r - 7) + abs(c - 7)) * 0.5
+    
+    my_nb = sum(1 for n in valid_neighbors(move, valid_mask) if n in my_stones)
+    score += my_nb * 15
+    
+    opp_nb = sum(1 for n in valid_neighbors(move, valid_mask) if n in opp_stones)
+    score += opp_nb * 5
+    
+    ncount = len(valid_neighbors(move, valid_mask))
+    if ncount == 2:
+        score += 10
+    elif ncount == 4:
+        score += 5
+    
+    return score

@@ -1,0 +1,579 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns the best move for a Tic-Tac-Toe game.
+The board is a 3x3 list of lists with `0` for empty, `1` for my piece, and `-1` for the opponent's piece.
+
+I need to implement a strategy. A common and effective strategy for Tic-Tac-Toe is the Minimax algorithm.
+Since Tic-Tac-Toe is a small, finite game, Minimax with alpha-beta pruning can perfectly solve it.
+
+Here's the plan:
+1.  **Helper functions**:
+    *   `check_winner(board)`: Checks if there's a winner (1, -1, or 0 for draw/no winner yet).
+    *   `get_empty_cells(board)`: Returns a list of (row, col) for empty cells.
+2.  **Minimax function**:
+    *   `minimax(board, depth, is_maximizing_player)`:
+        *   Base cases:
+            *   If a player wins, return score (+10 for me, -10 for opponent).
+            *   If it's a draw, return 0.
+        *   Recursive steps:
+            *   If `is_maximizing_player` (my turn, `1`): Try all empty cells, make a move, call minimax recursively, take the maximum score.
+            *   If `is_minimizing_player` (opponent's turn, `-1`): Try all empty cells, make a move, call minimax recursively, take the minimum score.
+3.  **`policy(board)` function**:
+    *   Initialize `best_score` and `best_move`.
+    *   Iterate through all empty cells.
+    *   For each empty cell:
+        *   Make the move temporarily on a copy of the board.
+        *   Call `minimax` for the opponent (as it's now their turn).
+        *   If the returned score is better than `best_score`, update `best_score` and `best_move`.
+    *   Return `best_move`.
+
+Let's refine the scoring for `minimax`:
+*   If ME (`1`) wins, return `1`.
+*   If OPPONENT (`-1`) wins, return `-1`.
+*   If draw, return `0`.
+
+The `minimax` function will return the score. The `policy` function will use this to find the move that leads to the best score for me.
+
+My player is `1`, the opponent is `-1`.
+
+Detailed `minimax` score:
+-   `minimax` returns a value.
+-   If I win, +1.
+-   If Opponent wins, -1.
+-   If Draw, 0.
+
+The `minimax` state will pass who the current player is for the *next* move.
+So, if `is_maximizing_player` is True, it means it's my turn to make a move, and I want to maximize my score *from this state*.
+If `is_maximizing_player` is False, it means it's the opponent's turn, and they will try to minimize my score.
+
+Let's adjust the scoring. Deeper wins are better (or worse for opponent). So maybe `10 - depth` or `-10 + depth`. But for Tic Tac Toe, the depth doesn't usually matter *that much* unless it's a tie-breaker. A simple +1, -1, 0 is often sufficient and easier to implement correctly.
+
+Let's think about base cases for `minimax`:
+1.  `winner = check_winner(board)`:
+    *   If `winner == 1` (I win): return `1`
+    *   If `winner == -1` (Opponent wins): return `-1`
+2.  `get_empty_cells(board)` is empty (draw): return `0`
+
+Let's structure the `minimax` function:
+`minimax(board, is_my_turn)`
+-   `score = check_game_state(board)` (returns 1 for my win, -1 for opponent win, 0 for draw, or `None` if game not over)
+-   If `score is not None`: return `score`
+
+-   If `is_my_turn` (maximizing player):
+    -   `best_score = -infinity`
+    -   For each `(r, c)` in `get_empty_cells`:
+        -   `board[r][c] = 1`
+        -   `score = minimax(board, False)` (opponent turn next)
+        -   `board[r][c] = 0` (undo move)
+        -   `best_score = max(best_score, score)`
+    -   Return `best_score`
+
+-   Else (`is_my_turn` = False, minimizing player):
+    -   `best_score = +infinity` (this should be `worst_score` from my perspective)
+    -   For each `(r, c)` in `get_empty_cells`:
+        -   `board[r][c] = -1`
+        -   `score = minimax(board, True)` (my turn next)
+        -   `board[r][c] = 0` (undo move)
+        -   `best_score = min(best_score, score)`
+    -   Return `best_score`
+
+`policy` function:
+-   `best_score = -float('inf')`
+-   `best_move = None`
+-   For each `(r, c)` in `get_empty_cells(board)`:
+    -   `board[r][c] = 1` (my hypothetical move)
+    -   `current_score = minimax(board, False)` (now it's opponent's turn to play against my hypothetical move)
+    -   `board[r][c] = 0` (undo move)
+    -   If `current_score > best_score`:
+        -   `best_score = current_score`
+        -   `best_move = (r, c)`
+-   Return `best_move`
+
+
+Let's implement `check_winner`. It needs to check rows, columns, and diagonals.
+
+```python
+def check_winner(board):
+    # Check rows
+    for row in board:
+        if all(cell == 1 for cell in row):
+            return 1
+        if all(cell == -1 for cell in row):
+            return -1
+
+    # Check columns
+    for col_idx in range(3):
+        if all(board[row_idx][col_idx] == 1 for row_idx in range(3)):
+            return 1
+        if all(board[row_idx][col_idx] == -1 for row_idx in range(3)):
+            return -1
+
+    # Check diagonals
+    if (board[0][0] == board[1][1] == board[2][2] == 1) or \
+       (board[0][2] == board[1][1] == board[2][0] == 1):
+        return 1
+    if (board[0][0] == board[1][1] == board[2][2] == -1) or \
+       (board[0][2] == board[1][1] == board[2][0] == -1):
+        return -1
+
+    # No winner yet, check for draw
+    if all(cell != 0 for row in board for cell in row):
+        return 0  # Draw
+
+    return None # Game not over
+```
+
+This `check_winner` function covers all win conditions and draws.
+
+Now the `minimax` function. It will take the current `board` and a boolean `is_maximizing`, indicating whose turn it is in the current state to determine the score.
+
+```python
+def minimax(board, is_maximizing_player):
+    winner_status = check_winner(board)
+
+    if winner_status is not None:
+        return winner_status # 1 for my win, -1 for opponent win, 0 for draw
+
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    if is_maximizing_player: # My turn (player 1)
+        best_score = -float('inf')
+        for r, c in empty_cells:
+            board[r][c] = 1 # Make move
+            score = minimax(board, False) # Recurse for opponent
+            board[r][c] = 0 # Undo move
+            best_score = max(best_score, score)
+        return best_score
+    else: # Opponent's turn (player -1)
+        best_score = float('inf')
+        for r, c in empty_cells:
+            board[r][c] = -1 # Make move
+            score = minimax(board, True) # Recurse for me
+            board[r][c] = 0 # Undo move
+            best_score = min(best_score, score)
+        return best_score
+```
+
+And finally, the `policy` function.
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    best_move = (-1, -1)
+    best_score = -float('inf')
+
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    # If the board is empty, pick the center or a corner for strategic advantage (optional, minimax will do it anyway)
+    if len(empty_cells) == 9: # First move
+        return (1, 1) # Center is usually best
+
+    # If the board has only one piece (opponent's first move)
+    # This also helps in slightly optimizing the very first moves
+    if len(empty_cells) == 8:
+        # If opponent took center, take corner. If opponent took corner, take center.
+        # This is a common heuristic, but again minimax will figure it out
+        if board[1][1] == -1: return (0, 0)
+        return (1, 1)
+
+    for r, c in empty_cells:
+        board[r][c] = 1 # Try my move
+        # Now, assume the opponent will play optimally to minimize my score
+        # So we call minimax as the minimizing player next
+        current_score = minimax(board, False)
+        board[r][c] = 0 # Undo the move
+
+        if current_score > best_score:
+            best_score = current_score
+            best_move = (r, c)
+        # If score is the same, then if best_score is 1 (winning state), it means multiple moves lead to win.
+        # We can just pick the first one found, or randomize for variety (not needed here)
+        # If it's a draw (0), same logic.
+
+        # Optimization: If we found a winning move (score 1), no need to look further.
+        # Immediately return it as it's the best possible outcome.
+        if best_score == 1:
+            return best_move
+
+    # If no winning move, and it's a draw, or forced loss, return the move that gives the best outcome (draw or least bad loss)
+    return best_move
+```
+
+A small edge case: What if `empty_cells` is empty? `policy` should not be called in this state as the game would be over. But `check_winner` would return 0 (draw) or 1/-1 (win) in that case. The loop for `empty_cells` won't run, `best_move` would remain `(-1, -1)`. This shouldn't happen in practical game play where a move is always requested for a non-terminal state.
+
+The optimization for the first two moves (`len(empty_cells) == 9` or `== 8`) might slightly speed up the very start if minimax is expensive. However, for a 3x3 tic-tac-toe, minimax itself is fast enough that these specific checks aren't strictly necessary and could even slightly degrade performance if the branching logic costs more than the saved minimax calls on average (unlikely for first moves, but possible). Let's remove them for cleanness and rely purely on minimax for all cases, as it's guaranteed to find the optimal move anyway.
+
+One common optimization strategy for the first minimax call is to explicitly call `minimax(board, True)` from `policy` and have the `minimax` function manage the current player. Let's stick with the current `policy` calling `minimax` for the opponent, as it feels more intuitive for finding *my* next move. `policy` is essentially the top-level maximizing player.
+
+Let's trace a simple scenario:
+Board:
+`[[1, 0, 0],`
+ `[0, -1, 0],`
+ `[0, 0, 0]]`
+
+My turn (`1`). `empty_cells = [(0,1), (0,2), ..., (2,2)]`
+
+Let's try `(0,1)`:
+`board[0][1] = 1`
+`minimax(board_after_my_move, False)` (opponent's turn)
+
+Opponent will look for `min(score)`.
+Suppose opponent has a move that leads to a draw (score 0), and another move that leads to me winning (score 1). Opponent picks the draw.
+So `minimax(board_after_my_move, False)` returns `0`.
+`best_score` = `max(-inf, 0)` -> `0`. `best_move = (0,1)`.
+Undo `board[0][1] = 0`.
+
+Suppose I find a move that leads to me winning immediately `best_score == 1`.
+`policy` will execute:
+`board[r][c] = 1`
+`current_score = minimax(board, False)` -> Let's say `current_score` evaluates to `1` (meaning, from this hypothetical board state, I can force a win).
+`board[r][c] = 0`
+`best_score = max(best_score, 1)` -> `1`.
+`best_move = (r, c)`.
+Then, `if best_score == 1: return best_move` will trigger immediate return. This is a very good optimization.
+
+The code looks correct and adheres to the minimax algorithm for optimal play in Tic-Tac-Toe.
+It should be well within the 1-second execution limit for 3x3.
+No external libraries are strictly forbidden, but Numpy is mentioned. I don't think Numpy is necessary here, standard lists are fine and probably faster for a 3x3 board due to less overhead.
+
+Final review of the code structure:
+-   `check_winner` is robust.
+-   `minimax` correctly handles maximizing and minimizing players, and base cases.
+-   `policy` correctly iterates through moves, calls `minimax` for the opponent's perspective, and selects the best move.
+-   The `best_score == 1` early exit in `policy` is a good optimization.
+
+One more consideration: If multiple moves lead to the same optimal score (e.g., multiple moves lead to a draw when a win isn't possible), `policy` will pick the first one encountered. This is perfectly fine.
+
+```python
+import math
+
+# Helper function to check the current status of the game board
+def check_winner(board: list[list[int]]) -> int | None:
+    """
+    Checks if there's a winner or a draw.
+    Returns:
+        1: If player 1 (maximizing player) wins
+        -1: If player -1 (minimizing player) wins
+        0: If it's a draw
+        None: If the game is still in progress
+    """
+    # Check rows
+    for row in board:
+        if all(cell == 1 for cell in row):
+            return 1
+        if all(cell == -1 for cell in row):
+            return -1
+
+    # Check columns
+    for col_idx in range(3):
+        if all(board[row_idx][col_idx] == 1 for row_idx in range(3)):
+            return 1
+        if all(board[row_idx][col_idx] == -1 for row_idx in range(3)):
+            return -1
+
+    # Check diagonals
+    if (board[0][0] == board[1][1] == board[2][2] == 1) or \
+       (board[0][2] == board[1][1] == board[2][0] == 1):
+        return 1
+    if (board[0][0] == board[1][1] == board[2][2] == -1) or \
+       (board[0][2] == board[1][1] == board[2][0] == -1):
+        return -1
+
+    # Check for draw (no empty cells left)
+    if all(cell != 0 for row in board for cell in row):
+        return 0  # Draw
+
+    # Game is still in progress
+    return None
+
+# Minimax algorithm to find the best score for the current player
+def minimax(board: list[list[int]], is_maximizing_player: bool) -> int:
+    """
+    Implements the Minimax algorithm to determine the best possible score
+    from the current board state.
+
+    Args:
+        board: The current 3x3 Tic-Tac-Toe board.
+        is_maximizing_player: True if it's the maximizing player's (player 1) turn,
+                              False if it's the minimizing player's (player -1) turn.
+
+    Returns:
+        The best score achievable from this state (1 for win, -1 for loss, 0 for draw).
+    """
+    winner_status = check_winner(board)
+
+    # Base case: if the game is over, return the score
+    if winner_status is not None:
+        return winner_status
+
+    # Get all available empty cells
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    if is_maximizing_player:  # Player 1's turn (our AI)
+        best_score = -math.inf
+        for r, c in empty_cells:
+            board[r][c] = 1  # Make a hypothetical move
+            score = minimax(board, False)  # Recurse for the opponent
+            board[r][c] = 0  # Undo the move (backtrack)
+            best_score = max(best_score, score)
+        return best_score
+    else:  # Player -1's turn (opponent)
+        best_score = math.inf
+        for r, c in empty_cells:
+            board[r][c] = -1  # Make a hypothetical move
+            score = minimax(board, True)  # Recurse for player 1
+            board[r][c] = 0  # Undo the move (backtrack)
+            best_score = min(best_score, score)
+        return best_score
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the best next move for player 1 (the AI).
+
+    Args:
+        board: The current 3x3 Tic-Tac-Toe board.
+
+    Returns:
+        A tuple (row, col) indicating the chosen move.
+    """
+    best_move = (-1, -1)  # Initialize with an invalid move
+    best_score = -math.inf  # We want to maximize our score
+
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    # Basic optimization for the very first move to slightly speed up,
+    # or ensure common strategic opening if minimax takes a while on some platforms.
+    # Minimax will find this anyway, but it's a quick shortcut.
+    if len(empty_cells) == 9: # Entire board is empty, first move
+        return (1, 1) # Take the center
+
+    for r, c in empty_cells:
+        board[r][c] = 1  # Try out our move
+        # Opponent will play optimally to minimize our score, so call minimax for them
+        current_score = minimax(board, False)
+        board[r][c] = 0  # Undo our move
+
+        if current_score > best_score:
+            best_score = current_score
+            best_move = (r, c)
+        
+        # Optimization: If we found a winning move, return it immediately
+        # as there's no better possible score.
+        if best_score == 1:
+            return best_move
+
+    # If no immediate win, return the move that leads to the best possible outcome
+    # (e.g., a draw if win is not possible, or the least-bad loss).
+    return best_move
+
+```
+
+Removed the simple first move heuristic as Minimax is fast enough and guaranteed to pick optimally.
+The very first empty board (`len(empty_cells) == 9`) special case for `(1,1)` is fine to keep, because it's guaranteed optimal and avoids a full minimax tree search on the initial board, slightly faster. Also the `best_score == 1` early exit is good.
+The `import math` is needed for `math.inf`.
+Looks good.<thinking>
+The goal is to implement a Tic-Tac-Toe AI policy function. The function `policy(board)` should take a 3x3 board state and return the optimal move (row, column).
+
+I will use the Minimax algorithm which is a standard approach for perfect play in finite, two-player, zero-sum games like Tic-Tac-Toe.
+
+Here's the breakdown of the implementation:
+
+1.  **`check_winner(board)` function**: This helper function will determine the current state of the game:
+    *   Returns `1` if the AI (player `1`) has won.
+    *   Returns `-1` if the opponent (player `-1`) has won.
+    *   Returns `0` if the game is a draw (no winner and no empty cells).
+    *   Returns `None` if the game is still in progress.
+    It checks all rows, columns, and both diagonals for three consecutive identical pieces (`1` or `-1`).
+
+2.  **`minimax(board, is_maximizing_player)` function**: This is the core of the AI.
+    *   **Base Cases**:
+        *   If `check_winner(board)` returns `1`, `-1`, or `0`, the game is over. Return that score directly. This signifies a win, loss, or draw.
+    *   **Recursive Step**:
+        *   Get all empty cells on the board.
+        *   If `is_maximizing_player` (it's our AI's turn), we want to choose a move that maximizes the eventual score for AI.
+            *   Initialize `best_score` to `-infinity`.
+            *   For each empty cell:
+                *   Temporarily place our piece (`1`) on the board.
+                *   Recursively call `minimax` for the *minimizing player* (`is_maximizing_player=False`).
+                *   Undo the move (backtrack) to restore the board state.
+                *   Update `best_score` with the maximum of the current `best_score` and the score returned by the recursive call.
+            *   Return `best_score`.
+        *   If `not is_maximizing_player` (it's the opponent's turn), the opponent wants to minimize our score.
+            *   Initialize `best_score` to `+infinity`.
+            *   For each empty cell:
+                *   Temporarily place the opponent's piece (`-1`) on the board.
+                *   Recursively call `minimax` for the *maximizing player* (`is_maximizing_player=True`).
+                *   Undo the move.
+                *   Update `best_score` with the minimum of the current `best_score` and the score returned by the recursive call.
+            *   Return `best_score`.
+
+3.  **`policy(board)` function**: This is the main function that gets called by the game engine.
+    *   It initializes `best_score` to `-infinity` and `best_move` to an invalid value.
+    *   It identifies all empty cells (`0`) on the current board.
+    *   **Optimization**: If the board is completely empty (first move), directly return the center `(1,1)` as it's an optimal opening. This avoids redundant computation for the known best first move.
+    *   For each possible empty cell:
+        *   Temporarily place our AI's piece (`1`) on that cell.
+        *   Call `minimax(board, False)`: This simulates the opponent's optimal response to our hypothetical move. We assume the opponent will play to minimize our score.
+        *   Undo the temporary move.
+        *   If the `current_score` returned by `minimax` is better than `best_score`, update `best_score` and `best_move`.
+        *   **Optimization**: If `best_score` becomes `1` (meaning we found a move that guarantees a win), we can immediately return this `best_move` because no other move can be better.
+    *   Finally, return the `best_move` found. This move guarantees the best possible outcome for the AI (win, or draw if no win is possible, or minimize loss).
+
+This comprehensive minimax approach ensures optimal play within the given constraints. For a 3x3 Tic-Tac-Toe, it will be extremely fast, well within the 1-second limit.
+</thinking>
+```python
+import math
+
+# Helper function to check the current status of the game board
+def check_winner(board: list[list[int]]) -> int | None:
+    """
+    Checks if there's a winner or a draw on the 3x3 Tic-Tac-Toe board.
+
+    Args:
+        board: A 3x3 list of lists representing the game board.
+               0: empty, 1: AI's piece, -1: opponent's piece.
+
+    Returns:
+        1: If player 1 (AI) wins.
+        -1: If player -1 (opponent) wins.
+        0: If it's a draw (no winner and no empty cells).
+        None: If the game is still in progress.
+    """
+    # Check rows
+    for row in board:
+        if all(cell == 1 for cell in row):
+            return 1
+        if all(cell == -1 for cell in row):
+            return -1
+
+    # Check columns
+    for col_idx in range(3):
+        if all(board[row_idx][col_idx] == 1 for row_idx in range(3)):
+            return 1
+        if all(board[row_idx][col_idx] == -1 for row_idx in range(3)):
+            return -1
+
+    # Check diagonals
+    # Main diagonal
+    if (board[0][0] == board[1][1] == board[2][2] == 1) or \
+       (board[0][0] == board[1][1] == board[2][2] == -1):
+        return board[0][0]
+    # Anti-diagonal
+    if (board[0][2] == board[1][1] == board[2][0] == 1) or \
+       (board[0][2] == board[1][1] == board[2][0] == -1):
+        return board[0][2]
+
+    # Check for draw (no empty cells left)
+    if all(cell != 0 for row in board for cell in row):
+        return 0  # Draw
+
+    # Game is still in progress
+    return None
+
+# Minimax algorithm to find the best score for the current player
+def minimax(board: list[list[int]], is_maximizing_player: bool) -> int:
+    """
+    Implements the Minimax algorithm to determine the best possible score
+    from the current board state assuming optimal play from both sides.
+
+    Args:
+        board: The current 3x3 Tic-Tac-Toe board.
+        is_maximizing_player: True if it's the maximizing player's (player 1) turn,
+                              False if it's the minimizing player's (player -1) turn.
+
+    Returns:
+        The best score achievable from this state given optimal play:
+        1 for a win by player 1, -1 for a win by player -1, 0 for a draw.
+    """
+    winner_status = check_winner(board)
+
+    # Base case: if the game is over, return the score
+    if winner_status is not None:
+        return winner_status
+
+    # Get all available empty cells
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    if is_maximizing_player:  # Player 1's turn (our AI)
+        best_score = -math.inf
+        for r, c in empty_cells:
+            board[r][c] = 1  # Make a hypothetical move for player 1
+            score = minimax(board, False)  # Recurse for the opponent (minimizing player)
+            board[r][c] = 0  # Undo the move (backtrack)
+            best_score = max(best_score, score)
+        return best_score
+    else:  # Player -1's turn (opponent, minimizing player)
+        best_score = math.inf
+        for r, c in empty_cells:
+            board[r][c] = -1  # Make a hypothetical move for player -1
+            score = minimax(board, True)  # Recurse for player 1 (maximizing player)
+            board[r][c] = 0  # Undo the move (backtrack)
+            best_score = min(best_score, score)
+        return best_score
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the best next move for player 1 (the AI) using the Minimax algorithm.
+
+    Args:
+        board: The current 3x3 Tic-Tac-Toe board.
+               0: empty, 1: AI's piece, -1: opponent's piece.
+
+    Returns:
+        A tuple (row, col) indicating the chosen move, which leads to the
+        optimal outcome (win, or draw if win not possible, or minimize loss).
+    """
+    best_move = (-1, -1)  # Initialize with an invalid move
+    best_score = -math.inf  # We want to maximize our score
+
+    empty_cells = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    # Optimization: If the board is completely empty, taking the center is an optimal first move.
+    # This avoids initiating a full minimax tree search for the very first move.
+    if len(empty_cells) == 9:
+        return (1, 1) # Center of the board
+
+    for r, c in empty_cells:
+        board[r][c] = 1  # Try out our (AI's) move
+        # Opponent will play optimally to minimize our score from this new state.
+        # So, we call minimax assuming it's the opponent's turn next.
+        current_score = minimax(board, False)
+        board[r][c] = 0  # Undo our move to restore the board for trying other moves
+
+        if current_score > best_score:
+            best_score = current_score
+            best_move = (r, c)
+        
+        # Optimization: If we found a move that guarantees a win (score 1),
+        # there's no better possible outcome, so we can return it immediately.
+        if best_score == 1:
+            return best_move
+
+    # If no immediate win, return the move that leads to the best possible outcome
+    # (e.g., a draw if win is not possible, or the least-bad loss).
+    return best_move
+```

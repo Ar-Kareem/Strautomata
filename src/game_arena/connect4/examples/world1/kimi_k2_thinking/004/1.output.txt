@@ -1,0 +1,243 @@
+**Strategy**
+
+The policy uses a classic depth‑first minimax search with alpha‑beta pruning.  
+- The board is represented as two bitboards (one for the player to move, one for the opponent).  
+- Moves are tried in a fixed “center‑first” order `[3,2,4,1,5,0,6]` to improve pruning.  
+- A transposition table stores already‑evaluated positions so that subtrees are not recomputed.  
+- The search is performed with iterative deepening (depth = 1, 2, 3,…). Before each new depth the elapsed time is checked; if more than 0.9 s have passed the search stops and the best move found so far is returned.  
+- At the root we first check for an immediate winning move and for an opponent winning move that must be blocked.  
+- The leaf evaluation function counts, for every possible 4‑cell line,
+  * how many of the player’s stones are present,
+  * how many of the opponent’s stones are present.  
+  If a line contains both colours it is ignored (blocked).  
+  Otherwise a simple exponential score is added (`10^(k‑1)` for a line with `k` player stones, subtracted for the opponent).  
+  A small bonus is also given for stones in the central column(s) to encourage control of the board.  
+- The win detection simply checks whether any of the 69 pre‑computed 4‑cell masks is fully contained in the player’s bitboard.
+
+This combination of a fast bitboard representation, alpha‑beta pruning, a simple but effective heuristic and iterative deepening allows the AI to look ahead several plies within the 1 second limit and produces a strong Connect 4 player.
+
+<code>
+import time
+
+# ------------------------------------------------------------
+#  Bitboard representation
+# ------------------------------------------------------------
+# index = row + col*6   (row 0 = top, row 5 = bottom)
+def _generate_line_masks():
+    """All 69 possible 4‑in‑a‑row masks."""
+    masks = []
+
+    # horizontal (6 rows, 4 possible starts)
+    for r in range(6):
+        for c in range(4):
+            m = 0
+            for dc in range(4):
+                pos = r + (c + dc) * 6
+                m |= 1 << pos
+            masks.append(m)
+
+    # vertical (7 columns, 3 possible starts)
+    for c in range(7):
+        for r in range(3):
+            m = 0
+            for dr in range(4):
+                pos = (r + dr) + c * 6
+                m |= 1 << pos
+            masks.append(m)
+
+    # diagonal down‑right (south‑east)
+    for r in range(3):
+        for c in range(4):
+            m = 0
+            for d in range(4):
+                pos = (r + d) + (c + d) * 6
+                m |= 1 << pos
+            masks.append(m)
+
+    # diagonal up‑right (south‑west)
+    for r in range(3, 6):
+        for c in range(4):
+            m = 0
+            for d in range(4):
+                pos = (r - d) + (c + d) * 6
+                m |= 1 << pos
+            masks.append(m)
+
+    return masks
+
+
+LINE_MASKS = _generate_line_masks()
+
+# Masks for central‑column heuristic
+CENTER_MASK = 0b111111 << (3 * 6)          # column 3
+ADJ_MASKS   = [0b111111 << (c * 6) for c in (2, 4)]
+
+# transposition table (cleared before every move)
+transposition = {}
+
+
+def _is_win(bits: int) -> bool:
+    """True if *bits* contains a full 4‑in‑a‑row."""
+    for m in LINE_MASKS:
+        if (bits & m) == m:
+            return True
+    return False
+
+
+def _eval(player_bits: int, opponent_bits: int) -> int:
+    """
+    Heuristic evaluation from the point of view of the player whose
+    pieces are stored in *player_bits*.
+    """
+    score = 0
+
+    # reward centre columns
+    score += (player_bits & CENTER_MASK).bit_count() * 5
+    score -= (opponent_bits & CENTER_MASK).bit_count() * 5
+    for m in ADJ_MASKS:
+        score += (player_bits & m).bit_count() * 2
+        score -= (opponent_bits & m).bit_count() * 2
+
+    # evaluate every possible 4‑cell line
+    for m in LINE_MASKS:
+        pc = (player_bits & m).bit_count()
+        oc = (opponent_bits & m).bit_count()
+        if pc and oc:          # blocked line
+            continue
+        if pc:
+            score += 10 ** (pc - 1)
+        elif oc:
+            score -= 10 ** (oc - 1)
+
+    return score
+
+
+def _negamax(player_bits: int, opponent_bits: int, depth: int,
+             alpha: float, beta: float) -> float:
+    """
+    Negamax search with α‑β pruning and a transposition table.
+    Returns the value of the position for the player to move.
+    """
+    key = (player_bits, opponent_bits)
+    stored = transposition.get(key)
+    if stored is not None:
+        d, v = stored
+        if d >= depth:
+            return v
+
+    # terminal nodes
+    if _is_win(player_bits):
+        return 1_000_000
+    if (player_bits | opponent_bits).bit_count() == 42:   # draw
+        return 0
+    if depth == 0:
+        return _eval(player_bits, opponent_bits)
+
+    col_order = (3, 2, 4, 1, 5, 0, 6)
+    best = -float('inf')
+    for col in col_order:
+        # column height = number of stones already in the column
+        col_mask = 0b111111 << (col * 6)
+        height = ((player_bits | opponent_bits) & col_mask).bit_count()
+        if height >= 6:          # column full
+            continue
+
+        # place a stone for the player to move
+        pos = (5 - height) + col * 6                # bottom‑most free row
+        new_player_bits = player_bits | (1 << pos)
+
+        # after the move the opponent becomes the player to move
+        val = -_negamax(opponent_bits, new_player_bits,
+                        depth - 1, -beta, -alpha)
+
+        if val > best:
+            best = val
+            if best > alpha:
+                alpha = best
+                if alpha >= beta:                 # prune
+                    transposition[key] = (depth, alpha)
+                    return alpha
+
+    transposition[key] = (depth, best)
+    return best
+
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Return a column (0‑6) for the current player.
+    The board is a 6×7 list of ints: 1 = our disc, -1 = opponent,
+    0 = empty.  We are always the player to move.
+    """
+    start = time.time()
+
+    # ---- convert board to bitboards ---------------------------------
+    player_bits = 0
+    opponent_bits = 0
+    for r in range(6):
+        for c in range(7):
+            v = board[r][c]
+            pos = r + c * 6
+            if v == 1:
+                player_bits |= 1 << pos
+            elif v == -1:
+                opponent_bits |= 1 << pos
+
+    col_order = (3, 2, 4, 1, 5, 0, 6)
+
+    # ---- immediate win or forced block -------------------------------
+    for col in col_order:
+        col_mask = 0b111111 << (col * 6)
+        height = ((player_bits | opponent_bits) & col_mask).bit_count()
+        if height >= 6:
+            continue
+        pos = (5 - height) + col * 6
+        # our winning move ?
+        if _is_win(player_bits | (1 << pos)):
+            return col
+        # opponent winning move that we must block ?
+        if _is_win(opponent_bits | (1 << pos)):
+            return col
+
+    # ---- iterative deepening with α‑β --------------------------------
+    global transposition
+    transposition.clear()
+
+    best_move = None
+    depth = 1
+    while True:
+        if time.time() - start > 0.9:          # 1 s budget
+            break
+
+        best_val = -float('inf')
+        best_this_depth = None
+        for col in col_order:
+            col_mask = 0b111111 << (col * 6)
+            height = ((player_bits | opponent_bits) & col_mask).bit_count()
+            if height >= 6:
+                continue
+            pos = (5 - height) + col * 6
+            new_player_bits = player_bits | (1 << pos)
+
+            val = -_negamax(opponent_bits, new_player_bits,
+                            depth - 1, -float('inf'), float('inf'))
+
+            if val > best_val:
+                best_val = val
+                best_this_depth = col
+
+        if best_this_depth is not None:
+            best_move = best_this_depth
+
+        depth += 1
+
+    # ---- final fallback (should never be needed) --------------------
+    if best_move is None:
+        for col in col_order:
+            col_mask = 0b111111 << (col * 6)
+            height = ((player_bits | opponent_bits) & col_mask).bit_count()
+            if height < 6:
+                best_move = col
+                break
+
+    return best_move
+</code>

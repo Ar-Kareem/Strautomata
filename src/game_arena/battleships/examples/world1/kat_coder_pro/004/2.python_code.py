@@ -1,0 +1,199 @@
+
+import numpy as np
+from collections import defaultdict, deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship targeting policy that uses a checkerboard search pattern
+    followed by smart ship hunting and destruction.
+    """
+    board = np.array(board, dtype=int)
+    rows, cols = 10, 10
+    
+    # Get all unknown cells (0) and previously hit cells (1)
+    unknown_cells = []
+    hit_cells = []
+    
+    for r in range(rows):
+        for c in range(cols):
+            if board[r, c] == 0:
+                unknown_cells.append((r, c))
+            elif board[r, c] == 1:
+                hit_cells.append((r, c))
+    
+    # If no hits yet, use checkerboard pattern for efficient searching
+    if not hit_cells:
+        # Checkerboard pattern: target cells where (r + c) % 2 == 0
+        checkerboard_cells = [(r, c) for r, c in unknown_cells if (r + c) % 2 == 0]
+        
+        if checkerboard_cells:
+            # Prefer checkerboard cells, but if none available (edge case), use any unknown
+            return checkerboard_cells[0]
+        else:
+            # Fallback: use any unknown cell
+            return unknown_cells[0] if unknown_cells else (0, 0)
+    
+    # We have hits - analyze the situation
+    return _hunt_ship(board, hit_cells, unknown_cells)
+
+def _hunt_ship(board: np.ndarray, hit_cells: list[tuple], unknown_cells: list[tuple]) -> tuple[int, int]:
+    """
+    Implement ship hunting logic when we have hits on the board.
+    """
+    # Group hits into potential ships
+    ship_segments = _find_ship_segments(board, hit_cells)
+    
+    # Try to extend known ship segments first
+    for segment in ship_segments:
+        if len(segment) > 0:
+            target = _extend_segment(board, segment)
+            if target:
+                return target
+    
+    # If we can't extend segments, look for high-probability targets
+    return _find_best_probabilistic_target(board, unknown_cells)
+
+def _find_ship_segments(board: np.ndarray, hit_cells: list[tuple]) -> list[list[tuple]]:
+    """
+    Group hit cells into potential ship segments.
+    """
+    if not hit_cells:
+        return []
+    
+    segments = []
+    visited = set()
+    
+    for hit in hit_cells:
+        if hit in visited:
+            continue
+            
+        # Try to build horizontal and vertical segments
+        horiz_segment = _build_segment(board, hit, (0, 1))
+        vert_segment = _build_segment(board, hit, (1, 0))
+        
+        # Choose the longer segment
+        if len(horiz_segment) >= len(vert_segment):
+            segments.append(horiz_segment)
+            visited.update(horiz_segment)
+        else:
+            segments.append(vert_segment)
+            visited.update(vert_segment)
+    
+    return segments
+
+def _build_segment(board: np.ndarray, start: tuple, direction: tuple) -> list[tuple]:
+    """
+    Build a ship segment in a given direction from a starting hit.
+    """
+    r, c = start
+    dr, dc = direction
+    segment = [start]
+    
+    # Extend in positive direction
+    r_pos, c_pos = r + dr, c + dc
+    while 0 <= r_pos < 10 and 0 <= c_pos < 10 and board[r_pos, c_pos] == 1:
+        segment.append((r_pos, c_pos))
+        r_pos, c_pos = r_pos + dr, c_pos + dc
+    
+    # Extend in negative direction
+    r_neg, c_neg = r - dr, c - dc
+    while 0 <= r_neg < 10 and 0 <= c_neg < 10 and board[r_neg, c_neg] == 1:
+        segment.insert(0, (r_neg, c_neg))
+        r_neg, c_neg = r_neg - dr, c_neg - dc
+    
+    return segment
+
+def _extend_segment(board: np.ndarray, segment: list[tuple]) -> tuple[int, int] or None:
+    """
+    Try to extend a ship segment in either direction.
+    """
+    if len(segment) == 0:
+        return None
+    
+    # Determine direction of the segment
+    if len(segment) == 1:
+        # Single hit - try all adjacent cells
+        r, c = segment[0]
+        directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+    else:
+        # Multiple hits - determine direction
+        r1, c1 = segment[0]
+        r2, c2 = segment[1]
+        dr, dc = r2 - r1, c2 - c1
+        directions = [(dr, dc), (-dr, -dc)]
+    
+    # Try to extend in valid directions
+    for r, c in segment:
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr, nc] == 0:
+                return (nr, nc)
+    
+    return None
+
+def _find_best_probabilistic_target(board: np.ndarray, unknown_cells: list[tuple]) -> tuple[int, int]:
+    """
+    Find the unknown cell with the highest probability of containing a ship.
+    """
+    # Calculate ship placement probabilities for unknown cells
+    probabilities = defaultdict(float)
+    
+    # Possible ship lengths
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # For each unknown cell, calculate how many ways ships could be placed through it
+    for r in range(10):
+        for c in range(10):
+            if board[r, c] != 0:
+                continue
+                
+            # Check horizontal placements
+            for length in ship_lengths:
+                for offset in range(length):
+                    start_col = c - offset
+                    end_col = start_col + length - 1
+                    
+                    if 0 <= start_col <= end_col < 10:
+                        # Check if ship fits horizontally
+                        valid = True
+                        for k in range(length):
+                            cell_r, cell_c = r, start_col + k
+                            if board[cell_r, cell_c] == -1:  # Hit water
+                                valid = False
+                                break
+                            if board[cell_r, cell_c] == 1 and (cell_r, cell_c) not in [(r, c)]:  # Hit different ship
+                                valid = False
+                                break
+                        
+                        if valid:
+                            probabilities[(r, c)] += 1.0
+    
+            # Check vertical placements
+            for length in ship_lengths:
+                for offset in range(length):
+                    start_row = r - offset
+                    end_row = start_row + length - 1
+                    
+                    if 0 <= start_row <= end_row < 10:
+                        # Check if ship fits vertically
+                        valid = True
+                        for k in range(length):
+                            cell_r, cell_c = start_row + k, c
+                            if board[cell_r, cell_c] == -1:  # Hit water
+                                valid = False
+                                break
+                            if board[cell_r, cell_c] == 1 and (cell_r, cell_c) not in [(r, c)]:  # Hit different ship
+                                valid = False
+                                break
+                        
+                        if valid:
+                            probabilities[(r, c)] += 1.0
+    
+    # If we have probabilistic targets, choose the best one
+    if probabilities:
+        best_cell = max(probabilities.keys(), key=lambda x: probabilities[x])
+        return best_cell
+    
+    # Fallback: use checkerboard pattern among remaining unknown cells
+    checkerboard_cells = [(r, c) for r, c in unknown_cells if (r + c) % 2 == 0]
+    return checkerboard_cells[0] if checkerboard_cells else unknown_cells[0]

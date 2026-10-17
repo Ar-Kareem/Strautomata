@@ -1,0 +1,172 @@
+The strategy uses a bitboard representation for fast move generation and evaluation. It treats the 6x6 board as a 36-bit integer where each bit represents a marble. This allows win-checking and line evaluation to be performed with bitwise operations, which is extremely fast in Python.
+
+The algorithm works as follows:
+1.  **Convert** the input arrays to bitboard integers.
+2.  **Iterate** over all empty cells and all 8 possible rotations (4 quadrants × 2 directions).
+3.  **Immediate Win**: If a move results in 5-in-a-row for us, return it instantly.
+4.  **Opponent Win Avoidance**: If a move allows the opponent to have 5-in-a-row immediately after our move (before they even play), it is heavily penalized. We only choose such a move if no safe move exists.
+5.  **Heuristic Evaluation**: For safe moves, evaluate the board state by counting partial lines (4-in-a-row, 3-in-a-row, etc.) for both players. A high positive score is given for our threats and a negative score for opponent threats, with extra weight for lines that are closer to completion (4-in-a-row is weighted much higher than 3-in-a-row).
+6.  **Select** the move with the highest score.
+
+The rotation logic is precomputed using permutations of the 9 cells within each 3x3 quadrant to handle the 90-degree rotations correctly.
+
+<code>
+# Pentago Policy - Bitboard based with heuristic evaluation
+
+# Precomputed constants for 6x6 board
+# Quadrant indices (0-indexed bit positions)
+# Quad 0: TL (0-2, 0-2), Quad 1: TR (0-2, 3-5)
+# Quad 2: BL (3-5, 0-2), Quad 3: BR (3-5, 3-5)
+QUAD_POS = [
+    [0, 1, 2, 6, 7, 8, 12, 13, 14],      # 0: rows 0-2, cols 0-2
+    [3, 4, 5, 9, 10, 11, 15, 16, 17],    # 1: rows 0-2, cols 3-5
+    [18, 19, 20, 24, 25, 26, 30, 31, 32], # 2: rows 3-5, cols 0-2
+    [21, 22, 23, 27, 28, 29, 33, 34, 35]  # 3: rows 3-5, cols 3-5
+]
+
+QUAD_MASK = [sum(1 << p for p in q) for q in QUAD_POS]
+
+# Rotation permutations for 3x3 grid indices 0..8
+# R = 90 deg Clockwise: new[i] = old[perm[i]]
+PERM_R = [6, 3, 0, 7, 4, 1, 8, 5, 2]
+# L = 90 deg Counter-Clockwise: new[i] = old[perm[i]]
+PERM_L = [2, 5, 8, 1, 4, 7, 0, 3, 6]
+
+# Precompute all winning lines (5-in-a-row masks)
+WIN_MASKS = []
+# Horizontal: 6 rows, 2 positions per row (0-4, 1-5)
+for r in range(6):
+    for c in range(2):
+        mask = 0
+        for k in range(5):
+            mask |= 1 << (r * 6 + c + k)
+        WIN_MASKS.append(mask)
+# Vertical: 6 cols, 2 positions per col
+for c in range(6):
+    for r in range(2):
+        mask = 0
+        for k in range(5):
+            mask |= 1 << ((r + k) * 6 + c)
+        WIN_MASKS.append(mask)
+# Diagonal \ (top-left to bottom-right): 4 lines
+for r in range(2):
+    for c in range(2):
+        mask = 0
+        for k in range(5):
+            mask |= 1 << ((r + k) * 6 + (c + k))
+        WIN_MASKS.append(mask)
+# Diagonal / (top-right to bottom-left): 4 lines
+for r in range(2):
+    for c in range(4, 6):
+        mask = 0
+        for k in range(5):
+            mask |= 1 << ((r + k) * 6 + (c - k))
+        WIN_MASKS.append(mask)
+
+FULL_MASK = (1 << 36) - 1
+
+def _rotate_board(board, quad, direction):
+    """Rotate a quadrant of the board. Returns new board integer."""
+    pos = QUAD_POS[quad]
+    # Extract 9 bits
+    bits = 0
+    for i, p in enumerate(pos):
+        if board >> p & 1:
+            bits |= 1 << i
+    
+    # Permute
+    perm = PERM_R if direction == 'R' else PERM_L
+    new_bits = 0
+    for i in range(9):
+        if bits >> perm[i] & 1:
+            new_bits |= 1 << i
+    
+    # Reconstruct board
+    new_board = board & ~QUAD_MASK[quad]
+    for i, p in enumerate(pos):
+        if new_bits >> i & 1:
+            new_board |= 1 << p
+    return new_board
+
+def _check_win(board):
+    """Check if board has 5-in-a-row."""
+    for mask in WIN_MASKS:
+        if board & mask == mask:
+            return True
+    return False
+
+def _evaluate(you_board, opp_board):
+    """Heuristic evaluation. Higher is better for 'you'."""
+    score = 0
+    for mask in WIN_MASKS:
+        y = (you_board & mask).bit_count()
+        o = (opp_board & mask).bit_count()
+        if o == 0:
+            if y == 4:
+                score += 10000
+            elif y == 3:
+                score += 100
+            elif y == 2:
+                score += 10
+            elif y == 1:
+                score += 1
+        if y == 0:
+            if o == 4:
+                score -= 10000
+            elif o == 3:
+                score -= 100
+            elif o == 2:
+                score -= 10
+            elif o == 1:
+                score -= 1
+    return score
+
+def policy(you, opponent):
+    """Main policy function."""
+    # Convert arrays to bitboards
+    you_int = 0
+    opp_int = 0
+    for r in range(6):
+        for c in range(6):
+            idx = r * 6 + c
+            if you[r][c]:
+                you_int |= 1 << idx
+            if opponent[r][c]:
+                opp_int |= 1 << idx
+    
+    empty = (~(you_int | opp_int)) & FULL_MASK
+    
+    best_score = -float('inf')
+    best_move_str = "1,1,0,R"  # Default fallback
+    
+    # Iterate all empty positions
+    temp = empty
+    while temp:
+        lsb = temp & -temp
+        pos = (lsb.bit_length() - 1)
+        temp ^= lsb
+        r, c = divmod(pos, 6)
+        r1, c1 = r + 1, c + 1  # 1-indexed for output
+        
+        for q in range(4):
+            for d in ['R', 'L']:
+                # Apply move
+                new_you = _rotate_board(you_int | (1 << pos), q, d)
+                new_opp = _rotate_board(opp_int, q, d)
+                
+                # Check for immediate win
+                if _check_win(new_you):
+                    return f"{r1},{c1},{q},{d}"
+                
+                # Check if opponent wins (bad move)
+                if _check_win(new_opp):
+                    sc = -1000000
+                else:
+                    sc = _evaluate(new_you, new_opp)
+                
+                if sc > best_score:
+                    best_score = sc
+                    best_move_str = f"{r1},{c1},{q},{d}"
+    
+    return best_move_str
+</code>

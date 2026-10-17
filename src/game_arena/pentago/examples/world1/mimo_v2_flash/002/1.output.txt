@@ -1,0 +1,248 @@
+**Pentago Strategy Analysis**
+
+To win at Pentago, the immediate priority is to detect and execute a "winning move." A winning move involves placing a marble to create a 5-in-a-row and then rotating a quadrant to finalize the alignment, or rotating a quadrant to unblock a previously placed marble to form a 5-in-a-row.
+
+Secondary priorities are blocking the opponent's winning moves and preventing their forks (setups for multiple winning threats). I will implement a brute-force search to evaluate every possible move (cell + rotation) and select the best one based on a hierarchy of objectives:
+1.  **Self-Win:** Maximize own 5-in-a-row probability.
+2.  **Opponent Block:** Minimize opponent's 5-in-a-row probability.
+3.  **Strategic Scoring:** Maximize own 4-in-a-row and 3-in-a-row counts.
+4.  **Center Control:** Favor placing marbles in the center and quadrants 0 and 3 for better connectivity.
+
+I will use numpy for efficient board representation and simulation.
+
+```python
+import numpy as np
+
+def policy(you, opponent) -> str:
+    """
+    Determines the best move for the current player in Pentago.
+    
+    Strategy:
+    1. Identify all legal moves.
+    2. Simulate the outcome of each move.
+    3. Evaluate the board state based on the following priority:
+       a. My 5-in-a-row (Win).
+       b. Opponent 5-in-a-row (Block).
+       c. My 4-in-a-row.
+       d. My 3-in-a-row.
+       e. Center control (preferred placement).
+    """
+    
+    # Convert inputs to numpy arrays for easier manipulation
+    # Note: Input format is list of lists or similar array-like objects
+    me = np.array(you, dtype=int)
+    opp = np.array(opponent, dtype=int)
+    
+    # Constants
+    EMPTY = 0
+    ME = 1
+    OPP = 2
+    
+    # Quadrant definitions (0-indexed rows/cols)
+    # Q0: 0-2, 0-2; Q1: 0-2, 3-5
+    # Q2: 3-5, 0-2; Q3: 3-5, 3-5
+    quad_coords = [
+        (slice(0, 3), slice(0, 3)), # Q0
+        (slice(0, 3), slice(3, 6)), # Q1
+        (slice(3, 6), slice(0, 3)), # Q2
+        (slice(3, 6), slice(3, 6))  # Q3
+    ]
+
+    # Helper to count consecutive lines
+    def count_line(arr, target_len):
+        # Horizontal
+        horz = (arr == ME).astype(int)
+        # Vertical
+        vert = horz.T
+        # Diagonals (main and anti)
+        diags = [horz.diagonal(), np.fliplr(horz).diagonal()]
+        
+        count = 0
+        for line in [horz, vert] + diags:
+            # Create sliding windows to find length sequences
+            # Simple convolution-like approach or manual sliding
+            # For simplicity and speed on 6x6, we can check sequences manually
+            # or use a robust logic for lengths
+            pass # Will implement specific counting below
+        
+        return count
+
+    # Actually, let's use a more direct evaluation approach:
+    # We will simulate each move and check for wins.
+    
+    # Pre-calculate all legal empty cells
+    empty_cells = []
+    for r in range(6):
+        for c in range(6):
+            if me[r][c] == 0 and opp[r][c] == 0:
+                empty_cells.append((r, c))
+                
+    if not empty_cells:
+        return "3,3,0,L" # Fallback, though board shouldn't be full
+
+    best_score = -float('inf')
+    best_move = empty_cells[0]
+    best_quad = 0
+    best_dir = 'L'
+
+    # Evaluation functions
+    def get_score(board, player):
+        # Check for 5-in-a-row
+        # Brute force check for 5 in a row on a 6x6 board
+        # Directions: Right, Down, Down-Right, Down-Left
+        
+        # Convert board to binary (1 if player, 0 otherwise)
+        b = (board == player).astype(int)
+        
+        def check_slice(slice_arr):
+            # Checks if a slice contains exactly 5 consecutive 1s
+            # We need to be careful about 6 consecutive 1s (counts as 5-in-a-row too)
+            s = ''.join(map(str, slice_arr))
+            return '11111' in s
+
+        # Rows
+        for r in range(6):
+            if check_slice(b[r, :]): return 10000
+        # Cols
+        for c in range(6):
+            if check_slice(b[:, c]): return 10000
+        # Diagonals (top-left to bottom-right)
+        for r in range(2): # Start rows
+            for c in range(2): # Start cols
+                # Check the 3 possible diagonal directions from (r,c)? No, standard diagonals
+                pass
+        # Let's implement a proper diagonal check for 6x6
+        # Main diagonals (top-left to bottom-right)
+        # Indices: (0,0), (0,1)...(0,4) | (1,0)...
+        for r in range(6):
+            for c in range(6):
+                # Check generic 5-length segments
+                if c + 5 <= 6: # Horizontal
+                    if np.sum(b[r, c:c+5]) == 5: return 10000
+                if r + 5 <= 6: # Vertical
+                    if np.sum(b[r:r+5, c]) == 5: return 10000
+                if r + 5 <= 6 and c + 5 <= 6: # Diag down-right
+                    diag_sum = 0
+                    for k in range(5):
+                        if b[r+k, c+k] == 1: diag_sum += 1
+                    if diag_sum == 5: return 10000
+                if r + 5 <= 6 and c - 4 >= 0: # Diag down-left
+                    diag_sum = 0
+                    for k in range(5):
+                        if b[r+k, c-k] == 1: diag_sum += 1
+                    if diag_sum == 5: return 10000
+                    
+        # If no win, return count of 4s and 3s
+        score = 0
+        # Count 4s (potential wins next turn)
+        for r in range(6):
+            for c in range(6):
+                if c + 4 <= 6 and np.sum(b[r, c:c+4]) == 4: score += 50
+                if r + 4 <= 6 and np.sum(b[r:r+4, c]) == 4: score += 50
+                if r + 4 <= 6 and c + 4 <= 6: 
+                    if all(b[r+k, c+k] == 1 for k in range(4)): score += 50
+                if r + 4 <= 6 and c - 3 >= 0:
+                    if all(b[r+k, c-k] == 1 for k in range(4)): score += 50
+        
+        # Count 3s
+        for r in range(6):
+            for c in range(6):
+                if c + 3 <= 6 and np.sum(b[r, c:c+3]) == 3: score += 10
+                if r + 3 <= 6 and np.sum(b[r:r+3, c]) == 3: score += 10
+                if r + 3 <= 6 and c + 3 <= 6: 
+                    if all(b[r+k, c+k] == 1 for k in range(3)): score += 10
+                if r + 3 <= 6 and c - 2 >= 0:
+                    if all(b[r+k, c-k] == 1 for k in range(3)): score += 10
+                    
+        return score
+
+    # Iterate through all moves
+    for r, c in empty_cells:
+        for q in range(4):
+            for d in ['L', 'R']:
+                # 1. Place marble
+                # Check if this cell belongs to quadrant q? 
+                # The prompt implies we can place anywhere, then rotate anywhere.
+                # However, standard Pentago usually implies restricted placement or rotation of the placed quadrant.
+                # Prompt says: "A legal move must place exactly one of your marbles on an empty cell, then rotate exactly one quadrant"
+                # It does NOT restrict placing in the rotated quadrant.
+                # So we treat (r,c) and (q,d) as independent choices for the simulation.
+                
+                # Clone boards
+                sim_me = me.copy()
+                sim_opp = opp.copy()
+                
+                # Place my marble
+                sim_me[r][c] = 1
+                
+                # Rotate quadrant q
+                # Define rotation helper
+                def rotate_quadrant(board, q_idx, direction):
+                    sr, sc = quad_coords[q_idx]
+                    sub = board[sr, sc]
+                    if direction == 'L':
+                        rotated = np.rot90(sub, 1) # 90 deg anticlockwise
+                    else:
+                        rotated = np.rot90(sub, 3) # 90 deg clockwise
+                    board[sr, sc] = rotated
+                
+                rotate_quadrant(sim_me, q, d)
+                rotate_quadrant(sim_opp, q, d) # Opponent rotates too
+                
+                # Evaluate
+                # Priority 1: Do I win?
+                my_win_score = get_score(sim_me, ME)
+                if my_win_score == 10000:
+                    # Found a winning move
+                    # We can return immediately or check for draw (unlikely to be a forced draw from winning)
+                    # Wait, prompt says if both have 5-in-a-row, it's a draw.
+                    # We must check if Opponent also wins.
+                    opp_win_score = get_score(sim_opp, OPP)
+                    if opp_win_score == 10000:
+                        # It's a draw. Avoid this unless no other moves.
+                        # But usually a win is better than non-win.
+                        # Actually, if I can't win without drawing, I might look for a better non-draw move.
+                        # Let's keep searching for a guaranteed win (where opp doesn't also win).
+                        # But if this is the only way to win, we take the draw.
+                        # For now, let's just score it lower than a solo win, but higher than a block.
+                        current_score = 9000 
+                    else:
+                        # Solo Win!
+                        return f"{r+1},{c+1},{q},{d}"
+                
+                # Priority 2: Does Opponent win?
+                # Actually, opponent wins if I do nothing? No, I make a move.
+                # I must check if this move creates a 5-in-a-row for opponent.
+                opp_win_score = get_score(sim_opp, OPP)
+                if opp_win_score == 10000:
+                    # This move allows opponent to win (immediately after my rotation).
+                    # This is a terrible move.
+                    # Unless I also win (checked above), avoid this.
+                    # If I am forced to make a move where opponent wins, I have to pick the "best" of the worst.
+                    # But usually we prioritize blocking opponent in the NEXT turn.
+                    # Here, the win happens immediately.
+                    # We should heavily penalize this.
+                    current_score = -10000
+                else:
+                    # Priority 3: Strategic Value
+                    # Count my structures
+                    my_struc = get_score(sim_me, ME)
+                    # Subtract opponent structures (blocking)
+                    opp_struc = get_score(sim_opp, OPP)
+                    
+                    # Center bias
+                    center_bias = 0
+                    if r in [1,2,3,4] and c in [1,2,3,4]: center_bias += 5
+                    # Quadrant bias: prefer rotating Q0 and Q3 (corners of the board) to connect across center
+                    if q in [0, 3]: center_bias += 2
+                    
+                    current_score = my_struc - opp_struc + center_bias
+
+                if current_score > best_score:
+                    best_score = current_score
+                    best_move = (r, c)
+                    best_quad = q
+                    best_dir = d
+
+    return f"{best_move[0]+1},{best_move[1]+1},{best_quad},{best_dir}"
+```

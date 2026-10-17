@@ -1,0 +1,100 @@
+
+import numpy as np
+from collections import deque
+
+class BattleshipPolicy:
+    def __init__(self):
+        self.size = 10
+        self.ship_sizes = [5, 4, 3, 3, 2]
+        self.directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+        self.reset()
+        
+    def reset(self):
+        self.probability_map = np.zeros((self.size, self.size))
+        self.hits = set()
+        self.misses = set()
+        self.untried = set((r, c) for r in range(self.size) for c in range(self.size))
+        self.target_queue = deque()
+        
+    def update_probability_map(self):
+        self.probability_map.fill(0)
+        
+        # Calculate probabilities for all possible ship positions
+        for ship_size in self.ship_sizes:
+            for r in range(self.size):
+                for c in range(self.size):
+                    for dr, dc in [(0, 1), (1, 0)]:  # horizontal and vertical
+                        if self.is_valid_ship_position(r, c, dr, dc, ship_size):
+                            for i in range(ship_size):
+                                rr, cc = r + i*dr, c + i*dc
+                                if (rr, cc) not in self.hits and (rr, cc) not in self.misses:
+                                    self.probability_map[rr, cc] += 1
+        
+        # Zero out already tried cells
+        for r, c in self.hits | self.misses:
+            self.probability_map[r, c] = 0
+            
+    def is_valid_ship_position(self, r, c, dr, dc, ship_size):
+        end_r = r + (ship_size - 1) * dr
+        end_c = c + (ship_size - 1) * dc
+        
+        if end_r >= self.size or end_c >= self.size:
+            return False
+            
+        for i in range(ship_size):
+            rr, cc = r + i*dr, c + i*dc
+            if (rr, cc) in self.misses:
+                return False
+                
+        return True
+        
+    def get_next_target(self):
+        if not self.target_queue:
+            # Hunt mode - choose highest probability cell
+            max_prob = np.max(self.probability_map)
+            if max_prob > 0:
+                rows, cols = np.where(self.probability_map == max_prob)
+                idx = np.random.choice(len(rows))  # randomize among equal probabilities
+                return rows[idx], cols[idx]
+            
+            # If no high probability cells, pick random untried cell
+            if self.untried:
+                return self.untried.pop()
+            
+            # Fallback - shouldn't happen if game isn't over
+            for r in range(self.size):
+                for c in range(self.size):
+                    if (r, c) not in self.hits and (r, c) not in self.misses:
+                        return r, c
+            return 0, 0
+        else:
+            # Target mode - pursue identified ship
+            return self.target_queue.popleft()
+            
+    def add_adjacent_targets(self, r, c):
+        for dr, dc in self.directions:
+            rr, cc = r + dr, c + dc
+            if 0 <= rr < self.size and 0 <= cc < self.size:
+                if (rr, cc) not in self.hits and (rr, cc) not in self.misses:
+                    self.target_queue.append((rr, cc))
+    
+    def policy(self, board):
+        # Update our knowledge from the board
+        for r in range(self.size):
+            for c in range(self.size):
+                if board[r][c] == 1 and (r, c) not in self.hits:
+                    self.hits.add((r, c))
+                    self.add_adjacent_targets(r, c)
+                elif board[r][c] == -1 and (r, c) not in self.misses:
+                    self.misses.add((r, c))
+                if (r, c) in self.untried and board[r][c] != 0:
+                    self.untried.discard((r, c))
+        
+        self.update_probability_map()
+        return self.get_next_target()
+
+# Global instance
+policy_instance = BattleshipPolicy()
+
+def policy(board):
+    return policy_instance.policy(board)

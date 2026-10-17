@@ -1,0 +1,80 @@
+
+import random
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Chooses the next move for a Tic Tac Toe game.
+
+    Args:
+        board: A 3x3 list of lists containing 0 (empty), 1 (you), and -1 (opponent).
+
+    Returns:
+        An integer 1-9 indicating the empty cell you choose, numbered:
+        1 2 3
+        4 5 6
+        7 8 9
+    """
+
+    # Convert the board to a 1D list of available moves
+    available_moves = []
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                available_moves.append(i * 3 + j + 1)
+
+    # If no moves are available, return -1
+    if not available_moves:
+        return -1
+    
+    # Check for winning move
+    for move in available_moves:
+        temp_board = [row[:] for row in board] # Create a copy
+        row = (move - 1) // 3
+        col = (move - 1) % 3
+        temp_board[row][col] = 1
+
+        # Check rows
+        for i in range(3):
+            if temp_board[i][0] == temp_board[i][1] == temp_board[i][2] == 1:
+                return move
+
+        # Check columns
+        for j in range(3):
+            if temp_board[0][j] == temp_board[1][j] == temp_board[2][j] == 1:
+                return move
+
+        # Check diagonals
+        if temp_board[0][0] == temp_board[1][1] == temp_board[2][2] == 1:
+            return move
+        if temp_board[0][2] == temp_board[1][1] == temp_board[2][0] == 1:
+            return move
+
+    # Check for blocking move
+    for move in available_moves:
+        temp_board = [row[:] for row in board] # Create a copy
+        row = (move - 1) // 3
+        col = (move - 1) % 3
+        temp_board[row][col] = -1
+
+        # Check rows
+        for i in range(3):
+            if temp_board[i][0] == temp_board[i][1] == temp_board[i][2] == -1:
+                return move
+
+        # Check columns
+        for j in range(3):
+            if temp_board[0][j] == temp_board[1][j] == temp_board[2][j] == -1:
+                return move
+
+        # Check diagonals
+        if temp_board[0][0] == temp_board[1][1] == temp_board[2][2] == -1:
+            return move
+        if temp_board[0][2] == temp_board[1][1] == temp_board[2][0] == -1:
+            return move
+    
+    # If center is available, take it
+    if 5 in available_moves:
+        return 5
+
+    # Otherwise, choose a random available move
+    return random.choice(available_moves)

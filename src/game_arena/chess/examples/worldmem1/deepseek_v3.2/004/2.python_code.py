@@ -1,0 +1,343 @@
+
+import numpy as np
+from collections import defaultdict
+import random
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Initialize memory if empty
+    if not memory:
+        memory.update({
+            'transposition_table': {},
+            'opening_moves': [],
+            'king_safety': {'white': 0, 'black': 0}
+        })
+    
+    # Convert to internal board representation
+    board = [[None for _ in range(8)] for _ in range(8)]
+    for sq, piece in pieces.items():
+        col = ord(sq[0]) - ord('a')
+        row = int(sq[1]) - 1
+        board[7-row][col] = piece  # board[0][0] is a8, board[7][7] is h1
+    
+    # Piece values
+    piece_value = {
+        'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0
+    }
+    
+    # Piece-square tables (from white's perspective, flipped for black)
+    pawn_table = np.array([
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [50, 50, 50, 50, 50, 50, 50, 50],
+        [10, 10, 20, 30, 30, 20, 10, 10],
+        [5,  5, 10, 25, 25, 10,  5,  5],
+        [0,  0,  0, 20, 20,  0,  0,  0],
+        [5, -5,-10,  0,  0,-10, -5,  5],
+        [5, 10, 10,-20,-20, 10, 10,  5],
+        [0,  0,  0,  0,  0,  0,  0,  0]
+    ]) * 0.1
+    
+    knight_table = np.array([
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+        [-40,-20,  0,  0,  0,  0,-20,-40],
+        [-30,  0, 10, 15, 15, 10,  0,-30],
+        [-30,  5, 15, 20, 20, 15,  5,-30],
+        [-30,  0, 15, 20, 20, 15,  0,-30],
+        [-30,  5, 10, 15, 15, 10,  5,-30],
+        [-40,-20,  0,  5,  5,  0,-20,-40],
+        [-50,-40,-30,-30,-30,-30,-40,-50]
+    ]) * 0.1
+    
+    bishop_table = np.array([
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5, 10, 10,  5,  0,-10],
+        [-10,  5,  5, 10, 10,  5,  5,-10],
+        [-10,  0, 10, 10, 10, 10,  0,-10],
+        [-10, 10, 10, 10, 10, 10, 10,-10],
+        [-10,  5,  0,  0,  0,  0,  5,-10],
+        [-20,-10,-10,-10,-10,-10,-10,-20]
+    ]) * 0.1
+    
+    rook_table = np.array([
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [5, 10, 10, 10, 10, 10, 10,  5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [0,  0,  0,  5,  5,  0,  0,  0]
+    ]) * 0.1
+    
+    queen_table = np.array([
+        [-20,-10,-10, -5, -5,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5,  5,  5,  5,  0,-10],
+        [-5,  0,  5,  5,  5,  5,  0, -5],
+        [0,  0,  5,  5,  5,  5,  0, -5],
+        [-10,  5,  5,  5,  5,  5,  0,-10],
+        [-10,  0,  5,  0,  0,  0,  0,-10],
+        [-20,-10,-10, -5, -5,-10,-10,-20]
+    ]) * 0.1
+    
+    king_mid_table = np.array([
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-20,-30,-30,-40,-40,-30,-30,-20],
+        [-10,-20,-20,-20,-20,-20,-20,-10],
+        [20, 20,  0,  0,  0,  0, 20, 20],
+        [20, 30, 10,  0,  0, 10, 30, 20]
+    ]) * 0.1
+    
+    def evaluate_board(board, maximizing_color):
+        """Evaluate board from perspective of maximizing player"""
+        score = 0
+        white_pieces = 0
+        black_pieces = 0
+        
+        # Material and positional scores
+        for row in range(8):
+            for col in range(8):
+                piece = board[row][col]
+                if not piece:
+                    continue
+                    
+                color, ptype = piece[0], piece[1]
+                value = piece_value[ptype]
+                
+                # Material with color
+                if color == 'w':
+                    white_pieces += value
+                else:
+                    black_pieces += value
+                
+                # Positional scoring
+                if ptype == 'P':
+                    table = pawn_table
+                elif ptype == 'N':
+                    table = knight_table
+                elif ptype == 'B':
+                    table = bishop_table
+                elif ptype == 'R':
+                    table = rook_table
+                elif ptype == 'Q':
+                    table = queen_table
+                else:  # King
+                    table = king_mid_table
+                
+                # Flip table for black pieces
+                if color == 'w':
+                    pos_score = table[7-row][col]
+                else:
+                    pos_score = table[row][col]
+                
+                if color == 'w':
+                    score += pos_score
+                else:
+                    score -= pos_score
+        
+        # Material balance from maximizing player's perspective
+        if maximizing_color == 'w':
+            material = white_pieces - black_pieces
+        else:
+            material = black_pieces - white_pieces
+        
+        # Add material to score
+        score += material
+        
+        # Bonus for bishop pair
+        bishops = {'w': 0, 'b': 0}
+        for row in range(8):
+            for col in range(8):
+                piece = board[row][col]
+                if piece and piece[1] == 'B':
+                    bishops[piece[0]] += 1
+        
+        if bishops['w'] >= 2:
+            score += 0.5
+        if bishops['b'] >= 2:
+            score -= 0.5
+            
+        return score
+    
+    def parse_move(move_str, board, color):
+        """Parse a move string and return (from_row, from_col, to_row, to_col, promotion)"""
+        # Handle castling
+        if move_str in ['O-O', 'O-O-O']:
+            row = 7 if color == 'w' else 0
+            if move_str == 'O-O':
+                return (row, 4, row, 6, None)  # king from e1/e8 to g1/g8
+            else:
+                return (row, 4, row, 2, None)  # king from e1/e8 to c1/c8
+        
+        # Handle promotion
+        promotion = None
+        if '=' in move_str:
+            move_str, promotion = move_str.split('=')
+            promotion = promotion[0]  # Q, R, B, or N
+        
+        # Extract target square (last 2 chars)
+        target = move_str[-2:]
+        to_col = ord(target[0]) - ord('a')
+        to_row = 7 - (int(target[1]) - 1)
+        
+        # Remove target from string to get piece info
+        move_str = move_str[:-2]
+        
+        # Handle captures
+        if 'x' in move_str:
+            move_str = move_str.replace('x', '')
+        
+        # Determine piece type (default pawn)
+        piece_type = 'P'
+        if move_str and move_str[0].isupper():
+            piece_type = move_str[0]
+            move_str = move_str[1:]
+        
+        # Find source square
+        from_row, from_col = None, None
+        
+        # For pawn moves without disambiguation
+        if piece_type == 'P' and not move_str:
+            # Pawn move like "e4" - find pawn that can move to target
+            direction = -1 if color == 'w' else 1
+            candidates = []
+            for dr in [1, 2]:  # Check one and two squares forward
+                fr = to_row - direction * dr
+                if 0 <= fr < 8:
+                    piece = board[fr][to_col]
+                    if piece and piece == color + 'P':
+                        candidates.append((fr, to_col))
+            
+            if candidates:
+                from_row, from_col = candidates[0]
+        
+        # For piece moves or disambiguated pawn moves
+        if from_row is None:
+            # Try to find the piece
+            for row in range(8):
+                for col in range(8):
+                    piece = board[row][col]
+                    if not piece or piece[0] != color or piece[1] != piece_type:
+                        continue
+                    
+                    # Check if this piece could move to target
+                    # Simplified: just check if it's the only candidate
+                    # In real implementation, would verify move legality
+                    if not move_str:  # No disambiguation
+                        from_row, from_col = row, col
+                        break
+                    else:  # Has disambiguation like "Nbd7"
+                        disambig = move_str
+                        if disambig[0].isalpha():  # File disambiguation
+                            file_num = ord(disambig[0]) - ord('a')
+                            if col == file_num:
+                                from_row, from_col = row, col
+                                break
+                        else:  # Rank disambiguation
+                            rank_num = 7 - (int(disambig[0]) - 1)
+                            if row == rank_num:
+                                from_row, from_col = row, col
+                                break
+            
+            # Fallback: if still not found, use first matching piece
+            if from_row is None:
+                for row in range(8):
+                    for col in range(8):
+                        piece = board[row][col]
+                        if piece and piece[0] == color and piece[1] == piece_type:
+                            from_row, from_col = row, col
+                            break
+                    if from_row is not None:
+                        break
+        
+        return (from_row, from_col, to_row, to_col, promotion)
+    
+    def make_move(board, move_str, color):
+        """Make a move on a copy of the board and return new board"""
+        new_board = [row[:] for row in board]
+        from_row, from_col, to_row, to_col, promotion = parse_move(move_str, board, color)
+        
+        if from_row is None or from_col is None:
+            return board  # Shouldn't happen with legal moves
+        
+        piece = new_board[from_row][from_col]
+        new_board[from_row][from_col] = None
+        
+        # Handle promotion
+        if promotion:
+            piece = color + promotion
+        
+        new_board[to_row][to_col] = piece
+        
+        # Handle castling rook move
+        if move_str == 'O-O':
+            rook_row = 7 if color == 'w' else 0
+            new_board[rook_row][7], new_board[rook_row][5] = None, color + 'R'
+        elif move_str == 'O-O-O':
+            rook_row = 7 if color == 'w' else 0
+            new_board[rook_row][0], new_board[rook_row][3] = None, color + 'R'
+        
+        return new_board
+    
+    def minimax(board, depth, alpha, beta, maximizing, color, max_depth=3):
+        """Minimax with alpha-beta pruning"""
+        if depth == max_depth:
+            return evaluate_board(board, 'w' if to_play == 'white' else 'b'), None
+        
+        if maximizing:
+            max_eval = float('-inf')
+            best_move = None
+            
+            # Get moves for current color
+            moves = legal_moves if depth == 0 else []
+            if not moves:
+                return evaluate_board(board, 'w' if to_play == 'white' else 'b'), None
+            
+            for move in moves:
+                new_board = make_move(board, move, color)
+                # Switch color for next ply
+                next_color = 'b' if color == 'w' else 'w'
+                eval_score, _ = minimax(new_board, depth+1, alpha, beta, False, next_color, max_depth)
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            
+            # Generate opponent moves (simplified - in full impl would generate legal moves)
+            # For efficiency, we'll just evaluate current position
+            eval_score = evaluate_board(board, 'w' if to_play == 'white' else 'b')
+            return eval_score, None
+    
+    # Check for immediate checkmates or winning captures first
+    best_move = None
+    max_score = float('-inf')
+    
+    # Get current color
+    color = 'w' if to_play == 'white' else 'b'
+    
+    # If few pieces left, use endgame evaluation
+    total_pieces = sum(1 for row in board for cell in row if cell)
+    max_depth = 3 if total_pieces > 10 else 4
+    
+    # Run minimax
+    _, best_move = minimax(board, 0, float('-inf'), float('inf'), True, color, max_depth)
+    
+    # Fallback: if no move found (shouldn't happen), pick first legal move
+    if not best_move:
+        best_move = legal_moves[0]
+    
+    # Update memory
+    memory['last_move'] = best_move
+    
+    return best_move, memory

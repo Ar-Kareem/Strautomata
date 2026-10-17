@@ -1,0 +1,109 @@
+
+import numpy as np
+from typing import Tuple
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determine the next move for Tic Tac Toe using minimax algorithm with alpha-beta pruning.
+    
+    Args:
+        board: 3x3 list of lists with 0 (empty), 1 (player), -1 (opponent)
+    
+    Returns:
+        Tuple of (row, col) indicating the next move
+    """
+    board_array = np.array(board)
+    
+    def check_winner(board):
+        # Check rows, columns, and diagonals
+        for i in range(3):
+            if abs(np.sum(board[i, :])) == 3:
+                return board[i, 0]
+            if abs(np.sum(board[:, i])) == 3:
+                return board[0, i]
+        
+        if abs(np.sum(board.diagonal())) == 3:
+            return board[0, 0]
+        if abs(np.sum(np.fliplr(board).diagonal())) == 3:
+            return board[0, 2]
+        
+        return 0  # No winner
+    
+    def is_terminal(board):
+        winner = check_winner(board)
+        if winner != 0:
+            return True, winner
+        
+        if not np.any(board == 0):  # No empty cells
+            return True, 0
+            
+        return False, 0
+    
+    def minimax(board, depth, alpha, beta, is_maximizing):
+        terminal, winner = is_terminal(board)
+        
+        if terminal:
+            if winner == 1:  # AI wins
+                return 10 - depth
+            elif winner == -1:  # Opponent wins
+                return depth - 10
+            else:  # Draw
+                return 0
+        
+        if is_maximizing:
+            max_eval = float('-inf')
+            for i in range(3):
+                for j in range(3):
+                    if board[i, j] == 0:
+                        board[i, j] = 1  # AI's move
+                        eval_score = minimax(board, depth + 1, alpha, beta, False)
+                        board[i, j] = 0  # Undo move
+                        max_eval = max(max_eval, eval_score)
+                        alpha = max(alpha, eval_score)
+                        if beta <= alpha:
+                            break  # Beta cutoff
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for i in range(3):
+                for j in range(3):
+                    if board[i, j] == 0:
+                        board[i, j] = -1  # Opponent's move
+                        eval_score = minimax(board, depth + 1, alpha, beta, True)
+                        board[i, j] = 0  # Undo move
+                        min_eval = min(min_eval, eval_score)
+                        beta = min(beta, eval_score)
+                        if beta <= alpha:
+                            break  # Alpha cutoff
+            return min_eval
+    
+    # Find all valid moves
+    empty_cells = []
+    for i in range(3):
+        for j in range(3):
+            if board_array[i, j] == 0:
+                empty_cells.append((i, j))
+    
+    # If no empty cells, return any position (should not happen in valid game)
+    if not empty_cells:
+        return (0, 0)
+    
+    # If only one move left, take it
+    if len(empty_cells) == 1:
+        return empty_cells[0]
+    
+    # Use minimax to find the best move
+    best_value = float('-inf')
+    best_move = empty_cells[0]  # Default to first empty cell
+    
+    for move in empty_cells:
+        row, col = move
+        board_array[row, col] = 1  # Try AI's move
+        move_value = minimax(board_array, 0, float('-inf'), float('inf'), False)
+        board_array[row, col] = 0  # Undo move
+        
+        if move_value > best_value:
+            best_value = move_value
+            best_move = move
+    
+    return best_move

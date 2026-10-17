@@ -1,0 +1,32 @@
+
+def policy(board: list[list[int]], legal_moves: list[int]) -> tuple[int, int]:
+    # Prioritize center (position 4) if available
+    if 4 in legal_moves:
+        if board[1][1] == 0:
+            return (1, 1)
+    
+    # Check corners (positions 0, 2, 6, 8) in order
+    corners = [0, 2, 6, 8]
+    for corner in corners:
+        if corner in legal_moves:
+            row = corner // 3
+            col = corner % 3
+            if board[row][col] == 0:
+                return (row, col)
+    
+    # Check edges (positions 1, 3, 5, 7) if no corners available
+    edges = [1, 3, 5, 7]
+    for edge in edges:
+        if edge in legal_moves:
+            row = edge // 3
+            col = edge % 3
+            if board[row][col] == 0:
+                return (row, col)
+    
+    # Fallback: return first legal move (should not occur in valid games)
+    for move in legal_moves:
+        row = move // 3
+        col = move % 3
+        if board[row][col] == 0:
+            return (row, col)
+    return legal_moves[0] // 3, legal_moves[0] % 3

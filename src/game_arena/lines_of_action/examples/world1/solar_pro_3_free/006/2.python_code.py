@@ -1,0 +1,205 @@
+
+import copy
+from typing import List, Tuple
+
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+CAPTURE_BONUS = 1000
+ADJ_BONUS = 100   # each new adjacency pair
+GROUP_DIFF_BONUS = 500  # we like to merge our groups (reduces number of groups)
+OPPONENT_ADJ_PENALTY = 50   # each opponent adjacency hurts us
+
+def _is_board_2d(board) -> List[List[int]]:
+    """Convert a flat 64‑list into a 8×8 list of lists (in‑place if possible)."""
+    if isinstance(board[0], list):
+        return board
+    return [board[i*8:(i+1)*8] for i in range(8)]
+
+def _adjacency_score(grid: List[List[int]], piece: int) -> int:
+    """Count unordered adjacent pairs (8‑direction) for the given piece."""
+    n = 8
+    score = 0
+    dirs = DIRS
+    for r in range(n):
+        for c in range(n):
+            if grid[r][c] != piece:
+                continue
+            for dr, dc in dirs:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < n and 0 <= nc < n and grid[nr][nc] == piece:
+                    score += 1
+    return score // 2          # each pair counted twice
+
+def _group_count(grid: List[List[int]], piece: int) -> int:
+    """Return number of connected components (8‑connected) of the given piece."""
+    n = 8
+    groups = 0
+    visited = [[False]*n for _ in range(n)]
+    for r in range(n):
+        for c in range(n):
+            if grid[r][c] == piece and not visited[r][c]:
+                groups += 1
+                # BFS flood fill
+                stack = [(r, c)]
+                visited[r][c] = True
+                while stack:
+                    cr, cc = stack.pop()
+                    for dr, dc in DIRS:
+                        nr, nc = cr+dr, cc+dc
+                        if 0 <= nr < n and 0 <= nc < n and not visited[nr][nc] and grid[nr][nc] == piece:
+                            visited[nr][nc] = True
+                            stack.append((nr, nc))
+    return groups
+
+def _apply_move(board: List[List[int]], src: Tuple[int, int],
+                dst: Tuple[int, int]) -> List[List[int]]:
+    """Return a copy of board where the move from src to dst has been applied."""
+    new_board = copy.deepcopy(board)
+    r, c = src
+    dr, dc = dst
+    new_board[r][c] = -1  # start is cleared
+    nr, nc = dr, dc
+    piece_at_dst = new_board[nr][nc]
+    new_board[nr][nc] = 1   # our piece occupies the destination
+    return new_board
+
+def _is_legal_move(board: List[List[int]], src: Tuple[int, int],
+                   dst: Tuple[int, int]) -> bool:
+    """Check whether a move from src to dst follows LoA rules."""
+    sr, sc = src
+    dr, dc = dst
+    steps = 0
+    piece_cnt = 0
+    # We count pieces starting with the moving piece itself
+    piece_cnt += 1          # start piece is always counted
+    cur_r, cur_c = sr + dr, sc + dc
+    while 0 <= cur_r < 8 and 0 <= cur_c < 8:
+        steps += 1
+        cell = board[cur_r][cur_c]
+        if cell == -1:      # opponent blocks the line – illegal
+            return False
+        # increase piece count if we stepped onto a piece (friend or opponent)
+        if cell != 0:
+            piece_cnt += 1
+        # legal if number of steps travelled equals pieces seen
+        if piece_cnt == steps:
+            # destination must be empty or opponent (we never land on a friendly piece)
+            if cell == 0:
+                # we are moving onto an empty square – that's okay
+                return True
+            elif cell == -1:
+                # we are capturing opponent – also legal
+                return True
+        # continue further
+        cur_r += dr
+        cur_c += dc
+    return False
+
+def _generate_legal_moves(board: List[List[int]]) -> List[Tuple[Tuple[int, int], Tuple[int, int], int]]:
+    """
+    Return list of all legal moves for the current player (value 1).
+    Each element is (src, dst, target_type) where target_type is 0 (empty) or -1 (capture).
+    """
+    n = 8
+    legal_moves = []
+    board = _is_board_2d(board)   # ensure 2‑D representation
+
+    for sr in range(n):
+        for sc in range(n):
+            if board[sr][sc] != 1:
+                continue
+            # Starting piece found
+            piece_cnt = 1          # includes the start piece
+            for dr, dc in DIRS:
+                cur_r, cur_c = sr + dr, sc + dc
+                steps = 0
+                while 0 <= cur_r < n and 0 <= cur_c < n:
+                    steps += 1
+                    cell = board[cur_r][cur_c]
+                    if cell == -1:       # cannot pass opponent
+                        break
+                    if cell != 0:
+                        piece_cnt += 1
+                    if piece_cnt == steps:
+                        # legal destination reached
+                        if cell == 0:     # move onto empty square
+                            legal_moves.append(( (sr, sc), (cur_r, cur_c), 0 ))
+                        elif cell == -1:  # capture opponent
+                            legal_moves.append(( (sr, sc), (cur_r, cur_c), -1 ))
+                        break
+                    cur_r += dr
+                    cur_c += dc
+    return legal_moves
+
+def _evaluate_move(board_before: List[List[int]],
+                  src: Tuple[int, int],
+                  dst: Tuple[int, int]) -> int:
+    """Score a single legal move; higher is better."""
+    # Apply move on a copy to evaluate resulting board
+    board_after = _apply_move(board_before, src, dst)
+
+    # Base scores
+    score = 0
+    if board_before[dst[0]][dst[1]] == -1:   # capture
+        score += CAPTURE_BONUS
+
+    # Own adjacency improvement
+    own_adj_before = _adjacency_score(board_before, 1)
+    own_adj_after  = _adjacency_score(board_after, 1)
+    score += own_adj_after - own_adj_before
+
+    # Opponent adjacency decrease (penalty)
+    opp_adj_before = _adjacency_score(board_before, -1)
+    opp_adj_after  = _adjacency_score(board_after, -1)
+    score -= opp_adj_after
+
+    # Group count improvement (we love merging groups)
+    own_groups_before = _group_count(board_before, 1)
+    own_groups_after  = _group_count(board_after, 1)
+    score += (own_groups_before - own_groups_after) * GROUP_DIFF_BONUS
+
+    # Move‑onto‑empty‑only bonus (encourages moving towards other pieces)
+    # If the destination was empty, give a small bonus for gaining adjacency.
+    if board_before[dst[0]][dst[1]] == 0:
+        # check if adjacency to other own pieces increased
+        adj_gain = own_adj_after - own_adj_before
+        score += adj_gain * ADJ_BONUS
+
+    return score
+
+def policy(board) -> str:
+    """
+    Main API: given the current 8×8 board, return a legal move string.
+    """
+    board2d = _is_board_2d(board)
+
+    # Gather all legal moves for the current player (value 1)
+    candidates = _generate_legal_moves(board2d)
+
+    if not candidates:
+        # No legal move found – this shouldn't happen in a proper LoA position,
+        # but we fallback to a random adjacent empty square.
+        # Scan for any own piece with a neighbour empty square.
+        for sr in range(8):
+            for sc in range(8):
+                if board2d[sr][sc] != 1:
+                    continue
+                for dr, dc in DIRS:
+                    er, ec = sr + dr, sc + dc
+                    if 0 <= er < 8 and 0 <= ec < 8 and board2d[er][ec] == 0:
+                        return f"{sr},{sc}:{er},{ec}"
+        # As a last resort, return an arbitrary valid format.
+        return "0,0:0,1"
+
+    best_move = None
+    best_score = float('-inf')
+
+    for src, dst, _ in candidates:
+        score = _evaluate_move(board2d, src, dst)
+        if score > best_score:
+            best_score = score
+            best_move = (src, dst)
+
+    # Format the move exactly as required: "row,col:row,col"
+    return f"{best_move[0][0]},{best_move[0][1]}:{best_move[1][0]},{best_move[1][1]}"

@@ -1,0 +1,106 @@
+The strategy for this policy is a heuristic-based minimax policy tailored for Kalah. It evaluates board states using a heuristic that prioritizes the difference in store seeds (a measure of current score advantage) plus a small fraction of the difference in non-store seeds (to favor seeds in houses for future moves and captures). It handles the game's extra turn mechanic by using limited-depth recursion (to a depth of 3) when an extra turn occurs, simulating future values for the player (since extra turns benefit the same player). For normal moves without extra turns, it selects the move that maximizes the heuristic value post-move. If the game ends in a terminal state (one player's houses are empty), it assigns high bonus/penalty values for wins/losses. This balances aggressiveness (favoring captures and extra turns) with caution (avoiding moves that harm seed differential), aiming to beat simpler greedy or random policies by anticipating outcomes 3 moves deep in extra-turn chains while staying within time limits.
+
+<code>
+import copy
+
+class Board:
+    def __init__(self, you, opponent):
+        self.you = you.copy()
+        self.opp = opponent.copy()
+
+    def is_empty(self, player):
+        if player == 'you':
+            return sum(self.you[:-1]) == 0
+        else:
+            return sum(self.opp[:-1]) == 0
+
+    def end_game(self):
+        if self.is_empty('you'):
+            self.you[6] += sum(self.you[:-1])
+            self.you[:-1] = [0] * 6
+        elif self.is_empty('opponent'):
+            self.opp[6] += sum(self.opp[:-1])
+            self.opp[:-1] = [0] * 6
+
+    def apply_move(self, player, move):
+        assert 0 <= move <= 5 and self.you[move] > 0
+        if player == 'you':
+            houses = self.you
+            opp_houses = self.opp
+        else:
+            houses = self.opp
+            opp_houses = self.you
+        seeds = houses[move]
+        houses[move] = 0
+        # Simulate sowing: 12 positions in cycle, skipping opp store
+        k = (move + 1) % 12
+        last_k = -1
+        for _ in range(seeds):
+            if k < 6:  # you houses
+                houses[k] += 1
+            elif k == 6:  # you store
+                houses[6] += 1
+            else:  # opp houses
+                opp_houses[k - 7] += 1
+            last_k = k
+            k = (k + 1) % 12
+        # Check extra turn: last seed in my store
+        extra_turn = (player == 'you' and last_k == 6)
+        # Check capture: last seed in my empty house, and opposite has seeds
+        if player == 'you' and 0 <= last_k < 6:
+            pos = last_k
+            if houses[pos] == 1 and opp_houses[5 - pos] > 0:
+                houses[6] += houses[pos] + opp_houses[5 - pos]
+                houses[pos] = 0
+                opp_houses[5 - pos] = 0
+        return extra_turn
+
+def evaluate_state(board):
+    if board.is_empty('you') or board.is_empty('opponent'):
+        board.end_game()
+        scores = board.you[6] - board.opp[6]
+        if scores > 0:
+            return 1000
+        elif scores < 0:
+            return -1000
+        else:
+            return 0
+    else:
+        scores = board.you[6] - board.opp[6]
+        home_diff = sum(board.you[:-1]) - sum(board.opp[:-1])
+        return scores + home_diff / 10.0
+
+def get_value(board, depth=3):
+    if depth == 0 or board.is_empty('you') or board.is_empty('opponent'):
+        return evaluate_state(board)
+    possible_moves = [i for i in range(6) if board.you[i] > 0]
+    if not possible_moves:
+        return evaluate_state(board)
+    max_val = -float('inf')
+    for m in possible_moves:
+        new_board = copy.deepcopy(board)
+        extra = new_board.apply_move('you', m)
+        val = evaluate_state(new_board)
+        if extra:
+            val += get_value(new_board, depth - 1)
+        if val > max_val:
+            max_val = val
+    return max_val
+
+def policy(you, opponent):
+    board = Board(you, opponent)
+    possible_moves = [i for i in range(6) if board.you[i] > 0]
+    assert possible_moves  # Guaranteed by problem
+    best_move = possible_moves[0]
+    best_val = -float('inf')
+    for m in possible_moves:
+        new_board = copy.deepcopy(board)
+        extra = new_board.apply_move('you', m)
+        val = evaluate_state(new_board)
+        if extra:
+            val += get_value(new_board, depth=3)
+        if val > best_val:
+            best_val = val
+            best_move = m
+    return best_move
+</code>

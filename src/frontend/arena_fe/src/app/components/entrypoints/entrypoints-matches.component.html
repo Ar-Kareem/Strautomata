@@ -1,0 +1,452 @@
+<section class="entrypoint-grid">
+  <div class="panel panel-primary mv-panel">
+    @if (indexError()) {
+      <div class="mv-error">Could not load the match history index ({{ indexError() }}). Run the exporter first.</div>
+    }
+
+    <div class="mv-toolbar">
+      <div class="mv-field">
+        <span>Game</span>
+        <arena-game-picker
+          [compact]="true"
+          allLabel="All games"
+          [games]="pickerGames()"
+          [selectedId]="gameKey()"
+          (selectedChange)="selectGame($event)"
+        ></arena-game-picker>
+      </div>
+      <!-- per-game filters: hidden on the overall leaderboard -->
+      @if (gameKey()) {
+        <label class="mv-field">
+          <span>Stage</span>
+          <div class="mv-stages" role="radiogroup" aria-label="Stage">
+            <button type="button" class="mv-stage" [class.is-active]="isTournament()" (click)="setPrimaryStage('tourney')">Tournament</button>
+            <button type="button" class="mv-stage" [class.is-active]="stage() === 'quals'" (click)="setPrimaryStage('quals')">Qualification</button>
+          </div>
+        </label>
+        @if (isTournament()) {
+          <label class="mv-field">
+            <span>View by</span>
+            <div class="mv-stages" role="radiogroup" aria-label="Tournament view">
+              <button type="button" class="mv-stage" [class.is-active]="stage() === 'models'" (click)="setStage('models')">Model</button>
+              <button type="button" class="mv-stage" [class.is-active]="stage() === 'tourney'" (click)="setStage('tourney')">Automaton</button>
+            </div>
+          </label>
+        }
+      }
+      @if (modelSel().size) {
+        <div class="mv-field">
+          <span>Showing</span>
+          <div class="mv-showing">
+            <span class="mv-side-count">{{ modelSel().size }}/{{ modelCount() }}</span>
+            <button type="button" class="mv-side-all" (click)="clearFilters()">Show all</button>
+          </div>
+        </div>
+      }
+      @if (playable(); as g) {
+        <button type="button" class="mv-play" (click)="playGame(g)">
+          <i class="fa-solid fa-gamepad" aria-hidden="true"></i>
+          Play {{ g.label }}
+        </button>
+      }
+    </div>
+
+    <!-- always there (just "Leaderboard" on the overview) so the sidebar below never shifts -->
+    <nav class="mv-crumbs" aria-label="Breadcrumb">
+      @for (crumb of crumbs(); track $index; let last = $last) {
+        <button type="button" class="mv-crumb" [class.is-last]="last" (click)="crumb.action()" [disabled]="last">{{ crumb.label }}</button>
+        @if (!last) {
+          <span class="mv-crumb-sep">›</span>
+        }
+      }
+      @if (gameKey() && contextModel(); as model) {
+        <button type="button" class="mv-profile-link" (click)="openProfile(model)">
+          <model-logo [bot]="model" [size]="14"></model-logo>
+          {{ model }} in every game
+          <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
+        </button>
+      }
+    </nav>
+
+    <div class="mv-body">
+      <aside class="mv-sidebar">
+          <div class="mv-side-title">
+            @if (modelSel().size) {
+              <span>Models <span class="mv-side-count">{{ modelSel().size }}/{{ modelCount() }}</span></span>
+              <button type="button" class="mv-side-all" (click)="clearFilters()">Show all</button>
+            } @else {
+              <span>Models</span>
+            }
+          </div>
+          <!-- chevron/family name: open or close; checkbox: in or out of the filter;
+               model name: its page (marked with the accent bar, apart from the checkboxes) -->
+          @for (family of familyTree(); track family.id) {
+            <div class="mv-family" [class.is-open]="openFamily() === family.id">
+              <div class="mv-row">
+                <button type="button" class="mv-chevron" [attr.aria-expanded]="openFamily() === family.id" [attr.aria-label]="'Show ' + family.id + ' models'" (click)="toggleFamilyOpen(family.id)">
+                  <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+                </button>
+                <button
+                  type="button"
+                  role="checkbox"
+                  class="mv-check"
+                  [class.is-on]="familySel().has(family.id)"
+                  [class.is-mixed]="familyPartial().has(family.id)"
+                  [attr.aria-checked]="familySel().has(family.id) ? 'true' : familyPartial().has(family.id) ? 'mixed' : 'false'"
+                  [attr.aria-label]="family.id"
+                  (click)="toggleFamilyInSelection(family.id, $event)"
+                ></button>
+                <button type="button" class="mv-row-name is-family" (click)="toggleFamilyOpen(family.id)">
+                  <model-logo [family]="family.id" [size]="15"></model-logo>
+                  <span class="mv-family-name">{{ family.id }}</span>
+                </button>
+                <span class="mv-family-count">{{ family.models.length }}</span>
+              </div>
+              @if (openFamily() === family.id) {
+                <div class="mv-models">
+                  @for (model of family.models; track model.id) {
+                    <div class="mv-row is-model" [class.is-current]="currentModel() === model.id">
+                      <button
+                        type="button"
+                        role="checkbox"
+                        class="mv-check"
+                        [class.is-on]="modelSel().has(model.id)"
+                        [attr.aria-checked]="modelSel().has(model.id)"
+                        [attr.aria-label]="model.id"
+                        (click)="toggleModelInSelection(model.id, $event)"
+                      ></button>
+                      <button type="button" class="mv-row-name" (click)="goToModel(model.id)">{{ model.id }}</button>
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          } @empty {
+            <div class="mv-side-empty">Loading…</div>
+          }
+        </aside>
+
+      <main class="mv-main">
+        @switch (view()) {
+          @case ('overview') {
+            <matches-overall
+              [games]="sortedGames()"
+              [availableModels]="indexModelIds()"
+              [selection]="modelSel()"
+              (openModel)="openProfile($event)"
+              (openModelInGame)="openModelInGame($event)"
+            ></matches-overall>
+            <div class="mv-intro">
+              <p>Per-game leaderboards</p>
+            </div>
+            <div class="mv-games">
+              @for (g of sortedGames(); track g.id) {
+                <button type="button" class="mv-game" (click)="selectGame(g.id)">
+                  <game-preview class="mv-game-board" [gameId]="g.game" [worldId]="g.world"></game-preview>
+                  <span class="mv-game-title">{{ g.label }}</span>
+                  <span class="mv-game-line">Tournament {{ g.stages.tourney?.matches ?? 0 | number }} matches</span>
+                  <span class="mv-game-line">Qualification {{ g.stages.quals?.matches ?? 0 | number }} matches</span>
+                </button>
+              } @empty {
+                @if (!indexError()) {
+                  <div class="mv-side-empty">Loading games…</div>
+                }
+              }
+            </div>
+          }
+
+          @case ('model') {
+            <matches-model
+              [model]="profile()!"
+              [games]="sortedGames()"
+              (openGame)="openModelInGame({ model: profile()!, gameId: $event })"
+              (openBot)="openProfileBot($event)"
+            >
+              <button mpBack type="button" class="mv-back" (click)="selectGame(null)">
+                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                <span>Back</span>
+              </button>
+            </matches-model>
+          }
+
+          @case ('game') {
+            <!-- a model's page has its own card instead -->
+            @if (stage() === 'models' || !singleModel()) {
+              <div class="mv-stats">
+                <div class="mv-stat"><span class="mv-stat-label">Matches{{ stats().filtered ? ' (filtered)' : '' }}</span><span class="mv-stat-value">{{ stats().matches === null ? '…' : (stats().matches | number) }}</span></div>
+                <div class="mv-stat"><span class="mv-stat-label">Automata</span><span class="mv-stat-value">{{ stats().bots }}</span></div>
+                <div class="mv-stat"><span class="mv-stat-label">Models</span><span class="mv-stat-value">{{ stats().models }}</span></div>
+                <div class="mv-stat"><span class="mv-stat-label">Qualified</span><span class="mv-stat-value">{{ stats().qualified }}</span></div>
+              </div>
+            }
+            @if (loadError()) {
+              <div class="mv-error">{{ loadError() }}</div>
+            }
+            @if (summaryLoading()) {
+              <div class="mv-loading">Loading leaderboard…</div>
+            } @else if (summary()) {
+              @if (stage() !== 'models' && singleModel(); as model) {
+                <div class="mv-model-head">
+                  <button type="button" class="mv-back" (click)="backFromModel()">
+                    <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                    <span>Back</span>
+                  </button>
+                  <matches-model-game-hero [game]="game()!" [model]="model" [games]="sortedGames()"></matches-model-game-hero>
+                </div>
+                <matches-model-automata [game]="game()!" [model]="model" (openBot)="openAutomaton($event)"></matches-model-automata>
+              }
+              @if (stage() === 'quals') {
+                <div class="mv-quals">
+                  @for (card of qualsCards(); track card.model) {
+                    <div class="mv-card">
+                      <button type="button" class="mv-card-head is-link" (click)="openModelPage(card.model)">
+                        <model-logo [family]="card.family" [size]="16"></model-logo>
+                        <span class="mv-card-title">{{ card.model }}</span>
+                        <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+                      </button>
+                      <table class="mv-card-table is-quals">
+                        <thead>
+                          <tr>
+                            <th class="col-rank">#</th>
+                            <th class="col-bot">Automata</th>
+                            <th>Rating</th>
+                            <th>Score</th>
+                            <th class="col-faults num">Faults</th>
+                            <th class="col-qual" title="Qualified for the tournament">Qual</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          @for (r of card.rankings; track r.bot) {
+                            <tr class="mv-card-row" [class.is-qualified]="r.qualified" (click)="selectBot(r.bot)">
+                              <td>{{ r.rank }}</td>
+                              <td>{{ botShortLabel(r.bot) }}</td>
+                              <td class="mv-q-rating">
+                                <div class="mv-q-ci" [style]="qualsCiStyle(r)" [title]="'95% CI ' + formatRating(r.q025) + ' – ' + formatRating(r.q975)">
+                                  <span class="mv-q-ci-bar"></span>
+                                  <span class="mv-q-ci-point"></span>
+                                </div>
+                                <span class="mv-q-value">{{ formatRating(r.rating) }}</span>
+                              </td>
+                              <td class="mv-q-score">
+                                @if (stageSummary()?.records?.[r.bot]; as rec) {
+                                  <span
+                                    class="mv-q-bar"
+                                    [style]="qualsScoreStyle(rec)"
+                                    [title]="rec.win + rec.enemy_error + rec.enemy_timeout + ' W · ' + rec.draw + ' D · ' + (rec.loss + rec.error + rec.timeout) + ' L'"
+                                  >
+                                    <span class="mv-q-seg is-win" style="width: var(--win)"></span>
+                                    <span class="mv-q-seg is-win is-fault" style="width: var(--win-fault)"></span>
+                                    <span class="mv-q-seg is-draw" style="width: var(--draw)"></span>
+                                    <span class="mv-q-seg is-loss is-fault" style="width: var(--loss-fault)"></span>
+                                    <span class="mv-q-seg is-loss" style="width: var(--loss)"></span>
+                                    <span class="mv-q-pct">{{ qualsScorePct(rec) }}%</span>
+                                  </span>
+                                } @else { – }
+                              </td>
+                              <td class="num mv-muted">
+                                @if (stageSummary()?.records?.[r.bot]; as rec) {
+                                  {{ rec.error + rec.timeout }}
+                                } @else { – }
+                              </td>
+                              <td class="mv-q-qual">{{ r.qualified ? '✓' : '' }}</td>
+                            </tr>
+                          }
+                        </tbody>
+                      </table>
+                      @if (stageSummary(); as ss) {
+                        <matches-heatmap
+                          [bots]="card.bots"
+                          [labels]="shortLabels()"
+                          [families]="familyByBot()"
+                          [pairwise]="ss.pairwise"
+                          [compact]="true"
+                          (openPair)="openPair($event)"
+                        ></matches-heatmap>
+                      }
+                    </div>
+                  } @empty {
+                    <div class="mv-side-empty">No models match the current filter.</div>
+                  }
+                </div>
+              } @else {
+                <div class="mv-section-head">
+                  <h3>{{ stage() === 'models' ? 'Model leaderboard' : 'Automaton leaderboard' }}</h3>
+                </div>
+                <matches-leaderboard
+                [ciScale]="ciScale()"
+                  [rows]="leaderboardRows()"
+                  [selectedId]="botA()"
+                  [subLabel]="'Top automaton'"
+                  (select)="selectBot($event)"
+                ></matches-leaderboard>
+                <div class="mv-h2h" #h2h [class.is-fullscreen]="isFullscreen()">
+                  <div class="mv-section-head">
+                    <h3>Heatmap</h3>
+                    <div class="mv-h2h-actions">
+                      <button type="button" class="ghost-button mv-small" (click)="toggleFullscreen(h2h)">
+                        <i class="fa-solid {{ isFullscreen() ? 'fa-compress' : 'fa-expand' }}" aria-hidden="true"></i>
+                        {{ isFullscreen() ? 'Exit full screen' : 'Full screen' }}
+                      </button>
+                    </div>
+                  </div>
+                  @if (stageSummary(); as ss) {
+                    @if (heatmapBots().length) {
+                      <matches-heatmap
+                        [bots]="heatmapBots()"
+                        [labels]="labels()"
+                        [families]="familyByBot()"
+                        [pairwise]="ss.pairwise"
+                        [cellOverride]="fullscreenCell()"
+                        [fill]="isFullscreen()"
+                        (openPair)="openPair($event)"
+                      ></matches-heatmap>
+                    } @else {
+                      <div class="mv-side-empty">Every model is filtered out. Use the filter to show some.</div>
+                    }
+                  }
+                </div>
+              }
+            }
+          }
+
+          @case ('bot') {
+            @if (stage() === 'models') {
+              <div class="mv-model-head">
+                <button type="button" class="mv-back" (click)="backToList()">
+                  <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                  <span>Back</span>
+                </button>
+                <matches-model-game-hero [game]="game()!" [model]="modelOf(botA()!)" [games]="sortedGames()"></matches-model-game-hero>
+              </div>
+            }
+            <div class="mv-model-head">
+              @if (stage() !== 'models') {
+                <button type="button" class="mv-back" (click)="backToList()">
+                  <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                  <span>Back</span>
+                </button>
+              }
+              <div class="mv-head-main">
+                @if (botARow(); as row) {
+                  <!-- tournament page of a model/automaton: its own leaderboard row, then its opponents -->
+                  <matches-leaderboard
+                    [ciScale]="ciScale()"
+                    [rows]="[row]"
+                    [selectedId]="null"
+                    [subLabel]="'Top automaton'"
+                    [selectable]="false"
+                  ></matches-leaderboard>
+                } @else if (botAInfo(); as info) {
+                  <div class="mv-bot-head">
+                    <div class="mv-bot-title">
+                      <model-logo [family]="info.family" [size]="22"></model-logo>
+                      <h3>{{ info.label }}</h3>
+                    </div>
+                    <div class="mv-bot-facts">
+                      @if (info.rating) {
+                        <span class="mv-fact">#{{ info.rating.rank }} · Elo {{ formatRating(info.rating.rating) }} (95% CI {{ formatRating(info.rating.q025) }} to {{ formatRating(info.rating.q975) }})</span>
+                      }
+                      <!-- every tournament automaton was top of its model in qualification, so the rank
+                           only says something in the Qualification view or for one that didn't qualify -->
+                      @if (info.quals && info.qualsOf > 1 && (stage() === 'quals' || !info.tourney)) {
+                        <span class="mv-fact">#{{ info.quals.rank }} of {{ info.qualsOf }} in qualification</span>
+                      }
+                      @if (info.record) {
+                        <span class="mv-fact">{{ info.record.avg_moves }} moves · {{ info.record.avg_secs }}s per game</span>
+                      }
+                    </div>
+                  </div>
+                }
+              </div>
+              <!-- the models page's hero already has one -->
+              @if (stage() !== 'models') {
+                <matches-fight-button [game]="game()!" [bot]="botA()!"></matches-fight-button>
+              }
+            </div>
+            @if (stage() === 'models') {
+              <matches-model-automata [game]="game()!" [model]="modelOf(botA()!)" (openBot)="openAutomaton($event)"></matches-model-automata>
+            } @else {
+              <matches-automaton-source class="mv-source" [game]="game()!" [bot]="botA()!" [fixed]="true"></matches-automaton-source>
+            }
+            @if (isBotADnq()) {
+              <div class="mv-dnq">
+                <p>Did not qualify for the tournament.</p>
+                <button type="button" class="ghost-button" (click)="viewQualification(botA()!)">View its qualification games</button>
+              </div>
+            } @else if (tableLoading()) {
+              <div class="mv-loading">Loading matches…</div>
+            } @else if (table()) {
+              <matches-matchup
+                [rows]="stageRows()"
+                [botA]="botA()!"
+                [labels]="labels()"
+                [families]="familyByBot()"
+                [ranks]="rankByBot()"
+                [qualified]="qualifiedBots()"
+                (pickOpponent)="selectOpponent($event)"
+              ></matches-matchup>
+            }
+          }
+
+          @case ('pair') {
+            <div class="mv-model-head">
+              <button type="button" class="mv-back" (click)="openRow() ? closeMatch() : selectOpponent(null)">
+                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                <span>Back</span>
+              </button>
+              <div class="mv-pair-head">
+                <div class="mv-pair-side">
+                  <model-logo [family]="botAInfo()?.family" [size]="16"></model-logo>
+                  <button type="button" class="mv-link" (click)="selectOpponent(null)">{{ botAInfo()?.label }}</button>
+                  @if (botAInfo()?.tourney; as t) { <span class="mv-muted">#{{ t.rank }} · {{ formatRating(t.rating) }}</span> }
+                </div>
+                <button type="button" class="ghost-button mv-small" (click)="swapPair()" title="Swap sides">⇄</button>
+                <div class="mv-pair-side">
+                  <model-logo [family]="botBInfo()?.family" [size]="16"></model-logo>
+                  <button type="button" class="mv-link" (click)="selectBot(botB())">{{ botBInfo()?.label }}</button>
+                  @if (botBInfo()?.tourney; as t) { <span class="mv-muted">#{{ t.rank }} · {{ formatRating(t.rating) }}</span> }
+                </div>
+              </div>
+            </div>
+
+            @if (openRow()) {
+              @if (detailLoading()) {
+                <div class="mv-loading">Loading move list…</div>
+              } @else if (detail(); as d) {
+                <matches-replay
+                  [gameId]="game()!.game"
+                  [worldId]="game()!.world"
+                  [gameLabel]="game()!.label"
+                  [detail]="d"
+                  [labelA]="detailLabelA()"
+                  [labelB]="detailLabelB()"
+                  [replayable]="game()!.replayable"
+                  (close)="closeMatch()"
+                ></matches-replay>
+              } @else if (loadError()) {
+                <div class="mv-error">{{ loadError() }}</div>
+              }
+            }
+
+            @if (tableLoading()) {
+              <div class="mv-loading">Loading matches…</div>
+            } @else if (table()) {
+              <matches-matchup
+                [rows]="stageRows()"
+                [botA]="botA()!"
+                [botB]="botB()"
+                [labels]="labels()"
+                [families]="familyByBot()"
+                [ranks]="rankByBot()"
+                [qualified]="qualifiedBots()"
+                [openRowIndex]="openRow()?.index ?? null"
+                (openMatch)="openMatch($event)"
+              ></matches-matchup>
+            }
+          }
+        }
+      </main>
+    </div>
+  </div>
+  <matches-tip></matches-tip>
+</section>

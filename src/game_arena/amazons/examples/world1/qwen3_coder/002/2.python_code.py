@@ -1,0 +1,136 @@
+
+import numpy as np
+from collections import deque
+
+def policy(board) -> str:
+    """
+    Implements a policy for the game of Amazons on a 6x6 board.
+    
+    Strategy:
+    - Use a minimax search with alpha-beta pruning to look ahead.
+    - Evaluate positions based on mobility (number of legal moves).
+    - Prefer moves that reduce opponent's mobility while preserving our own.
+    - If no deep search is feasible within time limit, fallback to a greedy heuristic.
+    """
+    # Define all possible directions for queen-like movement
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                 (0, -1),           (0, 1),
+                 (1, -1),  (1, 0),  (1, 1)]
+    
+    def get_legal_moves(board, player):
+        """
+        Generate all legal moves for the given player.
+        Returns list of (from_pos, to_pos, arrow_pos)
+        """
+        moves = []
+        for r in range(6):
+            for c in range(6):
+                if board[r, c] == player:
+                    # Try all directions for movement
+                    for dr, dc in directions:
+                        for step in range(1, 6):  # Max 5 steps on 6x6 board
+                            tr, tc = r + dr * step, c + dc * step
+                            if not (0 <= tr < 6 and 0 <= tc < 6):
+                                break  # Out of bounds
+                            if board[tr, tc] != 0:
+                                break  # Blocked
+                            # Now from (tr, tc), shoot arrow in all directions
+                            for adr, adc in directions:
+                                for astep in range(1, 6):
+                                    ar, ac = tr + adr * astep, tc + adc * astep
+                                    if not (0 <= ar < 6 and 0 <= ac < 6):
+                                        break
+                                    if (ar, ac) == (r, c):  # Can shoot through from position
+                                        continue
+                                    if board[ar, ac] != 0:
+                                        break
+                                    moves.append(((r, c), (tr, tc), (ar, ac)))
+        return moves
+
+    def make_move(board, move):
+        """
+        Apply move to board and return new board.
+        Move = (from_pos, to_pos, arrow_pos)
+        """
+        from_pos, to_pos, arrow_pos = move
+        new_board = np.copy(board)
+        new_board[from_pos] = 0
+        new_board[to_pos] = 1
+        new_board[arrow_pos] = -1
+        return new_board
+
+    def evaluate(board):
+        """
+        Evaluate board position from current player's perspective.
+        Higher score is better.
+        """
+        my_moves = len(get_legal_moves(board, 1))
+        opp_moves = len(get_legal_moves(board, 2))
+        # Prefer positions where we have more mobility than opponent
+        return my_moves - opp_moves * 2  # Weight opponent mobility more heavily
+
+    def minimax(board, depth, alpha, beta, maximizing):
+        """
+        Minimax with alpha-beta pruning.
+        """
+        if depth == 0:
+            return evaluate(board), None
+
+        if maximizing:
+            max_eval = float('-inf')
+            best_move = None
+            moves = get_legal_moves(board, 1)
+            if not moves:
+                return float('-inf'), None  # No legal moves = lose
+            for move in moves[:20]:  # Limit branching factor for performance
+                new_board = make_move(board, move)
+                eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = None
+            moves = get_legal_moves(board, 2)
+            if not moves:
+                return float('inf'), None  # Opponent has no moves = we win
+            for move in moves[:20]:
+                new_board = make_move(board, move)
+                eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+
+    # Get all legal moves for current player
+    legal_moves = get_legal_moves(board, 1)
+    if not legal_moves:
+        # Should not happen per problem statement, but just in case
+        raise ValueError("No legal moves available")
+
+    # Try minimax search with increasing depths until time runs out
+    import time
+    start_time = time.time()
+    chosen_move = legal_moves[0]  # Default fallback
+    try:
+        for depth in range(1, 5):  # Try depths 1 to 4
+            if time.time() - start_time > 0.8:  # Leave buffer time
+                break
+            score, move = minimax(board, depth, float('-inf'), float('inf'), True)
+            if move is not None:
+                chosen_move = move
+    except:
+        pass  # Fallback to default if error occurs
+
+    # Convert chosen move to string format
+    from_r, from_c = chosen_move[0]
+    to_r, to_c = chosen_move[1]
+    arrow_r, arrow_c = chosen_move[2]
+    return f"{from_r},{from_c}:{to_r},{to_c}:{arrow_r},{arrow_c}"

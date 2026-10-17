@@ -1,0 +1,362 @@
+
+from __future__ import annotations
+
+import time
+from typing import List, Tuple
+
+# =========================
+# Precomputed board geometry
+# =========================
+
+DIRS = [
+    (1, 0, 0),
+    (0, 1, 0),
+    (0, 0, 1),
+    (1, 1, 0),
+    (1, -1, 0),
+    (1, 0, 1),
+    (1, 0, -1),
+    (0, 1, 1),
+    (0, 1, -1),
+    (1, 1, 1),
+    (1, 1, -1),
+    (1, -1, 1),
+    (1, -1, -1),
+]
+
+
+def _idx(i: int, j: int, k: int) -> int:
+    return i * 9 + j * 3 + k
+
+
+INDEX_TO_COORD: List[Tuple[int, int, int]] = [
+    (i, j, k) for i in range(3) for j in range(3) for k in range(3)
+]
+
+LINES: List[Tuple[int, int, int]] = []
+for i in range(3):
+    for j in range(3):
+        for k in range(3):
+            for di, dj, dk in DIRS:
+                pi, pj, pk = i - di, j - dj, k - dk
+                if 0 <= pi < 3 and 0 <= pj < 3 and 0 <= pk < 3:
+                    continue
+                coords = []
+                ok = True
+                for t in range(3):
+                    x, y, z = i + di * t, j + dj * t, k + dk * t
+                    if not (0 <= x < 3 and 0 <= y < 3 and 0 <= z < 3):
+                        ok = False
+                        break
+                    coords.append(_idx(x, y, z))
+                if ok:
+                    LINES.append(tuple(coords))
+
+CELL_TO_LINES: List[List[int]] = [[] for _ in range(27)]
+for li, line in enumerate(LINES):
+    for p in line:
+        CELL_TO_LINES[p].append(li)
+
+POSITION_WEIGHT = [len(CELL_TO_LINES[p]) for p in range(27)]
+
+WIN_SCORE = 1_000_000
+INF = 10**18
+LINE_SCORE = (0, 5, 70, 0)  # score for open lines with 1 or 2 friendly marks
+
+
+# =========================
+# Utility functions
+# =========================
+
+def _flatten(board: List[List[List[int]]]) -> List[int]:
+    return [board[i][j][k] for i in range(3) for j in range(3) for k in range(3)]
+
+
+def _legal_moves(cells: List[int]) -> List[int]:
+    return [i for i, v in enumerate(cells) if v == 0]
+
+
+def _winner(cells: List[int]) -> int:
+    for a, b, c in LINES:
+        v = cells[a]
+        if v != 0 and v == cells[b] == cells[c]:
+            return v
+    return 0
+
+
+def _immediate_wins(cells: List[int], player: int) -> List[int]:
+    seen = set()
+    wins = []
+    opp = -player
+    for a, b, c in LINES:
+        va, vb, vc = cells[a], cells[b], cells[c]
+        if va == opp or vb == opp or vc == opp:
+            continue
+        cnt = (va == player) + (vb == player) + (vc == player)
+        if cnt == 2:
+            if va == 0 and a not in seen:
+                seen.add(a)
+                wins.append(a)
+            elif vb == 0 and b not in seen:
+                seen.add(b)
+                wins.append(b)
+            elif vc == 0 and c not in seen:
+                seen.add(c)
+                wins.append(c)
+    return wins
+
+
+def _fork_moves(cells: List[int], player: int, legal: List[int]) -> List[int]:
+    forks = []
+    for m in legal:
+        cells[m] = player
+        if len(_immediate_wins(cells, player)) >= 2:
+            forks.append(m)
+        cells[m] = 0
+    return forks
+
+
+def _move_heuristic(cells: List[int], move: int, player: int) -> int:
+    score = POSITION_WEIGHT[move] * 8
+    opp = -player
+
+    for li in CELL_TO_LINES[move]:
+        a, b, c = LINES[li]
+        own = 0
+        enemy = 0
+        for p in (a, b, c):
+            if p == move:
+                continue
+            v = cells[p]
+            if v == player:
+                own += 1
+            elif v == opp:
+                enemy += 1
+
+        if enemy == 0:
+            if own == 2:
+                score += 100000
+            elif own == 1:
+                score += 700
+            else:
+                score += 50
+
+        if own == 0:
+            if enemy == 2:
+                score += 50000
+            elif enemy == 1:
+                score += 180
+
+    return score
+
+
+def _best_by_heuristic(cells: List[int], moves: List[int], player: int) -> int:
+    best = moves[0]
+    best_score = _move_heuristic(cells, best, player)
+    for m in moves[1:]:
+        s = _move_heuristic(cells, m, player)
+        if s > best_score:
+            best_score = s
+            best = m
+    return best
+
+
+def _ordered_moves(cells: List[int], legal: List[int], player: int, first_move: int | None = None) -> List[int]:
+    ordered = sorted(legal, key=lambda m: _move_heuristic(cells, m, player), reverse=True)
+    if first_move is not None and first_move in ordered:
+        ordered.remove(first_move)
+        ordered.insert(0, first_move)
+    return ordered
+
+
+def _evaluate(cells: List[int]) -> int:
+    score = 0
+
+    for a, b, c in LINES:
+        va, vb, vc = cells[a], cells[b], cells[c]
+        me = (va == 1) + (vb == 1) + (vc == 1)
+        opp = (va == -1) + (vb == -1) + (vc == -1)
+        if me and opp:
+            continue
+        if me:
+            score += LINE_SCORE[me]
+        elif opp:
+            score -= LINE_SCORE[opp]
+
+    for p, v in enumerate(cells):
+        if v != 0:
+            score += v * POSITION_WEIGHT[p] * 2
+
+    return score
+
+
+# =========================
+# Search
+# =========================
+
+def _negamax(
+    cells: List[int],
+    depth: int,
+    alpha: int,
+    beta: int,
+    player: int,
+    start: float,
+    time_limit: float,
+    tt: dict,
+) -> int:
+    if time.perf_counter() - start > time_limit:
+        raise TimeoutError
+
+    w = _winner(cells)
+    if w != 0:
+        return (WIN_SCORE + depth) if w == player else -(WIN_SCORE + depth)
+
+    legal = _legal_moves(cells)
+    if not legal:
+        return 0
+
+    if depth == 0:
+        return _evaluate(cells) * player
+
+    key = (tuple(cells), player, depth)
+    if key in tt:
+        return tt[key]
+
+    # Tactical shortcut: if current player can win immediately, that's best.
+    wins = _immediate_wins(cells, player)
+    if wins:
+        val = WIN_SCORE + depth - 1
+        tt[key] = val
+        return val
+
+    moves = _ordered_moves(cells, legal, player)
+
+    best = -INF
+    for m in moves:
+        cells[m] = player
+        score = -_negamax(cells, depth - 1, -beta, -alpha, -player, start, time_limit, tt)
+        cells[m] = 0
+
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    tt[key] = best
+    return best
+
+
+def _root_search(
+    cells: List[int],
+    legal: List[int],
+    depth: int,
+    start: float,
+    time_limit: float,
+    tt: dict,
+    first_move: int | None = None,
+) -> Tuple[int, int]:
+    moves = _ordered_moves(cells, legal, 1, first_move=first_move)
+    best_move = moves[0]
+    best_score = -INF
+    alpha = -INF
+    beta = INF
+
+    for m in moves:
+        if time.perf_counter() - start > time_limit:
+            raise TimeoutError
+
+        cells[m] = 1
+        score = -_negamax(cells, depth - 1, -beta, -alpha, -1, start, time_limit, tt)
+        cells[m] = 0
+
+        if score > best_score:
+            best_score = score
+            best_move = m
+        if best_score > alpha:
+            alpha = best_score
+
+    return best_move, best_score
+
+
+# =========================
+# Public policy
+# =========================
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    cells = _flatten(board)
+    legal = _legal_moves(cells)
+
+    # Fallback safety: should not happen in normal play.
+    if not legal:
+        return (0, 0, 0)
+
+    # If game is already over, still return a legal move.
+    if _winner(cells) != 0:
+        return INDEX_TO_COORD[legal[0]]
+
+    # 1) Immediate win
+    my_wins = _immediate_wins(cells, 1)
+    if my_wins:
+        return INDEX_TO_COORD[_best_by_heuristic(cells, my_wins, 1)]
+
+    # 2) Immediate block
+    opp_wins = _immediate_wins(cells, -1)
+    if opp_wins:
+        return INDEX_TO_COORD[_best_by_heuristic(cells, opp_wins, 1)]
+
+    # 3) Create a fork
+    my_forks = _fork_moves(cells, 1, legal)
+    if my_forks:
+        return INDEX_TO_COORD[_best_by_heuristic(cells, my_forks, 1)]
+
+    # 4) Block opponent fork if possible
+    opp_forks = _fork_moves(cells, -1, legal)
+    if opp_forks:
+        safe_moves = []
+        for m in legal:
+            cells[m] = 1
+            new_legal = [x for x in legal if x != m]
+            if not _immediate_wins(cells, -1) and not _fork_moves(cells, -1, new_legal):
+                safe_moves.append(m)
+            cells[m] = 0
+        if safe_moves:
+            return INDEX_TO_COORD[_best_by_heuristic(cells, safe_moves, 1)]
+
+    # 5) Opening preference: center is extremely strong
+    center = _idx(1, 1, 1)
+    if center in legal and len(legal) >= 20:
+        return INDEX_TO_COORD[center]
+
+    # 6) Iterative deepening alpha-beta
+    empties = len(legal)
+    if empties >= 20:
+        max_depth = 3
+    elif empties >= 16:
+        max_depth = 4
+    elif empties >= 12:
+        max_depth = 5
+    elif empties >= 9:
+        max_depth = 7
+    else:
+        max_depth = empties  # exact or near-exact endgame search
+
+    start = time.perf_counter()
+    time_limit = 0.95
+
+    tt = {}
+    best_move = _best_by_heuristic(cells, legal, 1)
+
+    for depth in range(1, max_depth + 1):
+        try:
+            move, _ = _root_search(cells, legal, depth, start, time_limit, tt, first_move=best_move)
+            best_move = move
+        except TimeoutError:
+            break
+
+    # Final safety check
+    if cells[best_move] != 0:
+        best_move = legal[0]
+
+    return INDEX_TO_COORD[best_move]

@@ -1,0 +1,280 @@
+
+import numpy as np
+import itertools
+from collections import defaultdict
+import random
+import time
+
+def policy(you, opponent):
+    """Return the next move as 'row,col,quad,dir'"""
+    
+    # Convert to numpy arrays for easier manipulation
+    you_arr = np.array(you, dtype=int)
+    opp_arr = np.array(opponent, dtype=int)
+    board = you_arr + opp_arr * 2  # 0=empty, 1=you, 2=opponent
+    
+    # Get all legal moves
+    legal_moves = get_all_legal_moves(you_arr, opp_arr)
+    
+    # Check for immediate winning move
+    winning_move = find_winning_move(you_arr, opp_arr, legal_moves)
+    if winning_move:
+        return format_move(*winning_move)
+    
+    # Check for opponent immediate threats to block
+    blocking_move = find_blocking_move(you_arr, opp_arr, legal_moves)
+    if blocking_move:
+        return format_move(*blocking_move)
+    
+    # Use heuristic to select best move
+    best_move = select_best_move_heuristic(you_arr, opp_arr, legal_moves)
+    return format_move(*best_move)
+
+
+def get_all_legal_moves(you_arr, opp_arr):
+    """Return list of all legal moves as (row, col, quad, dir) tuples"""
+    moves = []
+    empty_cells = np.where(you_arr + opp_arr == 0)
+    empty_positions = list(zip(empty_cells[0], empty_cells[1]))
+    
+    for r, c in empty_positions:
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                moves.append((r, c, quad, direction))
+    return moves
+
+
+def find_winning_move(you_arr, opp_arr, legal_moves):
+    """Check if any move creates a 5-in-a-row for us"""
+    for r, c, quad, dir in legal_moves:
+        # Simulate the move
+        new_you, new_opp = simulate_move(you_arr, opp_arr, r, c, quad, dir)
+        if check_win(new_you):
+            return (r, c, quad, dir)
+    return None
+
+
+def find_blocking_move(you_arr, opp_arr, legal_moves):
+    """Check if opponent has immediate threats we need to block"""
+    # Look at opponent's potential winning moves on their next turn
+    opp_empty_cells = np.where(you_arr + opp_arr == 0)
+    opp_positions = list(zip(opp_empty_cells[0], opp_empty_cells[1]))
+    
+    # Check if opponent could win on their next move
+    for r, c in opp_positions:
+        temp_opp = opp_arr.copy()
+        temp_opp[r, c] = 1
+        
+        # Check all rotations
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                # Simulate opponent's rotation
+                rot_opp = rotate_quadrant(temp_opp, quad, dir)
+                if check_win(rot_opp):
+                    # We need to block this position or disrupt the rotation
+                    # Try to find a move that blocks this threat
+                    for move in legal_moves:
+                        mr, mc, mq, md = move
+                        new_you, new_opp = simulate_move(you_arr, opp_arr, mr, mc, mq, md)
+                        # Check if opponent's winning position is now blocked
+                        if not check_win_possible(new_opp):
+                            return move
+    return None
+
+
+def select_best_move_heuristic(you_arr, opp_arr, legal_moves):
+    """Select move with highest heuristic score"""
+    best_score = -float('inf')
+    best_moves = []
+    
+    for move in legal_moves:
+        r, c, quad, dir = move
+        score = evaluate_move(you_arr, opp_arr, r, c, quad, dir)
+        
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif abs(score - best_score) < 0.0001:
+            best_moves.append(move)
+    
+    # Random choice among equally good moves
+    return random.choice(best_moves)
+
+
+def evaluate_move(you_arr, opp_arr, r, c, quad, dir):
+    """Heuristic evaluation of a move"""
+    score = 0
+    
+    # Simulate the move
+    new_you, new_opp = simulate_move(you_arr, opp_arr, r, c, quad, dir)
+    
+    # 1. Center control bonus
+    if (2 <= r <= 3 and 2 <= c <= 3) or (2 <= r <= 3 and 3 <= c <= 4) or \
+       (3 <= r <= 4 and 2 <= c <= 3) or (3 <= r <= 4 and 3 <= c <= 4):
+        score += 0.5
+    
+    # 2. Our line potential
+    our_lines = count_potential_lines(new_you, new_opp, length=4)
+    score += our_lines * 2.0
+    
+    # 3. Block opponent lines
+    opp_lines = count_potential_lines(new_opp, new_you, length=4)
+    score -= opp_lines * 2.5  # Prioritize blocking
+    
+    # 4. Create future opportunities
+    our_future = count_potential_lines(new_you, new_opp, length=3)
+    score += our_future * 0.8
+    
+    # 5. Disrupt opponent formations
+    opp_future = count_potential_lines(new_opp, new_you, length=3)
+    score -= opp_future * 1.0
+    
+    # 6. Quadrant control - prefer rotations that move our pieces to good positions
+    quad_r_start, quad_c_start = get_quadrant_coords(quad)
+    you_in_quad = np.sum(you_arr[quad_r_start:quad_r_start+3, quad_c_start:quad_c_start+3])
+    opp_in_quad = np.sum(opp_arr[quad_r_start:quad_c_start+3, quad_c_start:quad_c_start+3])
+    
+    if you_in_quad > opp_in_quad:
+        score += 0.3  # We control this quadrant
+    
+    return score
+
+
+def count_potential_lines(player_board, opponent_board, length):
+    """Count potential lines of given length for player"""
+    count = 0
+    board = player_board + opponent_board
+    
+    # Check all possible lines
+    for i in range(6):
+        for j in range(6):
+            # Check if starting point is empty or ours
+            if opponent_board[i, j] == 1:
+                continue
+            
+            # Horizontal
+            if j + length <= 6:
+                segment = board[i, j:j+length]
+                opp_in_segment = np.sum(opponent_board[i, j:j+length])
+                if opp_in_segment == 0:
+                    count += 1
+            
+            # Vertical
+            if i + length <= 6:
+                segment = board[i:i+length, j]
+                opp_in_segment = np.sum(opponent_board[i:i+length, j])
+                if opp_in_segment == 0:
+                    count += 1
+            
+            # Diagonal down-right
+            if i + length <= 6 and j + length <= 6:
+                segment = [board[i+k, j+k] for k in range(length)]
+                opp_in_segment = sum(opponent_board[i+k, j+k] for k in range(length))
+                if opp_in_segment == 0:
+                    count += 1
+            
+            # Diagonal down-left
+            if i + length <= 6 and j - length + 1 >= 0:
+                segment = [board[i+k, j-k] for k in range(length)]
+                opp_in_segment = sum(opponent_board[i+k, j-k] for k in range(length))
+                if opp_in_segment == 0:
+                    count += 1
+    
+    return count
+
+
+def simulate_move(you_arr, opp_arr, r, c, quad, dir):
+    """Simulate a move and return new board states"""
+    new_you = you_arr.copy()
+    new_opp = opp_arr.copy()
+    
+    # Place marble (adjust for 0-indexing)
+    new_you[r, c] = 1
+    
+    # Apply rotation
+    new_you = rotate_quadrant(new_you, quad, dir)
+    new_opp = rotate_quadrant(new_opp, quad, dir)
+    
+    return new_you, new_opp
+
+
+def rotate_quadrant(board, quad, direction):
+    """Rotate a quadrant in-place"""
+    board = board.copy()
+    r_start, c_start = get_quadrant_coords(quad)
+    
+    # Extract quadrant
+    quadrant = board[r_start:r_start+3, c_start:c_start+3]
+    
+    # Rotate
+    if direction == 'R':  # Clockwise
+        rotated = np.rot90(quadrant, -1)
+    else:  # 'L' - Counter-clockwise
+        rotated = np.rot90(quadrant, 1)
+    
+    # Put back
+    board[r_start:r_start+3, c_start:c_start+3] = rotated
+    
+    return board
+
+
+def get_quadrant_coords(quad):
+    """Return starting row and column for a quadrant"""
+    if quad == 0:  # top-left
+        return 0, 0
+    elif quad == 1:  # top-right
+        return 0, 3
+    elif quad == 2:  # bottom-left
+        return 3, 0
+    else:  # bottom-right
+        return 3, 3
+
+
+def check_win(board):
+    """Check if board has 5-in-a-row"""
+    # Convert to binary
+    board_bin = (board == 1)
+    
+    # Check horizontal
+    for i in range(6):
+        for j in range(2):  # Starting columns for 5-in-a-row
+            if np.all(board_bin[i, j:j+5]):
+                return True
+    
+    # Check vertical
+    for i in range(2):
+        for j in range(6):
+            if np.all(board_bin[i:i+5, j]):
+                return True
+    
+    # Check diagonals
+    for i in range(2):
+        for j in range(2):
+            # Down-right diagonal
+            if all(board_bin[i+k, j+k] for k in range(5)):
+                return True
+    
+    for i in range(2):
+        for j in range(4, 6):
+            # Down-left diagonal
+            if all(board_bin[i+k, j-k] for k in range(5)):
+                return True
+    
+    return False
+
+
+def check_win_possible(board):
+    """Check if win is possible from current board state"""
+    return check_win(board)
+
+
+def format_move(r, c, quad, dir):
+    """Convert to 1-indexed string format"""
+    return f"{r+1},{c+1},{quad},{dir}"
+
+
+if __name__ == "__main__":
+    # Test the policy with empty board
+    you_test = [[0]*6 for _ in range(6)]
+    opp_test = [[0]*6 for _ in range(6)]
+    print(policy(you_test, opp_test))

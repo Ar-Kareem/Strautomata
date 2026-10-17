@@ -1,0 +1,898 @@
+<html>
+
+<!--=======================================================================-->
+
+<head>
+  <title>Human</title>
+  <script type='text/javascript' src='../assets/epilog.js'></script>
+  <script type='text/javascript'>
+//==============================================================================
+// Game parameters
+//==============================================================================
+
+var manager = 'manager';
+var player = 'human';
+
+function doplayer ()
+ {player = read(prompt("What is your player's identifier?"));
+  document.getElementById('player').innerHTML = player;
+  return true}
+
+//==============================================================================
+// human.js
+//==============================================================================
+
+indexing = false;
+dataindexing = false;
+ruleindexing = true;
+
+var game = 'buttonsandlights';
+var role = 'robot';
+var startclock = 10;
+var playclock = 10;
+
+var library = [];
+var roles = [];
+var state = [];
+var statelog = [];
+var movelog = [];
+var messageid = "0";
+
+function initialize ()
+ {//document.addEventListener('keydown',handlekey);
+  window.addEventListener("storage",handlestorage,false); console.log('listening');
+  definerules(library,readdata(document.getElementById('library').textContent));
+  roles = findroles(library);
+  state = findinits(library);
+  statelog = [state];
+  movelog = [];
+  movenum = 0;
+  showstate(state);
+  showactions(state);
+  showhistory(movelog,state);
+  return true}
+
+//==============================================================================
+
+function showstate (state)
+ {var stateholder = document.getElementById('stateholder');
+  var n = stateholder.childNodes.length;
+  for (var i=0; i<n; i++) {stateholder.removeChild(stateholder.childNodes[0])};
+  stateholder.appendChild(rendersituation(state));
+  return true}
+
+function rendersituation (state)
+ {return renderstate(state)}
+
+function renderstate (state)	
+ {var widget = document.createElement('textarea');
+  widget.setAttribute('rows','12');
+  widget.setAttribute('cols','40');
+  widget.setAttribute('style','font-family:courier');
+  widget.setAttribute('disabled',true);
+  widget.value = grindem(state);
+  return widget}
+
+//==============================================================================
+
+function showactions (state)
+ {var actionholder = document.getElementById('actionholder');
+  var n = actionholder.childNodes.length;
+  for (var i=0; i<n; i++) {actionholder.removeChild(actionholder.childNodes[0])};
+  actionholder.appendChild(renderactions(state));
+  return true}
+
+function renderactions (state)
+ {var widget = document.createElement('select');
+  var option = document.createElement('option');
+  option.value = 'error';
+  option.text = '';
+  widget.add(option);
+  var actions = findlegals(state,library).sort();
+  for (var i=0; i<actions.length; i++)
+      {var option = document.createElement('option');
+       var value = grind(actions[i]);
+       option.value = value;
+       option.text = value;
+       widget.add(option)}
+  if (findterminalp(state,library)) {widget.disabled = true}
+     else {widget.disabled = false};
+  widget.setAttribute('onchange','perform(read(this.value))');
+  return widget}
+
+//==============================================================================
+
+function showhistory (moves,state)
+ {var widget = document.getElementById('history');
+  var n = widget.childNodes.length;
+  for (var i=0; i<n; i++) {widget.removeChild(widget.childNodes[0])};
+  widget.appendChild(renderhistory(moves,state));
+  return true}
+
+function renderhistory (moves,state)
+ {var widget = document.createElement('table');
+  widget.setAttribute('cellspacing',0);
+  widget.setAttribute('cellpadding',3);
+  widget.setAttribute('border',1);
+  var row = widget.insertRow(0);
+  var cell = row.insertCell(0);
+  cell.innerHTML = 'Step';
+  cell.setAttribute('width','120');
+  cell.setAttribute('align','center');
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#dddddd');
+  for (var j=0; j<roles.length; j++)
+      {cell = row.insertCell(j+1);
+       cell.innerHTML = roles[j];
+       cell.setAttribute('width','120');
+       cell.setAttribute('align','center');
+       cell.setAttribute('style','font-weight:bold');
+       cell.setAttribute('bgcolor','#dddddd')};
+
+  for (var i=0; i<movenum; i++)
+      {row = widget.insertRow(i+1);
+       cell = row.insertCell(0);
+       cell.setAttribute('align','center');
+       cell.setAttribute('bgcolor','#dddddd');
+       cell.innerHTML = i+1;
+       for (var j=0; j<roles.length; j++)
+           {cell = row.insertCell(j+1);
+            cell.setAttribute('width','120');
+            cell.setAttribute('align','center');
+            if (findcontrol(statelog[i],library)===roles[j])
+               {cell.innerHTML = grind(moves[i])}}};
+
+  row = widget.insertRow(widget.rows.length);
+  cell = row.insertCell(0);
+  cell.innerHTML = 'Score';
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#dddddd');
+  cell.setAttribute('align','center');
+  for (var i=0; i<roles.length; i++)
+      {cell = row.insertCell(i+1);
+       cell.setAttribute('align','center');
+       cell.setAttribute('bgcolor','#dddddd');
+       cell.innerHTML = findreward(roles[i],state,library)};
+  return widget}
+
+//==============================================================================
+
+function perform (action)
+ {if (action==='error') {return false};
+  //action performed only if in control; could let manager handle for now
+  var response = grind(seq('message',messageid,player,manager,action));
+  console.log(response);
+  send(response);
+  //endclock(timekeeper);
+  return true}
+
+function copy (obj)
+ {return obj.slice(0)}
+
+//==============================================================================
+
+function handlestorage (ev)
+ {//console.log(ev);
+  console.log(ev.newValue);
+  if (ev.key!==player) {return false};
+  //var transcript = document.getElementById('transcript');
+  //transcript.value = transcript.value + ev.newValue + "\n";
+  var envelope = read(ev.newValue);
+  messageid = envelope[1]
+  var sender = envelope[2]
+  var receiver = envelope[3]
+  var message = envelope[4]
+  if (sender!==manager) {return false};
+  if (receiver!==player) {return false};
+  console.log("Manager: " + grind(message));
+  var answer = ggpeval(message);
+  if (!answer) {console.log("Player: no response"); return false};
+  var response = grind(seq('message',messageid,player,manager,answer));
+  send(response);
+  return true}
+
+function send (str)
+ {//var transcript = document.getElementById('transcript');
+  //transcript.value = transcript.value + str + "\n";
+  localStorage.manager = str;
+  return true}
+
+//==============================================================================
+
+function ggpeval (msg)
+ {if (symbolp(msg)) {return false};
+  if (msg[0]==='ping') {return ping()};
+  if (msg[0]==='start') {return start(msg[1],msg[2],msg[3],msg[4])};
+  if (msg[0]==='play') {return play(msg[1])};
+  if (msg[0]==='stop') {return stop(msg[1])};
+  if (msg[0]==='abort') {return abort()};
+  return false}
+
+//==============================================================================
+
+function ping ()
+ {return 'ready'}
+
+function start (r,rs,sc,pc)
+ {role = r;
+  //library = definemorerules([],rs.slice(1));
+  //roles = findroles(library);
+  //state = findinits(library);
+  startclock = numberize(sc);
+  playclock = numberize(pc);
+  //timekeeper = beginclock(startclock);
+  return 'ready'}
+
+function play (move)
+ {if (findcontrol(state,library)!==role) {return false};
+  if (move===nil) {return false};
+  statelog = statelog.slice(0,movenum+1);
+  movelog = movelog.slice(0,movenum);
+  movelog.push(move);
+  state = simulate(move,state,library)
+  statelog.push(state);
+  movenum++;
+  showstate(state);
+  showactions(state);
+  showhistory(movelog,state);
+  //endclock(timekeeper);
+  //timekeeper = beginclock(playclock);  return false}
+
+function stop (move)
+ {if (move!=='nil') {state = simulate(move,state,library)};
+  movelog = movelog.slice(0,movenum);
+  movelog.push(move);
+  movenum++;
+  showstate(state);
+  showactions(state);
+  showhistory(movelog,state);
+  //endclock(timekeeper);
+  return false}
+
+function abort ()
+ {//endclock(timekeeper);
+  return false}
+
+//------------------------------------------------------------------------------
+
+function simulate (move,state,rules)
+ {var deltas = compexpand(move,state,rules);
+  var additions = [];
+  var deletions = [];
+  for (var i=0; i<deltas.length; i++)
+      {if (symbolp(deltas[i])) {additions.push(deltas[i]); continue};
+       if (deltas[i][0]==='not') {deletions.push(deltas[i][1]); continue};
+       additions.push(deltas[i])};
+  var newstate = [];
+  for (i = 0; i<state.length; i++)
+      {if (find(state[i],additions)) {continue};
+       if (find(state[i],deletions)) {continue};
+       newstate.push(state[i])};
+  return newstate.concat(additions)}
+
+//==============================================================================
+// Timer//==============================================================================
+
+function beginclock (n)
+ {if (n===Infinity) {return false};
+  document.getElementById('timer').value = n;
+  return setInterval(updateclock,1000)}
+
+function updateclock ()
+ {var timer = document.getElementById('timer');
+  var time = timer.value - 1;
+  timer.value = time;
+  if (time<=0) {endclock()};
+  return true}
+
+function endclock ()
+ {clearclock();
+  return true}
+
+function clearclock ()
+ {document.getElementById('timer').value = '';
+  //clearInterval(timekeeper);
+  return true}
+
+//==============================================================================
+// Basics
+//==============================================================================
+
+function findroles (rules)
+ {return compfinds('R',seq('role','R'),seq(),rules)}
+
+function findbases (rules)
+ {return compfinds('P',seq('base','P'),seq(),rules)}
+
+function findactions (rules)
+ {return compfinds('A',seq('action','A'),seq(),rules)}
+
+function findinits (rules)
+ {return compfinds('P',seq('init','P'),seq(),rules)}
+
+function findcontrol (facts,rules)
+ {return compfindx('X',seq('control','X'),facts,rules)}
+
+function findlegalp (move,facts,rules)
+ {return compfindp(seq('legal',move),facts,rules)}
+
+function findlegalx (facts,rules)
+ {return compfindx('X',seq('legal','X'),facts,rules)}
+
+function findlegals (facts,rules)
+ {return compfinds('X',seq('legal','X'),facts,rules)}
+
+function findreward (role,facts,rules)
+ {var value = compfindx('R',seq('goal',role,'R'),facts,rules);
+  if (value) {return value};
+  return 0}
+
+function findterminalp (facts,rules)
+ {return compfindp('terminal',facts,rules)}
+
+//==============================================================================
+// End of Script
+//==============================================================================
+  </script>
+  <script type='text/javascript'>
+//==============================================================================
+// ttcc4
+//==============================================================================
+
+function renderstate (state)
+ {var step = compfindx('N',seq('step','N'),state,library);
+  var role = compfindx('R',seq('control','R'),state,library);
+  var table = document.createElement('table');
+  table.setAttribute('border','0');
+  var row = table.insertRow(0);
+  var cell = row.insertCell(0);
+  cell.setAttribute('align','center');
+  cell.setAttribute('style','font-size:20px');
+  cell.innerHTML = 'Step:  ' + step;
+  row = table.insertRow(1);
+  var cell = row.insertCell(0);
+  var board = renderboard(state);
+  cell.appendChild(board);
+  row = table.insertRow(2);
+  var cell = row.insertCell(0);
+  cell.setAttribute('align','center');
+  cell.setAttribute('style','font-size:20px');
+  cell.innerHTML = 'Control:  ' + role;
+  return table}
+
+function renderboard (state)
+ {var table = document.createElement('table');
+  table.setAttribute('cellspacing','0');
+  table.setAttribute('cellpadding','0');
+  table.setAttribute('border','0');
+  var row = table.insertRow(0);
+  makenone(row,0,0,state);
+  makenone(row,0,1,state);
+  makecell(row,0,2,state);
+  makecell(row,0,3,state);
+  makecell(row,0,4,state);
+  makenone(row,0,5,state);
+  makenone(row,0,6,state);
+  row = table.insertRow(1);
+  makenone(row,1,0,state);
+  makecell(row,1,1,state);
+  makecell(row,1,2,state);
+  makecell(row,1,3,state);
+  makecell(row,1,4,state);
+  makecell(row,1,5,state);
+  makenone(row,1,6,state);
+  row = table.insertRow(2);
+  makecell(row,2,0,state);
+  makecell(row,2,1,state);
+  makegrey(row,2,2,state);
+  makegrey(row,2,3,state);
+  makegrey(row,2,4,state);
+  makecell(row,2,5,state);
+  makecell(row,2,6,state);
+  row = table.insertRow(3);
+  makecell(row,3,0,state);
+  makecell(row,3,1,state);
+  makegrey(row,3,2,state);
+  makegrey(row,3,3,state);
+  makegrey(row,3,4,state);
+  makecell(row,3,5,state);
+  makecell(row,3,6,state);
+  row = table.insertRow(4);
+  makecell(row,4,0,state);
+  makecell(row,4,1,state);
+  makegrey(row,4,2,state);
+  makegrey(row,4,3,state);
+  makegrey(row,4,4,state);
+  makecell(row,4,5,state);
+  makecell(row,4,6,state);
+  row = table.insertRow(5);
+  makenone(row,5,0,state);
+  makecell(row,5,1,state);
+  makecell(row,5,2,state);
+  makecell(row,5,3,state);
+  makecell(row,5,4,state);
+  makecell(row,5,5,state);
+  makenone(row,5,6,state);
+  row = table.insertRow(6);
+  makenone(row,6,0,state);
+  makenone(row,6,1,state);
+  makecell(row,6,2,state);
+  makecell(row,6,3,state);
+  makecell(row,6,4,state);
+  makenone(row,6,5,state);
+  makenone(row,6,6,state);
+  return table}
+
+function makenone (row,rownum,colnum)
+ {var cell = row.insertCell(colnum);
+  cell.setAttribute('width','40');
+  cell.setAttribute('height','40');
+  cell.innerHTML = '&nbsp;';
+  return cell}
+
+function makegrey (row,rownum,colnum,state)
+ {var cell = row.insertCell(colnum);
+  cell.setAttribute('width','40');
+  cell.setAttribute('height','40');
+  cell.setAttribute('align','center');
+  cell.setAttribute('valign','center');
+  cell.setAttribute('style','border: 2px solid #000;background-color:#dddddd');
+  rownum = (rownum+1).toString();
+  colnum = (colnum+1).toString();
+  var mark = compfindx('Z',seq('cell',rownum,colnum,'Z'),state,seq());
+  if (mark=='whitepawn') {cell.innerHTML = '<img src="../library/ttcc4/whitepawn.png" height="30" width="30"/>'};
+  if (mark=='whitechecker') {cell.innerHTML = '<img src="../library/ttcc4/whitechecker.png" height="30" width="30"/>'};
+  if (mark=='whiteknight') {cell.innerHTML = '<img src="../library/ttcc4/whiteknight.png" height="30" width="30"/>'};
+  if (mark=='whitedisk') {cell.innerHTML = '<img src="../library/ttcc4/whitedisk.png" height="30" width="30"/>'};
+  if (mark=='blackpawn') {cell.innerHTML = '<img src="../library/ttcc4/blackpawn.png" height="30" width="30"/>'};
+  if (mark=='blackchecker') {cell.innerHTML = '<img src="../library/ttcc4/blackchecker.png" height="30" width="30"/>'};
+  if (mark=='blackknight') {cell.innerHTML = '<img src="../library/ttcc4/blackknight.png" height="30" width="30"/>'};
+  if (mark=='blackdisk') {cell.innerHTML = '<img src="../library/ttcc4/blackdisk.png" height="30" width="30"/>'};
+  if (mark==false) {cell.innerHTML = '&nbsp;'};
+  return cell}
+
+function makecell (row,rownum,colnum,state)
+ {var cell = row.insertCell(colnum);
+  cell.setAttribute('width','40');
+  cell.setAttribute('height','40');
+  cell.setAttribute('align','center');
+  cell.setAttribute('valign','center');
+  cell.setAttribute('style','border: 2px solid #000');
+  rownum = (rownum+1).toString();
+  colnum = (colnum+1).toString();
+  var mark = compfindx('Z',seq('cell',rownum,colnum,'Z'),state,seq());
+  if (mark=='whitepawn') {cell.innerHTML = '<img src="../library/ttcc4/whitepawn.png" height="30" width="30"/>'};
+  if (mark=='whitechecker') {cell.innerHTML = '<img src="../library/ttcc4/whitechecker.png" height="30" width="30"/>'};
+  if (mark=='whiteknight') {cell.innerHTML = '<img src="../library/ttcc4/whiteknight.png" height="30" width="30"/>'};
+  if (mark=='whitedisk') {cell.innerHTML = '<img src="../library/ttcc4/whitedisk.png" height="30" width="30"/>'};
+  if (mark=='blackpawn') {cell.innerHTML = '<img src="../library/ttcc4/blackpawn.png" height="30" width="30"/>'};
+  if (mark=='blackchecker') {cell.innerHTML = '<img src="../library/ttcc4/blackchecker.png" height="30" width="30"/>'};
+  if (mark=='blackknight') {cell.innerHTML = '<img src="../library/ttcc4/blackknight.png" height="30" width="30"/>'};
+  if (mark=='blackdisk') {cell.innerHTML = '<img src="../library/ttcc4/blackdisk.png" height="30" width="30"/>'};
+  if (mark==false) {cell.innerHTML = '&nbsp;'};
+  return cell}
+
+//==============================================================================
+//==============================================================================
+//==============================================================================
+  </script>
+  <style>
+  </style>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#aabbbb' onload='initialize()'>  <center>    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr>
+        <td>
+
+<!--=======================================================================-->
+
+<center>
+  <table width='640' cellpadding='0'>
+    <tr>
+      <td width='180' align='center' valign='center'>
+        <a href='../index.html'><img width='130' src='../assets/ggp.jpg'/></a>
+      </td>
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Gamemaster</span><br/>
+      </td>
+      <td width='180' align='center' style='color:#000066;font-size:18px'>
+        <i>General<br/>Game<br/>Playing</i>
+      </td>
+    </tr>
+  </table>
+</center>
+<!--=======================================================================-->
+
+<br/>
+<table width='640' cellpadding='8' cellspacing='0' bgcolor='#f4f8f8' border='1'>  <tr height='40'>
+    <td align='center'>
+<table style='color:#000066;font-size:18px'>
+  <tr>
+    <td>
+Protocol: localstorage<br/>
+Strategy: human<br/>
+Identifier: <span id='player'>human</span> <img src="../assets/pencil.gif" height='12' style="cursor:pointer" onclick='doplayer()'/>
+    </td>
+    <td width='20'>&nbsp;</td>
+    <td>
+Game: ttcc4 <img src="../assets/pencil.gif" onclick='dogame()'/><br/>
+Startclock: <br/>
+Playclock:     </td>
+  </tr>
+</table>
+    </td>
+  </tr></table>
+<br/>
+
+<!--=======================================================================-->
+
+<center>
+  <br/>
+  <div id='stateholder'></div>
+  <br/>
+  <br/>
+  <div id='actionholder'></div>
+  <br/>
+  <br/>
+  <div id='history'></div>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+
+<!--=======================================================================-->
+
+<textarea id='library' type='text/hrf' style='display:none'>
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% ttcc4
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% metadata
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+role(white)
+role(black)
+
+base(cell(X,Y,Piece)) :- start(Piece,X,Y)
+base(cell(X,Y,Piece)) :- onboard(X,Y) & piece(Piece,pawn,Color)
+base(cell(X,Y,Piece)) :- onboard(X,Y) & piece(Piece,knight,Color)
+base(cell(X,Y,Piece)) :- onboard(X,Y) & oddsquare(X,Y) & piece(Piece,checker,Color)
+base(cell(X,Y,Piece)) :- index(X) & chute(Y) & piece(Piece,disk,Color)
+base(step(1))
+base(step(N)) :- succ(M,N)
+base(control(Player)) :- role(Player)
+
+action(drop(Y)) :- role(Player) & chute(Y)
+
+action(pawnmove(X1,Y1,X2,Y2)) :-
+  piece(Piece,pawn,Player) &
+  active(Piece,X1,Y1) &
+  orthogonal(X1,Y1,X2,Y2) &
+  onboard(X2,Y2)
+
+action(pawnmove(X1,Y1,X2,Y2)) :-
+  piece(Piece,pawn,Player) &
+  active(Piece,X1,Y1) &
+  diagonal(X1,Y1,X2,Y2) &
+  onboard(X2,Y2)
+
+action(knightmove(X1,Y1,X2,Y2)) :-
+  piece(Piece,knight,Player) &
+  active(Piece,X1,Y1) &
+  ell(X1,Y1,X2,Y2) &
+  onboard(X2,Y2)
+
+action(checkermove(X1,Y1,X2,Y2)) :-
+  piece(Piece,checker,Player) &
+  active(Piece,X1,Y1) &
+  diagonal(X1,Y1,X2,Y2) &
+  onboard(X2,Y2) &
+  oddsquare(X2,Y2)
+
+action(jump(X1,Y1,X2,Y2,X3,Y3)) :-
+  piece(Piece,checker,Player) &
+  active(Piece,X1,Y1) &
+  jumpable(X1,Y1,X2,Y2,X3,Y3) &
+  onboard(X3,Y3) &
+  oddsquare(X2,Y2)
+
+action(noop) :- role(Player)
+
+action(kerchunk)
+
+active(Piece,X,Y) :- start(Piece,X,Y)
+active(Piece,X,Y) :- piece(Piece,Type,Role) & onboard(X,Y)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% init
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+init(cell(3,1,whiteknight))
+init(cell(4,1,whitechecker))
+init(cell(5,1,whitepawn))
+init(cell(3,7,blackpawn))
+init(cell(4,7,blackchecker))
+init(cell(5,7,blackknight))
+init(step(1))
+init(control(white))
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% legal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+legal(drop(N)) :- chute(N) & emptycell(1,N)
+
+legal(pawnmove(M1,N1,M2,N2)) :-
+  control(Role) &
+  cell(M1,N1,Piece) & 
+  piece(Piece,pawn,Role) &
+  orthogonal(M1,N1,M2,N2) &
+  onboard(M2,N2) &
+  emptycell(M2,N2)
+
+legal(knightmove(X1,Y1,X2,Y2)) :-
+  control(Role) &
+  cell(X1,Y1,Piece) &
+  piece(Piece,knight,Role) &
+  ell(X1,Y1,X2,Y2) &
+  onboard(X2,Y2) &
+  emptycell(X2,Y2)
+
+legal(knightmove(X1,Y1,X2,Y2)) :-
+  control(Role1) &
+  cell(X1,Y1,Piece) &
+  piece(Piece,knight,Role1) &
+  ell(X1,Y1,X2,Y2) &
+  onboard(X2,Y2) &
+  cell(X2,Y2,Piece2) &
+  piece(Piece2,Type,Role2) &
+  distinct(Role1,Role2)
+
+legal(checkermove(X1,Y1,X2,Y2)) :-
+  control(Role) &
+  cell(X1,Y1,Piece) &
+  piece(Piece,checker,Role) &
+  diagonal(X1,Y1,X2,Y2) &
+  onboard(X2,Y2) &
+  emptycell(X2,Y2)
+
+legal(jump(X1,Y1,X2,Y2,X3,Y3)) :-
+  control(Role1) &
+  cell(X1,Y1,Piece) &
+  piece(Piece,checker,Role1) &
+  jumpable(X1,Y1,X2,Y2,X3,Y3) &
+  cell(X2,Y2,Piece2) &
+  piece(Piece2,Ignore,Role2) &
+  distinct(Role1,Role2) &
+  emptycell(X3,Y3)
+
+legal(noop)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% operations
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+drop(N) :: control(Role) & lowpoint(M,N) & piece(Piece,disk,Role) ==> cell(M,N,Piece)
+drop(N) :: kerchunk
+
+pawnmove(X1,Y1,X2,Y2) :: cell(X1,Y1,Piece) ==> ~cell(X1,Y1,Piece) & cell(X2,Y2,Piece)
+pawnmove(X1,Y1,X2,Y2) :: kerchunk
+
+knightmove(M1,N1,M2,N2) :: cell(M1,N1,Piece) ==> ~cell(M1,N1,Piece) & cell(M2,N2,Piece)
+knightmove(M1,N1,M2,N2) :: cell(M2,N2,Piece) ==> ~cell(M2,N2,Piece)
+knightmove(M1,N1,M2,N2) :: cell(M2,N2,Piece) & start(Piece,M,N) ==> cell(M,N,Piece)
+knightmove(M1,N1,M2,N2) :: kerchunk
+
+checkermove(M1,N1,M2,N2) :: cell(M1,N1,Piece) ==> ~cell(M1,N1,Piece) & cell(M2,N2,Piece)
+checkermove(M1,N1,M2,N2) :: kerchunk
+
+jump(M1,N1,M2,N2,M3,N3) :: cell(M1,N1,Piece) ==> ~cell(M1,N1,Piece) & cell(M3,N3,Piece)
+jump(M1,N1,M2,N2,M3,N3) :: cell(M2,N2,Piece) ==> ~cell(M2,N2,Piece)
+jump(M1,N1,M2,N2,M3,N3) :: cell(M2,N2,Piece) & start(Piece,M,N) ==> cell(M,N,Piece)
+jump(M1,N1,M2,N2,M3,N3) :: kerchunk
+
+noop :: kerchunk
+
+kerchunk :: step(T1) & succ(T1,T2) ==> ~step(T1) & step(T2)
+kerchunk :: control(white) ==> ~control(white) & control(black)
+kerchunk :: control(black) ==> ~control(black) & control(white)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% goal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+goal(white,100) :- line(white)
+goal(white,50) :- ~line(white) & ~line(black)
+goal(white,0) :- line(black)
+
+goal(black,100) :- line(black)
+goal(black,50) :- ~line(white) & ~line(black)
+goal(black,0) :- line(white)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% terminal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+terminal :- line(Role)
+terminal :- step(41)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Views
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+orthogonal(X1,Y,X2,Y) :- plus1(X1,X2) & index(Y)
+orthogonal(X1,Y,X2,Y) :- plus1(X2,X1) & index(Y)
+orthogonal(X,Y1,X,Y2) :- plus1(Y1,Y2) & index(X)
+orthogonal(X,Y1,X,Y2) :- plus1(Y2,Y1) & index(X)
+
+diagonal(X1,Y1,X2,Y2) :- plus1(X1,X2) & plus1(Y1,Y2)
+diagonal(X1,Y1,X2,Y2) :- plus1(X1,X2) & plus1(Y2,Y1)
+diagonal(X1,Y1,X2,Y2) :- plus1(X2,X1) & plus1(Y1,Y2)
+diagonal(X1,Y1,X2,Y2) :- plus1(X2,X1) & plus1(Y2,Y1)
+
+ell(X1,Y1,X2,Y2) :- plus2(X2,X1) & plus1(Y1,Y2)
+ell(X1,Y1,X2,Y2) :- plus1(X2,X1) & plus2(Y1,Y2)
+ell(X1,Y1,X2,Y2) :- plus1(X1,X2) & plus2(Y1,Y2)
+ell(X1,Y1,X2,Y2) :- plus2(X1,X2) & plus1(Y1,Y2)
+ell(X1,Y1,X2,Y2) :- plus2(X2,X1) & plus1(Y2,Y1)
+ell(X1,Y1,X2,Y2) :- plus1(X2,X1) & plus2(Y2,Y1)
+ell(X1,Y1,X2,Y2) :- plus1(X1,X2) & plus2(Y2,Y1)
+ell(X1,Y1,X2,Y2) :- plus2(X1,X2) & plus1(Y2,Y1)
+
+jumpable(X1,Y1,X2,Y2,X3,Y3) :- plus1(X1,X2) & plus1(Y1,Y2) & plus1(X2,X3) & plus1(Y2,Y3)
+jumpable(X1,Y1,X2,Y2,X3,Y3) :- plus1(X1,X2) & plus1(Y2,Y1) & plus1(X2,X3) & plus1(Y3,Y2)
+jumpable(X1,Y1,X2,Y2,X3,Y3) :- plus1(X2,X1) & plus1(Y1,Y2) & plus1(X3,X2) & plus1(Y2,Y3)
+jumpable(X1,Y1,X2,Y2,X3,Y3) :- plus1(X2,X1) & plus1(Y2,Y1) & plus1(X3,X2) & plus1(Y3,Y2)
+
+
+lowpoint(M,N) :- lowpointfrom(1,N,M,N)
+
+lowpointfrom(7,N,7,N) :- index(N)
+lowpointfrom(M1,N,M1,N) :- plus1(M1,M2) & cell(M2,N,Piece)
+lowpointfrom(M1,N,M3,N) :- plus1(M1,M2) & emptycell(M2,N) & lowpointfrom(M2,N,M3,N)
+
+onboard(X,Y) :-
+   index(X) & index(Y) &
+   distinct(X,1) & distinct(X,7) &
+   distinct(Y,1) & distinct(Y,7)
+
+controls(X,Y,Role) :- cell(X,Y,Piece) & piece(Piece,Type,Role)
+
+emptycell(X,Y) :- index(X) & index(Y) & ~controls(X,Y,white) & ~controls(X,Y,black)
+
+
+line(Role) :- row(Role)
+line(Role) :- column(Role)
+line(Role) :- diag(Role)
+
+row(Role) :- controls(3,3,Role) & controls(3,4,Role) & controls(3,5,Role)
+row(Role) :- controls(4,3,Role) & controls(4,4,Role) & controls(4,5,Role)
+row(Role) :- controls(5,3,Role) & controls(5,4,Role) & controls(5,5,Role)
+
+column(Role) :- controls(3,3,Role) & controls(4,3,Role) & controls(5,3,Role)
+column(Role) :- controls(3,4,Role) & controls(4,4,Role) & controls(5,4,Role)
+column(Role) :- controls(3,5,Role) & controls(4,5,Role) & controls(5,5,Role)
+
+diag(Role) :- controls(3,3,Role) & controls(4,4,Role) & controls(5,5,Role)
+diag(Role) :- controls(3,5,Role) & controls(4,4,Role) & controls(5,3,Role)
+
+
+oddsquare(X,Y) :- oddidx(X) & evenidx(Y)
+oddsquare(X,Y) :- oddidx(Y) & evenidx(X)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Facts
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+rotation(white,black)
+rotation(black,white)
+
+start(whitepawn,5,1)
+start(whitechecker,4,1)
+start(whiteknight,3,1)
+start(blackpawn,3,7)
+start(blackchecker,4,7)
+start(blackknight,5,7)
+
+piece(whitedisk,disk,white)
+piece(blackdisk,disk,black)
+piece(whitepawn,pawn,white)
+piece(blackpawn,pawn,black)
+piece(whitechecker,checker,white)
+piece(blackchecker,checker,black)
+piece(whiteknight,knight,white)
+piece(blackknight,knight,black)
+
+chute(3)
+chute(4)
+chute(5)
+
+index(1)
+index(2)
+index(3)
+index(4)
+index(5)
+index(6)
+index(7)
+
+plus1(1,2)
+plus1(2,3)
+plus1(3,4)
+plus1(4,5)
+plus1(5,6)
+plus1(6,7)
+plus2(1,3)
+plus2(2,4)
+plus2(3,5)
+plus2(4,6)
+plus2(5,7)
+
+oddidx(1)
+oddidx(3)
+oddidx(5)
+oddidx(7)
+evenidx(2)
+evenidx(4)
+evenidx(6)
+
+succ(1,2)
+succ(2,3)
+succ(3,4)
+succ(4,5)
+succ(5,6)
+succ(6,7)
+succ(7,8)
+succ(8,9)
+succ(9,10)
+succ(10,11)
+succ(11,12)
+succ(12,13)
+succ(13,14)
+succ(14,15)
+succ(15,16)
+succ(16,17)
+succ(17,18)
+succ(18,19)
+succ(19,20)
+succ(20,21)
+succ(21,22)
+succ(22,23)
+succ(23,24)
+succ(24,25)
+succ(25,26)
+succ(26,27)
+succ(27,28)
+succ(28,29)
+succ(29,30)
+succ(30,31)
+succ(31,32)
+succ(32,33)
+succ(33,34)
+succ(34,35)
+succ(35,36)
+succ(36,37)
+succ(37,38)
+succ(38,39)
+succ(39,40)
+succ(40,41)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+</textarea>
+
+<!--=======================================================================-->
+
+<textarea id='lambda' type='text/hdf' style='display:none'></textarea>
+
+<!--=======================================================================-->
+
+</html>

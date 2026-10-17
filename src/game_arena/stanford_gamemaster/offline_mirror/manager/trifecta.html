@@ -1,0 +1,982 @@
+<html>
+
+<!--=======================================================================-->
+
+<head>
+  <title>Manager</title>
+  <script type='text/javascript' src='../assets/epilog.js'></script>
+  <script type='text/javascript'>
+//==============================================================================
+// Initialization//==============================================================================
+
+indexing = true;
+dataindexing = false;
+ruleindexing = true;
+
+var manager = 'manager';
+var players = 'anonymous';
+var game = 'buttonsandlights';
+var startclock = 10;
+var playclock = 10;
+
+var library = [];
+var ruleset = [];
+var roles = [];
+var state = [];
+var move = nil;
+var errors = {};
+
+var player = 'anonymous';
+var actives = [];
+var messageid = 0;
+var waiter = 'load';
+var timekeeper;
+
+//==============================================================================
+
+function doinitialize ()
+ {window.addEventListener("storage",handlestorage,false);
+  definerules(library,readdata(document.getElementById('library').value));
+  ruleset = readdata(document.getElementById('ruleset').value);
+  roles = findroles(library);
+  state = findinits(library);
+  errors = createerrors();
+  createscoreboard();
+  showstate(state);
+  showscore(state);
+  return true}
+
+function reinitialize ()
+ {state = findinits(library);
+  errors = createerrors();
+  createscoreboard();
+  showstate(state);
+  showscore(state);
+  return true}
+
+function createerrors ()
+ {var errors = {};
+  for (var i=0; i<roles.length; i++)
+      {errors[roles[i]] = 0};
+  return errors}
+
+function createscoreboard ()
+ {var scoreboard = document.getElementById('scoreboard');
+  var n = scoreboard.rows.length;
+  for (var i=0; i<n; i++) {scoreboard.deleteRow(0)};
+
+  var row = scoreboard.insertRow(0);
+  cell = row.insertCell(0);
+  cell.innerHTML = 'Roles';
+  cell.setAttribute('width','120');
+  cell.setAttribute('align','center');
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#f4f8f8');
+  for (var i=0; i<roles.length; i++)
+      {cell = row.insertCell(i+1);
+       cell.innerHTML = roles[i];
+       cell.setAttribute('width','120');
+       cell.setAttribute('align','center');
+       cell.setAttribute('style','font-weight:bold');
+       cell.setAttribute('bgcolor','#f4f8f8')};
+
+  row = scoreboard.insertRow(1);
+  cell = row.insertCell(0);
+  cell.innerHTML = 'Players';
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#f4f8f8');
+  cell.setAttribute('align','center');
+  for (var i=0; i<roles.length; i++)
+      {cell = row.insertCell(i+1);
+       cell.setAttribute('align','center');
+       cell.setAttribute('bgcolor','#f4f8f8');
+       cell.setAttribute('onclick','changeplayer(this)');
+       cell.style.cursor = 'pointer';
+       cell.innerHTML = players[i] ? players[i] : 'anonymous'};
+
+  row = scoreboard.insertRow(2);
+  cell = row.insertCell(0);
+  cell.innerHTML = 'Score';
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#f4f8f8');
+  cell.setAttribute('align','center');
+  for (var i=0; i<roles.length; i++)
+      {cell = row.insertCell(i+1);
+       cell.setAttribute('align','center');
+       cell.innerHTML = '&nbsp;'};
+
+  row = scoreboard.insertRow(3);
+  cell = row.insertCell(0);
+  cell.innerHTML = 'Errors';
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#f4f8f8');
+  cell.setAttribute('align','center');
+  for (var i=0; i<roles.length; i++)
+      {cell = row.insertCell(i+1);
+       cell.setAttribute('align','center');
+       cell.innerHTML = '0'};
+
+  return true}
+
+function changeplayer (node)
+ {var scoreboard = document.getElementById('scoreboard');
+  var row = scoreboard.rows[1];
+  for (var i=1; i<row.cells.length; i++)
+      {if (row.cells[i]===node)
+          {var newplayer = prompt("Player name:");
+           players[i-1] = newplayer;
+           row.cells[i].innerHTML = newplayer;
+           return true}};
+  return false}
+
+function getrole (player)
+ {for (var i=0; i<players.length; i++)
+      {if (player===players[i]) {return roles[i]}};
+  return 'robot'}
+
+function getplayer (role)
+ {for (var i=0; i<roles.length; i++)
+      {if (role===roles[i]) {return players[i]}};
+  return 'anonymous'}
+
+//==============================================================================
+// Display//==============================================================================
+
+function showstate (state)
+ {var stateholder = document.getElementById('stateholder');
+  var n = stateholder.childNodes.length;
+  for (var i=0; i<n; i++) {stateholder.removeChild(stateholder.childNodes[0])};
+  stateholder.appendChild(renderstate(state));
+  return true}
+
+function showscore (state)
+ {var scoreboard = document.getElementById('scoreboard');
+  var row = scoreboard.rows[2];
+  for (var i=0; i<roles.length; i++)
+      {row.cells[i+1].innerHTML = findreward(roles[i],state,library)};
+  return true}
+
+function showerrors ()
+ {var scoreboard = document.getElementById('scoreboard');
+  var row = scoreboard.rows[3];
+  for (var i=0; i<roles.length; i++)
+      {row.cells[i+1].innerHTML = errors[roles[i]]};
+  return true}
+
+//==============================================================================
+// Controls//==============================================================================
+
+function dopinger ()
+ {document.getElementById('pinger').disabled = false;
+  document.getElementById('starter').disabled = false;
+  document.getElementById('aborter').disabled = true;
+  doping();
+  return true}
+
+function dorunner ()
+ {document.getElementById('pinger').disabled = true;
+  document.getElementById('starter').disabled = true;
+  document.getElementById('aborter').disabled = false;
+  dostart();
+  return true}
+
+function doaborter ()
+ {document.getElementById('pinger').disabled = false;
+  document.getElementById('starter').disabled = false;
+  document.getElementById('aborter').disabled = true;
+  doabort();
+  return true}
+
+//==============================================================================
+// Operations//==============================================================================
+
+function doping ()
+ {waiter = 'ping';
+  messageid++;
+  actives = [];
+  for (var i=0; i<roles.length; i++)
+      {send(seq('ping'),players[i])};
+  timekeeper = beginclock(5);
+  return true}
+
+function handleping (sender,message)
+ {if (message!=='ready') {return false};
+  actives = adjoin(getrole(sender),actives);
+  if (actives.length===roles.length) {clearclock(); return endping()};
+  return true}
+
+function endping ()
+ {waiter = 'load';
+  alert(actives.length + "/" + roles.length + " ready.");
+  return true}
+
+//==============================================================================
+
+function dostart ()
+ {waiter = 'start';
+  messageid++;
+  reinitialize();
+  actives = [];
+  move = nil;
+  var rules = seq('ruleset').concat(ruleset);
+  var sc = stringize(startclock);
+  var pc = stringize(playclock);
+  for (var i=0; i<roles.length; i++)
+      {var message = grind(seq('start',roles[i],rules,sc,pc));
+       send(message,players[i])};
+  timekeeper = beginclock(startclock);
+  return true}
+
+function handlestart (sender,message)
+ {if (message!=='ready') {return false};
+  actives = adjoin(getrole(sender),actives);
+  if (actives.length===roles.length) {clearclock(); return endstart()};
+  return true}
+
+function endstart ()
+ {waiter = 'load';
+  setTimeout(doplay,1000);
+  return true}
+
+//==============================================================================
+
+function doplay ()
+ {waiter = 'play';
+  messageid++;
+  for (var i=0; i<roles.length; i++)
+      {var message = grind(seq('play',move));
+       send(message,players[i])};
+  timekeeper = beginclock(playclock);
+  return true}
+
+function handleplay (sender,message)
+ {var role = getrole(sender);
+  if (role!==findcontrol(state,library)) {return false};
+  move = message;
+  if (!findlegalp(move,state,library)) {playerror(role)};
+  clearclock();
+  endplay();
+  return true};
+
+function playerror (role)
+ {var actions=findlegals(state,library);
+  var ind = Math.floor(Math.random()*actions.length);
+  var newmove = actions[ind];
+  errors[role] = errors[role]+1;
+  console.log("Error: " + move + ".  Playing " + grind(newmove));
+  move = newmove;
+  return true}
+
+function playdefault ()
+ {var role = findcontrol(state,library);
+  var actions=findlegals(state,library);
+  var ind = Math.floor(Math.random()*actions.length);
+  move = actions[ind];
+  errors[role] = errors[role]+1;
+  console.log("Timeout.  Playing " + grind(move));
+  endplay();
+  return true}
+
+function endplay ()
+ {waiter = 'load';
+  state = simulate(move,state,library);
+  showstate(state);
+  showscore(state);
+  showerrors();
+  if (findterminalp(state,library)) {dostop(); return true};
+  setTimeout(doplay,1000);
+  return true}
+
+//==============================================================================
+
+function dostop ()
+ {waiter = 'load';
+  messageid++;
+  var message = grind(seq('stop',move));
+  for (var i=0; i<roles.length; i++)
+      {send(message,players[i])};
+  document.getElementById('pinger').disabled = false;
+  document.getElementById('starter').disabled = false;
+  document.getElementById('aborter').disabled = true;
+  return false}
+
+//==============================================================================
+
+function doabort ()
+ {waiter = 'load';
+  messageid++;
+  var message = grind(seq('abort'));
+  for (var i=0; i<roles.length; i++)
+      {send(message,players[i])};
+  return true}
+
+//==============================================================================
+// Timer//==============================================================================
+
+function beginclock (n)
+ {if (n===Infinity) {return false};
+  document.getElementById('timer').value = n;
+  return setInterval(updateclock,1000)}
+
+function updateclock ()
+ {var timer = document.getElementById('timer');
+  var time = timer.value - 1;
+  timer.value = time;
+  if (time<=0) {endclock()};
+  return true}
+
+function endclock ()
+ {clearclock();
+  if (waiter==='ping') {return endping()};
+  if (waiter==='start') {return endstart()};
+  if (waiter==='play') {return playdefault()};
+  return true}
+
+function clearclock ()
+ {document.getElementById('timer').value = '';
+  clearInterval(timekeeper);
+  return true}
+
+//==============================================================================
+// Basics
+//==============================================================================
+
+function findroles (rules)
+ {return compfinds('R',seq('role','R'),seq(),rules)}
+
+function findbases (rules)
+ {return compfinds('P',seq('base','P'),seq(),rules)}
+
+function findactions (rules)
+ {return compfinds('A',seq('action','A'),seq(),rules)}
+
+function findinits (rules)
+ {return compfinds('P',seq('init','P'),seq(),rules)}
+
+function findcontrol (facts,rules)
+ {return compfindx('X',seq('control','X'),facts,rules)}
+
+function findlegalp (move,facts,rules)
+ {return compfindp(seq('legal',move),facts,rules)}
+
+function findlegalx (facts,rules)
+ {return compfindx('X',seq('legal','X'),facts,rules)}
+
+function findlegals (facts,rules)
+ {return compfinds('X',seq('legal','X'),facts,rules)}
+
+function findreward (role,facts,rules)
+ {var value = compfindx('R',seq('goal',role,'R'),facts,rules);
+  if (value) {return value};
+  return 0}
+
+function findterminalp (facts,rules)
+ {return compfindp('terminal',facts,rules)}
+
+//------------------------------------------------------------------------------
+
+function simulate (move,state,rules)
+ {var deltas = compexpand(move,state,rules);
+  var additions = [];
+  var deletions = [];
+  for (var i=0; i<deltas.length; i++)
+      {if (symbolp(deltas[i])) {additions.push(deltas[i]); continue};
+       if (deltas[i][0]==='not') {deletions.push(deltas[i][1]); continue};
+       additions.push(deltas[i])};
+  var newstate = [];
+  for (i = 0; i<state.length; i++)
+      {if (find(state[i],additions)) {continue};
+       if (find(state[i],deletions)) {continue};
+       newstate.push(state[i])};
+  return newstate.concat(additions)}
+
+//==============================================================================
+// Communication
+//==============================================================================
+
+function send (msg,player)
+ {var response = grind(seq('message',messageid.toString(),manager,player,msg));
+  var transcript = document.getElementById('transcript');
+  transcript.value = transcript.value + response + "\n";
+  localStorage[player] = response;
+  return true}
+
+function handlestorage (ev)
+ {//console.log(ev);
+  if (ev.key!==manager) {return false};
+  var transcript = document.getElementById('transcript');
+  transcript.value = transcript.value + ev.newValue + "\n";
+
+  envelope = read(ev.newValue);
+  var msgid = envelope[1];
+  var sender = envelope[2];
+  var receiver = envelope[3];
+  var message = envelope[4];
+  if (parseInt(msgid)!==messageid) {return false};
+  if (waiter==='ping') {return handleping(sender,message)};
+  if (waiter==='start') {return handlestart(sender,message)};
+  if (waiter==='play') {return handleplay(sender,message)};
+
+  return true}
+
+//==============================================================================
+// End of manager//==============================================================================
+  </script>
+
+  <script type='text/javascript'>
+//==============================================================================
+// Game parameters
+//==============================================================================
+
+var manager = 'manager';
+var players = 'anonymous'.split(' ');
+var game = 'trifecta';
+var startclock = 10;
+var playclock = 10;
+
+//==============================================================================
+
+function domanager ()
+ {manager = read(prompt("What is your manager's identifier?"));
+  location.href = makeurl();
+  return true}
+
+function dogame ()
+ {game = prompt("What game do you want to play?");
+  location.href = makeurl();
+  return true}
+
+function dostartclock ()
+ {startclock = prompt("How many seconds on the start clock?");
+  location.href = makeurl();
+  return true}
+
+function doplayclock ()
+ {playclock = prompt("How many seconds on the play clock?");
+  location.href = makeurl();
+  return true}
+
+function makeurl ()
+ {return "manager.php" +
+         "?manager=" + manager +
+         "&players=" + players.join('+') +
+         "&game=" + game +
+         "&startclock=" + startclock  +
+         "&playclock=" + playclock}
+
+//==============================================================================
+// End of Game parameters
+//==============================================================================
+ </script>
+
+  <script type='text/javascript'>
+//------------------------------------------------------------------------------
+// tictactoe
+//------------------------------------------------------------------------------
+init();
+function renderstate (state)
+{
+	var table = document.createElement('table');
+	table.setAttribute('cellspacing','0');
+	var names = {'b': "Deck", "x": "White", "o": "Black"};
+	makerow(table,'b',state,names);
+	makerow(table,'x',state,names);
+	makerow(table,'o',state,names);
+	return table;
+}
+
+function getCards(type,state)
+{
+	return compfinds(seq('X','Y'),seq('cell','X','Y', type),state,seq());
+}
+
+function mapRC(rc)
+{
+	return (JSON.parse(rc[0]) - 1) * 3 + JSON.parse(rc[1]);
+}
+
+function makerow (table,player,state,names)
+{
+	var row = table.insertRow();
+	makecell(row, names[player]);
+	var _cards = getCards(player,state);//.join(',');
+	var t = document.createElement('table');
+	var r = t.insertRow();
+	if (!_cards.length)
+	{
+		var ct = document.createElement('table');
+		var ctr1 = ct.insertRow();
+		makecell(ctr1,"&nbsp;",75,120);
+		makecell(r,ct.outerHTML);
+	}
+	else
+	{
+		for (var i = 0; i < _cards.length; i++)
+		{
+			var c  = renderCard(mapRC(_cards[i]), 70);
+			var ct = document.createElement('table');
+			var ctr1 = ct.insertRow();
+			makecell(ctr1,c.outerHTML,75,75);
+			var ctr2 = ct.insertRow();
+			makecell(ctr2,_cards[i].join(","));
+			makecell(r,ct.outerHTML);
+		}
+	}
+	makecell(row,t.outerHTML);
+	//makecell(row, r);
+  	return row;
+}
+
+function makecell (row,html,w,h)
+{
+	var cell = row.insertCell();
+	if (typeof w != 'undefined')
+	{
+		cell.setAttribute('width',w);
+	}
+	if (typeof h != 'undefined')
+	{
+		cell.setAttribute('height',h);
+	}
+	cell.setAttribute('align','center');
+	cell.setAttribute('valign','center');
+	cell.setAttribute('style','font-family:HelveticaNeue-Light;font-size:12pt');
+	cell.innerHTML = html;
+	return cell;
+}
+
+/*CARD GENERATION PROCESS*/
+function shuffle(array)
+{
+	var choice = [], output = [];
+	for (var i = 0; i < array.length; i++)
+	{
+		choice.push(i);
+	}
+	for (var i = 0; i < array.length; i++)
+	{
+		var chosen = Math.floor(Math.random() * choice.length);
+		output.push(array[choice[chosen]]), choice.splice(chosen, 1); 
+	}
+	return output;
+}
+
+function init()
+{
+	var concept = {};
+	concept['rows'] = [[1,2,3], [4,5,6], [7,8,9]], concept['cols'] = [[1,4,7], [2,5,8], [3,6,9]], concept['dia1'] = [[1,5,9]], concept['dia2'] = [[3,5,7]];
+	var resDia1 = [], resDia2 = [];
+	for (var i = 1; i < 10; i++)
+	{
+		if (concept['dia1'][0].indexOf(i) == -1)
+		{
+			resDia1.push(i);
+		}
+		if (concept['dia2'][0].indexOf(i) == -1)
+		{
+			resDia2.push(i);
+		}
+	}
+	resDia1 = shuffle(resDia1), resDia2 = shuffle(resDia2);
+	for (var i = 0; i < 3; i++)
+	{
+		concept['dia1'].push([resDia1[i], resDia1[i + 3]]);
+		concept['dia2'].push([resDia2[i], resDia2[i + 3]]);
+	}
+	var props = shuffle(['background', 'foreground', 'shape', 'number']), concepts = Object.keys(concept), value = {};
+	palette = ['#F9A727', '#DD3C26', '#5138BD', '#F4F4F4', '#000000', '#27AE60'];
+	value['background'] = shuffle(palette);
+	value['foreground'] = shuffle(shuffle(palette));
+	value['shape'] = shuffle(['&hearts;', '&diams;', '&clubs;', '&spades;']);
+	value['number'] = shuffle([1, 2, 3, 4, 5]);
+	_card = {};
+	for (var i = 1; i <= 9; i++)
+	{
+		_card[i] = {};
+	}
+	for (var i = 0; i < concepts.length; i++)
+	{
+		var prop = props[i], c = concept[concepts[i]];
+		for (var j = 0; j < c.length; j++)
+		{
+			var d = c[j];
+			if ('foreground' in _card[d[0]] && prop == 'background')
+			{
+				var l = -1;
+				var flag;
+				do
+				{
+					l++; flag = false;
+					for(var w = 0; w < d.length; w++)
+					{
+						if (value[prop][l] == _card[d[w]]['foreground'])
+						{
+							flag = true;
+						}
+					}
+				} while (flag);
+				for (var k = 0; k < d.length; k++)
+				{
+					var x = d[k];
+					_card[x][prop] = value[prop][l];
+				}
+				value[prop].splice(l, 1);
+			}
+			else if ('background' in _card[d[0]] && prop == 'foreground')
+			{
+				var l = -1;
+				var flag;
+				do
+				{
+					l++; flag = false;
+					for (var w = 0; w < d.length; w++)
+					{
+						if (value[prop][l] == _card[d[w]]['background'])
+						{
+							flag = true;
+						}
+					}
+				} while (flag);
+				for (var k = 0; k < d.length; k++)
+				{
+					var x = d[k];
+					_card[x][prop] = value[prop][l];
+				}
+				value[prop].splice(l, 1);
+			}
+			else
+			{
+				for (var k = 0; k < d.length; k++)
+				{
+					var x = d[k];
+					_card[x][prop] = value[prop][0];
+				}
+				value[prop].splice(0, 1);
+			}
+		}
+	}
+}
+
+var gradient = {};
+gradient['#5138BD'] = '#6F56DB';
+gradient['#DD3C26'] = LightenDarkenColor('#DD3C26', -50);
+gradient['#000000'] = '#444444'
+gradient['#F4F4F4'] = '#CCCCCC';
+gradient['#F9A727'] = '#EB8327';
+gradient['#27AE60'] = '#40C779';
+function LightenDarkenColor(col, amt) 
+{
+	var usePound = false;
+  	if (col[0] == "#") 
+	{
+        col = col.slice(1);
+        usePound = true;
+    }
+ 	var num = parseInt(col,16), r = (num >> 16) + amt;
+ 
+    if (r > 255)
+	{
+		r = 255;
+    }
+	else if (r < 0)
+	{
+		r = 0;
+ 	}
+    var b = ((num >> 8) & 0x00FF) + amt;
+    if (b > 255)
+	{
+		b = 255;
+    }
+	else if (b < 0) 
+	{
+		b = 0;
+ 	}
+    var g = (num & 0x0000FF) + amt;
+    if (g > 255)
+	{
+		g = 255;
+    }
+	else if (g < 0) 
+	{
+		g = 0;
+ 	}
+    return (usePound?"#":"") + (g | (b << 8) | (r << 16)).toString(16);
+}
+
+function getCssValuePrefix(name, value) 
+{
+    var prefixes = ['', '-o-', '-ms-', '-moz-', '-webkit-'];
+    var dom = document.createElement('div');
+    for (var i = 0; i < prefixes.length; i++) 
+	{
+        dom.style[name] = prefixes[i] + value;
+        if (dom.style[name]) 
+		{
+            return prefixes[i];
+        }
+        dom.style[name] = '';
+    }
+}
+
+function renderCard(id, width)
+{
+	if (!id)
+	{
+		return;
+	}
+	sym = _card[id].shape, bkg = _card[id].background, fg = _card[id].foreground, n = _card[id].number;
+	var div = [];
+	var elem = document.createElement("div");
+	var w = width, h = 1.4* w, sh = h / 3, sw = w / 2;
+	//elem.style.width = w;
+	//elem.style.height = h;
+	var c3 = n % 2 ? sym : "&nbsp;", c1 = n > 1 ? sym : "&nbsp;", c2 = n > 3 ? sym : "&nbsp;"; 
+	var gP = getCssValuePrefix('backgroundImage', 'linear-gradient(left, #fff, #fff)');
+	var table = '<table class="card" cellspacing="0" width="' + w + '" height="' + h + '" cellpadding="0" style="text-align:center;font-size:' + (sh * 0.65) + 'px;color:' + fg + ';font-family:HelveticaNeue-Light;border-radius:5px;background:' + gP + "linear-gradient(" + ["left", gradient[bkg], bkg, gradient[bkg]].join(', ') + ');"><tr><td>' + c1 + '</td><td>' + c2 + '</td></tr><tr><td valign="middle" colspan="2">' + c3 + '</td></tr><tr><td>' + c2 + '</td><td>' + c1 + '</td></tr></table>';
+	elem.innerHTML = table;
+	return elem.firstChild  ;
+}
+  </script>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#aabbbb' onload='doinitialize()'>  <center>    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr>
+        <td>
+
+<!--=======================================================================-->
+
+<center>
+  <table width='640' cellpadding='0'>
+    <tr>
+      <td width='180' align='center' valign='center'>
+        <a href='../index.html'><img width='130' src='../assets/ggp.jpg'/></a>
+      </td>
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Gamemaster</span><br/>
+      </td>
+      <td width='180' align='center' style='color:#000066;font-size:18px'>
+        <a href='signin.php' style='color:#000066;text-decoration:none;cursor:pointer'>Sign In</a>      </td>
+    </tr>
+  </table>
+</center>
+<!--=======================================================================-->
+
+<br/>
+<table width='640' cellpadding='8' cellspacing='0' bgcolor='#f4f8f8' border='1'>  <tr height='40'>
+     <td align='center'>
+<table style='color:#000066;font-size:18px'>
+  <tr>
+    <td width='180' valign='top'>
+Protocol: localstorage<br/>
+Strategy: manager<br/>
+Identifier: manager <img src="../assets/pencil.gif" onclick='domanager()'/>
+    </td>
+    <td width='20'>&nbsp;</td>
+    <td>
+Game: trifecta <img src="../assets/pencil.gif" onclick='dogame()'/><br/>
+Startclock: 10 <img src="../assets/pencil.gif" onclick='dostartclock()'/><br/>
+Playclock: 10 <img src="../assets/pencil.gif" onclick='doplayclock()'/>
+    </td>
+  </tr>
+</table>
+    </td>
+  </tr></table>
+<br/>
+
+<!--=======================================================================-->
+
+<center>
+  <br/>
+  <div id='stateholder'></div>
+  <br/>
+  <input id='timer' type='text' size='4' style='font-size:36px;text-align:center;' disabled='true'/>
+  <br/>
+  <br/>
+  <table id='scoreboard' cellpadding='4' cellspacing='0' border='1'></table>
+  <br/>
+  <br/>
+  <input type='button' id='pinger' value='Ping' onclick='dopinger()'/>
+  <input type='button' id='starter' value='Run' onclick='dorunner()'/>
+  <input type='button' id='aborter' value='Abort' onclick='doaborter()' disabled/>
+  <br/>
+  <br/>
+
+  <textarea id='transcript' style='font-family:courier' rows='30' cols='80' readonly></textarea>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+
+<!--=======================================================================-->
+
+<textarea id='library' style='display:none'>
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% tictactoe
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% metadata
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+role(x)
+role(o)
+
+base(cell(M,N,x)) :- index(M) & index(N)
+base(cell(M,N,o)) :- index(M) & index(N)
+base(cell(M,N,b)) :- index(M) & index(N)
+base(control(R))  :- role(R)
+
+action(mark(M,N)) :- index(M) & index(N)
+
+index(1)
+index(2)
+index(3)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% init
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+init(cell(M,N,b)) :- index(M) & index(N)
+init(control(x))
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% legal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+legal(mark(M,N)) :- cell(M,N,b)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% operations
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+mark(M,N) :: control(R)  ==> cell(M,N,R) & ~cell(M,N,b)
+mark(M,N) :: control(x) ==> ~control(x) & control(o)
+mark(M,N) :: control(o) ==> ~control(o) & control(x)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% goal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+goal(x,100) :- line(x) & ~line(o)
+goal(x,50) :- line(x) & line(o)
+goal(x,50) :- ~line(x) & ~line(o)
+goal(x,0) :- ~line(x) & line(o)
+goal(o,100) :- ~line(x) & line(o)
+goal(o,50) :- line(x) & line(o)
+goal(o,50) :- ~line(x) & ~line(o)
+goal(o,0) :- line(x) & ~line(o)
+
+row(M,X) :- cell(M,1,X) & cell(M,2,X) & cell(M,3,X)
+col(N,X) :- cell(1,N,X) & cell(2,N,X) & cell(3,N,X)
+diag(X) :- cell(1,1,X) & cell(2,2,X) & cell(3,3,X)
+diag(X) :- cell(1,3,X) & cell(2,2,X) & cell(3,1,X)
+
+line(X) :- row(M,X)
+line(X) :- col(N,X)
+line(X) :- diag(X)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% terminal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+terminal :- line(x)
+terminal :- line(o)
+terminal :- ~open
+
+open :- cell(M,N,b)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+</textarea>
+
+<textarea id='ruleset' style='display:none'>
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% tictactoe
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% metadata
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+role(x)
+role(o)
+
+base(cell(M,N,x)) :- index(M) & index(N)
+base(cell(M,N,o)) :- index(M) & index(N)
+base(cell(M,N,b)) :- index(M) & index(N)
+base(control(R))  :- role(R)
+
+action(mark(M,N)) :- index(M) & index(N)
+
+index(1)
+index(2)
+index(3)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% init
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+init(cell(M,N,b)) :- index(M) & index(N)
+init(control(x))
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% legal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+legal(mark(M,N)) :- cell(M,N,b)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% operations
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+mark(M,N) :: control(R)  ==> cell(M,N,R) & ~cell(M,N,b)
+mark(M,N) :: control(x) ==> ~control(x) & control(o)
+mark(M,N) :: control(o) ==> ~control(o) & control(x)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% goal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+goal(x,100) :- line(x) & ~line(o)
+goal(x,50) :- line(x) & line(o)
+goal(x,50) :- ~line(x) & ~line(o)
+goal(x,0) :- ~line(x) & line(o)
+goal(o,100) :- ~line(x) & line(o)
+goal(o,50) :- line(x) & line(o)
+goal(o,50) :- ~line(x) & ~line(o)
+goal(o,0) :- line(x) & ~line(o)
+
+row(M,X) :- cell(M,1,X) & cell(M,2,X) & cell(M,3,X)
+col(N,X) :- cell(1,N,X) & cell(2,N,X) & cell(3,N,X)
+diag(X) :- cell(1,1,X) & cell(2,2,X) & cell(3,3,X)
+diag(X) :- cell(1,3,X) & cell(2,2,X) & cell(3,1,X)
+
+line(X) :- row(M,X)
+line(X) :- col(N,X)
+line(X) :- diag(X)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% terminal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+terminal :- line(x)
+terminal :- line(o)
+terminal :- ~open
+
+open :- cell(M,N,b)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+</textarea>
+
+<!--=======================================================================-->
+
+</html>

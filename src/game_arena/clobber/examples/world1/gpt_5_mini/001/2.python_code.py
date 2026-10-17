@@ -1,0 +1,93 @@
+
+import numpy as np
+
+def _as_board(arr):
+    """
+    Convert input (nested lists, flat list of length 30, or numpy array)
+    into a numpy array of shape (5,6) with dtype=int.
+    """
+    a = np.asarray(arr, dtype=int)
+    if a.shape == (5,6):
+        return a
+    if a.size == 30:
+        return a.reshape((5,6))
+    # Try to handle list-of-lists where outer length is 5 but shape may be ambiguous
+    try:
+        a = np.array(arr, dtype=int)
+        if a.shape == (5,6):
+            return a
+    except Exception:
+        pass
+    # As a fallback, try flatten then reshape
+    flat = a.flatten()
+    if flat.size >= 30:
+        return flat[:30].reshape((5,6))
+    # If everything fails, create empty board (shouldn't happen in normal use)
+    b = np.zeros((5,6), dtype=int)
+    return b
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    """
+    Choose a legal Clobber move. Return 'row,col,dir' where dir in {U,R,D,L}.
+    Strategy: enumerate all legal captures, simulate each, and choose the move
+    that minimizes the opponent's number of legal captures. Tie-break by
+    maximizing our number of legal captures after the move.
+    """
+    y = _as_board(you)
+    o = _as_board(opponent)
+
+    DIRECTIONS = {'U':(-1,0), 'R':(0,1), 'D':(1,0), 'L':(0,-1)}
+
+    # Collect all legal moves: our piece at (r,c) capturing an adjacent opponent
+    moves = []
+    for r in range(5):
+        for c in range(6):
+            if y[r, c] == 1:
+                for d, (dr, dc) in DIRECTIONS.items():
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 5 and 0 <= nc < 6 and o[nr, nc] == 1:
+                        moves.append((r, c, d))
+
+    # Safety: there should be at least one legal move by problem statement
+    if not moves:
+        # As a last resort, return the first (should not happen)
+        return "0,0,R"
+
+    def count_legal_moves_for(board_you, board_opponent):
+        """Count total legal capture moves (sum over pieces and directions)."""
+        cnt = 0
+        for rr in range(5):
+            for cc in range(6):
+                if board_you[rr, cc] == 1:
+                    for dr, dc in DIRECTIONS.values():
+                        r2, c2 = rr + dr, cc + dc
+                        if 0 <= r2 < 5 and 0 <= c2 < 6 and board_opponent[r2, c2] == 1:
+                            cnt += 1
+        return cnt
+
+    best_move = None
+    best_key = None  # tuple to compare: (opp_moves_after, -our_moves_after)
+
+    for (r, c, d) in moves:
+        dr, dc = DIRECTIONS[d]
+        nr, nc = r + dr, c + dc
+
+        # simulate move
+        y2 = y.copy()
+        o2 = o.copy()
+        y2[r, c] = 0
+        o2[nr, nc] = 0
+        y2[nr, nc] = 1
+
+        # count opponent's legal moves after this move (they will be 'opponent' role)
+        opp_legal = count_legal_moves_for(o2, y2)
+        our_legal = count_legal_moves_for(y2, o2)
+
+        key = (opp_legal, -our_legal)  # minimize opp_legal, maximize our_legal
+
+        if best_key is None or key < best_key:
+            best_key = key
+            best_move = (r, c, d)
+
+    r, c, d = best_move
+    return f"{r},{c},{d}"

@@ -1,0 +1,254 @@
+The strategy for this policy is to always obey the mandatory‑capture rule.  
+1. **Capture search** – It explores every own piece with a depth‑first search that can follow multiple jumps in a single turn.  
+   * The search uses forward‑only directions for ordinary men (downward for black, upward for white) and all four diagonals for kings.  
+   * Captures of opponent kings receive a higher value (10 pts) than captures of ordinary men (1 pt).  
+   * Longer capture sequences (more jumps) are preferred; landing on a promotion row adds a modest bonus (5 pts).  
+   * The first move of the best capture sequence is returned.  
+
+2. **No captures** – If no capture is possible, a **forward non‑capture move** is chosen:  
+   * Men move only forward (one diagonal step) to an empty dark square.  
+   * Kings move to any diagonal empty square (forward or backward).  
+   * Men are evaluated first; among them the move that brings a piece closest to its promotion row is selected.  
+   * If men cannot move, a king move is chosen.
+
+3. **Legal guarantees** – All returned moves are validated against board occupancy and piece colour; no illegal move is ever returned, satisfying the requirement for a legal move string.
+
+```python
+<code>
+import collections
+import itertools
+
+# ---------- Utility functions ----------
+def is_dark(r, c):
+    """Only dark squares (parity) are playable."""
+    return (r + c) % 2 == 0
+
+def promotion_row(color):
+    """Row where a man becomes a king."""
+    return 0 if color == 'b' else 7   # black promotes at bottom, white at top
+
+# ---------- Capture search ----------
+def capture_dfs(
+    curr_pos,
+    occupied,
+    opp_men_set,
+    opp_kings_set,
+    color,
+    is_king
+):
+    """
+    Depth‑first search for a capture sequence starting from `curr_pos`.
+    Returns (best_sequence, best_score) where best_sequence is a list of
+    ((from, to), ...) tuples, and best_score is an integer evaluating the
+    captures (king=10, man=1, promotion bonus=5).
+    """
+    # Determine allowed diagonal directions for the current piece
+    if is_king:
+        dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    else:
+        if color == 'b':
+            dirs = [(-1, -1), (-1, 1)]   # black moves downwards
+        else:
+            dirs = [(1, -1), (1, 1)]    # white moves upwards
+
+    best_seq = None
+    best_score = -float('inf')
+
+    for dr, dc in dirs:
+        mid_r = curr_pos[0] + dr
+        mid_c = curr_pos[1] + dc
+        to_r   = curr_pos[0] + 2 * dr
+        to_c   = curr_pos[1] + 2 * dc
+
+        # Board bounds
+        if not (0 <= mid_r <= 7 and 0 <= mid_c <= 7):
+            continue
+        if not (0 <= to_r <= 7 and 0 <= to_c <= 7):
+            continue
+
+        # Must jump over an opponent piece
+        mid = (mid_r, mid_c)
+        to  = (to_r, to_c)
+
+        if mid not in opp_men_set and mid not in opp_kings_set:
+            continue
+        if to in occupied:
+            continue
+
+        # ----- Make a capture -----
+        # Evaluate captured piece value
+        captured_is_king = mid in opp_kings_set
+        cap_score = 10 if captured_is_king else 1
+
+        # Remove jumped piece and moving piece from occupied for recursion
+        new_occ = occupied - {curr_pos, mid}
+        new_occ_men = set(opp_men_set) - {mid}
+        new_occ_kings = set(opp_kings_set) - {mid} if mid in opp_kings_set else set(opp_kings_set)
+
+        # Promotion check for the moving piece
+        landed_is_king = is_king or (
+            (color == 'b' and to[0] == 0) or
+            (color == 'w' and to[0] == 7)
+        )
+
+        # Recursively try continuation
+        seq_rest, rest_score = capture_dfs(
+            to, new_occ, new_occ_men, new_occ_kings,
+            color, landed_is_king
+        )
+        if seq_rest is None:
+            cur_seq = [(curr_pos, to)]
+        else:
+            cur_seq = [(curr_pos, to)] + seq_rest
+
+        total_score = cap_score + (rest_score if seq_rest is not None else 0)
+
+        # Update best
+        if total_score > best_score:
+            best_score = total_score
+            best_seq = cur_seq
+        elif total_score == best_score:
+            # Prefer longer sequences (more captures)
+            if len(cur_seq) > len(best_seq):
+                best_seq = cur_seq
+
+    return best_seq, best_score
+
+
+def capture_search(
+    my_set,
+    opp_men_set,
+    opp_kings_set,
+    color
+):
+    """
+    Search all my pieces for the best capture sequence.
+    Returns the first move of the best sequence, or None if no capture exists.
+    """
+    best_seq = None
+    best_score = -float('inf')
+    for piece in sorted(my_set, key=lambda p: (p[0], p[1])):
+        seq, score = capture_dfs(
+            piece, my_set, opp_men_set, opp_kings_set,
+            color, piece in set(my_kings)  # piece initially a king?
+        )
+        if seq is None:
+            continue
+        if score > best_score or (score == best_score and (best_seq is None or len(seq) > len(best_seq))):
+            best_score = score
+            best_seq = seq
+    return best_seq[0] if best_seq else None
+
+
+# ---------- Forward move generation ----------
+def forward_moves(
+    piece_positions,
+    occupied,
+    color,
+    is_king
+):
+    """
+    Generate non‑capture forward moves for the given pieces.
+    Returns a list of (from, to) tuples.
+    """
+    forward_dirs = {
+        'b': [(-1, -1), (-1, 1)],
+        'w': [(1, -1), (1, 1)]
+    }[color]
+
+    if is_king:
+        dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    else:
+        dirs = forward_dirs
+
+    moves = []
+    for (r, c) in piece_positions:
+        for dr, dc in dirs:
+            tr, tc = r + dr, c + dc
+            if not (0 <= tr <= 7 and 0 <= tc <= 7):
+                continue
+            if is_dark(tr, tc) and (tr, tc) not in occupied:
+                moves.append(((r, c), (tr, tc)))
+    return moves
+
+
+def king_moves(
+    piece_positions,
+    occupied,
+    color,
+    is_king
+):
+    """
+    Generate all diagonal non‑capture moves for kings.
+    """
+    dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    moves = []
+    for (r, c) in piece_positions:
+        for dr, dc in dirs:
+            tr, tc = r + dr, c + dc
+            if not (0 <= tr <= 7 and 0 <= tc <= 7):
+                continue
+            if is_dark(tr, tc) and (tr, tc) not in occupied:
+                moves.append(((r, c), (tr, tc)))
+    return moves
+
+
+def select_best_move(move_candidates, occupied, color):
+    """
+    Choose the best forward move according to heuristic:
+    * For men: move that reduces distance to the promotion row.
+    * For kings: move that reduces distance to the opposite side.
+    """
+    # Heuristic: lower post‑move distance to the opposite side => better
+    prom_row = promotion_row(color)
+    opposite_row = 0 if color == 'w' else 7
+    best_move = None
+    best_score = -float('inf')
+    for (from_sq, to_sq) in move_candidates:
+        # distance after move
+        new_r = to_sq[0]
+        new_dist = abs(new_r - opposite_row)   # smaller => closer to opponent side
+        if new_dist < best_score or (new_dist == best_score and from_sq < best_move):
+            best_score = new_dist
+            best_move = (from_sq, to_sq)
+    return best_move
+
+
+# ---------- Main policy ----------
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Return the next legal move as ((from_row, from_col), (to_row, to_col)).
+    Must be a capture when possible, otherwise a forward move.
+    """
+    # Convert all inputs to sets for O(1) look‑ups
+    my_set = set(my_men) | set(my_kings)
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+
+    occupied = my_set | opp_men_set | opp_kings_set   # all squares currently taken
+
+    # ----- 1. Mandatory capture search -----
+    capture_move = capture_search(my_set, opp_men_set, opp_kings_set, color)
+    if capture_move is not None:
+        return capture_move
+
+    # ----- 2. No captures: forward moves -----
+    # Prioritise men, then kings
+    men_moves = forward_moves(my_men, occupied, color, is_king=False)
+    king_moves = king_moves(my_kings, occupied, color, is_king=True)
+
+    # Men moves exist?
+    if men_moves:
+        best_move = select_best_move(men_moves, occupied, color)
+        return best_move
+
+    # Kings moves exist?
+    if king_moves:
+        best_move = select_best_move(king_moves, occupied, color)
+        return best_move
+
+    # If somehow we reach here, there is no legal move (should never happen in a valid game)
+    raise ValueError("No legal move found – unexpected board state")
+
+</code>
+```

@@ -1,0 +1,267 @@
+<thinking>
+I need to implement a Connect 4 AI policy that can make good moves within 1 second. Let me think about the approach:
+
+1. First, I should check for immediate wins - if I can win in one move, take it
+2. Second, I should block immediate threats - if opponent can win next turn, block it
+3. For general play, I'll use a minimax algorithm with alpha-beta pruning to look ahead several moves
+4. I'll need a good evaluation function that considers:
+   - Potential winning lines (not just completed ones)
+   - Center column preference (more opportunities)
+   - Blocking opponent's potential wins
+   - Creating multiple threats simultaneously
+
+Let me structure this:
+- A function to check if a move leads to immediate win
+- A minimax implementation with evaluation function
+- The main policy function that handles immediate threats and calls minimax
+
+For evaluation, I'll score positions based on how many potential 4-in-a-row opportunities exist, with different weights for 2-in-a-row, 3-in-a-row, etc.
+
+I should also handle the special cases first:
+- If I can win immediately, do it
+- If opponent can win immediately, block it
+
+Then fall back to minimax for deeper strategy.
+</thinking>
+
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    # Convert to numpy array for easier manipulation
+    np_board = np.array(board)
+    
+    # Get valid columns (not full)
+    valid_columns = [col for col in range(7) if np_board[0][col] == 0]
+    
+    # Check for immediate winning move
+    for col in valid_columns:
+        if is_winning_move(np_board, col, 1):
+            return col
+    
+    # Check for opponent's immediate winning move to block
+    for col in valid_columns:
+        if is_winning_move(np_board, col, -1):
+            return col
+    
+    # Use minimax with alpha-beta pruning for deeper look
+    _, best_col = minimax(np_board, 5, -np.inf, np.inf, True)
+    return best_col
+
+def drop_piece(board: np.ndarray, col: int, player: int) -> np.ndarray:
+    """Drop a piece in the specified column and return new board"""
+    new_board = board.copy()
+    for row in range(5, -1, -1):
+        if new_board[row][col] == 0:
+            new_board[row][col] = player
+            break
+    return new_board
+
+def is_winning_move(board: np.ndarray, col: int, player: int) -> bool:
+    """Check if dropping a piece in column col would result in a win"""
+    # Find the row where the piece would land
+    row = -1
+    for r in range(5, -1, -1):
+        if board[r][col] == 0:
+            row = r
+            break
+    
+    if row == -1:  # Column is full
+        return False
+    
+    # Temporarily place the piece
+    board[row][col] = player
+    
+    # Check for win
+    win = check_win(board, row, col, player)
+    
+    # Remove the temporary piece
+    board[row][col] = 0
+    
+    return win
+
+def check_win(board: np.ndarray, row: int, col: int, player: int) -> bool:
+    """Check if the last piece placed at (row, col) resulted in a win"""
+    # Check horizontal
+    count = 1
+    # Check right
+    for c in range(col + 1, min(7, col + 4)):
+        if board[row][c] == player:
+            count += 1
+        else:
+            break
+    # Check left
+    for c in range(col - 1, max(-1, col - 4), -1):
+        if board[row][c] == player:
+            count += 1
+        else:
+            break
+    if count >= 4:
+        return True
+    
+    # Check vertical
+    count = 1
+    # Check down (no need to check up since this is the topmost piece in column)
+    for r in range(row + 1, min(6, row + 4)):
+        if board[r][col] == player:
+            count += 1
+        else:
+            break
+    if count >= 4:
+        return True
+    
+    # Check diagonal (top-left to bottom-right)
+    count = 1
+    # Check down-right
+    r, c = row + 1, col + 1
+    while r < 6 and c < 7 and board[r][c] == player:
+        count += 1
+        r += 1
+        c += 1
+    # Check up-left
+    r, c = row - 1, col - 1
+    while r >= 0 and c >= 0 and board[r][c] == player:
+        count += 1
+        r -= 1
+        c -= 1
+    if count >= 4:
+        return True
+    
+    # Check diagonal (top-right to bottom-left)
+    count = 1
+    # Check down-left
+    r, c = row + 1, col - 1
+    while r < 6 and c >= 0 and board[r][c] == player:
+        count += 1
+        r += 1
+        c -= 1
+    # Check up-right
+    r, c = row - 1, col + 1
+    while r >= 0 and c < 7 and board[r][c] == player:
+        count += 1
+        r -= 1
+        c += 1
+    if count >= 4:
+        return True
+    
+    return False
+
+def evaluate_window(window: List[int]) -> int:
+    """Evaluate a window of 4 positions"""
+    score = 0
+    player_count = window.count(1)
+    opponent_count = window.count(-1)
+    empty_count = window.count(0)
+    
+    if player_count == 4:
+        score += 1000
+    elif player_count == 3 and empty_count == 1:
+        score += 100
+    elif player_count == 2 and empty_count == 2:
+        score += 10
+    elif player_count == 1 and empty_count == 3:
+        score += 1
+        
+    if opponent_count == 4:
+        score -= 1000
+    elif opponent_count == 3 and empty_count == 1:
+        score -= 100
+    elif opponent_count == 2 and empty_count == 2:
+        score -= 10
+    elif opponent_count == 1 and empty_count == 3:
+        score -= 1
+        
+    return score
+
+def evaluate_board(board: np.ndarray) -> int:
+    """Evaluate the entire board position"""
+    score = 0
+    
+    # Score center column preference
+    center_array = [int(i) for i in list(board[:, 3])]
+    center_count = center_array.count(1)
+    score += center_count * 3
+    
+    # Score Horizontal
+    for r in range(6):
+        row_array = [int(i) for i in list(board[r, :])]
+        for c in range(4):
+            window = row_array[c:c+4]
+            score += evaluate_window(window)
+    
+    # Score Vertical
+    for c in range(7):
+        col_array = [int(i) for i in list(board[:, c])]
+        for r in range(3):
+            window = col_array[r:r+4]
+            score += evaluate_window(window)
+    
+    # Score diagonal (positive slope)
+    for r in range(3):
+        for c in range(4):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += evaluate_window(window)
+    
+    # Score diagonal (negative slope)
+    for r in range(3):
+        for c in range(4):
+            window = [board[r+3-i][c+i] for i in range(4)]
+            score += evaluate_window(window)
+    
+    return score
+
+def is_terminal_node(board: np.ndarray) -> bool:
+    """Check if the game is over"""
+    # Check if any player has won or board is full
+    for col in range(7):
+        if board[0][col] == 0:  # There's still a valid move
+            # Check if this move would win for either player
+            if is_winning_move(board, col, 1) or is_winning_move(board, col, -1):
+                return True
+    # Check if board is full
+    return not any(0 in row for row in board)
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing_player: bool) -> Tuple[int, int]:
+    """Minimax with alpha-beta pruning"""
+    valid_columns = [col for col in range(7) if board[0][col] == 0]
+    is_terminal = is_terminal_node(board)
+    
+    if depth == 0 or is_terminal:
+        if is_terminal:
+            if any(is_winning_move(board, col, 1) for col in range(7) if board[0][col] == 0):
+                return (10000000000000, -1)
+            elif any(is_winning_move(board, col, -1) for col in range(7) if board[0][col] == 0):
+                return (-10000000000000, -1)
+            else:  # Game is over, no more valid moves
+                return (0, -1)
+        else:  # Depth is zero
+            return (evaluate_board(board), -1)
+    
+    if maximizing_player:
+        value = -np.inf
+        column = valid_columns[0]
+        for col in valid_columns:
+            child = drop_piece(board, col, 1)
+            new_score, _ = minimax(child, depth-1, alpha, beta, False)
+            if new_score > value:
+                value = new_score
+                column = col
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value, column
+    else:  # Minimizing player
+        value = np.inf
+        column = valid_columns[0]
+        for col in valid_columns:
+            child = drop_piece(board, col, -1)
+            new_score, _ = minimax(child, depth-1, alpha, beta, True)
+            if new_score < value:
+                value = new_score
+                column = col
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value, column
+</code>

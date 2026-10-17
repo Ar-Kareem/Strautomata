@@ -1,0 +1,86 @@
+The strategy for this policy is to first look for any moves that result in checkmate. If none are found, it prioritizes capturing the most valuable pieces. If there are no captures, it chooses a move that improves king safety or helps in long-term position evaluation. Finally, if all else fails, it will randomly choose a legal move to ensure compliance.
+
+<code>
+```python
+import numpy as np
+import re
+
+# Piece value mapping for heuristic strength evaluation
+piece_values = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 0  # King is not considered in material evaluation
+}
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # First, check if there's a move that results in checkmate
+    for move in legal_moves:
+        if '+' in move and '#' in move:
+            return move
+
+    # Find captures (moves with 'x') and evaluate by material gain
+    capture_moves = [move for move in legal_moves if 'x' in move]
+    if capture_moves:
+        best_capture = None
+        best_value = -1
+        for move in capture_moves:
+            # Extract captured piece from the move
+            if move[1] == 'x':
+                captured_square = move[2:]  # e.g., from "Bxf5", capture_square is "f5"
+                captured_piece = pieces.get(captured_square)
+                if captured_piece:
+                    color, piece_type = captured_piece
+                    value = piece_values[piece_type]
+                    if value > best_value:
+                        best_value = value
+                        best_capture = move
+        return best_capture or legal_moves[0]
+
+    # Check if any move improves king safety
+    king_safety_moves = []
+    king_pos = None
+    for pos, piece in pieces.items():
+        if piece[0] == to_play[0] and piece[1] == 'K':
+            king_pos = pos
+            break
+
+    if king_pos:
+        escape_moves = [move for move in legal_moves if king_pos in move and (move.endswith('+') or not move.endswith('+'))]
+        shelter_moves = [move for move in legal_moves if is_king_shelter(move, king_pos, pieces)]
+        for move in escape_moves:
+            if move in shelter_moves:
+                king_safety_moves.append(move)
+        if king_safety_moves:
+            return king_safety_moves[0]
+
+    # Otherwise, select a random legal move
+    return legal_moves[0]
+
+def is_king_shelter(move: str, king_pos: str, pieces: dict[str, str]) -> bool:
+    file = king_pos[0]
+    # Try to ensure the king has nearby pawns if not castled
+    king_file = ord(file) - ord('a')
+    
+    if re.match(r'^[a-h]x[a-h]', move):  # Capture
+        return False
+    
+    # For a non-capture move, assume it's a pawn move providing shelter
+    if re.match(r'^[a-h]\d', move):  # Target square
+        target_square = move
+        target_file = ord(target_square[0]) - ord('a')
+        # Check if the move is one that adds a shelter in front of or adjacent to the king (basic logic)
+        if abs(target_file - king_file) <= 1 and is_one_square_in_front(move, king_pos, pieces):
+            return True
+    return False
+
+def is_one_square_in_front(move: str, king_pos: str, pieces: dict[str, str]) -> bool:
+    target_square = move
+    king_file, king_rank = king_pos[0], int(king_pos[1])
+    file, rank = target_square[0], int(target_square[1])
+    
+    return file == king_file and rank == king_rank + 1
+```
+</code>

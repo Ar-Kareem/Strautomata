@@ -1,0 +1,87 @@
+# Strategy
+
+Alquerque is a checkers-like game where:
+1. **Red** starts at rows 4-5 (bottom), **Black** at rows 1-2 (top)
+2. Pieces move diagonally forward one square
+3. Captures are mandatory jumps over opponent pieces
+4. Players get 10 points per capture
+5. Game ends at move 60 or when a player has no pieces
+
+My policy uses:
+1. **Capture prioritization**: Always take available jumps (mandatory captures are key to winning)
+2. **Forward progress**: Move pieces toward opponent territory when no captures available
+3. **Territory control**: Prioritize moves that advance pieces closer to opponent's back row
+4. **Defensive positioning**: Avoid leaving pieces undefended when possible
+
+The algorithm:
+1. Parse the board state to find all pieces and empty cells
+2. Determine the player's color and direction (red moves up/decreasing row, black moves down/increasing row)
+3. Generate all legal moves:
+   - **Jumps**: Check all diagonal directions for opponent pieces with empty squares beyond
+   - **Regular moves**: Check forward diagonal moves only
+4. Prioritize jumps over regular moves (captures are high-value)
+5. Among jumps, prefer those that capture more pieces or advance further
+6. Among regular moves, prefer those advancing toward opponent territory
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the board state
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            row, col, owner = int(prop[1]), int(prop[2]), prop[3]
+            board[(row, col)] = owner
+    
+    # Determine direction for the role
+    if role == "red":
+        direction = -1  # red moves up (decreasing row)
+        opponent = "black"
+    else:
+        direction = 1   # black moves down (increasing row)
+        opponent = "red"
+    
+    # Find all pieces of the current player
+    my_pieces = [pos for pos, owner in board.items() if owner == role]
+    
+    # Generate all possible moves and jumps
+    jumps = []
+    regular_moves = []
+    
+    for r, c in my_pieces:
+        # Try all four diagonal directions
+        for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            nr, nc = r + dr, c + dc
+            
+            # Check for regular moves (forward only)
+            if 1 <= nr <= 5 and 1 <= nc <= 5:
+                if (nr, nc) not in board:  # Empty square
+                    if dr == direction:  # Forward direction
+                        regular_moves.append((f"move({r},{c},{nr},{nc})", nr, nc, 0))
+            
+            # Check for jumps (capture moves)
+            nr2, nc2 = r + 2*dr, c + 2*dc
+            if 1 <= nr <= 5 and 1 <= nc <= 5 and 1 <= nr2 <= 5 and 1 <= nc2 <= 5:
+                if (nr, nc) in board and board[(nr, nc)] == opponent:
+                    if (nr2, nc2) not in board:  # Empty square after jump
+                        jumps.append((f"jump({r},{c},{nr},{nc},{nr2},{nc2})", nr2, nc2, 1))
+    
+    # Prioritize jumps over regular moves
+    if jumps:
+        # Sort jumps by advancement (prefer moves closer to opponent's end)
+        if direction == -1:  # Red moves up
+            jumps.sort(key=lambda x: (x[1], -x[2]))  # Minimize row, maximize col for diversity
+        else:  # Black moves down
+            jumps.sort(key=lambda x: (-x[1], x[2]))  # Maximize row, maximize col for diversity
+        return jumps[0][0]
+    
+    if regular_moves:
+        # Sort regular moves by advancement
+        if direction == -1:  # Red moves up
+            regular_moves.sort(key=lambda x: (x[1], x[2]))  # Prefer smaller row (going up)
+        else:  # Black moves down
+            regular_moves.sort(key=lambda x: (-x[1], -x[2]))  # Prefer larger row (going down)
+        return regular_moves[0][0]
+    
+    # Fallback: return any legal move (shouldn't reach here in normal play)
+    return "move(1,1,1,1)"
+</code>

@@ -1,0 +1,125 @@
+
+import math
+from functools import lru_cache
+
+# Board constants
+ROWS, COLS = 5, 6
+N = ROWS * COLS
+
+# Precompute neighbors with directions
+DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+NEIGH = [[] for _ in range(N)]
+for r in range(ROWS):
+    for c in range(COLS):
+        idx = r * COLS + c
+        for dr, dc, ch in DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < ROWS and 0 <= nc < COLS:
+                nidx = nr * COLS + nc
+                NEIGH[idx].append((nidx, ch))
+
+INF = 10_000
+
+def gen_moves(you_bits, opp_bits):
+    moves = []
+    y = you_bits
+    while y:
+        lsb = y & -y
+        idx = lsb.bit_length() - 1
+        for to, dch in NEIGH[idx]:
+            if (opp_bits >> to) & 1:
+                moves.append((idx, to, dch))
+        y ^= lsb
+    return moves
+
+def count_moves(you_bits, opp_bits):
+    cnt = 0
+    y = you_bits
+    while y:
+        lsb = y & -y
+        idx = lsb.bit_length() - 1
+        for to, _ in NEIGH[idx]:
+            if (opp_bits >> to) & 1:
+                cnt += 1
+        y ^= lsb
+    return cnt
+
+def evaluate(you_bits, opp_bits):
+    my_moves = count_moves(you_bits, opp_bits)
+    opp_moves = count_moves(opp_bits, you_bits)
+    my_cnt = you_bits.bit_count()
+    opp_cnt = opp_bits.bit_count()
+    return 5 * (my_moves - opp_moves) + (my_cnt - opp_cnt)
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    # convert to bitboards
+    you_bits = 0
+    opp_bits = 0
+    for r in range(ROWS):
+        for c in range(COLS):
+            idx = r * COLS + c
+            if you[r][c]:
+                you_bits |= 1 << idx
+            elif opponent[r][c]:
+                opp_bits |= 1 << idx
+
+    total_pieces = (you_bits | opp_bits).bit_count()
+    if total_pieces > 18:
+        max_depth = 5
+    elif total_pieces > 12:
+        max_depth = 6
+    else:
+        max_depth = 8
+
+    @lru_cache(maxsize=None)
+    def negamax(you_b, opp_b, depth, alpha, beta):
+        moves = gen_moves(you_b, opp_b)
+        if not moves:
+            return -INF + (max_depth - depth)
+        if depth == 0:
+            return evaluate(you_b, opp_b)
+
+        best = -INF
+        for frm, to, _ in moves:
+            new_you = (you_b ^ (1 << frm)) | (1 << to)
+            new_opp = opp_b ^ (1 << to)
+            score = -negamax(new_opp, new_you, depth - 1, -beta, -alpha)
+            if score > best:
+                best = score
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return best
+
+    moves = gen_moves(you_bits, opp_bits)
+    if not moves:
+        # No legal move (game over), but must return something.
+        return "0,0,U"
+
+    best_move = moves[0]
+    best_score = -INF
+    alpha, beta = -INF, INF
+
+    # basic move ordering: try moves that capture toward center
+    center = (ROWS//2, COLS//2)
+    def move_key(m):
+        frm, to, _ = m
+        r, c = divmod(to, COLS)
+        return abs(r - center[0]) + abs(c - center[1])
+
+    moves.sort(key=move_key)
+
+    for frm, to, dch in moves:
+        new_you = (you_bits ^ (1 << frm)) | (1 << to)
+        new_opp = opp_bits ^ (1 << to)
+        score = -negamax(new_opp, new_you, max_depth - 1, -beta, -alpha)
+        if score > best_score:
+            best_score = score
+            best_move = (frm, to, dch)
+        if best_score > alpha:
+            alpha = best_score
+
+    frm, to, dch = best_move
+    r, c = divmod(frm, COLS)
+    return f"{r},{c},{dch}"

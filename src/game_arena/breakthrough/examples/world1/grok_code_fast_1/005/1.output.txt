@@ -1,0 +1,60 @@
+The strategy for this policy is a heuristic-based approach that generates all legal moves, simulates each move's outcome (updating piece positions for the player and opponent), and evaluates the resulting board state using a scoring function. The score prioritizes progressing pieces toward the opponent's home row (row 0 for black, row 7 for white), giving higher values to pieces closer to home. Movement (non-capturing diagonal or forward) is preferred over capture to avoid unnecessary risks, but captures are still prioritized as they remove opponent pieces. Reaching the opponent's home row immediately yields the highest possible score to ensure winning moves are chosen. Ties in score are broken by selecting the first valid move in the generated list. This greedy strategy is efficient (runs well within the 1-second time limit for an 8x8 board with up to 16 pieces per player) and aims to balance advancement and defense, making it competitive against simpler policies.
+
+<code>
+import copy
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Determine direction and home row based on color
+    dr = -1 if color == 'b' else 1
+    home = 0 if color == 'b' else 7
+    
+    # Convert lists to sets for fast lookups
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Function to get positional value for a piece
+    def pos_val(r):
+        return 7 - r if color == 'b' else r
+    
+    # Generate all legal moves as list of (from, to, is_capture)
+    moves = []
+    for r, c in me:
+        nr = r + dr
+        if 0 <= nr < 8:
+            # Straight forward if empty
+            if (nr, c) not in me_set and (nr, c) not in opp_set:
+                moves.append(((r, c), (nr, c), False))
+            # Diagonals
+            for dc in [-1, 1]:
+                nc = c + dc
+                if 0 <= nc < 8:
+                    target = (nr, nc)
+                    if target not in me_set:
+                        is_capture = target in opp_set
+                        moves.append(((r, c), target, is_capture))
+    
+    # Evaluate each move: simulate new positions and score
+    best_move = None
+    best_score = -float('inf')
+    bonus_capture = 1  # Small bonus for captures
+    for from_pos, to_pos, is_capture in moves:
+        # Simulate new positions
+        new_me = [p if p != from_pos else to_pos for p in me]
+        new_opp = [p for p in opp if p != to_pos] if is_capture else opp
+        
+        # Score: sum of positional values for my pieces
+        score = sum(pos_val(r) for r, _ in new_me)
+        if is_capture:
+            score += bonus_capture
+        
+        # Huge bonus if a piece reaches home and wins
+        if to_pos[0] == home:
+            score += 1000
+        
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = (from_pos, to_pos)
+    
+    return best_move
+</code>

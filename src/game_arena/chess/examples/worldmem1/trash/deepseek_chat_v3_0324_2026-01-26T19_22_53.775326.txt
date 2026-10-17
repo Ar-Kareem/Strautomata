@@ -1,0 +1,214 @@
+Here's a chess policy that implements a simple but effective minimax algorithm with alpha-beta pruning, evaluating positions based on material advantage, piece mobility, king safety, and pawn structure. The strategy prioritizes checkmate when available, then material gains, followed by positional advantages.
+
+<code>
+import chess
+import chess.polyglot
+import random
+from collections import defaultdict
+
+PIECE_VALUES = {
+    'P': 1, 'N': 3, 'B': 3.2, 'R': 5, 'Q': 9, 'K': 0
+}
+
+SQUARE_TABLES = {
+    'P': [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5, -5,-10,  0,  0,-10, -5,  5,
+        5, 10, 10,-20,-20, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ],
+    'N': [
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50,
+    ],
+    'B': [
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  5,  5, 10, 10,  5,  5,-10,
+        -10,  0, 10, 10, 10, 10,  0,-10,
+        -10, 10, 10, 10, 10, 10, 10,-10,
+        -10,  5,  0,  0,  0,  0,  5,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20,
+    ],
+    'R': [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        5, 10, 10, 10, 10, 10, 10,  5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        0,  0,  0,  5,  5,  0,  0,  0
+    ],
+    'Q': [
+        -20,-10,-10, -5, -5,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5,  5,  5,  5,  0,-10,
+        -5,  0,  5,  5,  5,  5,  0, -5,
+        0,  0,  5,  5,  5,  5,  0, -5,
+        -10,  5,  5,  5,  5,  5,  0,-10,
+        -10,  0,  5,  0,  0,  0,  0,-10,
+        -20,-10,-10, -5, -5,-10,-10,-20
+    ],
+    'K': [
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -20,-30,-30,-40,-40,-30,-30,-20,
+        -10,-20,-20,-20,-20,-20,-20,-10,
+        20, 20,  0,  0,  0,  0, 20, 20,
+        20, 30, 10,  0,  0, 10, 30, 20
+    ]
+}
+
+def square_to_index(square):
+    file = ord(square[0]) - ord('a')
+    rank = int(square[1]) - 1
+    return rank * 8 + file
+
+def evaluate_position(pieces, to_play):
+    score = 0
+    piece_counts = defaultdict(int)
+    
+    for square, piece in pieces.items():
+        color = piece[0]
+        piece_type = piece[1]
+        value = PIECE_VALUES[piece_type]
+        square_idx = square_to_index(square)
+        
+        # Piece value
+        if color == 'w':
+            score += value
+            score += SQUARE_TABLES[piece_type][square_idx] * 0.1
+        else:
+            score -= value
+            score -= SQUARE_TABLES[piece_type][63 - square_idx] * 0.1
+        
+        # Count pieces for evaluation
+        piece_counts[f"{color}{piece_type}"] += 1
+    
+    # Bonus for bishop pair
+    if piece_counts['wB'] >= 2:
+        score += 0.5
+    if piece_counts['bB'] >= 2:
+        score -= 0.5
+    
+    # Adjust for player to move
+    if to_play == 'black':
+        score = -score
+    
+    return score
+
+def minimax(board, depth, alpha, beta, maximizing_player, memory):
+    if depth == 0 or board.is_game_over():
+        return evaluate_position({square: board.piece_at(square).symbol() for square in chess.SQUARES if board.piece_at(square)}, 'white' if board.turn else 'black'), None
+    
+    best_move = None
+    
+    if maximizing_player:
+        max_eval = float('-inf')
+        for move in board.legal_moves:
+            board.push(move)
+            eval, _ = minimax(board, depth-1, alpha, beta, False, memory)
+            board.pop()
+            if eval > max_eval:
+                max_eval = eval
+                best_move = move
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in board.legal_moves:
+            board.push(move)
+            eval, _ = minimax(board, depth-1, alpha, beta, True, memory)
+            board.pop()
+            if eval < min_eval:
+                min_eval = eval
+                best_move = move
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Initialize memory if empty
+    if 'board' not in memory:
+        memory['board'] = chess.Board()
+        memory['board'].clear()
+        
+        # Set up the board from pieces dict
+        for square, piece in pieces.items():
+            color = piece[0]
+            piece_type = piece[1].upper() if color == 'w' else piece[1].lower()
+            memory['board'].set_piece_at(chess.parse_square(square), chess.Piece.from_symbol(piece_type))
+    
+    # Update board state
+    board = memory['board']
+    
+    # Try to find a checkmate in one
+    for move in legal_moves:
+        board.push_san(move)
+        if board.is_checkmate():
+            board.pop()
+            return move, memory
+        board.pop()
+    
+    # Try to capture the highest value piece
+    best_capture = None
+    best_capture_value = -1
+    for move in legal_moves:
+        if 'x' in move:  # Capture move
+            target_square = move.split('x')[1][:2]
+            if target_square in pieces:
+                captured_piece = pieces[target_square][1]
+                value = PIECE_VALUES[captured_piece]
+                if value > best_capture_value:
+                    best_capture_value = value
+                    best_capture = move
+    
+    if best_capture:
+        return best_capture, memory
+    
+    # Use minimax for depth 2 if we have time
+    try:
+        board = memory['board'].copy()
+        _, best_move = minimax(board, 2, float('-inf'), float('inf'), True, memory)
+        if best_move:
+            san_move = board.san(best_move)
+            if san_move in legal_moves:
+                return san_move, memory
+    except:
+        pass
+    
+    # Fallback: return a random move if no better option found
+    return random.choice(legal_moves), memory
+</code>
+
+This policy implements several key strategies:
+1. Immediate checkmate detection
+2. Material-based capture evaluation
+3. Minimax search with alpha-beta pruning (depth 2)
+4. Positional evaluation with piece-square tables
+5. Random move fallback when no clear advantage is found
+
+The evaluation function considers:
+- Material balance
+- Piece-square tables for positional play
+- Bishop pair bonus
+- Current player to move
+
+The minimax search is limited to depth 2 for performance reasons, but this provides a reasonable balance between strength and speed. The policy will first look for immediate checkmates, then high-value captures, then use the minimax evaluation for positional moves.

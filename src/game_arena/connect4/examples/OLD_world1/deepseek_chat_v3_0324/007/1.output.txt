@@ -1,0 +1,205 @@
+Here's a Python implementation of a Connect 4 AI policy using a minimax algorithm with alpha-beta pruning. It evaluates board positions with a simple heuristic that prioritizes immediate wins, blocks opponent wins, and creates opportunities for future wins:
+
+```python
+import numpy as np
+from typing import Optional
+
+def policy(board: list[list[int]]) -> int:
+    grid = np.array(board)
+    return find_best_move(grid)
+
+def find_best_move(grid: np.ndarray) -> int:
+    valid_moves = get_valid_moves(grid)
+    
+    # Check for immediate winning move
+    for col in valid_moves:
+        temp_grid = make_move(grid, col, 1)
+        if check_win(temp_grid, 1):
+            return col
+    
+    # Check for opponent's immediate winning move and block it
+    for col in valid_moves:
+        temp_grid = make_move(grid, col, -1)
+        if check_win(temp_grid, -1):
+            return col
+    
+    # Check for potential forks (creating multiple winning opportunities)
+    for col in valid_moves:
+        temp_grid = make_move(grid, col, 1)
+        if count_potential_wins(temp_grid, 1) >= 2:
+            return col
+    
+    # Use minimax for deeper strategy
+    depth = 4  # Adjust based on performance constraints
+    best_score = -float('inf')
+    best_col = valid_moves[0]
+    
+    for col in valid_moves:
+        temp_grid = make_move(grid, col, 1)
+        score = minimax(temp_grid, depth, -float('inf'), float('inf'), False)
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    return best_col
+
+def minimax(grid: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+    if depth == 0 or is_terminal(grid):
+        return evaluate_position(grid)
+    
+    valid_moves = get_valid_moves(grid)
+    
+    if maximizing:
+        value = -float('inf')
+        for col in valid_moves:
+            child = make_move(grid, col, 1)
+            value = max(value, minimax(child, depth-1, alpha, beta, False))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = float('inf')
+        for col in valid_moves:
+            child = make_move(grid, col, -1)
+            value = min(value, minimax(child, depth-1, alpha, beta, True))
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+def evaluate_position(grid: np.ndarray) -> float:
+    score = 0
+    lines = get_all_lines(grid)
+    
+    for line in lines:
+        count_me = np.count_nonzero(line == 1)
+        count_opp = np.count_nonzero(line == -1)
+        
+        if count_me == 4:
+            return 1000
+        elif count_opp == 4:
+            return -1000
+        
+        if count_opp == 0:
+            if count_me == 3:
+                score += 100
+            elif count_me == 2:
+                score += 10
+            elif count_me == 1:
+                score += 1
+        elif count_me == 0:
+            if count_opp == 3:
+                score -= 90
+            elif count_opp == 2:
+                score -= 9
+            elif count_opp == 1:
+                score -= 0.9
+    
+    # Center preference
+    center_col = grid.shape[1] // 2
+    center_count = np.count_nonzero(grid[:, center_col] == 1)
+    score += center_count * 3
+    
+    return score
+
+def is_terminal(grid: np.ndarray) -> bool:
+    return check_win(grid, 1) or check_win(grid, -1) or len(get_valid_moves(grid)) == 0
+
+def check_win(grid: np.ndarray, player: int) -> bool:
+    # Check horizontal
+    for r in range(grid.shape[0]):
+        for c in range(grid.shape[1] - 3):
+            if (grid[r, c] == player and 
+                grid[r, c+1] == player and 
+                grid[r, c+2] == player and 
+                grid[r, c+3] == player):
+                return True
+    # Check vertical
+    for c in range(grid.shape[1]):
+        for r in range(grid.shape[0] - 3):
+            if (grid[r, c] == player and 
+                grid[r+1, c] == player and 
+                grid[r+2, c] == player and 
+                grid[r+3, c] == player):
+                return True
+    # Check diagonal (positive slope)
+    for r in range(grid.shape[0] - 3):
+        for c in range(grid.shape[1] - 3):
+            if (grid[r, c] == player and 
+                grid[r+1, c+1] == player and 
+                grid[r+2, c+2] == player and 
+                grid[r+3, c+3] == player):
+                return True
+    # Check diagonal (negative slope)
+    for r in range(3, grid.shape[0]):
+        for c in range(grid.shape[1] - 3):
+            if (grid[r, c] == player and 
+                grid[r-1, c+1] == player and 
+                grid[r-2, c+2] == player and 
+                grid[r-3, c+3] == player):
+                return True
+    return False
+
+def count_potential_wins(grid: np.ndarray, player: int) -> int:
+    count = 0
+    lines = get_all_lines(grid)
+    
+    for line in lines:
+        if can_make_line(line, player):
+            count += 1
+    
+    return count
+
+def can_make_line(line: np.ndarray, player: int) -> bool:
+    opp = -player
+    if np.any(line == opp):
+        return False
+    return np.count_nonzero(line == player) >= 2
+
+def get_all_lines(grid: np.ndarray) -> list[np.ndarray]:
+    lines = []
+    rows, cols = grid.shape
+    
+    # Horizontal lines
+    for r in range(rows):
+        for c in range(cols - 3):
+            lines.append(grid[r, c:c+4])
+    
+    # Vertical lines
+    for c in range(cols):
+        for r in range(rows - 3):
+            lines.append(grid[r:r+4, c])
+    
+    # Diagonal lines (positive slope)
+    for r in range(rows - 3):
+        for c in range(cols - 3):
+            lines.append(np.array([grid[r+i, c+i] for i in range(4)]))
+    
+    # Diagonal lines (negative slope)
+    for r in range(3, rows):
+        for c in range(cols - 3):
+            lines.append(np.array([grid[r-i, c+i] for i in range(4)]))
+    
+    return lines
+
+def get_valid_moves(grid: np.ndarray) -> list[int]:
+    return [c for c in range(grid.shape[1]) if grid[0, c] == 0]
+
+def make_move(grid: np.ndarray, col: int, player: int) -> np.ndarray:
+    new_grid = grid.copy()
+    for row in range(grid.shape[0]-1, -1, -1):
+        if new_grid[row, col] == 0:
+            new_grid[row, col] = player
+            return new_grid
+    return new_grid
+```
+
+This implementation:
+1. First checks for immediate winning moves
+2. Then checks to block opponent's immediate wins
+3. Looks for opportunities to create multiple winning chances (forks)
+4. Falls back to a minimax search with alpha-beta pruning for deeper strategy
+5. Uses a heuristic evaluation function that scores potential lines and prefers the center column
+
+The depth of the minimax search is set to 4 to work within the 1-second time constraint on modern CPUs, but you can adjust this based on performance testing.

@@ -1,0 +1,144 @@
+
+import numpy as np
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    dice = state['dice']
+    my_off = state['my_off']
+    
+    # If no dice, pass
+    if not dice:
+        return "H:P,P"
+    
+    # If only one die, duplicate it for easier handling
+    if len(dice) == 1:
+        dice = [dice[0], dice[0]]
+    
+    # Sort dice
+    die1, die2 = sorted(dice, reverse=True)
+    
+    # Check for legal moves
+    def is_occupiable(point):
+        return opp_pts[point] < 2
+    
+    def can_bear_off():
+        # All checkers in home board (points 0-5)
+        for i in range(6, 24):
+            if my_pts[i] > 0:
+                return False
+        return True
+    
+    # Find all possible moves
+    possible_moves = []
+    
+    # Handle checkers on bar first
+    if my_bar > 0:
+        # Must enter from bar
+        enter1 = 24 - die1
+        enter2 = 24 - die2
+        
+        if is_occupiable(enter1) and is_occupiable(enter2):
+            # Both dice can be used
+            possible_moves.append((die1, 'B', die2, 'B'))
+            possible_moves.append((die2, 'B', die1, 'B'))
+        elif is_occupiable(enter1):
+            possible_moves.append((die1, 'B', None, None))
+        elif is_occupiable(enter2):
+            possible_moves.append((die2, 'B', None, None))
+        else:
+            # No legal entry
+            return "H:P,P"
+    else:
+        # No checkers on bar, normal moves
+        
+        # Check if bearing off is possible
+        bearing_off = can_bear_off()
+        
+        # Try first die
+        for start1 in range(24):  # 23 down to 0
+            if my_pts[start1] == 0:
+                continue
+            
+            dest1 = start1 - die1
+            if dest1 < 0:
+                if bearing_off:
+                    # Bearing off
+                    possible_moves.append((die1, f'A{start1}', None, None))
+            else:
+                if is_occupiable(dest1):
+                    possible_moves.append((die1, f'A{start1}', None, None))
+        
+        # Try second die after each first move
+        for i, move in enumerate(possible_moves):
+            d1, from1, _, _ = move
+            start1_idx = int(from1[1:]) if from1 != 'B' else -1
+            
+            # Try second die
+            for start2 in range(24):  # 23 down to 0
+                if start2 == start1_idx and my_pts[start2] <= 1:
+                    # Used last checker from this point
+                    continue
+                    
+                if my_pts[start2] == 0:
+                    continue
+                
+                dest2 = start2 - die2
+                if dest2 < 0:
+                    if bearing_off:
+                        # Bearing off
+                        possible_moves[i] = (d1, from1, die2, f'A{start2}')
+                else:
+                    if is_occupiable(dest2):
+                        possible_moves[i] = (d1, from1, die2, f'A{start2}')
+    
+    # If no moves found, pass
+    if not possible_moves:
+        return "H:P,P"
+    
+    # Evaluate moves and pick best
+    def evaluate_move(move):
+        d1, from1, d2, from2 = move
+        score = 0
+        
+        # Prefer bearing off
+        if from1 and from1.startswith('A') and int(from1[1:]) < 6 and d1 > int(from1[1:]):
+            score += 100
+        if from2 and from2.startswith('A') and int(from2[1:]) < 6 and d2 > int(from2[1:]):
+            score += 100
+            
+        # Prefer moving from high points
+        if from1 and from1.startswith('A'):
+            score += (24 - int(from1[1:])) * 2
+        if from2 and from2.startswith('A'):
+            score += (24 - int(from2[1:])) * 2
+            
+        # Prefer using both dice
+        if d2 is not None:
+            score += 50
+            
+        return score
+    
+    # Pick move with highest score
+    best_move = max(possible_moves, key=evaluate_move)
+    d1, from1, d2, from2 = best_move
+    
+    # Format output
+    if d2 is None:
+        from2 = 'P'
+        # Determine order based on die values
+        if d1 == die1:
+            order = 'H'
+            # Use other die for second move (but it's a pass)
+            other_die_val = die2
+        else:
+            order = 'L'
+            other_die_val = die1
+    else:
+        if d1 == die1:
+            order = 'H'
+        else:
+            order = 'L'
+    
+    return f"{order}:{from1},{from2}"

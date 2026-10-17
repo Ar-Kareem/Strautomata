@@ -1,0 +1,288 @@
+
+import random
+from typing import Dict, List, Tuple
+
+FILES = "abcdefgh"
+RANKS = "12345678"
+
+PIECE_VALUES = {
+    'P': 100,
+    'N': 320,
+    'B': 330,
+    'R': 500,
+    'Q': 900,
+    'K': 0
+}
+
+MATE_VALUE = 100000
+
+def policy(pieces: Dict[str, str], to_play: str) -> str:
+    color = 'w' if to_play == 'white' else 'b'
+    legal_moves = generate_legal_moves(pieces, color)
+    if not legal_moves:
+        return ""  # should not happen in normal play
+
+    best_move = None
+    if color == 'w':
+        best_score = -float('inf')
+    else:
+        best_score = float('inf')
+
+    # Move ordering: captures/promotions first
+    legal_moves.sort(key=lambda m: move_order_score(pieces, m, color), reverse=True)
+
+    for move in legal_moves:
+        new_pieces = apply_move(pieces, move)
+        score = minimax(new_pieces, 2, -float('inf'), float('inf'), opposite(color))
+        if color == 'w':
+            if score > best_score:
+                best_score = score
+                best_move = move
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = move
+
+    return best_move if best_move else legal_moves[0]
+
+def minimax(pieces: Dict[str, str], depth: int, alpha: float, beta: float, color: str) -> float:
+    legal_moves = generate_legal_moves(pieces, color)
+
+    if depth == 0 or not legal_moves:
+        if not legal_moves:
+            if is_in_check(pieces, color):
+                return -MATE_VALUE if color == 'w' else MATE_VALUE
+            else:
+                return 0  # stalemate
+        return evaluate(pieces)
+
+    if color == 'w':
+        value = -float('inf')
+        for move in legal_moves:
+            new_pieces = apply_move(pieces, move)
+            value = max(value, minimax(new_pieces, depth-1, alpha, beta, opposite(color)))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = float('inf')
+        for move in legal_moves:
+            new_pieces = apply_move(pieces, move)
+            value = min(value, minimax(new_pieces, depth-1, alpha, beta, opposite(color)))
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+def evaluate(pieces: Dict[str, str]) -> int:
+    score = 0
+    for sq, pc in pieces.items():
+        color, ptype = pc[0], pc[1]
+        val = PIECE_VALUES[ptype]
+        score += val if color == 'w' else -val
+    return score
+
+def opposite(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+def move_order_score(pieces: Dict[str, str], move: str, color: str) -> int:
+    # prioritize captures and promotions
+    score = 0
+    src = move[:2]
+    dst = move[2:4]
+    if dst in pieces and pieces[dst][0] != color:
+        score += 1000 + PIECE_VALUES[pieces[dst][1]]
+    if len(move) == 5:
+        score += 800
+    return score
+
+def generate_legal_moves(pieces: Dict[str, str], color: str) -> List[str]:
+    moves = []
+    for sq, pc in pieces.items():
+        if pc[0] != color:
+            continue
+        ptype = pc[1]
+        if ptype == 'P':
+            moves.extend(generate_pawn_moves(pieces, sq, color))
+        elif ptype == 'N':
+            moves.extend(generate_knight_moves(pieces, sq, color))
+        elif ptype == 'B':
+            moves.extend(generate_slider_moves(pieces, sq, color, [(1,1), (1,-1), (-1,1), (-1,-1)]))
+        elif ptype == 'R':
+            moves.extend(generate_slider_moves(pieces, sq, color, [(1,0), (-1,0), (0,1), (0,-1)]))
+        elif ptype == 'Q':
+            moves.extend(generate_slider_moves(pieces, sq, color, [(1,1), (1,-1), (-1,1), (-1,-1), (1,0), (-1,0), (0,1), (0,-1)]))
+        elif ptype == 'K':
+            moves.extend(generate_king_moves(pieces, sq, color))
+
+    # filter moves that leave king in check
+    legal = []
+    for m in moves:
+        new_pieces = apply_move(pieces, m)
+        if not is_in_check(new_pieces, color):
+            legal.append(m)
+    return legal
+
+def generate_pawn_moves(pieces: Dict[str, str], sq: str, color: str) -> List[str]:
+    moves = []
+    x, y = to_xy(sq)
+    direction = 1 if color == 'w' else -1
+    start_rank = 1 if color == 'w' else 6
+    promotion_rank = 7 if color == 'w' else 0
+
+    # forward move
+    nx, ny = x, y + direction
+    if on_board(nx, ny) and xy_to_sq(nx, ny) not in pieces:
+        if ny == promotion_rank:
+            for promo in "qrbn":
+                moves.append(sq + xy_to_sq(nx, ny) + promo)
+        else:
+            moves.append(sq + xy_to_sq(nx, ny))
+        # double move
+        if y == start_rank:
+            ny2 = y + 2*direction
+            if xy_to_sq(nx, ny2) not in pieces:
+                moves.append(sq + xy_to_sq(nx, ny2))
+
+    # captures
+    for dx in [-1, 1]:
+        nx, ny = x + dx, y + direction
+        if on_board(nx, ny):
+            target = xy_to_sq(nx, ny)
+            if target in pieces and pieces[target][0] != color:
+                if ny == promotion_rank:
+                    for promo in "qrbn":
+                        moves.append(sq + target + promo)
+                else:
+                    moves.append(sq + target)
+    return moves
+
+def generate_knight_moves(pieces: Dict[str, str], sq: str, color: str) -> List[str]:
+    moves = []
+    x, y = to_xy(sq)
+    for dx, dy in [(1,2),(2,1),(-1,2),(-2,1),(1,-2),(2,-1),(-1,-2),(-2,-1)]:
+        nx, ny = x + dx, y + dy
+        if on_board(nx, ny):
+            target = xy_to_sq(nx, ny)
+            if target not in pieces or pieces[target][0] != color:
+                moves.append(sq + target)
+    return moves
+
+def generate_slider_moves(pieces: Dict[str, str], sq: str, color: str, directions: List[Tuple[int,int]]) -> List[str]:
+    moves = []
+    x, y = to_xy(sq)
+    for dx, dy in directions:
+        nx, ny = x + dx, y + dy
+        while on_board(nx, ny):
+            target = xy_to_sq(nx, ny)
+            if target in pieces:
+                if pieces[target][0] != color:
+                    moves.append(sq + target)
+                break
+            moves.append(sq + target)
+            nx += dx
+            ny += dy
+    return moves
+
+def generate_king_moves(pieces: Dict[str, str], sq: str, color: str) -> List[str]:
+    moves = []
+    x, y = to_xy(sq)
+    for dx in [-1,0,1]:
+        for dy in [-1,0,1]:
+            if dx == 0 and dy == 0:
+                continue
+            nx, ny = x + dx, y + dy
+            if on_board(nx, ny):
+                target = xy_to_sq(nx, ny)
+                if target not in pieces or pieces[target][0] != color:
+                    moves.append(sq + target)
+    return moves
+
+def apply_move(pieces: Dict[str, str], move: str) -> Dict[str, str]:
+    new_pieces = dict(pieces)
+    src = move[:2]
+    dst = move[2:4]
+    promo = move[4] if len(move) == 5 else None
+    piece = new_pieces.pop(src)
+    if dst in new_pieces:
+        new_pieces.pop(dst)
+    if promo:
+        piece = piece[0] + promo.upper()
+    new_pieces[dst] = piece
+    return new_pieces
+
+def is_in_check(pieces: Dict[str, str], color: str) -> bool:
+    king_sq = None
+    for sq, pc in pieces.items():
+        if pc == color + 'K':
+            king_sq = sq
+            break
+    if not king_sq:
+        return True
+    return is_square_attacked(pieces, king_sq, opposite(color))
+
+def is_square_attacked(pieces: Dict[str, str], sq: str, by_color: str) -> bool:
+    x, y = to_xy(sq)
+    # pawn attacks
+    direction = 1 if by_color == 'w' else -1
+    for dx in [-1, 1]:
+        nx, ny = x + dx, y + direction
+        if on_board(nx, ny):
+            s = xy_to_sq(nx, ny)
+            if s in pieces and pieces[s] == by_color + 'P':
+                return True
+
+    # knight attacks
+    for dx, dy in [(1,2),(2,1),(-1,2),(-2,1),(1,-2),(2,-1),(-1,-2),(-2,-1)]:
+        nx, ny = x + dx, y + dy
+        if on_board(nx, ny):
+            s = xy_to_sq(nx, ny)
+            if s in pieces and pieces[s] == by_color + 'N':
+                return True
+
+    # bishop/queen attacks
+    for dx, dy in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+        nx, ny = x + dx, y + dy
+        while on_board(nx, ny):
+            s = xy_to_sq(nx, ny)
+            if s in pieces:
+                if pieces[s][0] == by_color and pieces[s][1] in ('B','Q'):
+                    return True
+                break
+            nx += dx
+            ny += dy
+
+    # rook/queen attacks
+    for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
+        nx, ny = x + dx, y + dy
+        while on_board(nx, ny):
+            s = xy_to_sq(nx, ny)
+            if s in pieces:
+                if pieces[s][0] == by_color and pieces[s][1] in ('R','Q'):
+                    return True
+                break
+            nx += dx
+            ny += dy
+
+    # king attacks
+    for dx in [-1,0,1]:
+        for dy in [-1,0,1]:
+            if dx == 0 and dy == 0:
+                continue
+            nx, ny = x + dx, y + dy
+            if on_board(nx, ny):
+                s = xy_to_sq(nx, ny)
+                if s in pieces and pieces[s] == by_color + 'K':
+                    return True
+
+    return False
+
+def to_xy(sq: str) -> Tuple[int,int]:
+    return FILES.index(sq[0]), RANKS.index(sq[1])
+
+def xy_to_sq(x: int, y: int) -> str:
+    return FILES[x] + RANKS[y]
+
+def on_board(x: int, y: int) -> bool:
+    return 0 <= x < 8 and 0 <= y < 8

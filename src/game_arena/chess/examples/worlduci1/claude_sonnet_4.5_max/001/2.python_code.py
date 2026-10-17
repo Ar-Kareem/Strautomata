@@ -1,0 +1,145 @@
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """Smart chess policy that evaluates moves based on captures, checks, material, and position."""
+    
+    color = 'w' if to_play == 'white' else 'b'
+    enemy = 'b' if color == 'w' else 'w'
+    
+    # Coordinate conversion helpers
+    def sq2xy(s):
+        return ord(s[0]) - ord('a'), int(s[1]) - 1
+    
+    def xy2sq(x, y):
+        return chr(ord('a') + x) + str(y + 1) if 0 <= x <= 7 and 0 <= y <= 7 else None
+    
+    # Generate pseudo-legal moves for a given color
+    def gen_moves(b, c):
+        mvs = []
+        for s, p in b.items():
+            if p[0] != c:
+                continue
+            x, y = sq2xy(s)
+            t = p[1]
+            
+            if t == 'P':  # Pawn
+                d = 1 if c == 'w' else -1
+                # Forward move
+                n = xy2sq(x, y+d)
+                if n and n not in b:
+                    if (c=='w' and y==6) or (c=='b' and y==1):
+                        mvs.extend([s+n+q for q in 'qrbn'])
+                    else:
+                        mvs.append(s+n)
+                        # Double push from starting position
+                        if ((c=='w' and y==1) or (c=='b' and y==6)):
+                            n2 = xy2sq(x, y+2*d)
+                            if n2 and n2 not in b:
+                                mvs.append(s+n2)
+                # Captures
+                for dx in [-1,1]:
+                    n = xy2sq(x+dx, y+d)
+                    if n and n in b and b[n][0] != c:
+                        if (c=='w' and y==6) or (c=='b' and y==1):
+                            mvs.extend([s+n+q for q in 'qrbn'])
+                        else:
+                            mvs.append(s+n)
+            
+            elif t == 'N':  # Knight
+                for dx, dy in [(2,1),(2,-1),(-2,1),(-2,-1),(1,2),(1,-2),(-1,2),(-1,-2)]:
+                    n = xy2sq(x+dx, y+dy)
+                    if n and (n not in b or b[n][0] != c):
+                        mvs.append(s+n)
+            
+            elif t in 'BRQ':  # Bishop, Rook, Queen
+                dirs = {'B':[(1,1),(1,-1),(-1,1),(-1,-1)],
+                        'R':[(1,0),(-1,0),(0,1),(0,-1)],
+                        'Q':[(1,1),(1,-1),(-1,1),(-1,-1),(1,0),(-1,0),(0,1),(0,-1)]}[t]
+                for dx, dy in dirs:
+                    for i in range(1,8):
+                        n = xy2sq(x+i*dx, y+i*dy)
+                        if not n:
+                            break
+                        if n in b:
+                            if b[n][0] != c:
+                                mvs.append(s+n)
+                            break
+                        mvs.append(s+n)
+            
+            elif t == 'K':  # King
+                for dx, dy in [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]:
+                    n = xy2sq(x+dx, y+dy)
+                    if n and (n not in b or b[n][0] != c):
+                        mvs.append(s+n)
+        
+        return mvs
+    
+    # Apply a move to the board
+    def do_move(b, m):
+        nb = b.copy()
+        f, t = m[:2], m[2:4]
+        nb[t] = nb[f] if len(m) == 4 else nb[f][0] + m[4].upper()
+        del nb[f]
+        return nb
+    
+    # Check if a color is in check
+    def checked(b, c):
+        ks = next((s for s, p in b.items() if p == c+'K'), None)
+        if not ks:
+            return False
+        opp = 'b' if c == 'w' else 'w'
+        return any(m[2:4] == ks for m in gen_moves(b, opp))
+    
+    # Get legal moves (filtering out moves that leave king in check)
+    def legal(b, c):
+        return [m for m in gen_moves(b, c) if not checked(do_move(b, m), c)]
+    
+    # Evaluate material balance
+    def eval_pos(b, c):
+        v = {'P':1, 'N':3, 'B':3, 'R':5, 'Q':9, 'K':0}
+        s = 0
+        opp = 'b' if c == 'w' else 'w'
+        for p in b.values():
+            val = v[p[1]]
+            s += val if p[0] == c else -val
+        return s
+    
+    # Score a move
+    def score(b, m, c):
+        v = {'P':100, 'N':320, 'B':330, 'R':500, 'Q':900, 'K':20000}
+        s = 0
+        
+        # Capture bonus
+        if m[2:4] in b:
+            s += v[b[m[2:4]][1]]
+        
+        # Promotion bonus
+        if len(m) == 5:
+            s += v[m[4].upper()]
+        
+        # Apply move
+        nb = do_move(b, m)
+        opp = 'b' if c == 'w' else 'w'
+        
+        # Check for checkmate
+        if checked(nb, opp):
+            s += 50
+            if not legal(nb, opp):
+                return 1000000  # Checkmate!
+        
+        # Material balance after move
+        s += eval_pos(nb, c) * 10
+        
+        # Center control bonus
+        x, y = sq2xy(m[2:4])
+        s += (4 - abs(x-3.5) - abs(y-3.5)) * 5
+        
+        return s
+    
+    # Get legal moves and select best one
+    mvs = legal(pieces, color)
+    if not mvs:
+        # Fallback (should not happen in normal play)
+        all_mvs = gen_moves(pieces, color)
+        return all_mvs[0] if all_mvs else 'e2e4'
+    
+    return max(mvs, key=lambda m: score(pieces, m, color))

@@ -1,0 +1,81 @@
+
+import numpy as np
+
+def check_win(board, player):
+    n = len(board)
+    # Check rows
+    for i in range(n):
+        for j in range(n):
+            if all(board[i][j][k] == player for k in range(n)):
+                return True
+            if all(board[i][k][j] == player for k in range(n)):
+                return True
+            if all(board[k][i][j] == player for k in range(n)):
+                return True
+
+    # Check diagonals in each slice
+    for i in range(n):
+        if all(board[i][k][k] == player for k in range(n)):
+            return True
+        if all(board[i][k][n-1-k] == player for k in range(n)):
+            return True
+        if all(board[k][i][k] == player for k in range(n)):
+            return True
+        if all(board[k][i][n-1-k] == player for k in range(n)):
+            return True
+        if all(board[k][k][i] == player for k in range(n)):
+            return True
+        if all(board[k][n-1-k][i] == player for k in range(n)):
+            return True
+            
+    # Check main diagonals
+    if all(board[k][k][k] == player for k in range(n)):
+        return True
+    if all(board[k][k][n-1-k] == player for k in range(n)):
+        return True
+    if all(board[k][n-1-k][k] == player for k in range(n)):
+        return True
+    if all(board[k][n-1-k][n-1-k] == player for k in range(n)):
+        return True
+    
+    return False
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Selects a move for a 3x3x3 Tic Tac Toe game.
+    """
+    n = len(board)
+
+    # 1. Check for winning move
+    for i in range(n):
+        for j in range(n):
+            for k in range(n):
+                if board[i][j][k] == 0:
+                    board[i][j][k] = 1
+                    if check_win(board, 1):
+                        return (i, j, k)
+                    board[i][j][k] = 0
+
+    # 2. Block opponent's winning move
+    for i in range(n):
+        for j in range(n):
+            for k in range(n):
+                if board[i][j][k] == 0:
+                    board[i][j][k] = -1
+                    if check_win(board, -1):
+                        return (i, j, k)
+                    board[i][j][k] = 0
+
+    # 3. Choose center if available
+    if board[n//2][n//2][n//2] == 0:
+        return (n//2, n//2, n//2)
+
+    # 4. Choose a random available cell
+    for i in range(n):
+        for j in range(n):
+            for k in range(n):
+                if board[i][j][k] == 0:
+                    return (i, j, k)
+
+    # If no moves are available (board full), return (0, 0, 0) as a default.
+    return (0, 0, 0)

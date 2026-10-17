@@ -1,0 +1,164 @@
+<thinking>
+We are going to implement a Kalah policy that uses minimax with alpha-beta pruning and a fixed depth of 5.
+ The policy will evaluate each possible move by simulating the game tree and choosing the move that maximizes our chance of winning.
+
+ Steps:
+ 1. We'll define helper functions: simulate_move and minimax.
+ 2. simulate_move(current, opponent, move_index) will simulate a move for the current player and return:
+      new_current: the updated board for the current player
+      new_opponent: the updated board for the opponent
+      extra_move: whether the current player gets another move (last seed in their store)
+ 3. minimax(you, opponent, depth, maximizing, alpha, beta) will compute the best value from the current state.
+    - If the game is over (no seeds in houses of one player), we return a terminal value.
+    - If depth==MAX_DEPTH, we return a heuristic evaluation.
+    - If maximizing, we try all moves for the current player (you) and propagate the maximum value.
+    - If minimizing, we try all moves for the opponent and propagate the minimum value.
+ 4. The policy function will iterate over all legal moves (non-empty houses in you), simulate the move, and then call minimax on the resulting state.
+    - It will choose the move that yields the highest minimax value.
+
+ Note: We must avoid mutating the input boards.
+
+ We'll set MAX_DEPTH = 5.
+
+ Let's code accordingly.
+</thinking>
+
+<code>
+MAX_DEPTH = 5
+INF = 10**9
+
+def simulate_move(current, opponent, move_index):
+    # Make deep copies to avoid mutating the original boards
+    current = current[:]  # shallow copy of list of 7 integers
+    opponent = opponent[:]
+    
+    n = current[move_index]
+    current[move_index] = 0  # pick up all seeds from the chosen house
+    
+    # Distribute the seeds
+    pos = move_index
+    last_pos = None
+    count = n
+    while count > 0:
+        pos = (pos + 1) % 14
+        if pos == 13:
+            # Skip opponent's store: move to the next house without placing a seed
+            pos = 0
+        # Place one seed at pos
+        if pos <= 6:
+            current[pos] += 1
+        else:
+            opponent[pos - 7] += 1
+        last_pos = pos
+        count -= 1
+    
+    extra_move = (last_pos == 6)
+    
+    # Check for capture
+    if last_pos is not None and 0 <= last_pos <= 5:
+        # Check if the house was empty before the last drop
+        if current[last_pos] - 1 == 0:
+            opposite_index = 5 - last_pos
+            if opponent[opposite_index] > 0:
+                # Capture: move the seed and the opposite seeds to the store
+                captured = current[last_pos] + opponent[opposite_index]
+                current[6] += captured
+                current[last_pos] = 0
+                opponent[opposite_index] = 0
+    
+    # Check for end of game conditions
+    if all(x == 0 for x in current[0:6]):
+        # Opponent collects their remaining seeds
+        opponent[6] += sum(opponent[0:6])
+        opponent[0:6] = [0]*6
+    elif all(x == 0 for x in opponent[0:6]):
+        # Current player collects their remaining seeds
+        current[6] += sum(current[0:6])
+        current[0:6] = [0]*6
+    
+    return current, opponent, extra_move
+
+def minimax(you, opponent, depth, maximizing, alpha, beta):
+    # Base case: terminal state
+    if all(x == 0 for x in you[0:6]):
+        # Opponent wins: all our houses empty -> they collect their seeds
+        opponent_total = opponent[6] + sum(opponent[0:6])
+        if you[6] > opponent_total:
+            return INF
+        elif you[6] < opponent_total:
+            return -INF
+        else:
+            return 0
+    
+    if all(x == 0 for x in opponent[0:6]):
+        # We win: all opponent houses empty -> we collect our seeds
+        our_total = you[6] + sum(you[0:6])
+        if our_total > opponent[6]:
+            return INF
+        elif our_total < opponent[6]:
+            return -INF
+        else:
+            return 0
+    
+    # Depth limit
+    if depth == MAX_DEPTH:
+        # Heuristic: our store minus opponent's store plus a fraction of house seeds difference
+        return (you[6] - opponent[6]) + (sum(you[0:6]) - sum(opponent[0:6])) * 0.1
+    
+    if maximizing:
+        best = -INF
+        for i in range(6):
+            if you[i] == 0:
+                continue
+            new_you, new_opponent, extra = simulate_move(you, opponent, i)
+            if extra:
+                value = minimax(new_you, new_opponent, depth+1, True, alpha, beta)
+            else:
+                value = minimax(new_opponent, new_you, depth+1, False, alpha, beta)
+            best = max(best, value)
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                break
+        return best
+    else:  # minimizing
+        best = INF
+        for i in range(6):
+            if opponent[i] == 0:
+                continue
+            new_opponent, new_you, extra = simulate_move(opponent, you, i)
+            if extra:
+                value = minimax(new_opponent, new_you, depth+1, False, alpha, beta)
+            else:
+                value = minimax(new_you, new_opponent, depth+1, True, alpha, beta)
+            best = min(best, value)
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return best
+
+def policy(you, opponent):
+    best_move = None
+    best_value = -INF
+    alpha = -INF
+    beta = INF
+    
+    for i in range(6):
+        if you[i] == 0:
+            continue
+        new_you, new_opponent, extra = simulate_move(you, opponent, i)
+        if extra:
+            value = minimax(new_you, new_opponent, 0, True, alpha, beta)
+        else:
+            value = minimax(new_opponent, new_you, 0, False, alpha, beta)
+        if value > best_value:
+            best_value = value
+            best_move = i
+            alpha = max(alpha, value)
+        else:
+            alpha = max(alpha, value)
+        
+        if beta <= alpha:
+            break
+    
+    return best_move
+</code>

@@ -1,0 +1,58 @@
+
+import random
+from typing import List, Tuple, Set
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    n = len(board)
+    
+    # Find all hits that haven't been sunk yet
+    hits = []
+    for i in range(n):
+        for j in range(n):
+            if board[i][j] == 1:
+                hits.append((i, j))
+    
+    # If we have hits, try to sink the ships
+    if hits:
+        # Try to find adjacent cells to continue attack
+        for row, col in hits:
+            # Check adjacent cells (up, right, down, left)
+            for dr, dc in [(-1, 0), (0, 1), (1, 0), (0, -1)]:
+                new_row, new_col = row + dr, col + dc
+                
+                # Check bounds
+                if 0 <= new_row < n and 0 <= new_col < n:
+                    # If this cell hasn't been fired at yet
+                    if board[new_row][new_col] == 0:
+                        return (new_row, new_col)
+    
+    # If no hits or no adjacent cells available, 
+    # use parity strategy to hunt for ships
+    # Ships of length >= 2 must occupy at least one even-parity cell
+    # Parity = (row + col) % 2
+    
+    # Collect all unchecked cells
+    unchecked = []
+    for i in range(n):
+        for j in range(n):
+            if board[i][j] == 0:
+                unchecked.append((i, j))
+    
+    # Separate by parity
+    even_parity = [(r, c) for r, c in unchecked if (r + c) % 2 == 0]
+    odd_parity = [(r, c) for r, c in unchecked if (r + c) % 2 == 1]
+    
+    # Prefer even parity (better for longer ships)
+    if even_parity:
+        return random.choice(even_parity)
+    elif odd_parity:
+        return random.choice(odd_parity)
+    
+    # Fallback (should never happen if called correctly)
+    for i in range(n):
+        for j in range(n):
+            if board[i][j] == 0:
+                return (i, j)
+                
+    # Should never reach here
+    return (0, 0)

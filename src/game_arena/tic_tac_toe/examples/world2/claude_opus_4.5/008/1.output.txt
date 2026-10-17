@@ -1,0 +1,240 @@
+<thinking>
+I need to create a policy for a 4x4 Tic Tac Toe game. In a 4x4 version, typically you need 4 in a row to win (though sometimes it's 3 in a row - I'll assume 4 in a row based on standard rules).
+
+Let me think about the approach:
+
+1. First, I should check if there's a winning move available (I can win immediately)
+2. Then check if I need to block the opponent from winning
+3. Otherwise, use a minimax algorithm with alpha-beta pruning to find the best move
+
+For a 4x4 board with 4-in-a-row win condition, the game tree is smaller than it might seem because many positions are draws or have clear winners.
+
+Let me implement a minimax with alpha-beta pruning approach:
+
+1. Check all lines (rows, columns, diagonals) for winning conditions
+2. Evaluate positions
+3. Use minimax to search ahead
+
+For 4x4 Tic Tac Toe with 4-in-a-row:
+- 4 rows
+- 4 columns  
+- 2 main diagonals
+
+Let me code this:
+
+```python
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    board = np.array(board)
+    
+    # Check for winning lines
+    def check_winner(b):
+        # Rows
+        for i in range(4):
+            if abs(sum(b[i, :])) == 4:
+                return np.sign(sum(b[i, :]))
+        # Columns
+        for j in range(4):
+            if abs(sum(b[:, j])) == 4:
+                return np.sign(sum(b[:, j]))
+        # Diagonals
+        if abs(sum(b.diagonal())) == 4:
+            return np.sign(sum(b.diagonal()))
+        if abs(sum(np.fliplr(b).diagonal())) == 4:
+            return np.sign(sum(np.fliplr(b).diagonal()))
+        return 0
+    
+    def get_empty(b):
+        return [(i, j) for i in range(4) for j in range(4) if b[i, j] == 0]
+    
+    def minimax(b, depth, alpha, beta, maximizing):
+        winner = check_winner(b)
+        if winner == 1:
+            return 100 + depth, None
+        if winner == -1:
+            return -100 - depth, None
+        
+        empty = get_empty(b)
+        if not empty or depth == 0:
+            return evaluate(b), None
+        
+        if maximizing:
+            max_eval = float('-inf')
+            best_move = empty[0]
+            for move in empty:
+                b[move] = 1
+                eval_score, _ = minimax(b, depth - 1, alpha, beta, False)
+                b[move] = 0
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = empty[0]
+            for move in empty:
+                b[move] = -1
+                eval_score, _ = minimax(b, depth - 1, alpha, beta, True)
+                b[move] = 0
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    def evaluate(b):
+        # Simple evaluation: count potential winning lines
+        score = 0
+        lines = []
+        for i in range(4):
+            lines.append(b[i, :])
+            lines.append(b[:, i])
+        lines.append(b.diagonal())
+        lines.append(np.fliplr(b).diagonal())
+        
+        for line in lines:
+            if -1 not in line:
+                score += sum(line) ** 2
+            if 1 not in line:
+                score -= sum(line) ** 2
+        return score
+    
+    _, best_move = minimax(board.copy(), 6, float('-inf'), float('inf'), True)
+    return best_move
+```
+
+Let me refine this a bit more for efficiency and correctness. I'll increase search depth and make sure the evaluation is good.
+</thinking>
+
+<code>
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    board = np.array(board, dtype=np.int8)
+    
+    def check_winner(b):
+        # Rows
+        for i in range(4):
+            s = np.sum(b[i, :])
+            if s == 4: return 1
+            if s == -4: return -1
+        # Columns
+        for j in range(4):
+            s = np.sum(b[:, j])
+            if s == 4: return 1
+            if s == -4: return -1
+        # Diagonals
+        s = b[0,0] + b[1,1] + b[2,2] + b[3,3]
+        if s == 4: return 1
+        if s == -4: return -1
+        s = b[0,3] + b[1,2] + b[2,1] + b[3,0]
+        if s == 4: return 1
+        if s == -4: return -1
+        return 0
+    
+    def get_empty(b):
+        return [(i, j) for i in range(4) for j in range(4) if b[i, j] == 0]
+    
+    def evaluate(b):
+        score = 0
+        # Evaluate all lines
+        for i in range(4):
+            # Row
+            row = b[i, :]
+            ones = np.sum(row == 1)
+            negs = np.sum(row == -1)
+            if negs == 0 and ones > 0:
+                score += 10 ** ones
+            if ones == 0 and negs > 0:
+                score -= 10 ** negs
+            # Column
+            col = b[:, i]
+            ones = np.sum(col == 1)
+            negs = np.sum(col == -1)
+            if negs == 0 and ones > 0:
+                score += 10 ** ones
+            if ones == 0 and negs > 0:
+                score -= 10 ** negs
+        
+        # Main diagonal
+        diag = np.array([b[i,i] for i in range(4)])
+        ones = np.sum(diag == 1)
+        negs = np.sum(diag == -1)
+        if negs == 0 and ones > 0:
+            score += 10 ** ones
+        if ones == 0 and negs > 0:
+            score -= 10 ** negs
+        
+        # Anti-diagonal
+        adiag = np.array([b[i,3-i] for i in range(4)])
+        ones = np.sum(adiag == 1)
+        negs = np.sum(adiag == -1)
+        if negs == 0 and ones > 0:
+            score += 10 ** ones
+        if ones == 0 and negs > 0:
+            score -= 10 ** negs
+        
+        return score
+    
+    def minimax(b, depth, alpha, beta, maximizing):
+        winner = check_winner(b)
+        if winner == 1:
+            return 100000 + depth, None
+        if winner == -1:
+            return -100000 - depth, None
+        
+        empty = get_empty(b)
+        if not empty:
+            return 0, None
+        if depth == 0:
+            return evaluate(b), None
+        
+        if maximizing:
+            max_eval = float('-inf')
+            best_move = empty[0]
+            for move in empty:
+                b[move[0], move[1]] = 1
+                eval_score, _ = minimax(b, depth - 1, alpha, beta, False)
+                b[move[0], move[1]] = 0
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            best_move = empty[0]
+            for move in empty:
+                b[move[0], move[1]] = -1
+                eval_score, _ = minimax(b, depth - 1, alpha, beta, True)
+                b[move[0], move[1]] = 0
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    empty_count = np.sum(board == 0)
+    # Adjust depth based on empty squares
+    if empty_count > 12:
+        depth = 5
+    elif empty_count > 8:
+        depth = 6
+    elif empty_count > 5:
+        depth = 8
+    else:
+        depth = 16  # Can search to end
+    
+    _, best_move = minimax(board.copy(), depth, float('-inf'), float('inf'), True)
+    return best_move
+</code>

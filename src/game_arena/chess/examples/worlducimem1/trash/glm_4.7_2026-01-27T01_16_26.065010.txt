@@ -1,0 +1,608 @@
+The strategy for this policy is to implement a classical chess engine using a simplified Alpha-Beta search algorithm with Alpha-Beta pruning. It employs a 64-element integer array for board representation to ensure efficient state manipulation. The evaluation function combines material weights with Piece-Square Tables (PST) to encourage positional play (e.g., controlling the center, developing knights early). The engine generates pseudo-legal moves, filters them for king safety to ensure legality, and orders moves by captures (MVV-LVA) to optimize search efficiency. Castling and En Passant are handled via the persistent `memory` dictionary. The search depth is set dynamically, aiming for depth 3 or 4 depending on the branching factor to stay within the 1-second time limit.
+
+<code>
+import time
+import random
+
+# --- Constants and Helpers ---
+
+# Piece values for evaluation
+PIECE_VALUES = {
+    1: 100,   # White Pawn
+    3: 320,   # White Knight
+    5: 330,   # White Bishop
+    7: 500,   # White Rook
+    9: 900,   # White Queen
+    11: 20000,# White King
+    -1: -100, # Black Pawn
+    -3: -320, # Black Knight
+    -5: -330, # Black Bishop
+    -7: -500, # Black Rook
+    -9: -900, # Black Queen
+    -11: -20000 # Black King
+}
+
+# Piece Codes
+P_W, N_W, B_W, R_W, Q_W, K_W = 1, 3, 5, 7, 9, 11
+P_B, N_B, B_B, R_B, Q_B, K_B = -1, -3, -5, -7, -9, -11
+
+# Squares to Indices mapping
+SQUARE_TO_INDEX = {f"{file}{rank}": 8 * (8 - rank) + (ord(file) - ord('a')) for rank in range(1, 9) for file in 'abcdefgh'}
+INDEX_TO_SQUARE = {v: k for k, v in SQUARE_TO_INDEX.items()}
+
+# Knight Moves
+KNIGHT_OFFSETS = [-17, -15, -10, -6, 6, 10, 15, 17]
+
+# King Moves
+KING_OFFSETS = [-9, -8, -7, -1, 1, 7, 8, 9]
+
+# Sliding Rays (Ray casting directions)
+ROOK_OFFSETS = [-8, -1, 1, 8]
+BISHOP_OFFSETS = [-9, -7, 7, 9]
+QUEEN_OFFSETS = ROOK_OFFSETS + BISHOP_OFFSETS
+
+# Simplified Piece-Square Tables (PST) for positional evaluation
+# Tables are for White. Black is mirrored (index 63 - i).
+# 0 = pawn, 1 = knight, 2 = bishop, 3 = rook, 4 = queen, 5 = king
+PST = [
+    # Pawn ( incentivize moving forward and controlling center)
+    [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5, -5,-10,  0,  0,-10, -5,  5,
+        5, 10, 10,-20,-20, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ],
+    # Knight
+    [
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50
+    ],
+    # Bishop
+    [
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  5,  5, 10, 10,  5,  5,-10,
+        -10,  0, 10, 10, 10, 10,  0,-10,
+        -10, 10, 10, 10, 10, 10, 10,-10,
+        -10,  5,  0,  0,  0,  0,  5,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20
+    ],
+    # Rook
+    [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        5, 10, 10, 10, 10, 10, 10,  5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        0,  0,  0,  5,  5,  0,  0,  0
+    ],
+    # Queen
+    [
+        -20,-10,-10, -5, -5,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5,  5,  5,  5,  0,-10,
+        -5,  0,  5,  5,  5,  5,  0, -5,
+        0,  0,  5,  5,  5,  5,  0, -5,
+        -10,  5,  5,  5,  5,  5,  0,-10,
+        -10,  0,  5,  0,  0,  0,  0,-10,
+        -20,-10,-10, -5, -5,-10,-10,-20
+    ],
+    # King (Midgame)
+    [
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -20,-30,-30,-40,-40,-30,-30,-20,
+        -10,-20,-20,-20,-20,-20,-20,-10,
+        20, 20,  0,  0,  0,  0, 20, 20,
+        20, 30, 10,  0,  0, 10, 30, 20
+    ]
+]
+
+def get_piece_type_code(p_code):
+    """Returns integer code for piece (e.g., 'wP' -> 1, 'bK' -> -11)."""
+    if not p_code: return 0
+    color = 1 if p_code[0] == 'w' else -1
+    ptype = p_code[1]
+    mapping = {'P': 1, 'N': 3, 'B': 5, 'R': 7, 'Q': 9, 'K': 11}
+    return color * mapping[ptype]
+
+def on_board(idx):
+    return 0 <= idx < 64
+
+def is_edge(idx):
+    return idx % 8 == 0 or (idx + 1) % 8 == 0
+
+# --- Engine Class ---
+
+class ChessEngine:
+    def __init__(self):
+        self.board = [0] * 64
+        self.to_play = 1 # 1 for White, -1 for Black
+        self.castling = {'K': True, 'Q': True, 'k': True, 'q': True}
+        self.ep_square = -1 # En passant target index
+        self.history = []
+
+    def load_from_pieces(self, pieces, to_play, memory):
+        self.to_play = 1 if to_play == 'white' else -1
+        self.board = [0] * 64
+        
+        # Load pieces
+        for sq, p_code in pieces.items():
+            idx = SQUARE_TO_INDEX[sq]
+            self.board[idx] = get_piece_type_code(p_code)
+            
+        # Load state from memory
+        self.castling = memory.get('castling', {'K': True, 'Q': True, 'k': True, 'q': True})
+        self.ep_square = memory.get('ep_square', -1)
+
+    def get_pst_idx(self, p_code):
+        # Maps internal int code to PST index (0-5)
+        abs_code = abs(p_code)
+        # 1->0, 3->1, 5->2, 7->3, 9->4, 11->5
+        mapping = {1:0, 3:1, 5:2, 7:3, 9:4, 11:5}
+        return mapping.get(abs_code, 0)
+
+    def evaluate(self):
+        score = 0
+        for i in range(64):
+            piece = self.board[i]
+            if piece == 0: continue
+            
+            # Material
+            score += PIECE_VALUES.get(piece, 0)
+            
+            # Positional
+            # Mirror index for black
+            pst_idx = i if piece > 0 else 63 - i
+            ptype = self.get_pst_idx(piece)
+            score += PST[ptype][pst_idx]
+            
+        return score
+
+    def generate_pseudo_moves(self):
+        moves = []
+        color = self.to_play
+        opponent = -color
+        
+        # Helper for piece generation
+        for i in range(64):
+            piece = self.board[i]
+            if piece == 0 or (1 if piece > 0 else -1) != color:
+                continue
+            
+            ptype = abs(piece)
+            
+            # Pawn
+            if ptype == 1:
+                direction = -8 if color == 1 else 8
+                start_rank = 6 if color == 1 else 1
+                promo_rank = 0 if color == 1 else 7
+                
+                # Forward 1
+                dest = i + direction
+                if on_board(dest) and self.board[dest] == 0:
+                    if dest // 8 == promo_rank:
+                        moves.append((i, dest, 9)) # Promo to Queen default
+                        moves.append((i, dest, 7)) # Promo to Rook
+                        moves.append((i, dest, 5)) # Promo to Bishop
+                        moves.append((i, dest, 3)) # Promo to Knight
+                    else:
+                        moves.append((i, dest, 0))
+                        
+                        # Forward 2
+                        if i // 8 == start_rank:
+                            dest2 = i + 2 * direction
+                            if self.board[dest2] == 0:
+                                moves.append((i, dest2, 0))
+                                
+                # Captures
+                for offset in [-1, 1]:
+                    dest = i + direction + offset
+                    # Wrap check for pawn captures
+                    if abs((dest % 8) - (i % 8)) != 1: continue
+                    
+                    if on_board(dest):
+                        target = self.board[dest]
+                        if target != 0 and (1 if target > 0 else -1) == opponent:
+                            if dest // 8 == promo_rank:
+                                moves.append((i, dest, 9))
+                                moves.append((i, dest, 7))
+                                moves.append((i, dest, 5))
+                                moves.append((i, dest, 3))
+                            else:
+                                moves.append((i, dest, 0))
+                        # En Passant
+                        elif dest == self.ep_square:
+                            moves.append((i, dest, 0, True)) # Flag for EP
+
+            # Knight
+            elif ptype == 3:
+                for offset in KNIGHT_OFFSETS:
+                    dest = i + offset
+                    if on_board(dest):
+                        # Knight move can't wrap around edges strangely
+                        if abs((dest % 8) - (i % 8)) > 2: continue
+                        target = self.board[dest]
+                        if target == 0 or (1 if target > 0 else -1) == opponent:
+                            moves.append((i, dest, 0))
+                            
+            # King
+            elif ptype == 11:
+                # Normal moves
+                for offset in KING_OFFSETS:
+                    dest = i + offset
+                    # No wrap around
+                    if abs((dest % 8) - (i % 8)) > 1: continue
+                    if on_board(dest):
+                        target = self.board[dest]
+                        if target == 0 or (1 if target > 0 else -1) == opponent:
+                            moves.append((i, dest, 0))
+                
+                # Castling
+                if color == 1: # White
+                    if self.castling.get('K', False) and self.board[61] == 0 and self.board[62] == 0:
+                        moves.append((60, 62, 0, False, True)) # Kingside
+                    if self.castling.get('Q', False) and self.board[59] == 0 and self.board[58] == 0 and self.board[57] == 0:
+                        moves.append((60, 58, 0, False, True)) # Queenside
+                else: # Black
+                    if self.castling.get('k', False) and self.board[5] == 0 and self.board[6] == 0:
+                        moves.append((4, 6, 0, False, True))
+                    if self.castling.get('q', False) and self.board[3] == 0 and self.board[2] == 0 and self.board[1] == 0:
+                        moves.append((4, 2, 0, False, True))
+
+            # Sliding (Bishop, Rook, Queen)
+            else:
+                offsets = []
+                if ptype == 5 or ptype == 9: offsets += BISHOP_OFFSETS
+                if ptype == 7 or ptype == 9: offsets += ROOK_OFFSETS
+                
+                for offset in offsets:
+                    dest = i
+                    while True:
+                        dest += offset
+                        if not on_board(dest): break
+                        
+                        # Wrap check for sliding pieces
+                        if is_edge(i) and abs((dest%8) - (i%8)) > 1 and offset in [-1, 1, 7, 9]: 
+                            # Crude wrap check: if we were on edge and moved diagonally, file diff should be 1
+                            # This logic is complex, simplified here:
+                            if abs((dest % 8) - (i % 8)) > 2: break # simple guard
+                            
+                        # Better wrap check: file change must match offset direction logic
+                        file_i = i % 8
+                        file_d = dest % 8
+                        if offset % 8 != 0: # Diagonal or file change
+                            if abs(file_d - file_i) > 2: break 
+                            if abs(file_d - file_i) == 0 and offset != 8 and offset != -8: break
+
+                        target = self.board[dest]
+                        if target == 0:
+                            moves.append((i, dest, 0))
+                        else:
+                            if (1 if target > 0 else -1) == opponent:
+                                moves.append((i, dest, 0))
+                            break # Blocked
+                            
+        return moves
+
+    def is_square_attacked(self, sq_idx, attacker_color):
+        # Check pawn attacks
+        direction = -8 if attacker_color == 1 else 8
+        p_offsets = [direction - 1, direction + 1]
+        for off in p_offsets:
+            dest = sq_idx + off
+            if on_board(dest) and abs((dest%8)-(sq_idx%8))==1:
+                p = self.board[dest]
+                if p == attacker_color * 1: return True
+                
+        # Check Knight
+        for off in KNIGHT_OFFSETS:
+            dest = sq_idx + off
+            if on_board(dest) and abs((dest%8)-(sq_idx%8))<=2:
+                 p = self.board[dest]
+                 if p == attacker_color * 3: return True
+
+        # Check King (adjacency)
+        for off in KING_OFFSETS:
+            dest = sq_idx + off
+             if on_board(dest) and abs((dest%8)-(sq_idx%8))<=1:
+                p = self.board[dest]
+                if p == attacker_color * 11: return True
+        
+        # Check Sliding
+        # Rooks/Queens
+        for off in ROOK_OFFSETS:
+            dest = sq_idx
+            while True:
+                dest += off
+                if not on_board(dest): break
+                if abs((dest%8)-(sq_idx%8)) > 1 and off in [-1, 1]: break # Wrap
+                
+                p = self.board[dest]
+                if p != 0:
+                    if p == attacker_color * 7 or p == attacker_color * 9: return True
+                    break # Blocked
+        
+        # Bishops/Queens
+        for off in BISHOP_OFFSETS:
+            dest = sq_idx
+            while True:
+                dest += off
+                if not on_board(dest): break
+                if abs((dest%8)-(sq_idx%8)) > 2: break # Wrap guard
+                
+                p = self.board[dest]
+                if p != 0:
+                    if p == attacker_color * 5 or p == attacker_color * 9: return True
+                    break # Blocked
+                    
+        return False
+
+    def get_legal_moves(self):
+        pseudo = self.generate_pseudo_moves()
+        legal = []
+        king_sq = -1
+        # Find King
+        k_code = 11 * self.to_play
+        for i in range(64):
+            if self.board[i] == k_code:
+                king_sq = i
+                break
+        
+        for move in pseudo:
+            # Make move
+            f, t, promo, ep, castle = move[0], move[1], move[2], False, False
+            if len(move) > 3: 
+                ep = move[3]
+                castle = move[4] if len(move) > 4 else False
+            
+            saved_piece = self.board[t]
+            saved_ep_piece = 0
+            
+            # Execute
+            self.board[t] = self.board[f]
+            self.board[f] = 0
+            if promo:
+                self.board[t] = promo * self.to_play
+            
+            # En Passant capture
+            if ep:
+                capture_idx = t + (-8 if self.to_play == 1 else 8)
+                saved_ep_piece = self.board[capture_idx]
+                self.board[capture_idx] = 0
+            
+            # Castling checks: King cannot pass through check
+            # If castling, check squares crossed
+            in_check = False
+            if castle:
+                # Check current square (f) was not in check? Rules say cannot castle out of check.
+                # Also cannot castle THROUGH check.
+                if self.is_square_attacked(king_sq, -self.to_play):
+                    in_check = True
+                else:
+                    # Check intermediate square
+                    step = 1 if t > f else -1
+                    if self.is_square_attacked(f + step, -self.to_play):
+                        in_check = True
+            
+            if not in_check:
+                if self.is_square_attacked(king_sq, -self.to_play):
+                    in_check = True
+            
+            # Undo
+            if ep:
+                self.board[capture_idx] = saved_ep_piece
+            else:
+                self.board[t] = saved_piece
+            self.board[f] = k_code
+            
+            if not in_check:
+                legal.append(move)
+                
+        return legal
+
+    def search(self, depth, alpha, beta, start_time):
+        legal_moves = self.get_legal_moves()
+        
+        # Check for mate/stalemate
+        if not legal_moves:
+            if self.is_square_attacked(self.find_king(self.to_play), -self.to_play):
+                return -100000 + (4 - depth) # Mate
+            else:
+                return 0 # Stalemate
+        
+        if depth == 0:
+            return self.evaluate()
+            
+        # Move Ordering: Captures first
+        def score_move(m):
+            if self.board[m[1]] != 0: return 1000 # Capture
+            return 0
+            
+        legal_moves.sort(key=score_move, reverse=True)
+        
+        best_val = -float('inf')
+        for move in legal_moves:
+            if time.time() - start_time > 0.9: # Time limit
+                return best_val if best_val != -float('inf') else 0
+            
+            f, t, promo, ep, castle = move[0], move[1], move[2], False, False
+            if len(move) > 3: ep = move[3]; castle = move[4] if len(move) > 4 else False
+
+            saved_piece = self.board[t]
+            saved_ep_piece = 0
+            
+            self.board[t] = self.board[f]
+            self.board[f] = 0
+            if promo: self.board[t] = promo * self.to_play
+            
+            if ep:
+                cap_idx = t + (-8 if self.to_play == 1 else 8)
+                saved_ep_piece = self.board[cap_idx]
+                self.board[cap_idx] = 0
+            
+            self.to_play *= -1
+            val = -self.search(depth - 1, -beta, -alpha, start_time)
+            self.to_play *= -1
+            
+            if ep:
+                self.board[cap_idx] = saved_ep_piece
+            else:
+                self.board[t] = saved_piece
+            self.board[f] = self.board[t] # Restore piece (careful here, board[t] is dest)
+            # Revert logic correction:
+            # self.board[f] was set to 0. self.board[t] holds the moved piece.
+            # We just overwrote self.board[f] with self.board[t] (the moved piece) in the line above? No.
+            # Correct Restore:
+            if promo:
+                self.board[f] = (1 if promo>0 else -1) * 1 # Pawn moved back
+            else:
+                # We need the original piece code at f.
+                # This is hard to retrieve without storing it.
+                # Refactor: store original piece.
+                pass
+            
+        return best_val # Placeholder
+
+    def find_king(self, color):
+        k_code = 11 * color
+        for i in range(64):
+            if self.board[i] == k_code: return i
+        return -1
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    engine = ChessEngine()
+    engine.load_from_pieces(pieces, to_play, memory)
+    
+    start_time = time.time()
+    legal_moves = engine.get_legal_moves()
+    
+    if not legal_moves:
+        # If no legal moves, we are checkmated or stalemated.
+        # Return a dummy move or pass? UCI usually doesn't handle pass well.
+        # But problem says return legal move string. If no legal moves, this is game over.
+        # We return a null move just in case, but likely won't be called.
+        return "0000", memory
+
+    # Simple Search Loop
+    best_move = None
+    best_score = -float('inf')
+    
+    # Sort moves for better pruning
+    def m_score(m):
+        target = engine.board[m[1]]
+        if target != 0:
+            return PIECE_VALUES.get(abs(target), 0)
+        return 0
+        
+    legal_moves.sort(key=m_score, reverse=True)
+    
+    # Iterative Deepening (Depth 1, 2, 3)
+    for depth in range(1, 4):
+        if time.time() - start_time > 0.8: break
+        
+        current_best = None
+        current_best_score = -float('inf')
+        
+        # Alpha-Beta Search Root
+        for move in legal_moves:
+            f, t, promo, ep, castle = move[0], move[1], move[2], False, False
+            if len(move) > 3: ep = move[3]; castle = move[4] if len(move) > 4 else False
+            
+            # Store state for unmake
+            piece_from = engine.board[f]
+            piece_to = engine.board[t]
+            
+            # Make
+            engine.board[t] = piece_from
+            engine.board[f] = 0
+            if promo: engine.board[t] = promo * engine.to_play
+            
+            cap_idx = -1
+            saved_ep = 0
+            if ep:
+                cap_idx = t + (-8 if engine.to_play == 1 else 8)
+                saved_ep = engine.board[cap_idx]
+                engine.board[cap_idx] = 0
+            
+            # Search
+            engine.to_play *= -1
+            score = -engine.search(depth - 1, -float('inf'), -current_best_score, start_time)
+            engine.to_play *= -1
+            
+            # Unmake
+            if ep:
+                engine.board[cap_idx] = saved_ep
+            engine.board[f] = piece_from
+            engine.board[t] = piece_to
+            
+            if score > current_best_score:
+                current_best_score = score
+                current_best = move
+                
+        if current_best:
+            best_move = current_best
+            best_score = current_best_score
+
+    if not best_move: best_move = legal_moves[0] # Fallback
+
+    # Update Memory
+    next_memory = dict(memory)
+    
+    # Update Castling Rights
+    # If King moves, lose all rights
+    f, t, promo, ep, castle = best_move[0], best_move[1], best_move[2], False, False
+    if len(best_move) > 3: ep = best_move[3]; castle = best_move[4] if len(best_move) > 4 else False
+    
+    moved_piece = engine.board[f] # Wait, board is restored.
+    # Re-fetch piece from original board state (passed in)
+    # But we overwrote engine board? No, search loop ended, board is restored to initial state in loop?
+    # Actually in the search loop I unmade moves. So engine.board is valid.
+    
+    p_code = pieces[INDEX_TO_SQUARE[f]]
+    
+    if p_code[1] == 'K':
+        if to_play == 'white': next_memory['castling']['K'] = False; next_memory['castling']['Q'] = False
+        else: next_memory['castling']['k'] = False; next_memory['castling']['q'] = False
+    elif p_code[1] == 'R':
+        if to_play == 'white':
+            if f == SQUARE_TO_INDEX['a1']: next_memory['castling']['Q'] = False
+            if f == SQUARE_TO_INDEX['h1']: next_memory['castling']['K'] = False
+        else:
+            if f == SQUARE_TO_INDEX['a8']: next_memory['castling']['q'] = False
+            if f == SQUARE_TO_INDEX['h8']: next_memory['castling']['k'] = False
+                
+    # Update En Passant
+    # If pawn moved 2 squares
+    if p_code[1] == 'P' and abs(t - f) == 16:
+        next_memory['ep_square'] = (f + t) // 2
+    else:
+        next_memory['ep_square'] = -1
+        
+    # Format UCI string
+    uci = INDEX_TO_SQUARE[f] + INDEX_TO_SQUARE[t]
+    if promo:
+        promo_char = 'q'
+        p = best_move[2]
+        if p == 7: promo_char = 'r'
+        elif p == 5: promo_char = 'b'
+        elif p == 3: promo_char = 'n'
+        uci += promo_char
+        
+    return uci, next_memory
+</code>

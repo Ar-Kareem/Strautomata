@@ -1,0 +1,238 @@
+The strategy for this policy is a fast adversarial search with strong safety guarantees:
+
+- It always generates only legal Clobber moves, so it will never be disqualified.
+- It uses alpha-beta minimax to search several plies ahead.
+- It orders moves to improve pruning and strength.
+- It heavily prefers immediate wins, avoids immediate losing replies, and uses mobility-based evaluation:
+  - maximize your legal moves,
+  - minimize opponent legal moves,
+  - prefer creating trapped enemy pieces,
+  - prefer preserving connected local fighting chances.
+- If search cannot finish for any reason, it still returns a legal move via a safe fallback.
+
+<code>
+import time
+from typing import List, Tuple
+
+ROWS = 5
+COLS = 6
+DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+
+WIN_SCORE = 10**9
+
+def _to_masks(you, opponent):
+    ym = 0
+    om = 0
+    idx = 0
+    for r in range(ROWS):
+        for c in range(COLS):
+            if you[r][c]:
+                ym |= (1 << idx)
+            elif opponent[r][c]:
+                om |= (1 << idx)
+            idx += 1
+    return ym, om
+
+def _bit(r: int, c: int) -> int:
+    return 1 << (r * COLS + c)
+
+def _iter_bits(mask: int):
+    while mask:
+        lsb = mask & -mask
+        idx = lsb.bit_length() - 1
+        yield idx
+        mask ^= lsb
+
+def _legal_moves_masks(ym: int, om: int):
+    moves = []
+    for idx in _iter_bits(ym):
+        r = idx // COLS
+        c = idx % COLS
+        for dr, dc, ch in DIRS:
+            nr = r + dr
+            nc = c + dc
+            if 0 <= nr < ROWS and 0 <= nc < COLS:
+                nidx = nr * COLS + nc
+                if (om >> nidx) & 1:
+                    moves.append((idx, nidx, ch))
+    return moves
+
+def _apply_move(ym: int, om: int, move):
+    src, dst, _ = move
+    ym2 = ym
+    om2 = om
+    ym2 &= ~(1 << src)
+    om2 &= ~(1 << dst)
+    ym2 |= (1 << dst)
+    return ym2, om2
+
+def _move_to_str(move):
+    src, _, ch = move
+    r = src // COLS
+    c = src % COLS
+    return f"{r},{c},{ch}"
+
+def _adj_enemy_count(idx: int, enemy_mask: int) -> int:
+    r = idx // COLS
+    c = idx % COLS
+    cnt = 0
+    if r > 0 and ((enemy_mask >> (idx - COLS)) & 1):
+        cnt += 1
+    if r + 1 < ROWS and ((enemy_mask >> (idx + COLS)) & 1):
+        cnt += 1
+    if c > 0 and ((enemy_mask >> (idx - 1)) & 1):
+        cnt += 1
+    if c + 1 < COLS and ((enemy_mask >> (idx + 1)) & 1):
+        cnt += 1
+    return cnt
+
+def _count_trapped(mask_a: int, mask_b: int) -> int:
+    trapped = 0
+    for idx in _iter_bits(mask_a):
+        if _adj_enemy_count(idx, mask_b) == 0:
+            trapped += 1
+    return trapped
+
+def _count_frontier(mask_a: int, mask_b: int) -> int:
+    cnt = 0
+    for idx in _iter_bits(mask_a):
+        if _adj_enemy_count(idx, mask_b) > 0:
+            cnt += 1
+    return cnt
+
+def _evaluate(ym: int, om: int) -> int:
+    my_moves = _legal_moves_masks(ym, om)
+    if not my_moves:
+        return -WIN_SCORE
+    opp_moves = _legal_moves_masks(om, ym)
+    if not opp_moves:
+        return WIN_SCORE
+
+    my_count = ym.bit_count()
+    opp_count = om.bit_count()
+    my_mob = len(my_moves)
+    opp_mob = len(opp_moves)
+
+    my_front = _count_frontier(ym, om)
+    opp_front = _count_frontier(om, ym)
+    my_trapped = _count_trapped(ym, om)
+    opp_trapped = _count_trapped(om, ym)
+
+    score = 0
+    score += 120 * (my_mob - opp_mob)
+    score += 18 * (my_front - opp_front)
+    score += 22 * (opp_trapped - my_trapped)
+    score += 6 * (my_count - opp_count)
+
+    return score
+
+def _ordered_moves(ym: int, om: int):
+    moves = _legal_moves_masks(ym, om)
+    scored = []
+    for mv in moves:
+        ym2, om2 = _apply_move(ym, om, mv)
+
+        opp_moves = _legal_moves_masks(om2, ym2)
+        if not opp_moves:
+            pri = 10**7
+        else:
+            opp_mob = len(opp_moves)
+            my_reply_mob = len(_legal_moves_masks(ym2, om2))
+            dst = mv[1]
+            local = _adj_enemy_count(dst, om2)
+            pri = 1000 * (20 - opp_mob) + 50 * my_reply_mob + 10 * local
+
+            losing_reply_exists = False
+            for omv in opp_moves:
+                om3, ym3 = _apply_move(om2, ym2, omv)
+                if not _legal_moves_masks(ym3, om3):
+                    losing_reply_exists = True
+                    break
+            if losing_reply_exists:
+                pri -= 50000
+
+        scored.append((pri, mv))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [mv for _, mv in scored]
+
+def policy(you: List[List[int]], opponent: List[List[int]]) -> str:
+    ym, om = _to_masks(you, opponent)
+    legal = _legal_moves_masks(ym, om)
+    if not legal:
+        # Should not happen in valid arena states, but must return a string.
+        # Return a syntactically valid move string fallback.
+        return "0,0,R"
+
+    start_time = time.time()
+    time_limit = 0.92
+
+    best_move = _ordered_moves(ym, om)[0]
+    tt = {}
+
+    def negamax(cur_you: int, cur_opp: int, depth: int, alpha: int, beta: int) -> int:
+        if time.time() - start_time > time_limit:
+            raise TimeoutError
+
+        key = (cur_you, cur_opp, depth)
+        if key in tt:
+            return tt[key]
+
+        moves = _ordered_moves(cur_you, cur_opp)
+        if not moves:
+            return -WIN_SCORE + (20 - depth)
+
+        if depth == 0:
+            val = _evaluate(cur_you, cur_opp)
+            tt[key] = val
+            return val
+
+        best = -10**18
+        a = alpha
+        for mv in moves:
+            ny, no = _apply_move(cur_you, cur_opp, mv)
+            val = -negamax(no, ny, depth - 1, -beta, -a)
+            if val > best:
+                best = val
+            if best > a:
+                a = best
+            if a >= beta:
+                break
+
+        tt[key] = best
+        return best
+
+    ordered_root = _ordered_moves(ym, om)
+
+    try:
+        depth = 1
+        while True:
+            if time.time() - start_time > time_limit:
+                break
+
+            current_best = ordered_root[0]
+            current_best_val = -10**18
+            alpha = -10**18
+            beta = 10**18
+
+            root_moves = _ordered_moves(ym, om)
+            for mv in root_moves:
+                ny, no = _apply_move(ym, om, mv)
+                val = -negamax(no, ny, depth - 1, -beta, -alpha)
+
+                if val > current_best_val:
+                    current_best_val = val
+                    current_best = mv
+                if val > alpha:
+                    alpha = val
+
+            best_move = current_best
+            depth += 1
+
+    except TimeoutError:
+        pass
+    except Exception:
+        # Safe fallback to strongest quickly ordered legal move.
+        pass
+
+    return _move_to_str(best_move)
+</code>

@@ -1,0 +1,409 @@
+The strategy for this policy is a fast alpha–beta minimax checkers engine with mandatory-capture enforcement. It (1) generates all legal single-step moves and single-jump captures (captures always preferred), (2) searches several plies deep with iterative deepening under a strict time budget, (3) evaluates positions using material (men/kings), promotion progress, center control, mobility, and “hanging piece” safety (pieces that can be captured next move are penalized). Captures, promotions, and centralizing moves are ordered first to improve pruning and tactical strength.
+
+<code>
+import time
+from functools import lru_cache
+from typing import List, Tuple, Optional
+
+Square = Tuple[int, int]
+Move = Tuple[Square, Square]
+
+# ---------------------------
+# Helpers / core move logic
+# ---------------------------
+
+def _in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+def _opponent(color: str) -> str:
+    return "w" if color == "b" else "b"
+
+def _dirs_for_piece(is_king: bool, color: str):
+    # Note: Coordinates: row 0 bottom, row increases upward.
+    # White moves "up" (increasing row). Black moves "down" (decreasing row).
+    if is_king:
+        return ((1, -1), (1, 1), (-1, -1), (-1, 1))
+    if color == "w":
+        return ((1, -1), (1, 1))
+    else:
+        return ((-1, -1), (-1, 1))
+
+def _promotion_row(color: str) -> int:
+    return 7 if color == "w" else 0
+
+def _home_row(color: str) -> int:
+    return 0 if color == "w" else 7
+
+def _to_tuple_sorted(lst: List[Square]) -> Tuple[Square, ...]:
+    return tuple(sorted(lst))
+
+class _GenMove:
+    __slots__ = ("frm", "to", "is_cap", "cap_sq", "promote")
+    def __init__(self, frm: Square, to: Square, is_cap: bool, cap_sq: Optional[Square], promote: bool):
+        self.frm = frm
+        self.to = to
+        self.is_cap = is_cap
+        self.cap_sq = cap_sq
+        self.promote = promote
+
+def _generate_moves(
+    men: Tuple[Square, ...],
+    kings: Tuple[Square, ...],
+    opp_men: Tuple[Square, ...],
+    opp_kings: Tuple[Square, ...],
+    color: str
+) -> List[_GenMove]:
+    occ_me = set(men) | set(kings)
+    occ_opp = set(opp_men) | set(opp_kings)
+    occ_all = occ_me | occ_opp
+
+    cap_moves: List[_GenMove] = []
+    quiet_moves: List[_GenMove] = []
+
+    promo_r = _promotion_row(color)
+
+    # Men
+    for (r, c) in men:
+        for dr, dc in _dirs_for_piece(False, color):
+            r1, c1 = r + dr, c + dc
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            # capture
+            if _in_bounds(r2, c2) and (r1, c1) in occ_opp and (r2, c2) not in occ_all:
+                promote = (r2 == promo_r)
+                cap_moves.append(_GenMove((r, c), (r2, c2), True, (r1, c1), promote))
+            # quiet
+            if _in_bounds(r1, c1) and (r1, c1) not in occ_all:
+                promote = (r1 == promo_r)
+                quiet_moves.append(_GenMove((r, c), (r1, c1), False, None, promote))
+
+    # Kings
+    for (r, c) in kings:
+        for dr, dc in _dirs_for_piece(True, color):
+            r1, c1 = r + dr, c + dc
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            # capture
+            if _in_bounds(r2, c2) and (r1, c1) in occ_opp and (r2, c2) not in occ_all:
+                cap_moves.append(_GenMove((r, c), (r2, c2), True, (r1, c1), False))
+            # quiet
+            if _in_bounds(r1, c1) and (r1, c1) not in occ_all:
+                quiet_moves.append(_GenMove((r, c), (r1, c1), False, None, False))
+
+    # Mandatory capture rule
+    return cap_moves if cap_moves else quiet_moves
+
+def _apply_move(
+    men0: Tuple[Square, ...], kings0: Tuple[Square, ...],
+    men1: Tuple[Square, ...], kings1: Tuple[Square, ...],
+    turn: int,  # 0 or 1
+    color0: str, color1: str,
+    mv: _GenMove
+):
+    # Convert to sets for modifications
+    m0, k0 = set(men0), set(kings0)
+    m1, k1 = set(men1), set(kings1)
+
+    if turn == 0:
+        my_m, my_k, opp_m, opp_k = m0, k0, m1, k1
+        my_color = color0
+    else:
+        my_m, my_k, opp_m, opp_k = m1, k1, m0, k0
+        my_color = color1
+
+    frm, to = mv.frm, mv.to
+
+    # Remove moved piece from its set (men or kings)
+    moved_is_king = frm in my_k
+    if moved_is_king:
+        my_k.remove(frm)
+    else:
+        # must be in men
+        if frm in my_m:
+            my_m.remove(frm)
+        else:
+            # Shouldn't happen; return unchanged state
+            return men0, kings0, men1, kings1
+
+    # Remove captured piece
+    if mv.is_cap and mv.cap_sq is not None:
+        cap = mv.cap_sq
+        if cap in opp_m:
+            opp_m.remove(cap)
+        elif cap in opp_k:
+            opp_k.remove(cap)
+
+    # Place moved piece (handle promotion)
+    if moved_is_king:
+        my_k.add(to)
+    else:
+        if mv.promote:
+            my_k.add(to)
+        else:
+            my_m.add(to)
+
+    # Write back
+    if turn == 0:
+        m0, k0, m1, k1 = my_m, my_k, opp_m, opp_k
+    else:
+        m1, k1, m0, k0 = my_m, my_k, opp_m, opp_k
+
+    return (_to_tuple_sorted(list(m0)), _to_tuple_sorted(list(k0)),
+            _to_tuple_sorted(list(m1)), _to_tuple_sorted(list(k1)))
+
+def _has_any_capture(
+    men: Tuple[Square, ...],
+    kings: Tuple[Square, ...],
+    opp_men: Tuple[Square, ...],
+    opp_kings: Tuple[Square, ...],
+    color: str
+) -> bool:
+    occ_opp = set(opp_men) | set(opp_kings)
+    occ_all = occ_opp | (set(men) | set(kings))
+
+    for (r, c) in men:
+        for dr, dc in _dirs_for_piece(False, color):
+            r1, c1 = r + dr, c + dc
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            if _in_bounds(r2, c2) and (r1, c1) in occ_opp and (r2, c2) not in occ_all:
+                return True
+    for (r, c) in kings:
+        for dr, dc in _dirs_for_piece(True, color):
+            r1, c1 = r + dr, c + dc
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            if _in_bounds(r2, c2) and (r1, c1) in occ_opp and (r2, c2) not in occ_all:
+                return True
+    return False
+
+# ---------------------------
+# Evaluation
+# ---------------------------
+
+def _eval_position(
+    men0: Tuple[Square, ...], kings0: Tuple[Square, ...],
+    men1: Tuple[Square, ...], kings1: Tuple[Square, ...],
+    color0: str, color1: str,
+    turn: int
+) -> int:
+    # Material
+    MAN = 100
+    KING = 175
+
+    score = 0
+    score += MAN * (len(men0) - len(men1))
+    score += KING * (len(kings0) - len(kings1))
+
+    # Advancement/progress to promotion for men
+    # White promotes at row 7; Black promotes at row 0.
+    def progress_bonus(men: Tuple[Square, ...], color: str) -> int:
+        if not men:
+            return 0
+        if color == "w":
+            return sum(r for r, _ in men)  # higher is closer to promotion
+        else:
+            return sum((7 - r) for r, _ in men)  # lower is closer to promotion
+
+    score += 4 * progress_bonus(men0, color0)
+    score -= 4 * progress_bonus(men1, color1)
+
+    # Center control bonus
+    center = {(r, c) for r in range(2, 6) for c in range(2, 6)}
+    score += 6 * sum(1 for sq in men0 if sq in center) + 8 * sum(1 for sq in kings0 if sq in center)
+    score -= 6 * sum(1 for sq in men1 if sq in center) + 8 * sum(1 for sq in kings1 if sq in center)
+
+    # Home row guard (men)
+    score += 10 * sum(1 for (r, _) in men0 if r == _home_row(color0))
+    score -= 10 * sum(1 for (r, _) in men1 if r == _home_row(color1))
+
+    # Mobility (slight)
+    # Use mandatory-capture move generation count
+    moves0 = _generate_moves(men0, kings0, men1, kings1, color0)
+    moves1 = _generate_moves(men1, kings1, men0, kings0, color1)
+    score += 2 * (len(moves0) - len(moves1))
+
+    # Safety: penalize pieces that are capturable next move by opponent
+    # (single-jump threat approximation).
+    # If opponent has any capture, count how many of our pieces are immediate capture victims.
+    def count_hanging(
+        my_men: Tuple[Square, ...], my_kings: Tuple[Square, ...],
+        opp_men: Tuple[Square, ...], opp_kings: Tuple[Square, ...],
+        opp_color: str
+    ) -> int:
+        occ_my = set(my_men) | set(my_kings)
+        occ_all = occ_my | (set(opp_men) | set(opp_kings))
+        hanging = 0
+
+        # If opponent captures exist, check for each of our squares whether it's the jumped piece.
+        # Generate all opponent captures and mark their cap_sq.
+        caps = _generate_moves(opp_men, opp_kings, my_men, my_kings, opp_color)
+        if not caps or not caps[0].is_cap:
+            return 0
+        victim_sqs = {mv.cap_sq for mv in caps if mv.is_cap and mv.cap_sq is not None}
+        for sq in occ_my:
+            if sq in victim_sqs:
+                hanging += 1
+        return hanging
+
+    hang0 = count_hanging(men0, kings0, men1, kings1, color1)
+    hang1 = count_hanging(men1, kings1, men0, kings0, color0)
+    score -= 18 * hang0
+    score += 18 * hang1
+
+    # Small tempo: prefer being the side to move slightly if captures exist
+    if turn == 0 and _has_any_capture(men0, kings0, men1, kings1, color0):
+        score += 8
+    if turn == 1 and _has_any_capture(men1, kings1, men0, kings0, color1):
+        score -= 8
+
+    return score
+
+# ---------------------------
+# Search (iterative deepening alpha-beta)
+# ---------------------------
+
+def _order_moves(moves: List[_GenMove]) -> List[_GenMove]:
+    # Captures first, promotions next, then centralizing (approx) by destination center-ness
+    def key(mv: _GenMove):
+        tr, tc = mv.to
+        center_dist = abs(tr - 3.5) + abs(tc - 3.5)
+        return (
+            0 if mv.is_cap else 1,
+            0 if mv.promote else 1,
+            center_dist
+        )
+    return sorted(moves, key=key)
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> Move:
+    # Convert to tuple-sorted immutable representation
+    men0 = _to_tuple_sorted(list(map(tuple, my_men)))
+    kings0 = _to_tuple_sorted(list(map(tuple, my_kings)))
+    men1 = _to_tuple_sorted(list(map(tuple, opp_men)))
+    kings1 = _to_tuple_sorted(list(map(tuple, opp_kings)))
+
+    color0 = color
+    color1 = _opponent(color)
+
+    # Hard time budget (keep buffer)
+    start = time.perf_counter()
+    TIME_BUDGET = 0.92  # seconds
+
+    # Generate legal moves at root (must always return a legal move)
+    root_moves = _generate_moves(men0, kings0, men1, kings1, color0)
+    root_moves = _order_moves(root_moves)
+
+    if not root_moves:
+        # No legal moves exist: return a fallback (should not happen in normal play).
+        # We choose a syntactically valid move; engine may treat game as lost anyway.
+        if men0:
+            return (men0[0], men0[0])
+        if kings0:
+            return (kings0[0], kings0[0])
+        return ((0, 0), (0, 0))
+
+    # If only one move, play it immediately.
+    if len(root_moves) == 1:
+        mv = root_moves[0]
+        return (mv.frm, mv.to)
+
+    @lru_cache(maxsize=200000)
+    def negamax(
+        men0_t: Tuple[Square, ...], kings0_t: Tuple[Square, ...],
+        men1_t: Tuple[Square, ...], kings1_t: Tuple[Square, ...],
+        turn: int, depth: int, alpha: int, beta: int
+    ) -> int:
+        # Time check
+        if time.perf_counter() - start > TIME_BUDGET:
+            return _eval_position(men0_t, kings0_t, men1_t, kings1_t, color0, color1, turn)
+
+        # Terminal-ish: no pieces
+        if not men0_t and not kings0_t:
+            return -10_000
+        if not men1_t and not kings1_t:
+            return 10_000
+
+        # Depth reached
+        if depth == 0:
+            # Quiescence: if captures available for side to move, extend a bit
+            if turn == 0:
+                moves = _generate_moves(men0_t, kings0_t, men1_t, kings1_t, color0)
+            else:
+                moves = _generate_moves(men1_t, kings1_t, men0_t, kings0_t, color1)
+            if moves and moves[0].is_cap:
+                # one-ply capture quiescence
+                best = -10**9
+                for mv in _order_moves(moves)[:10]:
+                    nm0, nk0, nm1, nk1 = _apply_move(men0_t, kings0_t, men1_t, kings1_t,
+                                                    turn, color0, color1, mv)
+                    val = negamax(nm0, nk0, nm1, nk1, 1 - turn, 0, -beta, -alpha)
+                    val = -val
+                    if val > best:
+                        best = val
+                    if best > alpha:
+                        alpha = best
+                    if alpha >= beta:
+                        break
+                return best
+            return _eval_position(men0_t, kings0_t, men1_t, kings1_t, color0, color1, turn)
+
+        # Generate moves
+        if turn == 0:
+            moves = _generate_moves(men0_t, kings0_t, men1_t, kings1_t, color0)
+        else:
+            moves = _generate_moves(men1_t, kings1_t, men0_t, kings0_t, color1)
+
+        if not moves:
+            # No legal moves: side to move loses
+            return -9_000 if turn == 0 else 9_000
+
+        moves = _order_moves(moves)
+
+        best = -10**9
+        for mv in moves:
+            nm0, nk0, nm1, nk1 = _apply_move(men0_t, kings0_t, men1_t, kings1_t,
+                                            turn, color0, color1, mv)
+            val = negamax(nm0, nk0, nm1, nk1, 1 - turn, depth - 1, -beta, -alpha)
+            val = -val
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return best
+
+    # Iterative deepening at root
+    best_move = root_moves[0]
+    best_score = -10**9
+
+    # Depth schedule tuned for 1s: start shallow to guarantee a move
+    for depth in (2, 3, 4, 5, 6):
+        if time.perf_counter() - start > TIME_BUDGET:
+            break
+        cur_best = None
+        cur_best_score = -10**9
+
+        # aspiration window could be added; keep simple and reliable
+        alpha, beta = -10**9, 10**9
+
+        for mv in root_moves:
+            if time.perf_counter() - start > TIME_BUDGET:
+                break
+            nm0, nk0, nm1, nk1 = _apply_move(men0, kings0, men1, kings1, 0, color0, color1, mv)
+            val = negamax(nm0, nk0, nm1, nk1, 1, depth - 1, -beta, -alpha)
+            val = -val
+            # Small tie-break: prefer captures/promotions
+            tiebreak = (50 if mv.is_cap else 0) + (30 if mv.promote else 0)
+            val2 = val + tiebreak
+
+            if val2 > cur_best_score:
+                cur_best_score = val2
+                cur_best = mv
+
+            if val2 > alpha:
+                alpha = val2
+
+        if cur_best is not None:
+            best_move = cur_best
+            best_score = cur_best_score
+
+    # Return a guaranteed-legal root move
+    return (best_move.frm, best_move.to)
+</code>

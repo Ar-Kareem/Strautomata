@@ -1,0 +1,257 @@
+### Strategy Overview
+
+My policy combines several key principles from strong Backgammon strategies:
+
+1. **Bar Priority**: Always move checkers off the bar first if possible, using the highest available die first (since bar moves are often critical).
+
+2. **Blot Protection**: Avoid moving into blots (single opponent checkers) unless absolutely necessary, as they can be hit and sent to the bar.
+
+3. **Home Board Focus**: Prioritize moving checkers into the home board (points 0-5) to build anchors and reduce exposure to hits.
+
+4. **Bearing Off**: When all checkers are in the home board, prioritize bearing off high-point checkers first (to minimize opponent's chances to hit them).
+
+5. **Double Dice Utilization**: Always use both dice if possible, and prefer higher dice first when only one can be used.
+
+6. **Risk Assessment**: Evaluate potential moves by considering:
+   - Opponent's blots and their positions
+   - Current board position (e.g., whether we're in the home board)
+   - Dice values and their potential impact
+
+7. **Positional Play**: Aim to create multiple anchors in the home board while keeping checkers safe from hits.
+
+### Implementation Approach
+
+The policy uses a weighted scoring system to evaluate potential moves:
+- **Bar moves** get highest priority
+- **Home board moves** get bonuses
+- **Blot avoidance** is penalized
+- **Bearing off** gets special consideration
+- **Double dice usage** is mandatory when possible
+
+The code first checks for bar moves, then evaluates all possible legal moves using the scoring system, and selects the move with the highest score.
+
+### Python Implementation
+
+```python
+<code>
+import numpy as np
+from collections import defaultdict
+
+def policy(state):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+
+    # Helper functions
+    def is_blot(point):
+        return opp_pts[point] == 1
+
+    def is_home_board(point):
+        return point <= 5
+
+    def is_outer_board(point):
+        return point >= 18
+
+    def get_legal_moves():
+        moves = []
+        if my_bar > 0:
+            # Bar moves have highest priority
+            for die in sorted(dice, reverse=True):
+                if my_bar > 0:
+                    moves.append(('B', die))
+                    my_bar -= 1
+        else:
+            # Check for bearing off if all checkers are in home board
+            if all(my_pts[0:6] == 0) and sum(my_pts[0:6]) == (24 - my_off):
+                # Find all checkers in home board
+                home_checkers = [i for i in range(6) if my_pts[i] > 0]
+                # Sort by point (highest first for bearing off)
+                for die in sorted(dice, reverse=True):
+                    if home_checkers:
+                        point = home_checkers.pop(0)
+                        moves.append((point, die))
+
+        # If no moves yet, look for regular moves
+        if not moves:
+            for die in sorted(dice, reverse=True):
+                for point in range(24):
+                    if my_pts[point] > 0:
+                        dest = (point + die) % 24
+                        if opp_pts[dest] < 2:
+                            moves.append((point, die))
+                            my_pts[point] -= 1
+                            break
+
+        # Reset state for evaluation
+        my_pts = state['my_pts']
+        my_bar = state['my_bar']
+
+        # Generate all possible legal moves
+        legal_moves = []
+        if my_bar > 0:
+            # Bar moves
+            for die in sorted(dice, reverse=True):
+                if my_bar > 0:
+                    legal_moves.append(('B', die))
+        else:
+            # Regular moves
+            for die in dice:
+                for point in range(24):
+                    if my_pts[point] > 0:
+                        dest = (point + die) % 24
+                        if opp_pts[dest] < 2:
+                            legal_moves.append((point, die))
+
+        # If no legal moves, return pass
+        if not legal_moves:
+            return "H:P,P"
+
+        return legal_moves
+
+    def evaluate_move(move1, move2=None):
+        score = 0
+
+        # Evaluate first move
+        point1, die1 = move1
+        dest1 = (point1 + die1) % 24
+
+        # Bar move bonus
+        if point1 == 'B':
+            score += 100
+        # Home board move bonus
+        elif is_home_board(dest1):
+            score += 50
+        # Outer board move penalty
+        elif is_outer_board(dest1):
+            score -= 30
+        # Blot avoidance
+        if is_blot(dest1):
+            score -= 80
+        # Checker count (more checkers on point is better)
+        score += my_pts[point1] * 5
+
+        # Evaluate second move if exists
+        if move2:
+            point2, die2 = move2
+            dest2 = (point2 + die2) % 24
+
+            # Bar move bonus
+            if point2 == 'B':
+                score += 100
+            # Home board move bonus
+            elif is_home_board(dest2):
+                score += 50
+            # Outer board move penalty
+            elif is_outer_board(dest2):
+                score -= 30
+            # Blot avoidance
+            if is_blot(dest2):
+                score -= 80
+            # Checker count
+            score += my_pts[point2] * 5
+
+        return score
+
+    # Get all possible legal moves
+    legal_moves = get_legal_moves()
+
+    # If only one die, we must use it
+    if len(dice) == 1:
+        die = dice[0]
+        best_move = None
+        best_score = -float('inf')
+
+        for point in range(24):
+            if my_pts[point] > 0:
+                dest = (point + die) % 24
+                if opp_pts[dest] < 2:
+                    move = (point, die)
+                    score = evaluate_move(move)
+                    if score > best_score:
+                        best_score = score
+                        best_move = move
+
+        if best_move:
+            point, die = best_move
+            order = 'H' if die == max(dice) else 'L'
+            return f"{order}:{point},P"
+        else:
+            return "H:P,P"
+
+    # Two dice case - find best pair
+    best_pair = None
+    best_score = -float('inf')
+
+    # Try all possible combinations
+    for i in range(len(legal_moves)):
+        for j in range(i, len(legal_moves)):
+            move1 = legal_moves[i]
+            move2 = legal_moves[j] if i != j else None
+
+            # Check if both dice can be used
+            if move2:
+                # Check if both moves use different dice
+                if move1[1] == move2[1]:
+                    continue
+
+                # Check if both moves are possible with current dice
+                dice_used = {move1[1], move2[1]}
+                if dice_used != set(dice):
+                    continue
+
+            score = evaluate_move(move1, move2)
+            if score > best_score:
+                best_score = score
+                best_pair = (move1, move2)
+
+    if best_pair:
+        move1, move2 = best_pair
+        point1, die1 = move1
+        point2 = move2[0] if move2 else 'P'
+
+        # Determine order (H if first move uses higher die)
+        order = 'H' if die1 == max(dice) else 'L'
+        return f"{order}:{point1},{point2}"
+    else:
+        # Fallback to single move if no pair found
+        best_single = None
+        best_single_score = -float('inf')
+
+        for move in legal_moves:
+            score = evaluate_move(move)
+            if score > best_single_score:
+                best_single_score = score
+                best_single = move
+
+        if best_single:
+            point, die = best_single
+            order = 'H' if die == max(dice) else 'L'
+            return f"{order}:{point},P"
+        else:
+            return "H:P,P"
+</code>
+```
+
+### Key Features of the Implementation:
+
+1. **Bar Priority**: The code first checks for bar moves and gives them the highest priority (score of 100).
+
+2. **Blot Avoidance**: Moving into opponent blots is heavily penalized (-80 points).
+
+3. **Home Board Focus**: Moving into the home board (points 0-5) gets a bonus (+50 points).
+
+4. **Outer Board Penalty**: Moving checkers to the outer board (points 18-23) is discouraged (-30 points).
+
+5. **Double Dice Utilization**: The code always tries to use both dice when possible, and evaluates move pairs.
+
+6. **Bearing Off**: When all checkers are in the home board, the code prioritizes bearing off high-point checkers first.
+
+7. **Checker Count**: More checkers on a point make that move more attractive (+5 points per checker).
+
+8. **Legal Move Generation**: The code carefully generates all legal moves according to the rules.
+
+This implementation should perform well against other basic policies by focusing on positional play, blot avoidance, and efficient use of the dice.

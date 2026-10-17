@@ -1,0 +1,125 @@
+
+import random
+import numpy as np
+
+def policy(you, opponent) -> str:
+    # Convert inputs to numpy arrays for easier manipulation
+    you_board = np.array(you)
+    opp_board = np.array(opponent)
+
+    # Define all possible winning lines (5-in-a-row)
+    lines = [
+        # Horizontal
+        [(0,0), (0,1), (0,2), (0,3), (0,4)], [(0,1), (0,2), (0,3), (0,4), (0,5)],
+        [(1,0), (1,1), (1,2), (1,3), (1,4)], [(1,1), (1,2), (1,3), (1,4), (1,5)],
+        [(2,0), (2,1), (2,2), (2,3), (2,4)], [(2,1), (2,2), (2,3), (2,4), (2,5)],
+        [(3,0), (3,1), (3,2), (3,3), (3,4)], [(3,1), (3,2), (3,3), (3,4), (3,5)],
+        [(4,0), (4,1), (4,2), (4,3), (4,4)], [(4,1), (4,2), (4,3), (4,4), (4,5)],
+        [(5,0), (5,1), (5,2), (5,3), (5,4)], [(5,1), (5,2), (5,3), (5,4), (5,5)],
+        # Vertical
+        [(0,0), (1,0), (2,0), (3,0), (4,0)], [(1,0), (2,0), (3,0), (4,0), (5,0)],
+        [(0,1), (1,1), (2,1), (3,1), (4,1)], [(1,1), (2,1), (3,1), (4,1), (5,1)],
+        [(0,2), (1,2), (2,2), (3,2), (4,2)], [(1,2), (2,2), (3,2), (4,2), (5,2)],
+        [(0,3), (1,3), (2,3), (3,3), (4,3)], [(1,3), (2,3), (3,3), (4,3), (5,3)],
+        [(0,4), (1,4), (2,4), (3,4), (4,4)], [(1,4), (2,4), (3,4), (4,4), (5,4)],
+        [(0,5), (1,5), (2,5), (3,5), (4,5)], [(1,5), (2,5), (3,5), (4,5), (5,5)],
+        # Diagonal (top-left to bottom-right)
+        [(0,0), (1,1), (2,2), (3,3), (4,4)], [(1,1), (2,2), (3,3), (4,4), (5,5)],
+        [(0,1), (1,2), (2,3), (3,4), (4,5)],
+        [(1,0), (2,1), (3,2), (4,3), (5,4)],
+        # Diagonal (top-right to bottom-left)
+        [(0,5), (1,4), (2,3), (3,2), (4,1)], [(1,4), (2,3), (3,2), (4,1), (5,0)],
+        [(0,4), (1,3), (2,2), (3,1), (4,0)],
+        [(1,5), (2,4), (3,3), (4,2), (5,1)]
+    ]
+
+    # Check if a move creates a win for the player
+    def is_winning_move(board, row, col):
+        temp_board = board.copy()
+        temp_board[row][col] = 1
+        for line in lines:
+            if all(temp_board[r][c] == 1 for (r, c) in line):
+                return True
+        return False
+
+    # Check if a move blocks opponent's win
+    def is_blocking_move(you_board, opp_board, row, col):
+        temp_opp = opp_board.copy()
+        temp_opp[row][col] = 1
+        for line in lines:
+            if all(temp_opp[r][c] == 1 for (r, c) in line):
+                return True
+        return False
+
+    # Generate all possible moves
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if you_board[r][c] == 0 and opp_board[r][c] == 0:
+                for quad in range(4):
+                    for dir in ['L', 'R']:
+                        moves.append((r, c, quad, dir))
+
+    # First priority: winning moves
+    winning_moves = []
+    for move in moves:
+        r, c, quad, dir = move
+        # Simulate the move
+        temp_you = you_board.copy()
+        temp_opp = opp_board.copy()
+        temp_you[r][c] = 1
+
+        # Apply rotation
+        quad_rows = [0, 0, 3, 3][quad]
+        quad_cols = [0, 3, 0, 3][quad]
+        quadrant = temp_you[quad_rows:quad_rows+3, quad_cols:quad_cols+3]
+        if dir == 'L':
+            rotated = np.rot90(quadrant, k=1)
+        else:
+            rotated = np.rot90(quadrant, k=-1)
+        temp_you[quad_rows:quad_rows+3, quad_cols:quad_cols+3] = rotated
+
+        # Apply same rotation to opponent
+        quadrant_opp = temp_opp[quad_rows:quad_rows+3, quad_cols:quad_cols+3]
+        if dir == 'L':
+            rotated_opp = np.rot90(quadrant_opp, k=1)
+        else:
+            rotated_opp = np.rot90(quadrant_opp, k=-1)
+        temp_opp[quad_rows:quad_rows+3, quad_cols:quad_cols+3] = rotated_opp
+
+        # Check if this creates a win
+        if is_winning_move(temp_you, r, c):
+            winning_moves.append(move)
+
+    if winning_moves:
+        # Return a random winning move
+        return f"{winning_moves[0][0]+1},{winning_moves[0][1]+1},{winning_moves[0][2]},{winning_moves[0][3]}"
+
+    # Second priority: blocking opponent's win
+    blocking_moves = []
+    for move in moves:
+        r, c, quad, dir = move
+        if is_blocking_move(you_board, opp_board, r, c):
+            blocking_moves.append(move)
+
+    if blocking_moves:
+        # Return a random blocking move
+        return f"{blocking_moves[0][0]+1},{blocking_moves[0][1]+1},{blocking_moves[0][2]},{blocking_moves[0][3]}"
+
+    # Third priority: center control
+    center_moves = []
+    for move in moves:
+        r, c, quad, dir = move
+        # Check if move is in center of any quadrant
+        quad_row = r // 3
+        quad_col = c // 3
+        quad_index = quad_row * 2 + quad_col
+        if (r % 3 == 1 and c % 3 == 1):  # Center of quadrant
+            center_moves.append(move)
+
+    if center_moves:
+        # Return a random center move
+        return f"{center_moves[0][0]+1},{center_moves[0][1]+1},{center_moves[0][2]},{center_moves[0][3]}"
+
+    # Fourth priority: random move
+    return f"{moves[0][0]+1},{moves[0][1]+1},{moves[0][2]},{moves[0][3]}"

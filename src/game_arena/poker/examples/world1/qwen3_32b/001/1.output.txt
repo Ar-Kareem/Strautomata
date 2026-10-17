@@ -1,0 +1,109 @@
+The strategy for this policy is:
+
+This is a simplified version of Texas Hold 'em with the following approach:
+1. Evaluate the strength of our current hand using the single private card and any available public cards.
+2. Compare our hand strength with the opponent's potential holdings.
+3. Use a combination of hand strength, pot odds, and betting patterns to make decisions.
+
+The policy works as follows:
+- In early rounds with limited public cards, we are more cautious and focus on playable hands.
+- When we have a strong hand (such as a high pair or potential flush/straight), we raise or go all-in to maximize value.
+- When we have a medium-strength hand, we call or raise depending on the board texture and bet sizing.
+- We fold when our hand is weak and we face significant betting pressure or when the pot odds are unfavorable.
+- We use numpy for quick decision-making based on card rankings and random probabilities to introduce variability.
+
+<code>
+```python
+import numpy as np
+
+def hand_strength(private_cards, public_cards):
+    """
+    Basic heuristic to estimate hand strength based on our hole card and public cards.
+    """
+    all_cards = private_cards + public_cards
+    if len(all_cards) < 2:
+        return private_cards[0]['rank']  # Early stage, just rank own card for simplicity
+    return min(card['rank'] for card in all_cards) * len(all_cards)  # Simplistic hand evaluation proxy
+
+def policy(state: dict) -> str:
+    allowed_actions = state['allowed_actions']
+    to_call = state['to_call']
+    my_spent = state['my_spent']
+    opponent_spent = state['opponent_spent']
+    pot = state['pot']
+    private_cards = state['private_cards']
+    public_cards = state['public_cards']
+
+    total_chips = state['my_spent'] + state['opponent_spent'] + pot
+
+    num_cards = len(private_cards) + len(public_cards)
+    base_strength = hand_strength(private_cards, public_cards)
+
+    # Early stage strategy (pre-flop, 1 card each round) - high cards are preferable
+    if num_cards == 1:
+        card_value = private_cards[0]['rank']
+        if card_value >= 13:  # Assuming aces are high or equal (14 or 13 depending on encoding)
+            return 'raise'
+        elif card_value >= 10:
+            if to_call == 0:
+                return 'call'  # Check when we can
+            else:
+                return 'call' if total_chips == 100 else 'fold'
+        else:
+            # Fold weaker cards but allow all-in as a bluff or aggressive move
+            return np.random.choice(['fold', 'all-in'], p=[0.75, 0.25]) if 'fold' in allowed_actions else 'call'
+
+    elif num_cards <= 3:  # After the first few cards (flop)
+        # Consider combo of high cards and potential straights or flushes
+        all_cards = [c['rank'] for c in (private_cards + public_cards)]
+        unique_ranks = len(set(all_cards))
+        best_card = max(all_cards)
+
+        if best_card >= 13 and unique_ranks == 1:  # Pair with high card
+            return 'raise'
+        elif best_card >= 10 or 'all-in' in allowed_actions:
+            if to_call == 0:
+                return 'call'
+            else:
+                if total_chips >= pot * 0.8:  # Call if we're strong or if it's not too expensive
+                    return 'call'
+                else:
+                    return 'raise'
+
+    else:  # Later rounds (turn and river)
+        # If there's a flush opportunity, we raise
+        all_suits = set(c['suit'] for c in (private_cards + public_cards))
+        if len(all_suits) == 1:
+            return 'raise'
+        # Linearly increase calling threshold as our hand strength increases
+        if base_strength >= 100:
+            return 'raise' if 'raise' in allowed_actions else 'all-in'
+        elif base_strength >= 75:
+            return 'call' if to_call == 0 else 'raise'
+        elif base_strength >= 50:
+            if to_call == 0:
+                return 'call'
+            else:
+                if total_chips < pot * 1.5:
+                    return 'call'
+                else:
+                    return np.random.choice(['fold', 'raise'], p=[0.3, 0.7]) if 'raise' in allowed_actions else 'call'
+        else:
+            if to_call == 0:
+                return 'call'
+            else:
+                # Fold if we're behind in bet but high enough to be suspicious
+                if opponent_spent > my_spent:
+                    if total_chips < pot * 2:
+                        if np.random.random() < 0.3:
+                            return 'raise'
+                        else:
+                            return 'call'
+                    else:
+                        return 'raise' if 'raise' in allowed_actions else 'all-in'
+                else:
+                    return 'fold' if 'fold' in allowed_actions else 'call'
+
+    return 'call'  # Default safe action
+```
+</code>

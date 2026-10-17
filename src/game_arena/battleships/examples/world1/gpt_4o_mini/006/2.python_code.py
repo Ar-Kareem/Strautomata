@@ -1,0 +1,44 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Create a grid to represent our knowledge of the surroundings
+    height = len(board)
+    width = len(board[0]) if height > 0 else 0
+
+    # Make sure to track the last shot state
+    hit_cells = [(r, c) for r in range(height) for c in range(width) if board[r][c] == 1]
+    missed_cells = [(r, c) for r in range(height) for c in range(width) if board[r][c] == -1]
+
+    possible_moves = []
+    
+    # Mark all possible moves
+    for r in range(height):
+        for c in range(width):
+            if board[r][c] == 0:  # Only consider cells that are currently unknown
+                possible_moves.append((r, c))
+
+    if len(hit_cells) > 0:
+        # If we have hits, let's try to target around them
+        last_hit = hit_cells[-1]
+        hit_row, hit_col = last_hit
+
+        # Prioritize adjacent cells to the last hit location
+        adj_cells = [(hit_row + i, hit_col + j) for i in [-1, 0, 1] for j in [-1, 0, 1]
+                     if (i != 0 or j != 0) and 0 <= hit_row + i < height and 0 <= hit_col + j < width]
+        
+        # Filter valid adjacent cells that haven't been shot yet
+        adj_cells = [(r, c) for r, c in adj_cells if (r, c) in possible_moves]
+
+        if adj_cells:
+            return adj_cells[0]  # Return the first valid adjacent cell to hit
+
+    # If no hits recorded, use random selection from possible moves or prioritize in a pattern
+    # checkerboard pattern targeting to find the ship
+    for r in range(height):
+        for c in range(width):
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                return (r, c)
+
+    # Fallback to any valid move if the above doesn't return
+    return possible_moves[0] if possible_moves else (0, 0)  # Just return (0, 0) if no valid moves

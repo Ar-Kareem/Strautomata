@@ -1,0 +1,288 @@
+
+import copy
+
+def policy(you, opponent):
+    # Convert input arrays to board representation
+    board = [[0] * 6 for _ in range(6)]
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 1:
+                board[r][c] = 1
+            elif opponent[r][c] == 1:
+                board[r][c] = -1
+            else:
+                board[r][c] = 0
+    
+    # Find the best move using minimax with depth 2
+    move, _ = find_best_move(board, depth=2)
+    if move is None:
+        return "1,1,0,L"  # Fallback, though should not happen
+    r, c, quad, dir_char = move
+    return f"{r+1},{c+1},{quad},{dir_char}"
+
+def find_best_move(board, depth):
+    if depth == 0:
+        best_move = None
+        best_value = -float('inf')
+        moves = generate_moves(board)
+        for move in moves:
+            new_board = simulate_move(board, move, player=1)
+            value = evaluate(new_board)
+            if value > best_value:
+                best_value = value
+                best_move = move
+        return best_move, best_value
+    else:
+        best_move = None
+        best_value = -float('inf')
+        moves = generate_moves(board)
+        # Order moves by immediate evaluation for better pruning
+        moves_with_values = []
+        for move in moves:
+            new_board = simulate_move(board, move, player=1)
+            value = evaluate(new_board)
+            moves_with_values.append((value, move))
+        moves_with_values.sort(key=lambda x: x[0], reverse=True)  # Sort by evaluation descending
+        
+        for _, move in moves_with_values:
+            new_board = simulate_move(board, move, player=1)
+            value, _ = minimax(new_board, depth-1, maximizing_player=False)
+            if value > best_value:
+                best_value = value
+                best_move = move
+        return best_move, best_value
+
+def minimax(board, depth, maximizing_player):
+    if depth == 0 or game_over(board):
+        return evaluate(board), None
+    
+    if maximizing_player:
+        best_value = -float('inf')
+        moves = generate_moves(board)
+        # Order moves for maximizing player
+        moves_with_values = []
+        for move in moves:
+            new_board = simulate_move(board, move, player=1)
+            value = evaluate(new_board)
+            moves_with_values.append((value, move))
+        moves_with_values.sort(key=lambda x: x[0], reverse=True)
+        
+        for _, move in moves_with_values:
+            new_board = simulate_move(board, move, player=1)
+            value, _ = minimax(new_board, depth-1, maximizing_player=False)
+            if value > best_value:
+                best_value = value
+        return best_value, None
+    else:
+        best_value = float('inf')
+        moves = generate_moves(board)
+        # Order moves for minimizing player (opponent)
+        moves_with_values = []
+        for move in moves:
+            new_board = simulate_move(board, move, player=-1)
+            value = evaluate(new_board)
+            moves_with_values.append((value, move))
+        moves_with_values.sort(key=lambda x: x[0])  # Sort ascending for minimization
+        
+        for _, move in moves_with_values:
+            new_board = simulate_move(board, move, player=-1)
+            value, _ = minimax(new_board, depth-1, maximizing_player=True)
+            if value < best_value:
+                best_value = value
+        return best_value, None
+
+def generate_moves(board):
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == 0:
+                for quad in range(4):
+                    for dir_char in ['L', 'R']:
+                        moves.append((r, c, quad, dir_char))
+    return moves
+
+def simulate_move(board, move, player):
+    r, c, quad, dir_char = move
+    new_board = copy.deepcopy(board)
+    new_board[r][c] = player
+    new_board = rotate_quad(new_board, quad, dir_char)
+    return new_board
+
+def rotate_quad(board, quad, dir_char):
+    # Determine the quadrant boundaries
+    if quad == 0:
+        r0, r1 = 0, 2
+        c0, c1 = 0, 2
+    elif quad == 1:
+        r0, r1 = 0, 2
+        c0, c1 = 3, 5
+    elif quad == 2:
+        r0, r1 = 3, 5
+        c0, c1 = 0, 2
+    elif quad == 3:
+        r0, r1 = 3, 5
+        c0, c1 = 3, 5
+    
+    # Extract the 3x3 sub-board
+    sub_board = []
+    for i in range(r0, r1+1):
+        row = []
+        for j in range(c0, c1+1):
+            row.append(board[i][j])
+        sub_board.append(row)
+    
+    # Rotate the sub-board
+    rotated_sub = rotate_3x3(sub_board, dir_char)
+    
+    # Put it back into the board
+    new_board = copy.deepcopy(board)
+    for i in range(3):
+        for j in range(3):
+            new_board[r0+i][c0+j] = rotated_sub[i][j]
+    return new_board
+
+def rotate_3x3(matrix, dir_char):
+    if dir_char == 'L':
+        new_matrix = [[0]*3 for _ in range(3)]
+        for i in range(3):
+            for j in range(3):
+                new_matrix[i][j] = matrix[j][2-i]
+        return new_matrix
+    elif dir_char == 'R':
+        new_matrix = [[0]*3 for _ in range(3)]
+        for i in range(3):
+            for j in range(3):
+                new_matrix[i][j] = matrix[2-j][i]
+        return new_matrix
+
+def game_over(board):
+    winner = check_winner(board)
+    if winner != 0:
+        return True
+    # Check if board is full
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == 0:
+                return False
+    return True
+
+def check_winner(board):
+    me_win = False
+    opponent_win = False
+    segments = generate_5_cell_segments()
+    
+    for seg in segments:
+        values = [board[i][j] for i, j in seg]
+        if all(v == 1 for v in values):
+            me_win = True
+        if all(v == -1 for v in values):
+            opponent_win = True
+    
+    if me_win and opponent_win:
+        return 0  # Draw
+    elif me_win:
+        return 1
+    elif opponent_win:
+        return -1
+    else:
+        return 0
+
+def generate_5_cell_segments():
+    segments = []
+    # Horizontal segments
+    for i in range(6):
+        for j in [0, 1]:
+            seg = []
+            for k in range(5):
+                seg.append((i, j+k))
+            segments.append(seg)
+    # Vertical segments
+    for j in range(6):
+        for i in [0, 1]:
+            seg = []
+            for k in range(5):
+                seg.append((i+k, j))
+            segments.append(seg)
+    # Diagonal segments (top-left to bottom-right)
+    for i in [0, 1]:
+        for j in [0, 1]:
+            seg = []
+            for k in range(5):
+                seg.append((i+k, j+k))
+            segments.append(seg)
+    # Diagonal segments (top-right to bottom-left)
+    for i in [0, 1]:
+        for j in [4, 5]:
+            seg = []
+            for k in range(5):
+                seg.append((i+k, j-k))
+            segments.append(seg)
+    return segments
+
+def evaluate(board):
+    winner = check_winner(board)
+    if winner == 1:
+        return 10000
+    elif winner == -1:
+        return -10000
+    else:
+        return heuristic(board)
+
+def heuristic(board):
+    segments = generate_4_cell_segments()
+    my_score = 0
+    opponent_score = 0
+    
+    for seg in segments:
+        has_opponent = False
+        has_me = False
+        my_count = 0
+        opponent_count = 0
+        for i, j in seg:
+            if board[i][j] == 1:
+                my_count += 1
+                has_me = True
+            elif board[i][j] == -1:
+                opponent_count += 1
+                has_opponent = True
+        
+        # Score for me if no opponent marble
+        if not has_opponent and my_count > 0:
+            my_score += 10 ** my_count
+        # Score for opponent if no my marble
+        if not has_me and opponent_count > 0:
+            opponent_score += 10 ** opponent_count
+    
+    return my_score - opponent_score
+
+def generate_4_cell_segments():
+    segments = []
+    # Horizontal segments
+    for i in range(6):
+        for j in range(3):  # j from 0 to 2
+            seg = []
+            for k in range(4):
+                seg.append((i, j+k))
+            segments.append(seg)
+    # Vertical segments
+    for j in range(6):
+        for i in range(3):  # i from 0 to 2
+            seg = []
+            for k in range(4):
+                seg.append((i+k, j))
+            segments.append(seg)
+    # Diagonal segments (top-left to bottom-right)
+    for i in range(3):
+        for j in range(3):
+            seg = []
+            for k in range(4):
+                seg.append((i+k, j+k))
+            segments.append(seg)
+    # Diagonal segments (top-right to bottom-left)
+    for i in range(3):
+        for j in range(3, 6):  # j from 3 to 5
+            seg = []
+            for k in range(4):
+                seg.append((i+k, j-k))
+            segments.append(seg)
+    return segments

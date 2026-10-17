@@ -1,0 +1,240 @@
+**Strategy Explanation**  
+
+This checkers policy uses a minimax search with alpha-beta pruning and a heuristic evaluation function. Key aspects:  
+
+- **Capture Forcing**: If captures exist, the search prioritizes maximizing capture sequences.  
+- **Heuristic Evaluation**:  
+  - Material count (men = 1, kings = 3).  
+  - Positional advantage for central control and advancement toward promotion.  
+  - King safety and opponent piece threats.  
+- **Search Depth**: Adaptive depth based on remaining pieces; deeper search in mid-game.  
+- **Move Ordering**: Captures first, then moves toward promotion squares.  
+
+---
+
+<code>
+import numpy as np
+from copy import deepcopy
+from typing import List, Tuple, Optional
+import itertools
+
+class CheckersState:
+    def __init__(self, my_men, my_kings, opp_men, opp_kings, color):
+        self.my_men = set(my_men)
+        self.my_kings = set(my_kings)
+        self.opp_men = set(opp_men)
+        self.opp_kings = set(opp_kings)
+        self.color = color  # 'b' or 'w'
+        self.my_pieces = self.my_men | self.my_kings
+        self.opp_pieces = self.opp_men | self.opp_kings
+        self.all_pieces = self.my_pieces | self.opp_pieces
+        self.dark_squares = {(r, c) for r in range(8) for c in range(8) if (r + c) % 2 == 1}
+        self.direction = 1 if self.color == 'w' else -1
+    
+    def is_dark(self, pos):
+        return (pos[0] + pos[1]) % 2 == 1
+    
+    def inside_board(self, pos):
+        r, c = pos
+        return 0 <= r < 8 and 0 <= c < 8
+    
+    def is_opponent(self, pos):
+        return pos in self.opp_pieces
+    
+    def is_mine(self, pos):
+        return pos in self.my_pieces
+    
+    def is_empty(self, pos):
+        return pos not in self.all_pieces and self.is_dark(pos)
+    
+    def generate_moves(self) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+        captures = []
+        noncaptures = []
+        
+        for piece in self.my_pieces:
+            piece_captures = self.get_captures_from(piece)
+            if piece_captures:
+                captures.extend(piece_captures)
+            else:
+                noncaptures.extend(self.get_noncaptures_from(piece))
+        
+        # If captures exist, only return captures (forced capture rule)
+        if captures:
+            # For each capture sequence, we need to find the maximal capture chain.
+            # We'll handle chains via search in get_captures_from.
+            # Here we flatten to immediate capture moves.
+            return captures
+        return noncaptures
+    
+    def get_captures_from(self, pos):
+        r, c = pos
+        is_king = pos in self.my_kings
+        directions = []
+        if is_king:
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            directions = [(self.direction, -1), (self.direction, 1)]
+        
+        captures = []
+        for dr, dc in directions:
+            mid = (r + dr, c + dc)
+            land = (r + 2*dr, c + 2*dc)
+            if not self.inside_board(land):
+                continue
+            if self.is_opponent(mid) and self.is_empty(land):
+                captures.append((pos, land))
+        return captures
+    
+    def get_noncaptures_from(self, pos):
+        r, c = pos
+        is_king = pos in self.my_kings
+        directions = []
+        if is_king:
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            directions = [(self.direction, -1), (self.direction, 1)]
+        
+        moves = []
+        for dr, dc in directions:
+            to = (r + dr, c + dc)
+            if self.inside_board(to) and self.is_empty(to):
+                moves.append((pos, to))
+        return moves
+    
+    def apply_move(self, move):
+        new_state = deepcopy(self)
+        (fr, fc), (tr, tc) = move
+        piece = (fr, fc)
+        if piece in new_state.my_men:
+            new_state.my_men.remove(piece)
+            if tr == (0 if new_state.color == 'b' else 7):
+                new_state.my_kings.add((tr, tc))
+            else:
+                new_state.my_men.add((tr, tc))
+        elif piece in new_state.my_kings:
+            new_state.my_kings.remove(piece)
+            new_state.my_kings.add((tr, tc))
+        else:
+            raise ValueError("Moving piece not found")
+        
+        # Capture handling
+        dr, dc = tr - fr, tc - fc
+        if abs(dr) == 2:
+            mid = (fr + dr//2, fc + dc//2)
+            if mid in new_state.opp_men:
+                new_state.opp_men.remove(mid)
+            elif mid in new_state.opp_kings:
+                new_state.opp_kings.remove(mid)
+        
+        # Update sets
+        new_state.my_pieces = new_state.my_men | new_state.my_kings
+        new_state.opp_pieces = new_state.opp_men | new_state.opp_kings
+        new_state.all_pieces = new_state.my_pieces | new_state.opp_pieces
+        return new_state
+    
+    def evaluate(self):
+        # Material
+        my_material = len(self.my_men) + 3 * len(self.my_kings)
+        opp_material = len(self.opp_men) + 3 * len(self.opp_kings)
+        material = my_material - opp_material
+        
+        # Positional
+        pos_score = 0
+        for r, c in self.my_men:
+            if self.color == 'w':
+                pos_score += r  # white moves upward, so higher r is better
+            else:
+                pos_score += (7 - r)  # black moves downward, so lower r is better
+            # Center control bonus
+            if 2 <= c <= 5:
+                pos_score += 0.1
+        for r, c in self.my_kings:
+            # Kings in center
+            if 2 <= r <= 5 and 2 <= c <= 5:
+                pos_score += 0.2
+        
+        for r, c in self.opp_men:
+            if self.color == 'w':
+                pos_score -= (7 - r)
+            else:
+                pos_score -= r
+        # Threat: pieces that can be captured next turn
+        threat = 0
+        for piece in self.my_pieces:
+            if any(abs(tr - piece[0]) == 2 for (_, (tr, _)) in self.get_captures_from(piece)):
+                threat -= 0.5
+        for piece in self.opp_pieces:
+            if any(abs(tr - piece[0]) == 2 for (_, (tr, _)) in self.get_captures_from(piece)):
+                threat += 0.5
+        
+        return material + 0.05 * pos_score + threat
+    
+    def is_terminal(self):
+        return not self.my_pieces or not self.opp_pieces or not self.generate_moves()
+
+def minimax(state: CheckersState, depth: int, alpha: float, beta: float, maximizing: bool) -> Tuple[float, Optional[Tuple]]:
+    if depth == 0 or state.is_terminal():
+        return state.evaluate(), None
+    
+    moves = state.generate_moves()
+    if not moves:
+        return state.evaluate(), None
+    
+    if maximizing:
+        best_val = -float('inf')
+        best_move = None
+        for move in moves:
+            new_state = state.apply_move(move)
+            val, _ = minimax(new_state, depth - 1, alpha, beta, False)
+            if val > best_val:
+                best_val = val
+                best_move = move
+            alpha = max(alpha, best_val)
+            if beta <= alpha:
+                break
+        return best_val, best_move
+    else:
+        best_val = float('inf')
+        best_move = None
+        for move in moves:
+            new_state = state.apply_move(move)
+            val, _ = minimax(new_state, depth - 1, alpha, beta, True)
+            if val < best_val:
+                best_val = val
+                best_move = move
+            beta = min(beta, best_val)
+            if beta <= alpha:
+                break
+        return best_val, best_move
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    state = CheckersState(my_men, my_kings, opp_men, opp_kings, color)
+    moves = state.generate_moves()
+    if not moves:
+        # Should not happen, but fallback
+        return ((0, 0), (0, 0))
+    
+    # Adaptive depth
+    total_pieces = len(state.my_pieces) + len(state.opp_pieces)
+    if total_pieces > 20:
+        depth = 3
+    elif total_pieces > 10:
+        depth = 4
+    else:
+        depth = 6
+    
+    # If only one move, return it quickly
+    if len(moves) == 1:
+        return moves[0]
+    
+    # If captures, maybe deeper search for best capture sequence
+    captures = [m for m in moves if abs(m[0][0] - m[1][0]) == 2]
+    if captures and total_pieces <= 12:
+        depth = min(depth + 2, 8)
+    
+    _, best_move = minimax(state, depth, -float('inf'), float('inf'), True)
+    if best_move is None:
+        # Fallback: first legal move
+        best_move = moves[0]
+    return best_move
+</code>

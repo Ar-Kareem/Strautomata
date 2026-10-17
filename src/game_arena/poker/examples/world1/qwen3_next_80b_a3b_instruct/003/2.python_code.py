@@ -1,0 +1,327 @@
+
+import numpy as np
+
+def policy(state: dict) -> str:
+    private_cards = state['private_cards']
+    public_cards = state['public_cards']
+    pot = state['pot']
+    my_spent = state['my_spent']
+    opponent_spent = state['opponent_spent']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    
+    # Extract our single hole card
+    if not private_cards:
+        # Should not happen per spec, but safety
+        return 'fold'
+    my_card_rank = private_cards[0]['rank']
+    
+    # Normalize rank: 2-14 (2,3,...,10,J,Q,K,A)
+    # We'll use 2-14 directly as given
+    
+    # Calculate current bet and pot after call
+    current_max_bet = max(my_spent, opponent_spent)
+    pot_after_call = pot + to_call  # if we call, this is the pot size
+    
+    # Determine if we have a pair on board
+    board_ranks = [card['rank'] for card in public_cards]
+    pair_on_board = len(set(board_ranks)) < len(board_ranks)  # has duplicates
+    
+    # How many cards are on the board?
+    board_length = len(public_cards)
+    
+    # Estimate hand strength
+    def hand_strength():
+        # Base value based on card rank
+        if my_card_rank >= 14:  # Ace
+            base = 9.0
+        elif my_card_rank >= 13:  # King
+            base = 8.0
+        elif my_card_rank >= 12:  # Queen
+            base = 7.0
+        elif my_card_rank >= 11:  # Jack
+            base = 6.0
+        elif my_card_rank >= 10:  # 10
+            base = 5.0
+        elif my_card_rank >= 8:   # 8-9
+            base = 3.5
+        elif my_card_rank >= 6:   # 6-7
+            base = 2.5
+        else:                     # 2-5
+            base = 1.0
+            
+        # Bonus for top pair or overpair
+        if board_length > 0:
+            highest_board_rank = max(board_ranks)
+            if my_card_rank == highest_board_rank:
+                base += 2.0  # top pair
+            elif my_card_rank > highest_board_rank:
+                base += 3.0  # overpair
+        
+        # Drawing power: flush or straight draws
+        # Since only one hole card, flush draw needs 4+ of same suit on board
+        board_suits = [card['suit'] for card in public_cards]
+        if len(board_suits) >= 2:
+            suit_counts = {}
+            for s in board_suits:
+                suit_counts[s] = suit_counts.get(s, 0) + 1
+            if max(suit_counts.values()) >= 4:
+                # 4 of same suit on board — we have the fifth for flush!
+                if public_cards and any(card['suit'] == private_cards[0]['suit'] for card in public_cards):
+                    base += 5.0  # flush (we have the matching suit)
+                else:
+                    # We don't have the flush suit? Then maybe a backdoor flush draw
+                    # Only 1 card, so if we have one of that suit, we're 1 away from flush draw
+                    if private_cards[0]['suit'] in suit_counts:
+                        base += 1.0  # backdoor flush draw
+        
+        # Straight draws (with single card, we need 4/5 in a row)
+        # Look for sequences we can complete
+        if board_length >= 2:
+            # Check for open-ended straight draw possibilities
+            # We need 4 consecutive ranks including our card
+            # Possible straights: we are one of the cards in a 5-card sequence
+            # Example: board has 8,9,10 — we have 7 or J -> open ended
+            #           board has 7,9,10 — we have 8 -> gutshot
+            # We'll check for 2 card gaps
+            all_ranks = [my_card_rank] + board_ranks
+            all_ranks = sorted(set(all_ranks))
+            straight_possible = False
+            for i in range(len(all_ranks) - 4):
+                if all_ranks[i+4] - all_ranks[i] == 4 and len(all_ranks[i:i+5]) == 5:
+                    # We have 5 consecutive
+                    if my_card_rank in all_ranks[i:i+5]:
+                        straight_possible = True
+            if straight_possible:
+                base += 1.5
+            else:
+                # Check for one-card gutshots: if we can complete a straight with one card
+                # Look for 3 cards on board and our card bridging them
+                for r in range(2, 15):
+                    # Try every possible card that would complete a straight with our card and board
+                    for a in range(2, 11):  # starting rank for 5-card straight
+                        seq = [a, a+1, a+2, a+3, a+4]
+                        if my_card_rank in seq:
+                            needed = [x for x in seq if x != my_card_rank]
+                            if len(needed) <= len(board_ranks):
+                                count_needed_on_board = sum(1 for n in needed if n in board_ranks)
+                                if count_needed_on_board >= 3:
+                                    # We have 3 out of 4 needed cards on board
+                                    if count_needed_on_board == 3:
+                                        base += 1.0  # gutshot draw
+                                    elif count_needed_on_board == 4:
+                                        base += 2.0  # open ended or made straight
+        return base
+
+    strength = hand_strength()
+    
+    # Calculate pot odds and implied odds
+    call_cost = to_call
+    pot_odds_ratio = call_cost / (pot + call_cost) if (pot + call_cost) > 0 else 0
+    
+    # Estimate equity: roughly linear with strength, normalized
+    # This is a simulation of expected winning chance
+    # We map strength to equity: 1->5%, 10->80%, etc.
+    # Strength ranges: ~1 to 12+ (max)
+    # Let's approximate: 
+    # strength <= 2 => 5% equity
+    # strength >= 10 => 80% equity
+    # linear interpolate
+    min_strength = 1.0
+    max_strength = 12.0
+    equity = min(max((strength - min_strength) / (max_strength - min_strength), 0.0), 1.0)
+    
+    # For bluffing or semi-bluffing on draws
+    outs = 0
+    if board_length > 0:
+        # Count draws
+        # Flush draw: 1 card in hand + 4 on board = 1 flush draw? But we need 5 for flush
+        # Actually, we already don't have the full flush. But we might have 4 on board and we have one of the same suit → flush made
+        # We already calculated that in hand_strength.
+        # For 4-to-a-flush draw: NOT possible with only 1 hole card and 4 on board? Actually it IS possible.
+        # But we already added +5 if we have flush. Otherwise, if we have one of suit that appears 4 times on board, we have flush draw.
+        board_suits = [card['suit'] for card in public_cards]
+        suit_counts = {}
+        for s in board_suits:
+            suit_counts[s] = suit_counts.get(s, 0) + 1
+        my_suit = private_cards[0]['suit']
+        if suit_counts.get(my_suit, 0) >= 4:
+            # We have flush draw (we need 1 more card, and one card to come? Only 1 card coming? Actually, no — the game continues until all cards out)
+            # But in our case, public_cards could be 4 already? Then one card remains? Or 5?
+            # In Hold'em, max 5 public cards. If 4 public cards and we have a flush draw, then we have 9 outs? But actually, we already have the flush if we have the 5th??
+            # Correction: To make a flush, we need 5 of same suit. If board has 4 of our suit and we have one, we already have a flush! So that was taken care of above.
+            # So flush draw means: board has 3 of our suit? Then we have 2 left to make it? But we only have 1 card. So we can NEVER have a flush draw if we have one card and board has 3 of the same suit — because we'd have 4 total. So we can have:
+            # - 4 on board + our card -> flush made
+            # - 3 on board + our card -> flush draw (one card left to come)
+            # But our hand strength function already handled flush made.
+            # So for draw: if board has 3 of our suit, that's a 9-out draw (since 9 cards of suit remain, minus 4 already out = 9)
+            # But wait: how many cards of a suit remain? 13 total, 4 out (3 board + 1 our) → 9 left.
+            # So...
+            if suit_counts.get(my_suit, 0) == 3:
+                outs += 9  # flush draw
+            
+        # Straight draws: general case
+        # We need 8 outs for open-ended, 4 for gutshot, etc.
+        # We'll do a simple expansion of the straight check from hand_strength
+        # If we don't have a made straight, check for 4-card straight draw
+        # We need 4 consecutive ranks with one missing — and the missing one is the one we need
+        if board_length >= 3:
+            all_ranks = [my_card_rank] + board_ranks
+            all_ranks = sorted(set(all_ranks))
+            for a in range(2, 11):
+                seq = [a, a+1, a+2, a+3, a+4]
+                in_seq = [r for r in all_ranks if r in seq]
+                missing = [r for r in seq if r not in all_ranks]
+                if len(in_seq) == 4 and len(missing) == 1:
+                    # We are 1 card away from a straight
+                    if missing[0] == my_card_rank:
+                        # We are holding the missing card? That means we already have it -> made straight?
+                        pass
+                    else:
+                        # We have 4 out of 5 — missing one other rank, and we don't hold the missing one
+                        # We need to hold the missing one for the draw — but we have only one card
+                        # So: if our card is NOT the missing one, then we can't complete this straight.
+                        # But if we're holding a card that is not in seq? Then we can't complete it.
+                        # So we need to see if we're holding one card that is the key to the straight:
+                        # Example: board: 6,7,9,10 — we hold 8 → that's 4 cards on board, we have one, make 8,9,10,6,7 — 6,7,8,9,10 → full straight?
+                        # We already have 6,7,9,10 on board and our 8 — that's 5 cards → we made the straight,
+                        # But we did a set() so we have unique ranks. So if we already have 5 distinct cards including my_card_rank going into 5-card straight, we have it.
+                        # So what remains: if we don't have the straight made (i.e., 5 consecutive already), then we must be missing one rank, and we hold the missing one?
+                        # We did: all_ranks = sorted(set([my_card_rank] + board_ranks))
+                        # So if we have 5 distinct cards and they form a straight? We already checked that above in hand_strength and got +2 for made straight.
+                        # So if we're here, we don't have 5 consecutive.
+                        # So: if the missing card is one that we hold? Then we hold the card that completes the straight → we would have already included it.
+                        # So this means: we are NOT holding the missing card → then we have a 4-card straight draw but we don't have the card to complete it → we cannot complete it.
+                        # So we need to check if we can complete the straight with our single card.
+                        # Let's rework: for a 4-card straight draw on the board and we have one card: that card must be the one that completes the straight.
+                        # So we need to see if our card completes a straight with the board.
+                        if my_card_rank == missing[0]:
+                            if len(set(seq)) == 5 and len(all_ranks) == 4:
+                                # We're missing exactly one card and we have it
+                                if len(bs) == 4: # 4 cards on board, we have 1
+                                    if len(set([my_card_rank] + board_ranks)) == 5: # and not overcounted
+                                        # We are holding the missing card — so it's a straight draw of 4
+                                        # But wait: if board has 6,7,9,10 and our card is 8, we have 5 distinct cards = made straight.
+                                        # So if we're here at the draw check and we have 4 cards from board + our card, and they DON'T make a straight, then we DON'T hold the missing one.
+                                        pass
+                                    else:
+                                        # We're holding the wrong card? So we're not drawing.
+                                        pass
+                        # Instead, let's do a direct method: enumerate the possible straights that we can complete (using my_card_rank)
+                        # We are 1 card, so we can only be part of one card missing from possible straights.
+                        # Three possibilities: my_card_rank is the high card, low card, or middle (like 8 in 6,7,9,10)
+                        # But given space, let's simplify: if there exists a straight that needs exactly one card and that card is my_card_rank, and we don't have it already in the board,
+                        # then we have a straight draw.
+                        # We already have the made straight check. So now we check: is there any straight that has my_card_rank and 4 cards from the board?
+                        found_straight_draw = False
+                        for low in range(2, 11):
+                            if low <= my_card_rank <= low + 4:
+                                required = set(range(low, low+5))
+                                present = set(board_ranks)
+                                if my_card_rank in required:
+                                    needed = required - present
+                                    if len(needed) == 1 and my_card_rank in needed:
+                                        # But wait: my_card_rank is our card, which is not in the board — so if the board has 4 of the 5 cards and we have the 5th
+                                        # then present has 4 (board) + we have the 5th — but present doesn't contain my_card_rank since our card is separate
+                                        # so present is board_ranks (without our card)
+                                        # We have: our card and board_ranks — complete set = board_ranks + [my_card_rank]
+                                        # count how many of the straight are on board
+                                        board_in_straight = len(present & required)
+                                        if board_in_straight == 4 and my_card_rank in required:
+                                            # We have 4 on board, we have the missing one
+                                            # So we have a straight draw
+                                            outs += 8  # open-ended: we can have 2 outs? Actually — 4 cards on board with one gap — we need the specific card — 4 outs? 
+                                            # Wait: if we have a 4-outer to a straight (odd-numbered like 5,7,8,9 — missing 6) — then we need a 6 — four 6s remain → 4 outs
+                                            # If we have 6,7,9,10 — missing 8 — 4 outs? Yes.
+                                            # But if we have 7,8,9,10 — and need 6 or J? Then we need either 6 or J — 8 outs.
+                                            # So we need to check if the gap is at the end or middle
+                                            required_list = list(required)
+                                            required_list.sort()
+                                            # Check if our card is in the middle or end
+                                            if my_card_rank == required_list[0] or my_card_rank == required_list[-1]:
+                                                outs += 4    # gutshot: 4 outs
+                                            else:
+                                                outs += 8    # open-ended: 8 outs
+                                            found_straight_draw = True
+                                            break
+                        if found_straight_draw:
+                            # Already added
+                            pass
+    
+    # Convert outs to approximate equity: for one card to come? But in Hold'em, if this is flop, 2 cards left; turn, 1 card left?
+    # In this unknown game configuration, we assume that public_cards may be 0,3,4,5.
+    # How many cards remain to be revealed? Standard: continue until 5 cards are public.
+    cards_revealed = len(public_cards)
+    cards_to_come = 5 - cards_revealed
+    # If 3 public cards: 2 cards to come → then we have 2 chances
+    if cards_to_come == 2:
+        # Approximate: equity = (outs * 4.5) / 47 (for 2 cards)
+        # Rule of thumb: outs * 4
+        estimated_equity = min((outs * 4) / 100, 1.0)
+    elif cards_to_come == 1:
+        estimated_equity = min((outs * 2.2) / 100, 1.0)  # Rule of thumb: 2% per out per card → 2.2 * outs
+    else:
+        # No public cards? We estimate based on strength only
+        estimated_equity = equity
+    
+    # Combine: our own hand strength and pot odds
+    # If we have high equity, we raise
+    # If equity is good enough to justify calling, call
+    # If we can raise and have good equity, raise
+    
+    # Is raising possible?
+    can_raise = 'raise' in allowed_actions
+    can_all_in = 'all-in' in allowed_actions
+    
+    # Determine action
+    if to_call == 0:
+        # Check opportunity
+        if estimated_equity > 0.6 and can_raise:
+            return 'raise'
+        elif estimated_equity > 0.4:
+            return 'call'  # check
+        else:
+            return 'call'  # check
+    else:
+        # Must call or raise or fold
+        call_value = estimated_equity * (pot + to_call) - to_call
+        # Spread: if call_value > 0 and est > 0.3, it's positive expected value
+        
+        if estimated_equity > 0.5 and can_raise:
+            # Strong hand — raise
+            return 'raise'
+        elif estimated_equity > 0.3 and call_value > 0:
+            # Positive EV call
+            if can_all_in and (my_spent + to_call) > pot_after_call * 0.5:
+                # If we can go all-in and we have a good hand, go for it if we're closer to all-in
+                # Check if we're "short-stacked"
+                # stack = total we have: we don't have total stack, but we can compute our remaining stack
+                # Assume initial stack is 1000? Not given. But we know my_spent and to_call.
+                # We don't know total stack. So we can't tell exact stack size.
+                # We'll assume we can go all-in if our remaining stack is less than pot size? Not reliable.
+                # Let’s say if our remaining stack is less than 2 * to_call, then go all-in
+                # We know: my_spent is already committed, to_call is what we need to match
+                # So our total if we call = my_spent + to_call
+                # We don't know initial stack. Let's assume standard initial stack is 1000? But problem says first round both have 100 in pot? So maybe initial stack 1000?
+                # We are given no stack size. So we'll avoid all-in unless strength is very high or we have already put in most.
+                # Wait: if we have less than to_call left? We can't call and raise? But function says we can do 'all-in'
+                # The API: 'all-in' commits entire stack.
+                # So if we don't have enough to raise, we can't raise? But we can always all-in if in allowed.
+                # So if we're very strong and can all-in, do so.
+                if estimated_equity > 0.7:
+                    return 'all-in'
+            return 'call'
+        elif estimated_equity < 0.2:
+            return 'fold'
+        else:
+            # Medium equity — if pot odds are good, call
+            # pot_odds_ratio is the ratio you need to win to make call profitable
+            if estimated_equity > pot_odds_ratio:
+                return 'call'
+            else:
+                return 'fold'
+    
+    # Fallback — prefer the 'safe' legal action when unsure
+    for action in ['all-in', 'raise', 'call', 'fold']:
+        if action in allowed_actions:
+            return action

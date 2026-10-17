@@ -1,0 +1,245 @@
+
+import time
+from typing import List, Tuple, Set
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Checkers AI policy combining mandatory capture handling with alpha-beta search.
+    Strategy:
+    1. Longest-sequence capture priority
+    2. Alpha-beta pruning for positional moves
+    3. Material evaluation (man=1, king=3)
+    4. Positional bonuses for center and advancement
+    5. Time-aware iterative deepening
+    """
+    start = time.time()
+    deadline = start + 0.9
+    
+    # Use sets for O(1) lookups
+    my_men_s = set(my_men)
+    my_kings_s = set(my_kings)
+    opp_men_s = set(opp_men)
+    opp_kings_s = set(opp_kings)
+    
+    # Generate all legal moves
+    moves = _all_moves(my_men_s, my_kings_s, opp_men_s, opp_kings_s, color)
+    
+    if not moves:
+        return ((0, 0), (0, 0))
+    
+    # Mandatory capture: must take longest sequence
+    if moves[0][2]:  # All moves are captures if any exist
+        best = max(moves, key=lambda m: _capture_score(m, opp_kings_s))
+        return (best[0], best[1])
+    
+    # Positional search with iterative deepening
+    best_move = moves[0]
+    best_score = -1e9
+    moves.sort(key=lambda m: _heuristic(m, color), reverse=True)
+    
+    for depth in (3, 5, 7):
+        if time.time() > deadline:
+            break
+        
+        for move in moves[:15]:  # Limited branching for speed
+            score = _alpha_beta(move, depth, my_men_s, my_kings_s, opp_men_s, opp_kings_s,
+                               color, -1e9, 1e9, True, deadline)
+            if score > best_score:
+                best_score = score
+                best_move = move
+    
+    return (best_move[0], best_move[1])
+
+def _all_moves(mm: Set[Tuple[int, int]], mk: Set[Tuple[int, int]], 
+               om: Set[Tuple[int, int]], ok: Set[Tuple[int, int]], 
+               color: str) -> List[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]]:
+    """Generate all legal moves, filtering for mandatory captures."""
+    moves = []
+    
+    # Generate moves for men
+    for p in mm:
+        moves.extend(_piece_moves(p, False, mm, mk, om, ok, color))
+    
+    # Generate moves for kings
+    for p in mk:
+        moves.extend(_piece_moves(p, True, mm, mk, om, ok, color))
+    
+    # Keep only longest captures if any exist
+    captures = [m for m in moves if m[2]]
+    if captures:
+        max_len = max(len(m[2]) for m in captures)
+        return [m for m in captures if len(m[2]) == max_len]
+    
+    return moves
+
+def _piece_moves(pos: Tuple[int, int], king: bool, mm: Set[Tuple[int, int]], 
+                 mk: Set[Tuple[int, int]], om: Set[Tuple[int, int]], 
+                 ok: Set[Tuple[int, int]], color: str) -> List[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]]:
+    """Get all moves for a single piece."""
+    r, c = pos
+    
+    # Determine movement directions
+    dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)] if king else \
+           [(1, -1), (1, 1)] if color == 'w' else [(-1, -1), (-1, 1)]
+    
+    # Check captures first (mandatory if available)
+    caps = _capture_moves(pos, king, dirs, [], set(), mm, mk, om, ok)
+    if caps:
+        return caps
+    
+    # Non-capturing moves
+    quiet = []
+    for dr, dc in dirs:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            to = (nr, nc)
+            if to not in mm and to not in mk and to not in om and to not in ok:
+                quiet.append((pos, to, []))
+    
+    return quiet
+
+def _capture_moves(pos: Tuple[int, int], king: bool, dirs: List[Tuple[int, int]],
+                   captured: List[Tuple[int, int]], visited: Set[Tuple[int, int]],
+                   mm: Set[Tuple[int, int]], mk: Set[Tuple[int, int]], 
+                   om: Set[Tuple[int, int]], ok: Set[Tuple[int, int]]) -> List[Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]]]:
+    """Recursively find all capture sequences."""
+    r, c = pos
+    sequences = []
+    
+    for dr, dc in dirs:
+        # Position of piece to capture
+        mr, mc = r + dr, c + dc
+        if 0 <= mr < 8 and 0 <= mc < 8:
+            mid = (mr, mc)
+            if (mid in om or mid in ok) and mid not in captured:
+                # Landing position after capture
+                lr, lc = r + 2 * dr, c + 2 * dc
+                if 0 <= lr < 8 and 0 <= lc < 8:
+                    land = (lr, lc)
+                    if (land not in mm and land not in mk and land not in om and 
+                        land not in ok and land not in visited):
+                        new_captured = captured + [mid]
+                        new_visited = visited | {land}
+                        
+                        # Continue searching for multi-captures
+                        more = _capture_moves(land, king, dirs, new_captured, new_visited,
+                                           mm, mk, om, ok)
+                        if more:
+                            sequences.extend(more)
+                        else:
+                            sequences.append((pos, land, new_captured))
+    
+    return sequences
+
+def _capture_score(move: Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]],
+                   opp_kings: Set[Tuple[int, int]]) -> int:
+    """Score capture sequence: prioritize length and king captures."""
+    return len(move[2]) * 20 + sum(1 for c in move[2] if c in opp_kings) * 15
+
+def _heuristic(move: Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]], 
+               color: str) -> int:
+    """Quick heuristic for non-capture move ordering."""
+    if move[2]:
+        return 10000
+    
+    _, to, _ = move
+    r, c = to
+    score = 0
+    
+    # Centralize
+    if 2 <= r <= 5 and 2 <= c <= 5:
+        score += 50
+    
+    # Advance
+    score += r * 10 if color == 'w' else (7 - r) * 10
+    
+    # Avoid edges
+    if c in (0, 7):
+        score -= 20
+    
+    return score
+
+def _alpha_beta(move: Tuple[Tuple[int, int], Tuple[int, int], List[Tuple[int, int]]], depth: int,
+                mm: Set[Tuple[int, int]], mk: Set[Tuple[int, int]], 
+                om: Set[Tuple[int, int]], ok: Set[Tuple[int, int]],
+                color: str, alpha: float, beta: float, maximizing: bool, deadline: float) -> float:
+    """Alpha-beta search with time limit."""
+    if time.time() > deadline:
+        return -1e9
+    
+    # Apply move
+    f, t, caps = move
+    nmm, nmk, nom, nok = set(mm), set(mk), set(om), set(ok)
+    
+    # Remove captured pieces
+    for c in caps:
+        if c in nom:
+            nom.remove(c)
+        elif c in nok:
+            nok.remove(c)
+    
+    # Move the piece
+    is_k = f in mk
+    if is_k:
+        nmk.remove(f)
+    else:
+        nmm.remove(f)
+    
+    # Handle promotion
+    promo = not is_k and ((color == 'w' and t[0] == 7) or (color == 'b' and t[0] == 0))
+    if promo:
+        nmk.add(t)
+    elif is_k:
+        nmk.add(t)
+    else:
+        nmm.add(t)
+    
+    # Evaluate at depth limit
+    if depth == 0:
+        return _evaluate(nmm, nmk, nom, nok, color)
+    
+    # Generate opponent moves
+    opp_color = 'b' if color == 'w' else 'w'
+    opp_moves = _generate_moves(nom, nok, nmm, nmk, opp_color)
+    
+    if not opp_moves:
+        return 10000 if maximizing else -10000
+    
+    # Search opponent responses
+    if maximizing:
+        value = -1e9
+        for opp_move in opp_moves:
+            value = max(value, _alpha_beta(opp_move, depth - 1, nom, nok, nmm, nmk,
+                                          opp_color, alpha, beta, False, deadline))
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                break
+        return value
+    else:
+        value = 1e9
+        for opp_move in opp_moves:
+            value = min(value, _alpha_beta(opp_move, depth - 1, nom, nok, nmm, nmk,
+                                          opp_color, alpha, beta, True, deadline))
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+def _evaluate(mm: Set[Tuple[int, int]], mk: Set[Tuple[int, int]], 
+              om: Set[Tuple[int, int]], ok: Set[Tuple[int, int]], color: str) -> float:
+    """Static evaluation: material + simplified position."""
+    # Material
+    score = (len(mm) - len(om)) * 1.0 + (len(mk) - len(ok)) * 3.0
+    
+    # Positional bonuses for men
+    for p in mm:
+        r, c = p
+        if 2 <= c <= 5:
+            score += 0.1 * (r if color == 'w' else 7 - r)
+        if c in (0, 7):
+            score -= 0.1
+    
+    # King positional bonus
+    score += len(mk) * 0.2
+    
+    return score

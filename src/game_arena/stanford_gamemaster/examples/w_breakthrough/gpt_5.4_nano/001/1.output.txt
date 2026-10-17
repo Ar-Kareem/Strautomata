@@ -1,0 +1,171 @@
+The strategy for this policy is to play a strong, robust heuristic Breakthrough agent:
+1. Parse the 8x8 board from `state`.
+2. For the current `role` (white moves “up”, black moves “down”), enumerate all legal forward moves:
+   - forward one step (straight)
+   - diagonal one step capturing if an opponent occupies the target
+3. Score each candidate move with a few fast tactical/positional terms:
+   - Strongly prefer immediate winning moves (reach last rank)
+   - Strongly prefer captures (especially captures that advance)
+   - Strongly discourage moves that allow the opponent to capture that moved piece next turn
+   - Prefer moves that advance farther toward promotion
+   - Prefer moves that improve formation (slightly favor advancing pieces closer to center)
+4. Pick the move with the highest score; break ties deterministically.
+
+<code>
+import math
+
+def policy(state: list[list[object]], role: str) -> str:
+    # --- Helpers ---
+    def parse_board(state):
+        board = [[None for _ in range(9)] for __ in range(9)]  # 1..8
+        for fact in state:
+            if not fact:
+                continue
+            if fact[0] == "cell" and len(fact) == 4:
+                _, x, y, c = fact
+                x = int(x); y = int(y)
+                if 1 <= x <= 8 and 1 <= y <= 8:
+                    board[x][y] = c  # 'white' or 'black'
+        return board
+
+    def opponent(p):
+        return "black" if p == "white" else "white"
+
+    def in_bounds(x, y):
+        return 1 <= x <= 8 and 1 <= y <= 8
+
+    def direction(p):
+        # white goes from bottom (row 2) to top (row 8): y increases
+        # black goes from top (row 7) to bottom (row 1): y decreases
+        return 1 if p == "white" else -1
+
+    def last_rank(p):
+        return 8 if p == "white" else 1
+
+    def start_rank(p):
+        return 2 if p == "white" else 7
+
+    def generate_moves(board, p):
+        d = direction(p)
+        opp = opponent(p)
+        moves = []
+        # enumerate pieces
+        for x in range(1, 9):
+            for y in range(1, 9):
+                if board[x][y] == p:
+                    # Straight forward
+                    ny = y + d
+                    if in_bounds(x, ny) and board[x][ny] is None:
+                        moves.append((x, y, x, ny, False))  # (fx,fy,tx,ty,is_capture)
+                    # Diagonal captures
+                    for dx in (-1, 1):
+                        nx = x + dx
+                        ny = y + d
+                        if in_bounds(nx, ny) and board[nx][ny] == opp:
+                            moves.append((x, y, nx, ny, True))
+        return moves
+
+    def is_capture(board, p, tx, ty):
+        opp = opponent(p)
+        return board[tx][ty] == opp
+
+    def would_be_win(p, tx, ty):
+        return ty == last_rank(p)
+
+    def compute_threatening_captures(board, moved_piece_pos, p):
+        """
+        Estimate if opponent can capture the moved piece next turn.
+        For Breakthrough, opponent captures diagonally forward one step toward their direction.
+        moved_piece_pos: (x,y) of piece after our move.
+        Returns count of opponent pieces that could capture it in one move.
+        """
+        opp = opponent(p)
+        (mx, my) = moved_piece_pos
+        d_opp = direction(opp)
+
+        # Opponent captures onto our piece position: their forward-diagonal squares.
+        # If opponent is at (mx-1, my-d_opp) or (mx+1, my-d_opp) they can capture (mx,my).
+        count = 0
+        for dx in (-1, 1):
+            ox = mx + dx
+            oy = my - d_opp
+            if in_bounds(ox, oy) and board[ox][oy] == opp:
+                # Must be diagonal capture landing exactly on (mx,my).
+                # That landing would be (ox + sign, oy + d_opp) => which equals (mx,my) by construction.
+                count += 1
+        return count
+
+    def score_move(board, p, move):
+        fx, fy, tx, ty, is_cap = move
+        opp = opponent(p)
+        s = 0.0
+
+        # Immediate win
+        if would_be_win(p, tx, ty):
+            return 1e9
+
+        # Promotion progress
+        prog = (ty - start_rank(p)) * direction(p)  # number of steps advanced from start rank-ish
+        s += 50.0 * prog
+
+        # Captures
+        if is_cap:
+            s += 300.0
+            # prefer captures that also advance a lot
+            s += 30.0 * ((ty - fy) * direction(p))
+
+        # Avoid moving into capture range
+        # Simulate move on a copy
+        b2 = [row[:] for row in board]
+        b2[tx][ty] = p
+        b2[fx][fy] = None
+        threats = compute_threatening_captures(b2, (tx, ty), p)
+        # If opponent can capture it, heavily penalize
+        if threats > 0:
+            s -= 500.0 * threats
+        else:
+            s += 15.0  # slight bonus if safe
+
+        # Centering preference (helps avoid being squeezed)
+        center_dist = abs(tx - 4.5)
+        s += 10.0 * (3.5 - center_dist)
+
+        # Slight preference for not moving from edge
+        edge_pen = 0.0
+        if tx in (1, 8):
+            edge_pen = 8.0
+        s -= edge_pen
+
+        # If move is straight (non-capture), a bit less than diagonal captures of equal advancement
+        if not is_cap:
+            s -= 5.0
+
+        return s
+
+    # --- Main ---
+    board = parse_board(state)
+    p = role
+    moves = generate_moves(board, p)
+
+    # If somehow no moves (shouldn't happen in legal play), fallback:
+    if not moves:
+        return "move(1,1,1,1)"  # illegal fallback, but should never be used
+
+    # Choose best scoring move; tie-break deterministically by lexicographic from/to
+    best = None
+    best_score = -math.inf
+    for m in moves:
+        sc = score_move(board, p, m)
+        if sc > best_score:
+            best_score = sc
+            best = m
+        elif sc == best_score:
+            # Tie-break: prefer capturing, then more advanced, then leftmost source, then leftmost dest
+            fx, fy, tx, ty, is_cap = m
+            bfx, bfy, btx, bty, bis_cap = best
+            if (is_cap, (ty-fy)*direction(p), -fx, -tx) > (bis_cap, (bty-bfy)*direction(p), -bfx, -btx):
+                best = m
+
+    fx, fy, tx, ty, _ = best
+    return f"move({fx},{fy},{tx},{ty})"
+</code>

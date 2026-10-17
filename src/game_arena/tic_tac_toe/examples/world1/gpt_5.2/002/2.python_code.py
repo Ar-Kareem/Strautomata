@@ -1,0 +1,120 @@
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import List, Tuple, Optional
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Returns a legal move (row, col) for a 3x3 Tic-Tac-Toe board.
+    0 = empty, 1 = our mark, -1 = opponent mark.
+    """
+
+    # Collect legal moves first; we must ALWAYS return a legal move string.
+    legal_moves = [(r, c) for r in range(3) for c in range(3) if board[r][c] == 0]
+    if not legal_moves:
+        # No legal moves; return something valid-looking (shouldn't happen in normal play).
+        return (0, 0)
+
+    # Convert board to immutable tuple for caching.
+    start_state = tuple(tuple(row) for row in board)
+
+    def winner(state: Tuple[Tuple[int, int, int], Tuple[int, int, int], Tuple[int, int, int]]) -> int:
+        # Rows and columns
+        for i in range(3):
+            s = state[i][0] + state[i][1] + state[i][2]
+            if s == 3:
+                return 1
+            if s == -3:
+                return -1
+            s = state[0][i] + state[1][i] + state[2][i]
+            if s == 3:
+                return 1
+            if s == -3:
+                return -1
+        # Diagonals
+        s = state[0][0] + state[1][1] + state[2][2]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+        s = state[0][2] + state[1][1] + state[2][0]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+        return 0
+
+    def empties(state) -> List[Tuple[int, int]]:
+        return [(r, c) for r in range(3) for c in range(3) if state[r][c] == 0]
+
+    def apply_move(state, move: Tuple[int, int], player: int):
+        r, c = move
+        row = list(state[r])
+        row[c] = player
+        new_rows = [list(state[i]) for i in range(3)]
+        new_rows[r] = row
+        return tuple(tuple(new_rows[i]) for i in range(3))
+
+    @lru_cache(maxsize=None)
+    def minimax(state, player: int, depth: int, alpha: int, beta: int) -> int:
+        """
+        Returns value from our perspective:
+          + big positive => good for us
+          - big negative => good for opponent
+        """
+        w = winner(state)
+        if w == 1:
+            return 100 - depth  # prefer quicker wins
+        if w == -1:
+            return -100 + depth  # prefer slower losses
+
+        moves = empties(state)
+        if not moves:
+            return 0  # draw
+
+        if player == 1:
+            value = -10_000
+            for mv in moves:
+                nxt = apply_move(state, mv, 1)
+                value = max(value, minimax(nxt, -1, depth + 1, alpha, beta))
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value
+        else:
+            value = 10_000
+            for mv in moves:
+                nxt = apply_move(state, mv, -1)
+                value = min(value, minimax(nxt, 1, depth + 1, alpha, beta))
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return value
+
+    # Prefer center, then corners, then edges as a tie-breaker (common strong heuristic).
+    def move_priority(mv: Tuple[int, int]) -> int:
+        r, c = mv
+        if (r, c) == (1, 1):
+            return 0
+        if (r, c) in {(0, 0), (0, 2), (2, 0), (2, 2)}:
+            return 1
+        return 2
+
+    best_move: Optional[Tuple[int, int]] = None
+    best_value = -10_000
+
+    # Evaluate all legal moves for us (player = 1).
+    # Sort by heuristic priority so alpha-beta tends to prune more and ties pick strong squares.
+    for mv in sorted(legal_moves, key=move_priority):
+        nxt = apply_move(start_state, mv, 1)
+        val = minimax(nxt, -1, 1, -10_000, 10_000)
+        if val > best_value:
+            best_value = val
+            best_move = mv
+
+    # Safety fallback: ensure returned move is legal.
+    if best_move is None or board[best_move[0]][best_move[1]] != 0:
+        return legal_moves[0]
+    return best_move

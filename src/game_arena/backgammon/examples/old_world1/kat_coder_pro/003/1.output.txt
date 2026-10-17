@@ -1,0 +1,187 @@
+The logic for this policy is to implement a simple heuristic-based strategy for Backgammon. The policy will:
+1. Check if there are checkers on the bar that need to be moved
+2. Prioritize hitting opponent blots (single checkers)
+3. Build points in the home board
+4. Move checkers towards the home board
+5. Bear off checkers when possible
+6. Use a greedy approach to maximize immediate gains
+
+<code>
+import numpy as np
+
+def policy(state: dict) -> str:
+    """
+    A simple heuristic-based Backgammon policy.
+    
+    Args:
+        state: Dictionary with keys:
+            - my_pts: list of 24 integers (my checkers on each point)
+            - opp_pts: list of 24 integers (opponent checkers on each point)
+            - my_bar: int (my checkers on bar)
+            - opp_bar: int (opponent checkers on bar)
+            - my_off: int (my checkers borne off)
+            - opp_off: int (opponent checkers borne off)
+            - dice: list of 0-2 integers (current dice roll)
+    
+    Returns:
+        Move string in format: <ORDER>:<FROM1>,<FROM2>
+        ORDER: 'H' for higher die first, 'L' for lower die first
+        FROM: 'A0'..'A23' for absolute point, 'B' for bar, 'P' for pass
+    """
+    
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    dice = state['dice']
+    
+    # If no dice, return pass
+    if not dice:
+        return "H:P,P"
+    
+    # Sort dice in descending order
+    dice = sorted(dice, reverse=True)
+    high_die, low_die = dice[0], dice[1] if len(dice) > 1 else dice[0]
+    
+    # Helper function to check if a point is safe (no opponent blot)
+    def is_safe(point):
+        return opp_pts[point] <= 1
+    
+    # Helper function to check if a point is open (can move to)
+    def is_open(point):
+        return opp_pts[point] < 2
+    
+    # Helper function to get destination for a move
+    def get_dest(from_point, die):
+        if from_point == 'B':
+            return die - 1  # Moving from bar
+        elif from_point.startswith('A'):
+            idx = int(from_point[1:])
+            return idx + die
+        return None
+    
+    # Helper function to check if a move hits an opponent
+    def can_hit(from_point, die):
+        dest = get_dest(from_point, die)
+        if dest is None or dest >= 24:
+            return False
+        return opp_pts[dest] == 1
+    
+    # Helper function to check if bearing off is possible
+    def can_bear_off():
+        # All checkers must be in home board (points 18-23)
+        for i in range(18):
+            if my_pts[i] > 0:
+                return False
+        return True
+    
+    # Helper function to check if bearing off with exact die is possible
+    def can_bear_off_exact(die):
+        if not can_bear_off():
+            return False
+        # Check if we have a checker on the exact point
+        point_idx = 24 - die
+        if point_idx >= 0 and my_pts[point_idx] > 0:
+            return True
+        # Otherwise, bear off from highest point
+        for i in range(23, 17, -1):
+            if my_pts[i] > 0:
+                return True
+        return False
+    
+    # If we have checkers on bar, we must move them first
+    if my_bar > 0:
+        # Try to enter with higher die
+        if is_open(high_die - 1):
+            return f"H:B,P" if len(dice) == 1 else f"H:B,P"
+        # Try to enter with lower die
+        elif len(dice) > 1 and is_open(low_die - 1):
+            return f"L:B,P"
+        # Can't enter, pass
+        return f"H:P,P"
+    
+    # Generate all possible moves
+    possible_moves = []
+    
+    # Check for hitting moves
+    for i in range(24):
+        if my_pts[i] > 0:
+            # Try higher die
+            dest_high = i + high_die
+            if dest_high < 24 and is_open(dest_high) and can_hit(f"A{i}", high_die):
+                possible_moves.append((f"A{i}", None, "hit_high"))
+            
+            # Try lower die if different from higher
+            if len(dice) > 1 and high_die != low_die:
+                dest_low = i + low_die
+                if dest_low < 24 and is_open(dest_low) and can_hit(f"A{i}", low_die):
+                    possible_moves.append((f"A{i}", None, "hit_low"))
+    
+    # If we can hit, do it
+    if possible_moves:
+        # Prefer hitting with higher die
+        hit_moves = [m for m in possible_moves if "hit_high" in m[2]]
+        if hit_moves:
+            return f"H:{hit_moves[0][0]},P"
+        else:
+            hit_moves = [m for m in possible_moves if "hit_low" in m[2]]
+            return f"L:{hit_moves[0][0]},P"
+    
+    # Check for building points in home board
+    for i in range(18, 24):
+        if my_pts[i] == 1:  # We have a blot
+            for j in range(24):
+                if my_pts[j] > 0:
+                    # Try to move to safety
+                    dest_high = j + high_die
+                    dest_low = j + low_die if len(dice) > 1 else None
+                    
+                    if dest_high == i and is_open(i):
+                        return f"H:A{j},P"
+                    if dest_low == i and is_open(i):
+                        return f"L:A{j},P"
+    
+    # Check for bearing off
+    if can_bear_off():
+        # Try exact bearing off with higher die
+        if can_bear_off_exact(high_die):
+            # Find the point to bear off from
+            point_idx = 24 - high_die
+            if point_idx >= 0 and my_pts[point_idx] > 0:
+                return f"H:A{point_idx},P"
+            # Otherwise bear off from highest point
+            for i in range(23, 17, -1):
+                if my_pts[i] > 0:
+                    return f"H:A{i},P"
+        
+        # Try exact bearing off with lower die
+        if len(dice) > 1 and can_bear_off_exact(low_die):
+            point_idx = 24 - low_die
+            if point_idx >= 0 and my_pts[point_idx] > 0:
+                return f"L:A{point_idx},P"
+            for i in range(23, 17, -1):
+                if my_pts[i] > 0:
+                    return f"L:A{i},P"
+        
+        # Bear off from highest point if no exact match
+        for i in range(23, 17, -1):
+            if my_pts[i] > 0:
+                return f"H:A{i},P"
+    
+    # Move checkers towards home board
+    # Prefer moving checkers from higher indices (closer to home)
+    for i in range(23, -1, -1):
+        if my_pts[i] > 0:
+            dest_high = i + high_die
+            dest_low = i + low_die if len(dice) > 1 else None
+            
+            # Try higher die
+            if dest_high < 24 and is_open(dest_high):
+                return f"H:A{i},P"
+            
+            # Try lower die
+            if dest_low is not None and dest_low < 24 and is_open(dest_low):
+                return f"L:A{i},P"
+    
+    # If no moves possible, pass
+    return f"H:P,P"
+</code>

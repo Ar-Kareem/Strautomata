@@ -1,0 +1,326 @@
+## Strategy
+
+My chess policy will implement a minimax search with alpha-beta pruning to evaluate positions and select the best move. The key components are:
+
+1. **Move Generation**: Generate all legal moves by understanding piece movement rules, including special moves like castling, en passant, and pawn promotion.
+
+2. **Position Evaluation**: Use a material-based evaluation with piece-square tables to encourage good piece placement. Material values: Pawn=100, Knight=320, Bishop=330, Rook=500, Queen=900, King=20000.
+
+3. **Search Algorithm**: Minimax with alpha-beta pruning to search several plies deep (depth 3-4 depending on time). This allows the engine to look ahead and avoid blunders while finding tactical opportunities.
+
+4. **Move Ordering**: Order moves by captures first (MVV-LVA - Most Valuable Victim, Least Valuable Attacker) to improve alpha-beta pruning efficiency.
+
+5. **Check Detection**: Properly detect when the king is in check to ensure only legal moves are considered.
+
+6. **Special Cases**: Handle checkmate detection and stalemate avoidance.
+
+<code>
+import copy
+
+def policy(pieces, to_play, memory):
+    my_color = 'w' if to_play == 'white' else 'b'
+    
+    # Generate legal moves
+    legal_moves = generate_legal_moves(pieces, my_color, memory)
+    
+    if not legal_moves:
+        return ('0000', memory)  # Should not happen if we have legal moves
+    
+    if len(legal_moves) == 1:
+        return (legal_moves[0], memory)
+    
+    # Use minimax with alpha-beta pruning
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    depth = 3  # Search depth
+    
+    for move in order_moves(legal_moves, pieces, my_color):
+        new_pieces = make_move(pieces, move, memory)
+        opp_color = 'b' if my_color == 'w' else 'w'
+        score = -negamax(new_pieces, opp_color, depth - 1, -beta, -alpha, {})
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+        alpha = max(alpha, score)
+    
+    return (best_move, memory)
+
+def negamax(pieces, color, depth, alpha, beta, mem):
+    if depth == 0:
+        return evaluate(pieces, color)
+    
+    legal_moves = generate_legal_moves(pieces, color, mem)
+    
+    if not legal_moves:
+        if is_in_check(pieces, color):
+            return -100000 - depth  # Checkmate
+        return 0  # Stalemate
+    
+    best_score = float('-inf')
+    for move in order_moves(legal_moves, pieces, color):
+        new_pieces = make_move(pieces, move, mem)
+        opp_color = 'b' if color == 'w' else 'w'
+        score = -negamax(new_pieces, opp_color, depth - 1, -beta, -alpha, mem)
+        best_score = max(best_score, score)
+        alpha = max(alpha, score)
+        if alpha >= beta:
+            break
+    return best_score
+
+def evaluate(pieces, color):
+    piece_values = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    score = 0
+    for sq, piece in pieces.items():
+        val = piece_values.get(piece[1], 0)
+        if piece[0] == color:
+            score += val + positional_bonus(sq, piece)
+        else:
+            score -= val + positional_bonus(sq, piece)
+    return score
+
+def positional_bonus(sq, piece):
+    file_idx = ord(sq[0]) - ord('a')
+    rank_idx = int(sq[1]) - 1
+    if piece[0] == 'b':
+        rank_idx = 7 - rank_idx
+    
+    # Center control bonus
+    center_bonus = max(0, 3 - abs(3.5 - file_idx)) + max(0, 3 - abs(3.5 - rank_idx))
+    
+    if piece[1] == 'P':
+        return rank_idx * 10 + center_bonus * 2
+    elif piece[1] in ['N', 'B']:
+        return center_bonus * 5
+    return center_bonus * 2
+
+def order_moves(moves, pieces, color):
+    def score_move(m):
+        to_sq = m[2:4]
+        if to_sq in pieces:
+            captured = pieces[to_sq]
+            return 10 * piece_value(captured[1]) - piece_value(get_piece_at(pieces, m[:2])[1])
+        return 0
+    return sorted(moves, key=score_move, reverse=True)
+
+def piece_value(p):
+    return {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 100}.get(p, 0)
+
+def get_piece_at(pieces, sq):
+    return pieces.get(sq, '')
+
+def generate_legal_moves(pieces, color, memory):
+    moves = []
+    for sq, piece in pieces.items():
+        if piece[0] == color:
+            moves.extend(generate_piece_moves(pieces, sq, piece, memory))
+    
+    legal = []
+    for move in moves:
+        new_pieces = make_move(pieces, move, memory)
+        if not is_in_check(new_pieces, color):
+            legal.append(move)
+    return legal
+
+def generate_piece_moves(pieces, sq, piece, memory):
+    moves = []
+    ptype = piece[1]
+    color = piece[0]
+    f, r = ord(sq[0]) - ord('a'), int(sq[1])
+    
+    if ptype == 'P':
+        moves.extend(generate_pawn_moves(pieces, sq, color))
+    elif ptype == 'N':
+        for df, dr in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+            nf, nr = f + df, r + dr
+            if 0 <= nf < 8 and 1 <= nr <= 8:
+                nsq = chr(ord('a') + nf) + str(nr)
+                if nsq not in pieces or pieces[nsq][0] != color:
+                    moves.append(sq + nsq)
+    elif ptype == 'B':
+        moves.extend(slide_moves(pieces, sq, color, [(-1,-1),(-1,1),(1,-1),(1,1)]))
+    elif ptype == 'R':
+        moves.extend(slide_moves(pieces, sq, color, [(-1,0),(1,0),(0,-1),(0,1)]))
+    elif ptype == 'Q':
+        moves.extend(slide_moves(pieces, sq, color, [(-1,-1),(-1,1),(1,-1),(1,1),(-1,0),(1,0),(0,-1),(0,1)]))
+    elif ptype == 'K':
+        for df in [-1,0,1]:
+            for dr in [-1,0,1]:
+                if df == 0 and dr == 0:
+                    continue
+                nf, nr = f + df, r + dr
+                if 0 <= nf < 8 and 1 <= nr <= 8:
+                    nsq = chr(ord('a') + nf) + str(nr)
+                    if nsq not in pieces or pieces[nsq][0] != color:
+                        moves.append(sq + nsq)
+        # Castling
+        if color == 'w' and sq == 'e1':
+            if pieces.get('h1') == 'wR' and 'f1' not in pieces and 'g1' not in pieces:
+                moves.append('e1g1')
+            if pieces.get('a1') == 'wR' and 'b1' not in pieces and 'c1' not in pieces and 'd1' not in pieces:
+                moves.append('e1c1')
+        elif color == 'b' and sq == 'e8':
+            if pieces.get('h8') == 'bR' and 'f8' not in pieces and 'g8' not in pieces:
+                moves.append('e8g8')
+            if pieces.get('a8') == 'bR' and 'b8' not in pieces and 'c8' not in pieces and 'd8' not in pieces:
+                moves.append('e8c8')
+    return moves
+
+def generate_pawn_moves(pieces, sq, color):
+    moves = []
+    f, r = ord(sq[0]) - ord('a'), int(sq[1])
+    direction = 1 if color == 'w' else -1
+    start_rank = 2 if color == 'w' else 7
+    promo_rank = 8 if color == 'w' else 1
+    
+    # Forward
+    nr = r + direction
+    if 1 <= nr <= 8:
+        nsq = chr(ord('a') + f) + str(nr)
+        if nsq not in pieces:
+            if nr == promo_rank:
+                for p in ['q', 'r', 'b', 'n']:
+                    moves.append(sq + nsq + p)
+            else:
+                moves.append(sq + nsq)
+            # Double push
+            if r == start_rank:
+                nr2 = r + 2 * direction
+                nsq2 = chr(ord('a') + f) + str(nr2)
+                if nsq2 not in pieces:
+                    moves.append(sq + nsq2)
+    
+    # Captures
+    for df in [-1, 1]:
+        nf = f + df
+        nr = r + direction
+        if 0 <= nf < 8 and 1 <= nr <= 8:
+            nsq = chr(ord('a') + nf) + str(nr)
+            if nsq in pieces and pieces[nsq][0] != color:
+                if nr == promo_rank:
+                    for p in ['q', 'r', 'b', 'n']:
+                        moves.append(sq + nsq + p)
+                else:
+                    moves.append(sq + nsq)
+    return moves
+
+def slide_moves(pieces, sq, color, directions):
+    moves = []
+    f, r = ord(sq[0]) - ord('a'), int(sq[1])
+    for df, dr in directions:
+        nf, nr = f + df, r + dr
+        while 0 <= nf < 8 and 1 <= nr <= 8:
+            nsq = chr(ord('a') + nf) + str(nr)
+            if nsq in pieces:
+                if pieces[nsq][0] != color:
+                    moves.append(sq + nsq)
+                break
+            moves.append(sq + nsq)
+            nf += df
+            nr += dr
+    return moves
+
+def make_move(pieces, move, memory):
+    new_pieces = dict(pieces)
+    fr, to = move[:2], move[2:4]
+    piece = new_pieces.get(fr, '')
+    
+    if fr in new_pieces:
+        del new_pieces[fr]
+    
+    if len(move) == 5:  # Promotion
+        new_pieces[to] = piece[0] + move[4].upper()
+    else:
+        new_pieces[to] = piece
+    
+    # Castling rook movement
+    if piece[1] == 'K':
+        if move == 'e1g1':
+            if 'h1' in new_pieces:
+                del new_pieces['h1']
+            new_pieces['f1'] = 'wR'
+        elif move == 'e1c1':
+            if 'a1' in new_pieces:
+                del new_pieces['a1']
+            new_pieces['d1'] = 'wR'
+        elif move == 'e8g8':
+            if 'h8' in new_pieces:
+                del new_pieces['h8']
+            new_pieces['f8'] = 'bR'
+        elif move == 'e8c8':
+            if 'a8' in new_pieces:
+                del new_pieces['a8']
+            new_pieces['d8'] = 'bR'
+    
+    return new_pieces
+
+def is_in_check(pieces, color):
+    king_sq = None
+    for sq, piece in pieces.items():
+        if piece == color + 'K':
+            king_sq = sq
+            break
+    if not king_sq:
+        return True
+    
+    opp = 'b' if color == 'w' else 'w'
+    kf, kr = ord(king_sq[0]) - ord('a'), int(king_sq[1])
+    
+    # Check by pawns
+    pawn_dir = 1 if color == 'w' else -1
+    for df in [-1, 1]:
+        nf, nr = kf + df, kr + pawn_dir
+        if 0 <= nf < 8 and 1 <= nr <= 8:
+            nsq = chr(ord('a') + nf) + str(nr)
+            if pieces.get(nsq) == opp + 'P':
+                return True
+    
+    # Check by knights
+    for df, dr in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
+        nf, nr = kf + df, kr + dr
+        if 0 <= nf < 8 and 1 <= nr <= 8:
+            nsq = chr(ord('a') + nf) + str(nr)
+            if pieces.get(nsq) == opp + 'N':
+                return True
+    
+    # Check by sliding pieces
+    for df, dr in [(-1,0),(1,0),(0,-1),(0,1)]:
+        nf, nr = kf + df, kr + dr
+        while 0 <= nf < 8 and 1 <= nr <= 8:
+            nsq = chr(ord('a') + nf) + str(nr)
+            if nsq in pieces:
+                p = pieces[nsq]
+                if p[0] == opp and p[1] in ['R', 'Q']:
+                    return True
+                break
+            nf += df
+            nr += dr
+    
+    for df, dr in [(-1,-1),(-1,1),(1,-1),(1,1)]:
+        nf, nr = kf + df, kr + dr
+        while 0 <= nf < 8 and 1 <= nr <= 8:
+            nsq = chr(ord('a') + nf) + str(nr)
+            if nsq in pieces:
+                p = pieces[nsq]
+                if p[0] == opp and p[1] in ['B', 'Q']:
+                    return True
+                break
+            nf += df
+            nr += dr
+    
+    # Check by king
+    for df in [-1,0,1]:
+        for dr in [-1,0,1]:
+            if df == 0 and dr == 0:
+                continue
+            nf, nr = kf + df, kr + dr
+            if 0 <= nf < 8 and 1 <= nr <= 8:
+                nsq = chr(ord('a') + nf) + str(nr)
+                if pieces.get(nsq) == opp + 'K':
+                    return True
+    
+    return False
+</code>

@@ -1,0 +1,155 @@
+
+import math
+import copy
+
+ROWS = 6
+COLS = 7
+PLAYER = 1
+OPPONENT = -1
+WIN_SCORE = 100_000
+LOSS_SCORE = -WIN_SCORE
+
+def policy(board: list[list[int]]) -> int:
+    """Return the column (0‑6) where the current player should drop a disc."""
+    def valid_moves(b):
+        return [c for c in range(COLS) if b[0][c] == 0]
+
+    def make_move(b, col, piece):
+        new_board = copy.deepcopy(b)
+        for r in range(ROWS-1, -1, -1):
+            if new_board[r][col] == 0:
+                new_board[r][col] = piece
+                break
+        return new_board
+
+    def check_winner(b, piece):
+        # horizontal
+        for r in range(ROWS):
+            for c in range(COLS-3):
+                if all(b[r][c+i] == piece for i in range(4)):
+                    return True
+        # vertical
+        for c in range(COLS):
+            for r in range(ROWS-3):
+                if all(b[r+i][c] == piece for i in range(4)):
+                    return True
+        # positive diagonal
+        for r in range(ROWS-3):
+            for c in range(COLS-3):
+                if all(b[r+i][c+i] == piece for i in range(4)):
+                    return True
+        # negative diagonal
+        for r in range(3, ROWS):
+            for c in range(COLS-3):
+                if all(b[r-i][c+i] == piece for i in range(4)):
+                    return True
+        return False
+
+    def is_terminal(b):
+        return check_winner(b, PLAYER) or check_winner(b, OPPONENT) or not any(b[0][c] == 0 for c in range(COLS))
+
+    def evaluate_window(window, piece):
+        opp = OPPONENT if piece == PLAYER else PLAYER
+        count_piece = window.count(piece)
+        count_opp = window.count(opp)
+        count_empty = window.count(0)
+
+        if count_piece == 4:
+            return WIN_SCORE
+        if count_piece == 3 and count_empty == 1:
+            return 1_000
+        if count_piece == 2 and count_empty == 2:
+            return 10
+        if count_opp == 4:
+            return LOSS_SCORE
+        if count_opp == 3 and count_empty == 1:
+            return -1_000
+        if count_opp == 2 and count_empty == 2:
+            return -10
+        return 0
+
+    def score_position(b, piece):
+        score = 0
+        # centre column preference
+        centre_array = [b[r][COLS//2] for r in range(ROWS)]
+        centre_count = centre_array.count(piece)
+        score += centre_count * 3
+
+        # horizontal
+        for r in range(ROWS):
+            row_array = b[r]
+            for c in range(COLS-3):
+                window = row_array[c:c+4]
+                score += evaluate_window(window, piece)
+
+        # vertical
+        for c in range(COLS):
+            col_array = [b[r][c] for r in range(ROWS)]
+            for r in range(ROWS-3):
+                window = col_array[r:r+4]
+                score += evaluate_window(window, piece)
+
+        # positive diagonal
+        for r in range(ROWS-3):
+            for c in range(COLS-3):
+                window = [b[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        # negative diagonal
+        for r in range(3, ROWS):
+            for c in range(COLS-3):
+                window = [b[r-i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        return score
+
+    def minimax(b, depth, alpha, beta, maximizingPlayer):
+        if depth == 0 or is_terminal(b):
+            if check_winner(b, PLAYER):
+                return (None, WIN_SCORE)
+            elif check_winner(b, OPPONENT):
+                return (None, LOSS_SCORE)
+            else:
+                return (None, score_position(b, PLAYER))
+
+        valid_cols = valid_moves(b)
+        # order moves centre‑outwards for better pruning
+        order = [3,2,4,1,5,0,6]
+        valid_cols.sort(key=lambda x: order.index(x))
+
+        if maximizingPlayer:
+            value = -math.inf
+            best_col = valid_cols[0]
+            for col in valid_cols:
+                child = make_move(b, col, PLAYER)
+                _, new_score = minimax(child, depth-1, alpha, beta, False)
+                if new_score > value:
+                    value = new_score
+                    best_col = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return best_col, value
+        else:
+            value = math.inf
+            best_col = valid_cols[0]
+            for col in valid_cols:
+                child = make_move(b, col, OPPONENT)
+                _, new_score = minimax(child, depth-1, alpha, beta, True)
+                if new_score < value:
+                    value = new_score
+                    best_col = col
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break
+            return best_col, value
+
+    # Choose move
+    col, _ = minimax(board, depth=4, alpha=-math.inf, beta=math.inf, maximizingPlayer=True)
+
+    # Fallback: if minimax returns None (shouldn't happen), pick first legal column
+    if col is None or board[0][col] != 0:
+        for c in range(COLS):
+            if board[0][c] == 0:
+                return c
+    return col

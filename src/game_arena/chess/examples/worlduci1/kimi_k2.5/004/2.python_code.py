@@ -1,0 +1,316 @@
+
+import time
+from typing import List, Tuple, Optional
+
+# Board mappings
+FILES = 'abcdefgh'
+RANKS = '12345678'
+SQ_TO_IDX = {f + r: (i, j) for i, f in enumerate(FILES) for j, r in enumerate(RANKS)}
+IDX_TO_SQ = {(i, j): f + r for i, f in enumerate(FILES) for j, r in enumerate(RANKS)}
+
+# Piece values
+VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 0}
+
+# Movement directions
+DIRECTIONS = {
+    'N': [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)],
+    'K': [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)],
+    'R': [(0, 1), (0, -1), (1, 0), (-1, 0)],
+    'B': [(1, 1), (1, -1), (-1, 1), (-1, -1)],
+    'Q': [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+}
+
+def parse_board(pieces: dict) -> List[List[Optional[str]]]:
+    """Convert pieces dict to 8x8 board (file, rank) indexing."""
+    board = [[None for _ in range(8)] for _ in range(8)]
+    for sq, pc in pieces.items():
+        f, r = SQ_TO_IDX[sq]
+        board[f][r] = pc
+    return board
+
+def in_bounds(f: int, r: int) -> bool:
+    return 0 <= f < 8 and 0 <= r < 8
+
+def is_square_attacked(board: List[List[Optional[str]]], f: int, r: int, by_color: str) -> bool:
+    """Check if square (f,r) is attacked by by_color."""
+    opp = 'b' if by_color == 'w' else 'w'
+    
+    # Pawns
+    dir = -1 if by_color == 'w' else 1  # Direction pawns attack from
+    for df in [-1, 1]:
+        nf, nr = f + df, r + dir
+        if in_bounds(nf, nr) and board[nf][nr] == by_color + 'P':
+            return True
+    
+    # Knights
+    for df, dr in DIRECTIONS['N']:
+        nf, nr = f + df, r + dr
+        if in_bounds(nf, nr) and board[nf][nr] == by_color + 'N':
+            return True
+    
+    # King
+    for df, dr in DIRECTIONS['K']:
+        nf, nr = f + df, r + dr
+        if in_bounds(nf, nr) and board[nf][nr] == by_color + 'K':
+            return True
+    
+    # Rays (Rook/Queen)
+    for df, dr in DIRECTIONS['R']:
+        for i in range(1, 8):
+            nf, nr = f + i*df, r + i*dr
+            if not in_bounds(nf, nr):
+                break
+            p = board[nf][nr]
+            if p:
+                if p[0] == by_color and p[1] in ('R', 'Q'):
+                    return True
+                break
+    
+    # Diagonals (Bishop/Queen)
+    for df, dr in DIRECTIONS['B']:
+        for i in range(1, 8):
+            nf, nr = f + i*df, r + i*dr
+            if not in_bounds(nf, nr):
+                break
+            p = board[nf][nr]
+            if p:
+                if p[0] == by_color and p[1] in ('B', 'Q'):
+                    return True
+                break
+    return False
+
+def find_king(board: List[List[Optional[str]]], color: str) -> Tuple[int, int]:
+    for f in range(8):
+        for r in range(8):
+            if board[f][r] == color + 'K':
+                return (f, r)
+    return (0, 0)  # Should not happen
+
+def generate_pseudo_legal(board: List[List[Optional[str]]], color: str) -> List[Tuple]:
+    """Generate all pseudo-legal moves as ((f1,r1), (f2,r2), promo)."""
+    moves = []
+    for f in range(8):
+        for r in range(8):
+            pc = board[f][r]
+            if not pc or pc[0] != color:
+                continue
+            ptype = pc[1]
+            
+            if ptype == 'P':
+                dir = 1 if color == 'w' else -1
+                start_r = 1 if color == 'w' else 6
+                promo_r = 7 if color == 'w' else 0
+                
+                # Forward
+                nf, nr = f, r + dir
+                if in_bounds(nf, nr) and not board[nf][nr]:
+                    if nr == promo_r:
+                        for pr in 'qrbn':
+                            moves.append(((f,r), (nf,nr), pr))
+                    else:
+                        moves.append(((f,r), (nf,nr), None))
+                        # Double push
+                        if r == start_r:
+                            nf2, nr2 = f, r + 2*dir
+                            if in_bounds(nf2, nr2) and not board[nf2][nr2]:
+                                moves.append(((f,r), (nf2,nr2), None))
+                
+                # Captures
+                for df in [-1, 1]:
+                    nf, nr = f + df, r + dir
+                    if in_bounds(nf, nr):
+                        tgt = board[nf][nr]
+                        if tgt and tgt[0] != color:
+                            if nr == promo_r:
+                                for pr in 'qrbn':
+                                    moves.append(((f,r), (nf,nr), pr))
+                            else:
+                                moves.append(((f,r), (nf,nr), None))
+            
+            elif ptype == 'N':
+                for df, dr in DIRECTIONS['N']:
+                    nf, nr = f + df, r + dr
+                    if in_bounds(nf, nr):
+                        tgt = board[nf][nr]
+                        if not tgt or tgt[0] != color:
+                            moves.append(((f,r), (nf,nr), None))
+            
+            elif ptype == 'K':
+                for df, dr in DIRECTIONS['K']:
+                    nf, nr = f + df, r + dr
+                    if in_bounds(nf, nr):
+                        tgt = board[nf][nr]
+                        if not tgt or tgt[0] != color:
+                            moves.append(((f,r), (nf,nr), None))
+                
+                # Castling (simplified: allowed if pieces on starting squares)
+                if color == 'w' and f == 4 and r == 0:
+                    # Kingside
+                    if board[5][0] is None and board[6][0] is None and board[7][0] == 'wR':
+                        if not is_square_attacked(board, 4, 0, 'b') and \
+                           not is_square_attacked(board, 5, 0, 'b') and \
+                           not is_square_attacked(board, 6, 0, 'b'):
+                            moves.append(((4,0), (6,0), None))
+                    # Queenside
+                    if board[3][0] is None and board[2][0] is None and board[1][0] is None and board[0][0] == 'wR':
+                        if not is_square_attacked(board, 4, 0, 'b') and \
+                           not is_square_attacked(board, 3, 0, 'b') and \
+                           not is_square_attacked(board, 2, 0, 'b'):
+                            moves.append(((4,0), (2,0), None))
+                elif color == 'b' and f == 4 and r == 7:
+                    # Kingside
+                    if board[5][7] is None and board[6][7] is None and board[7][7] == 'bR':
+                        if not is_square_attacked(board, 4, 7, 'w') and \
+                           not is_square_attacked(board, 5, 7, 'w') and \
+                           not is_square_attacked(board, 6, 7, 'w'):
+                            moves.append(((4,7), (6,7), None))
+                    # Queenside
+                    if board[3][7] is None and board[2][7] is None and board[1][7] is None and board[0][7] == 'bR':
+                        if not is_square_attacked(board, 4, 7, 'w') and \
+                           not is_square_attacked(board, 3, 7, 'w') and \
+                           not is_square_attacked(board, 2, 7, 'w'):
+                            moves.append(((4,7), (2,7), None))
+            
+            else:  # R, B, Q
+                for df, dr in DIRECTIONS[ptype]:
+                    for i in range(1, 8):
+                        nf, nr = f + i*df, r + i*dr
+                        if not in_bounds(nf, nr):
+                            break
+                        tgt = board[nf][nr]
+                        if not tgt:
+                            moves.append(((f,r), (nf,nr), None))
+                        elif tgt[0] != color:
+                            moves.append(((f,r), (nf,nr), None))
+                            break
+                        else:
+                            break
+    return moves
+
+def make_move(board: List[List[Optional[str]]], move: Tuple) -> List[List[Optional[str]]]:
+    """Return new board after move."""
+    (f1, r1), (f2, r2), promo = move
+    new_board = [row[:] for row in board]
+    pc = new_board[f1][r1]
+    new_board[f1][r1] = None
+    if promo:
+        new_board[f2][r2] = pc[0] + promo.upper()
+    else:
+        new_board[f2][r2] = pc
+    return new_board
+
+def is_checkmate(board: List[List[Optional[str]]], color: str) -> bool:
+    """Check if color is checkmated."""
+    kf, kr = find_king(board, color)
+    if not is_square_attacked(board, kf, kr, 'b' if color == 'w' else 'w'):
+        return False
+    # Any legal move?
+    for m in generate_pseudo_legal(board, color):
+        nb = make_move(board, m)
+        kf2, kr2 = find_king(nb, color)
+        if not is_square_attacked(nb, kf2, kr2, 'b' if color == 'w' else 'w'):
+            return False
+    return True
+
+def evaluate(board: List[List[Optional[str]]]) -> int:
+    """Evaluate from White's perspective."""
+    score = 0
+    for f in range(8):
+        for r in range(8):
+            p = board[f][r]
+            if p:
+                v = VALUES[p[1]]
+                if p[0] == 'w':
+                    score += v
+                    if p[1] == 'P':
+                        score += r * 10  # Advance pawns
+                else:
+                    score -= v
+                    if p[1] == 'P':
+                        score -= (7 - r) * 10
+    return score
+
+def negamax(board: List[List[Optional[str]]], color: str, depth: int, alpha: int, beta: int) -> int:
+    """Negamax search with alpha-beta pruning."""
+    if depth == 0:
+        return evaluate(board) if color == 'w' else -evaluate(board)
+    
+    moves = generate_pseudo_legal(board, color)
+    legal = []
+    for m in moves:
+        nb = make_move(board, m)
+        kf, kr = find_king(nb, color)
+        if not is_square_attacked(nb, kf, kr, 'b' if color == 'w' else 'w'):
+            legal.append(m)
+    
+    if not legal:
+        kf, kr = find_king(board, color)
+        if is_square_attacked(board, kf, kr, 'b' if color == 'w' else 'w'):
+            return -100000 + depth  # Checkmate
+        return 0  # Stalemate
+    
+    # Sort by capture value for better pruning
+    def score_move(m):
+        (_, _), (f2, r2), _ = m
+        t = board[f2][r2]
+        return VALUES.get(t[1], 0) if t else 0
+    
+    legal.sort(key=score_move, reverse=True)
+    
+    max_score = -1000000
+    for m in legal:
+        nb = make_move(board, m)
+        score = -negamax(nb, 'b' if color == 'w' else 'w', depth - 1, -beta, -alpha)
+        max_score = max(max_score, score)
+        alpha = max(alpha, score)
+        if alpha >= beta:
+            break
+    return max_score
+
+def policy(pieces: dict, to_play: str) -> str:
+    color = 'w' if to_play == 'white' else 'b'
+    board = parse_board(pieces)
+    
+    # Generate legal moves
+    pseudo = generate_pseudo_legal(board, color)
+    legal = []
+    for m in pseudo:
+        nb = make_move(board, m)
+        kf, kr = find_king(nb, color)
+        if not is_square_attacked(nb, kf, kr, 'b' if color == 'w' else 'w'):
+            legal.append(m)
+    
+    if not legal:
+        return "0000"  # Should not happen
+    
+    # Check for immediate checkmate
+    opp = 'b' if color == 'w' else 'w'
+    for m in legal:
+        nb = make_move(board, m)
+        if is_checkmate(nb, opp):
+            (f1, r1), (f2, r2), pr = m
+            uci = IDX_TO_SQ[(f1, r1)] + IDX_TO_SQ[(f2, r2)]
+            return uci + pr if pr else uci
+    
+    # Search depth 3
+    best_move = legal[0]
+    best_score = -1000000
+    # Sort for move ordering
+    def score_move(m):
+        (_, _), (f2, r2), _ = m
+        t = board[f2][r2]
+        return VALUES.get(t[1], 0) if t else 0
+    legal.sort(key=score_move, reverse=True)
+    
+    for m in legal:
+        nb = make_move(board, m)
+        score = -negamax(nb, opp, 2, -1000000, 1000000)  # Depth 2 after root = total 3
+        if score > best_score:
+            best_score = score
+            best_move = m
+    
+    (f1, r1), (f2, r2), pr = best_move
+    uci = IDX_TO_SQ[(f1, r1)] + IDX_TO_SQ[(f2, r2)]
+    if pr:
+        uci += pr
+    return uci

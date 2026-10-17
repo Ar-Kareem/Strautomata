@@ -1,0 +1,241 @@
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    MATERIAL = {
+        'P': 1,
+        'N': 3,
+        'B': 3,
+        'R': 5,
+        'Q': 9,
+        'K': 0
+    }
+
+    def square_to_index(square):
+        col = ord(square[0]) - ord('a')
+        rank = int(square[1])
+        row = 8 - rank
+        return (row, col)
+
+    def parse_pieces(pieces_dict):
+        board = [[None for _ in range(8)] for _ in range(8)]
+        for square, piece in pieces_dict.items():
+            r, c = square_to_index(square)
+            board[r][c] = piece
+        return board
+
+    def generate_pseudo_legal_moves(board, color):
+        moves = []
+        pawn_direction = -1 if color == 'w' else 1
+        start_rank = 6 if color == 'w' else 1
+        for r in range(8):
+            for c in range(8):
+                piece = board[r][c]
+                if piece is None:
+                    continue
+                if piece[0] != ('w' if color == 'white' else 'b'):
+                    continue
+                ptype = piece[1]
+                if ptype == 'P':
+                    new_r = r + pawn_direction
+                    if 0 <= new_r < 8:
+                        if board[new_r][c] is None:
+                            moves.append((r, c, new_r, c))
+                            if (r == start_rank) and board[new_r + pawn_direction][c] is None:
+                                moves.append((r, c, new_r + pawn_direction, c))
+                        for dc in [-1, 1]:
+                            new_c = c + dc
+                            new_r_capture = r + pawn_direction
+                            if 0 <= new_c < 8 and 0 <= new_r_capture < 8:
+                                target = board[new_r_capture][new_c]
+                                if target is not None and target[0] != piece[0]:
+                                    moves.append((r, c, new_r_capture, new_c))
+                elif ptype == 'N':
+                    knight_moves = [(2, 1), (2, -1), (-2, 1), (-2, -1),
+                                    (1, 2), (-1, 2), (1, -2), (-1, -2)]
+                    for dr, dc in knight_moves:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            target = board[nr][nc]
+                            if target is None or target[0] != piece[0]:
+                                moves.append((r, c, nr, nc))
+                elif ptype == 'B':
+                    directions = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+                    for dr, dc in directions:
+                        nr, nc = r + dr, c + dc
+                        while 0 <= nr < 8 and 0 <= nc < 8:
+                            target = board[nr][nc]
+                            if target is None:
+                                moves.append((r, c, nr, nc))
+                                nr += dr
+                                nc += dc
+                            else:
+                                if target[0] != piece[0]:
+                                    moves.append((r, c, nr, nc))
+                                break
+                elif ptype == 'R':
+                    directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    for dr, dc in directions:
+                        nr, nc = r + dr, c + dc
+                        while 0 <= nr < 8 and 0 <= nc < 8:
+                            target = board[nr][nc]
+                            if target is None:
+                                moves.append((r, c, nr, nc))
+                                nr += dr
+                                nc += dc
+                            else:
+                                if target[0] != piece[0]:
+                                    moves.append((r, c, nr, nc))
+                                break
+                elif ptype == 'Q':
+                    directions = [(1, 0), (-1, 0), (0, 1), (0, -1),
+                                  (1, 1), (1, -1), (-1, 1), (-1, -1)]
+                    for dr, dc in directions:
+                        nr, nc = r + dr, c + dc
+                        while 0 <= nr < 8 and 0 <= nc < 8:
+                            target = board[nr][nc]
+                            if target is None:
+                                moves.append((r, c, nr, nc))
+                                nr += dr
+                                nc += dc
+                            else:
+                                if target[0] != piece[0]:
+                                    moves.append((r, c, nr, nc))
+                                break
+                elif ptype == 'K':
+                    directions = [(1, 0), (-1, 0), (0, 1), (0, -1),
+                                  (1, 1), (1, -1), (-1, 1), (-1, -1)]
+                    for dr, dc in directions:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            target = board[nr][nc]
+                            if target is None or target[0] != piece[0]:
+                                moves.append((r, c, nr, nc))
+        return moves
+
+    def is_square_attacked(board, r, c, attacking_color):
+        opponent_color = 'b' if attacking_color == 'w' else 'w'
+        if attacking_color == 'w':
+            pawn_dir = -1
+        else:
+            pawn_dir = 1
+        for dc in [-1, 1]:
+            nc = c + dc
+            nr = r + pawn_dir
+            if 0 <= nc < 8 and 0 <= nr < 8:
+                piece = board[nr][nc]
+                if piece is not None and piece[0] == attacking_color and piece[1] == 'P':
+                    return True
+        knight_moves = [(2, 1), (2, -1), (-2, 1), (-2, -1),
+                        (1, 2), (-1, 2), (1, -2), (-1, -2)]
+        for dr, dc in knight_moves:
+            kr, kc = r + dr, c + dc
+            if 0 <= kr < 8 and 0 <= kc < 8:
+                piece = board[kr][kc]
+                if piece is not None and piece[0] == attacking_color and piece[1] == 'N':
+                    return True
+        directions = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+        for dr, dc in directions:
+            kr, kc = r + dr, c + dc
+            while 0 <= kr < 8 and 0 <= kc < 8:
+                piece = board[kr][kc]
+                if piece is not None:
+                    if piece[0] == attacking_color and (piece[1] in ['B', 'Q']):
+                        return True
+                    break
+                kr += dr
+                kc += dc
+        directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        for dr, dc in directions:
+            kr, kc = r + dr, c + dc
+            while 0 <= kr < 8 and 0 <= kc < 8:
+                piece = board[kr][kc]
+                if piece is not None:
+                    if piece[0] == attacking_color and (piece[1] in ['R', 'Q']):
+                        return True
+                    break
+                kr += dr
+                kc += dc
+        for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]:
+            kr, kc = r + dr, c + dc
+            if 0 <= kr < 8 and 0 <= kc < 8:
+                piece = board[kr][kc]
+                if piece is not None and piece[0] == attacking_color and piece[1] == 'K':
+                    return True
+        return False
+
+    def is_legal_move(board, move, color):
+        temp_board = [row[:] for row in board]
+        r, c, new_r, new_c = move
+        piece = temp_board[r][c]
+        target = temp_board[new_r][new_c]
+        temp_board[new_r][new_c] = piece
+        temp_board[r][c] = None
+        if piece[1] == 'P' and (new_r == 0 or new_r == 7):
+            temp_board[new_r][new_c] = piece[0] + 'Q'
+        king_r, king_c = None, None
+        for kr in range(8):
+            for kc in range(8):
+                if temp_board[kr][kc] and temp_board[kr][kc][0] == color and temp_board[kr][kc][1] == 'K':
+                    king_r, king_c = kr, kc
+                    break
+            if king_r is not None:
+                break
+        if is_square_attacked(temp_board, king_r, king_c, color):
+            return False
+        return True
+
+    def generate_legal_moves(board, to_play):
+        pseudo_moves = generate_pseudo_legal_moves(board, 'w' if to_play == 'white' else 'b')
+        color = 'w' if to_play == 'white' else 'b'
+        legal_moves = []
+        for move in pseudo_moves:
+            if is_legal_move(board, move, color):
+                legal_moves.append(move)
+        return legal_moves
+
+    def move_to_uci(move, board):
+        r, c, new_r, new_c = move
+        piece = board[r][c]
+        start_col = chr(ord('a') + c)
+        start_row = 8 - r
+        end_col = chr(ord('a') + new_c)
+        end_row = 8 - new_r
+        uci = start_col + str(start_row) + end_col + str(end_row)
+        if piece and piece[1] == 'P' and (new_r == 0 or new_r == 7):
+            uci += 'q'
+        return uci
+
+    board = parse_pieces(pieces)
+    legal_moves_list = generate_legal_moves(board, to_play)
+    best_move = None
+    best_score = -float('inf')
+
+    for move in legal_moves_list:
+        r, c, new_r, new_c = move
+        piece = board[r][c]
+        target_piece = board[new_r][new_c]
+        score = 0
+        if target_piece is not None and target_piece[0] != piece[0]:
+            captured_value = MATERIAL.get(target_piece[1], 0)
+            my_value = MATERIAL.get(piece[1], 0)
+            score += (captured_value - my_value) * 10 + 10
+        # Check for check
+        temp_board = [row[:] for row in board]
+        temp_board[new_r][new_c] = piece
+        temp_board[r][c] = None
+        if piece[1] == 'P' and (new_r == 0 or new_r == 7):
+            temp_board[new_r][new_c] = piece[0] + 'Q'
+        opponent_color = 'b' if to_play == 'white' else 'w'
+        king_r, king_c = None, None
+        for kr in range(8):
+            for kc in range(8):
+                if temp_board[kr][kc] and temp_board[kr][kc][0] == opponent_color and temp_board[kr][kc][1] == 'K':
+                    king_r, king_c = kr, kc
+                    break
+            if king_r is not None:
+                break
+        if is_square_attacked(temp_board, king_r, king_c, opponent_color):
+            score += 1000
+        if score > best_score:
+            best_score = score
+            best_move = move
+    return move_to_uci(best_move, board)

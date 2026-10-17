@@ -1,0 +1,119 @@
+
+import copy
+
+def check_win(board):
+    # Helper: 5-in-a-row for win
+    for r in range(6):
+        for c in range(6 - 4):
+            if all(board[r][c + i] == 1 for i in range(5)):
+                return 1
+            if all(board[r][c + i] == -1 for i in range(5)):
+                return -1
+    for c in range(6):
+        for r in range(6 - 4):
+            if all(board[r + i][c] == 1 for i in range(5)):
+                return 1
+            if all(board[r + i][c] == -1 for i in range(5)):
+                return -1
+    # Diagonal \
+    for r in range(6 - 4):
+        for c in range(6 - 4):
+            if all(board[r + i][c + i] == 1 for i in range(5)):
+                return 1
+            if all(board[r + i][c + i] == -1 for i in range(5)):
+                return -1
+    # Diagonal /
+    for r in range(6 - 4):
+        for c in range(3, 6):
+            if all(board[r + i][c - i] == 1 for i in range(5)):
+                return 1
+            if all(board[r + i][c - i] == -1 for i in range(5)):
+                return -1
+    return 0
+
+def rotate_board(board, q, d):
+    row_start = 3 * (q // 2)
+    col_start = 3 * (q % 2)
+    sub = [[board[row_start + i][col_start + j] for j in range(3)] for i in range(3)]
+    newsub = [[0 for _ in range(3)] for _ in range(3)]
+    if d == 'R':
+        for i in range(3):
+            for j in range(3):
+                newsub[i][j] = sub[2 - j][i]
+    else:  # 'L'
+        for i in range(3):
+            for j in range(3):
+                newsub[i][j] = sub[j][2 - i]
+    for i in range(3):
+        for j in range(3):
+            board[row_start + i][col_start + j] = newsub[i][j]
+
+def score_board(board):
+    win = check_win(board)
+    if win == 1:
+        return 10000
+    if win == -1:
+        return -10000
+    # Heuristic: weighted counts of n-in-a-rows
+    def count_n(player, n):
+        sc = 0
+        # Horizontal
+        for r in range(6):
+            for i in range(6 - n + 1):
+                if all(board[r][i + j] == player for j in range(n)):
+                    sc += 1
+        # Vertical
+        for c in range(6):
+            for i in range(6 - n + 1):
+                if all(board[i + j][c] == player for j in range(n)):
+                    sc += 1
+        # Diagonal \
+        for r in range(6 - n + 1):
+            for c in range(6 - n + 1):
+                if all(board[r + j][c + j] == player for j in range(n)):
+                    sc += 1
+        # Diagonal /
+        for r in range(6 - n + 1):
+            for c in range(6 - n + 1):
+                if all(board[r + j][c + n - 1 - j] == player for j in range(n)):
+                    sc += 1
+        return sc
+    return 10 * count_n(1, 4) - 10 * count_n(-1, 4) + count_n(1, 3) - count_n(-1, 3)
+
+def policy(you, opponent):
+    # Board init: 1 for me, -1 for opp, 0 empty
+    board = []
+    for r in range(6):
+        row = []
+        for c in range(6):
+            if you[r][c] == 1:
+                row.append(1)
+            elif opponent[r][c] == 1:
+                row.append(-1)
+            else:
+                row.append(0)
+        board.append(row)
+    
+    # Get legal moves: r,c 0-indexed, q 0-3, d 'L' or 'R'
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == 0:
+                for q in range(4):
+                    for d in 'RL':
+                        moves.append((r, c, q, d))
+    
+    best_score = -999999
+    best_move = None
+    for move in moves:
+        board_cp = [row[:] for row in board]
+        r, c, q, d = move
+        board_cp[r][c] = 1
+        rotate_board(board_cp, q, d)
+        score = score_board(board_cp)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    # Return 1-indexed string
+    r, c, q, d = best_move
+    return f"{r+1},{c+1},{q},{d}"

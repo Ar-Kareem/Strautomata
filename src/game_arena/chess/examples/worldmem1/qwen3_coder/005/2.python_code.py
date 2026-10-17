@@ -1,0 +1,229 @@
+
+import random
+
+# Standard piece values
+PIECE_VALUES = {
+    'P': 100,
+    'N': 300,
+    'B': 300,
+    'R': 500,
+    'Q': 900,
+    'K': 0  # Not used directly in eval
+}
+
+# Simplified piece-square tables (for position score)
+# Indexed [rank][file], with rank 0 = rank 1, ..., rank 7 = rank 8
+PAWN_PST = [
+    [0,  0,  0,  0,  0,  0,  0,  0],
+    [5, 10, 10, -20, -20, 10, 10,  5],
+    [5, -5,-10,  0,  0,-10, -5,  5],
+    [0,  0,  0, 20, 20,  0,  0,  0],
+    [5,  5, 10, 25, 25, 10,  5,  5],
+    [10, 10, 15, 20, 20, 15, 10, 10],
+    [50, 50, 50, 50, 50, 50, 50, 50],
+    [0,  0,  0,  0,  0,  0,  0,  0]
+]
+
+KNIGHT_PST = [
+    [-50,-40,-30,-30,-30,-30,-40,-50],
+    [-40,-20,  0,  5,  5,  0,-20,-40],
+    [-30,  5, 10, 15, 15, 10,  5,-30],
+    [-30,  0, 15, 20, 20, 15,  0,-30],
+    [-30,  5, 15, 20, 20, 15,  5,-30],
+    [-30,  0, 10, 15, 15, 10,  0,-30],
+    [-40,-20,  0,  0,  0,  0,-20,-40],
+    [-50,-40,-30,-30,-30,-30,-40,-50]
+]
+
+BISHOP_PST = [
+    [-20,-10,-10,-10,-10,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5, 10, 10,  5,  0,-10],
+    [-10,  5,  5, 10, 10,  5,  5,-10],
+    [-10,  0, 10, 10, 10, 10,  0,-10],
+    [-10, 10, 10, 10, 10, 10, 10,-10],
+    [-10,  5,  0,  0,  0,  0,  5,-10],
+    [-20,-10,-10,-10,-10,-10,-10,-20]
+]
+
+ROOK_PST = [
+    [0,  0,  0,  5,  5,  0,  0,  0],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [5, 10, 10, 10, 10, 10, 10,  5],
+    [0,  0,  0,  0,  0,  0,  0,  0]
+]
+
+QUEEN_PST = [
+    [-20,-10,-10, -5, -5,-10,-10,-20],
+    [-10,  0,  5,  0,  0,  0,  0,-10],
+    [-10,  5,  5,  5,  5,  5,  0,-10],
+    [-5,  0,  5,  5,  5,  5,  0, -5],
+    [-5,  0,  5,  5,  5,  5,  0, -5],
+    [-10,  0,  5,  5,  5,  5,  0,-10],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-20,-10,-10, -5, -5,-10,-10,-20]
+]
+
+KING_PST_WHITE = [
+    [20, 30, 10,  0,  0, 10, 30, 20],
+    [20, 20,  0,  0,  0,  0, 20, 20],
+    [-10,-20,-20,-20,-20,-20,-20,-10],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-40,-50,-50,-60,-60,-50,-50,-40],
+    [-50,-60,-60,-70,-70,-60,-60,-50],
+    [-60,-70,-70,-80,-80,-70,-70,-60],
+    [-70,-80,-80,-90,-90,-80,-80,-70]
+]
+
+KING_PST_BLACK = [
+    [-70,-80,-80,-90,-90,-80,-80,-70],
+    [-60,-70,-70,-80,-80,-70,-70,-60],
+    [-50,-60,-60,-70,-70,-60,-60,-50],
+    [-40,-50,-50,-60,-60,-50,-50,-40],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-10,-20,-20,-20,-20,-20,-20,-10],
+    [20, 20,  0,  0,  0,  0, 20, 20],
+    [20, 30, 10,  0,  0, 10, 30, 20]
+]
+
+def parse_square(sq):
+    """Converts a square string like 'e4' into (file, rank) indices."""
+    file = ord(sq[0]) - ord('a')
+    rank = int(sq[1]) - 1
+    return file, rank
+
+def evaluate_position(pieces, to_play_color):
+    """
+    Simple static evaluation of the board position.
+    Returns a numerical score: higher is better for White.
+    """
+    score = 0
+    
+    # Material and positional evaluation
+    for sq, piece_code in pieces.items():
+        color_char = piece_code[0]
+        piece_type = piece_code[1]
+        
+        value = PIECE_VALUES.get(piece_type, 0)
+        file, rank = parse_square(sq)
+        
+        # Positional score using PST
+        pst_score = 0
+        if piece_type == 'P':
+            pst_score = PAWN_PST[rank][file] if color_char == 'w' else PAWN_PST[7-rank][file]
+        elif piece_type == 'N':
+            pst_score = KNIGHT_PST[rank][file] if color_char == 'w' else KNIGHT_PST[7-rank][file]
+        elif piece_type == 'B':
+            pst_score = BISHOP_PST[rank][file] if color_char == 'w' else BISHOP_PST[7-rank][file]
+        elif piece_type == 'R':
+            pst_score = ROOK_PST[rank][file] if color_char == 'w' else ROOK_PST[7-rank][file]
+        elif piece_type == 'Q':
+            pst_score = QUEEN_PST[rank][file] if color_char == 'w' else QUEEN_PST[7-rank][file]
+        elif piece_type == 'K':
+            if color_char == 'w':
+                pst_score = KING_PST_WHITE[rank][file]
+            else:
+                pst_score = KING_PST_BLACK[rank][file]
+                
+        sign = 1 if color_char == 'w' else -1
+        score += sign * (value + pst_score)
+        
+    return score if to_play_color == 'white' else -score
+
+
+def simulate_move(board_state, move_str):
+    """
+    Returns new board state after applying given move.
+    Assumes move_str is a legal UCI-style move (though not required here).
+    This is used only for internal simulation for one-ply lookahead.
+    """
+    import re
+    # Parse move string (basic approximation assuming move notation like "e4", "Bxf5", etc.)
+    # We don't fully parse complex notation, just assume it affects some squares
+    # Since we can't fully parse without movegen lib, we'll simply attempt parsing:
+    
+    # Naive approach: try to figure destination first
+    captures = bool('x' in move_str)
+    promotes = '=' in move_str
+    
+    # Remove annotations for cleaner parsing
+    clean = move_str.replace('+','').replace('#','').replace('x','')
+    if promotes:
+        idx = clean.index('=')
+        clean = clean[:idx+2] # Keep promotion part
+    
+    # Extract destination square (last 2 chars should be square usually unless castling)
+    dest_sq = ''
+    if move_str.startswith("O-O"):
+        # Approximation only - no real need to do full parsing since all we care about is result which isn't computable anyway due to lack of full game info
+        # So effectively just returning same board because deep simulation impossible
+        return board_state.copy()
+    elif len(clean) >=2:
+        possible_sq = clean[-2:]
+        if possible_sq[0] in 'abcdefgh' and possible_sq[1] in '12345678':
+            dest_sq = possible_sq
+            
+    # For now, approximate that move results in a change by assuming worst-case or best-case depending on capture/etc
+    # This allows us to detect checks at least sometimes via heuristics later
+    
+    # As a placeholder, just return unchanged board
+    return board_state.copy()
+
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    """
+    Evaluate each legal move using a combination of material, position and basic tactics.
+    Select the move with highest resulting estimated value, prioritizing checkmates and captures.
+    """
+    best_move = None
+    best_score = float('-inf')
+    
+    # Our current evaluation
+    base_eval = evaluate_position(pieces, to_play)
+
+    for move in legal_moves:
+        score = 0.0
+        
+        # Simulate board update with move (very simplified)
+        simulated_board = simulate_move(pieces, move)
+        
+        # Reevaluate position from our perspective after the move
+        post_eval = evaluate_position(simulated_board, to_play)
+        
+        # Prefer moves leading to increased advantage
+        score += (post_eval - base_eval)
+        
+        # Small bonus for check marks
+        if '+' in move:
+            score += 30
+            
+        # Huge bonus for promotion possibilities or captures
+        if 'x' in move:
+            captured_piece = None
+            # Guess what was captured based on target square -- again very rough
+            target = move.split('x')[-1][:2]
+            if target in pieces:
+                cap_p = pieces[target][1]
+                score += PIECE_VALUES.get(cap_p, 0) * 0.5  # Incentivize capturing
+                
+        if '=' in move:
+            promoted_to = move.split('=')[1][0]
+            score += PIECE_VALUES.get(promoted_to, 0) * 0.7 # Encourage good promotions
+            
+        # Break ties randomly but consistently
+        tiebreak = hash((move, len(legal_moves))) % 1000 / 1000.0
+        score += tiebreak / 1000.0
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    # Fallback: select a random move if nothing found (should never happen)
+    if best_move is None:
+        best_move = random.choice(legal_moves)
+        
+    return best_move, memory

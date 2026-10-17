@@ -1,0 +1,139 @@
+<code>
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Dots and Boxes AI policy for a 4x4 grid.
+    
+    This policy implements several heuristics:
+    1. Try to avoid moves that give the opponent a box (double-cross strategy)
+    2. Prefer moves that capture a box
+    3. Prefer moves that set up a long chain (avoiding short chains)
+    4. Prefer moves on the perimeter when no immediate capture is possible
+    
+    Args:
+        horizontal: 5x5 array, 1 if edge is drawn, 0 otherwise (player 1), -1 (player 2)
+        vertical: 5x5 array, 1 if edge is drawn, 0 otherwise (player 1), -1 (player 2)
+        capture: 4x4 array, 1 if box captured by player 1, -1 by player 2, 0 unclaimed
+        
+    Returns:
+        String in format 'row,col,dir' where dir is 'H' or 'V'
+    """
+    # Get legal moves
+    legal_moves = []
+    # Horizontal moves (5x5 grid has 5 rows of horizontal edges)
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+    # Vertical moves (5x5 grid has 5 cols of vertical edges)
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+    
+    # Helper function to check if a move captures a box
+    def captures_boxes(row, col, dir):
+        boxes = []
+        if dir == 'H':
+            # Horizontal edge at (row, col) affects boxes above and below
+            if row > 0:
+                # Box above: check if other 3 edges are filled
+                if horizontal[row-1, col] != 0 and vertical[row-1, col] != 0 and vertical[row-1, col+1] != 0:
+                    boxes.append((row-1, col))
+            if row < 4:
+                # Box below: check if other 3 edges are filled
+                if horizontal[row+1, col] != 0 and vertical[row, col] != 0 and vertical[row, col+1] != 0:
+                    boxes.append((row, col))
+        else: # dir == 'V'
+            # Vertical edge at (row, col) affects boxes left and right
+            if col > 0:
+                # Box left: check if other 3 edges are filled
+                if vertical[row, col-1] != 0 and horizontal[row, col-1] != 0 and horizontal[row+1, col-1] != 0:
+                    boxes.append((row, col-1))
+            if col < 4:
+                # Box right: check if other 3 edges are filled
+                if vertical[row, col+1] != 0 and horizontal[row, col] != 0 and horizontal[row+1, col] != 0:
+                    boxes.append((row, col))
+        return boxes
+    
+    # Helper function to check if a move gives opponent a box
+    def gives_opponent_box(row, col, dir):
+        # Check if this move sets up a box with 3 sides filled (dangerous)
+        if dir == 'H':
+            # Check box above
+            if row > 0:
+                count = sum([
+                    horizontal[row-1, col] != 0,
+                    vertical[row-1, col] != 0,
+                    vertical[row-1, col+1] != 0
+                ])
+                if count == 2:  # Already has 2 other edges
+                    return True
+            # Check box below
+            if row < 4:
+                count = sum([
+                    horizontal[row+1, col] != 0,
+                    vertical[row, col] != 0,
+                    vertical[row, col+1] != 0
+                ])
+                if count == 2:
+                    return True
+        else: # dir == 'V'
+            # Check box left
+            if col > 0:
+                count = sum([
+                    vertical[row, col-1] != 0,
+                    horizontal[row, col-1] != 0,
+                    horizontal[row+1, col-1] != 0
+                ])
+                if count == 2:
+                    return True
+            # Check box right
+            if col < 4:
+                count = sum([
+                    vertical[row, col+1] != 0,
+                    horizontal[row, col] != 0,
+                    horizontal[row+1, col] != 0
+                ])
+                if count == 2:
+                    return True
+        return False
+    
+    # Score moves based on heuristics
+    best_score = -1000
+    best_move = None
+    
+    for move in legal_moves:
+        row, col, dir = move
+        score = 0
+        
+        # Check if this move captures boxes
+        captured = captures_boxes(row, col, dir)
+        if captured:
+            score += 10 * len(captured)  # Strong preference for captures
+        
+        # Check if this move gives opponent a box (avoid if possible)
+        if gives_opponent_box(row, col, dir):
+            score -= 5
+            
+        # Prefer moves on perimeter when no capture (avoids creating small chains)
+        if not captured:
+            if row == 0 or row == 4 or col == 0 or col == 4:
+                score += 1
+        
+        # Prefer vertical moves in the middle when no capture (creates longer chains)
+        if not captured and dir == 'V' and 1 <= col <= 3:
+            score += 0.5
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Return the best move
+    if best_move is None:
+        # Fallback - should not happen if legal_moves is not empty
+        best_move = legal_moves[0]
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+</code>

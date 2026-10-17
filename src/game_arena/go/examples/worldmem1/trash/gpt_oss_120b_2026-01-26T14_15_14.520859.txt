@@ -1,0 +1,184 @@
+**Strategy Overview**
+
+The policy follows a simple, fast, and effective hierarchy:
+
+1. **Capture Priority** –  
+   For every empty point it simulates the move, removes any opponent groups that would lose their last liberty and keeps the move only if it is legal (no suicide after the captures).  
+   The move that captures the most opponent stones is chosen.
+
+2. **Play Near Own Stones** –  
+   If no capturing move exists, the policy prefers positions that are closest (Manhattan distance) to any of its own stones, encouraging the building of strong, connected groups.
+
+3. **Random Fallback** –  
+   When neither of the above yields a unique choice (e.g., an empty board), a random empty point is selected.
+
+4. **Pass** –  
+   If the board is completely filled the policy passes with `(0, 0)`.
+
+All the necessary board handling (neighbors, group detection, liberty counting, legality checking) is done locally, guaranteeing that the returned move is always legal.
+
+---
+
+<code>
+import random
+from collections import deque
+from typing import List, Tuple, Dict, Set
+
+BOARD_SIZE = 19
+
+# Directions: up, down, left, right
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+def inside(r: int, c: int) -> bool:
+    return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+
+def get_neighbors(r: int, c: int) -> ListTuple[int, int]]:
+    return [(r + dr, c + dc) for dr, dc in DIRS if inside(r + dr, c + dc)]
+
+def bfs_group(board: List[List[int]], start: Tuple[int, int]) -> Tuple[Set[Tuple[int, int]], Set[Tuple[int, int]]]:
+    """Return (stones in the group, liberties of the group)."""
+    color = board[start[0] - 1][start[1] - 1]
+    visited = set()
+    liberties = set()
+    q = deque([start])
+    while q:
+        r, c = q.popleft()
+        if (r, c) in visited:
+            continue
+        visited.add((r, c))
+        for nr, nc in get_neighbors(r, c):
+            val = board[nr - 1][nc - 1]
+            if val == 0:
+                liberties.add((nr, nc))
+            elif val == color and (nr, nc) not in visited:
+                q.append((nr, nc))
+    return visited, liberties
+
+def remove_group(board: List[List[int]], group: Set[Tuple[int, int]]):
+    for r, c in group:
+        board[r - 1][c - 1] = 0
+
+def simulate_move(board: List[List[int]],
+                  move: Tuple[int, int],
+                  my_color: int,
+                  opp_color: int) -> Tuple[bool, int]:
+    """
+    Simulate placing a stone of `my_color` at `move`.
+    Returns (is_legal, captured_opponent_stones_count).
+    """
+    r, c = move
+    if board[r - 1][c - 1] != 0:
+        return False, 0  # occupied
+
+    # Place the stone
+    board[r - 1][c - 1] = my_color
+
+    captured = 0
+    # Check opponent neighbours for captures
+    for nr, nc in get_neighbors(r, c):
+        if board[nr - 1][nc - 1] == opp_color:
+            group, libs = bfs_group(board, (nr, nc))
+            if not libs:  # captured
+                captured += len(group)
+                remove_group(board, group)
+
+    # After possible captures, ensure our new stone has liberties
+    group, libs = bfs_group(board, (r, c))
+    if not libs:
+        # Suicide (illegal) – revert board and reject
+        board[r - 1][c - 1] = 0
+        # No need to revert captures because they only happen when libs==0,
+        # and we would have already removed them; we must restore them.
+        # Simpler: treat suicide as illegal by copying board before simulation.
+        return False, 0
+
+    return True, captured
+
+def build_board(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> List[List[int]]:
+    board = [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    for r, c in me:
+        board[r - 1][c - 1] = 1
+    for r, c in opponent:
+        board[r - 1][c - 1] = 2
+    return board
+
+def policy(me: List[Tuple[int, int]],
+           opponent: List[Tuple[int, int]],
+           memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    """
+    Return the next move (row, col) and updated memory.
+    """
+    # Colors for internal board representation
+    MY = 1
+    OP = 2
+
+    board = build_board(me, opponent)
+
+    # Gather all empty points
+    empty_points = [(r, c) for r in range(1, BOARD_SIZE + 1)
+                          for c in range(1, BOARD_SIZE + 1)
+                          if board[r - 1][c - 1] == 0]
+
+    if not empty_points:
+        # Board full – must pass
+        return (0, 0), memory
+
+    best_moves = []
+    best_capture = -1
+
+    # 1. Look for capturing moves
+    for pt in empty_points:
+        # Work on a copy to avoid mutating the main board
+        trial_board = [row[:] for row in board]
+        legal, cap = simulate_move(trial_board, pt, MY, OP)
+        if legal:
+            if cap > best_capture:
+ best_capture = cap
+                best_moves = [pt]
+            elif cap == best_capture:
+                best_moves.append(pt)
+
+    if best_capture > 0:
+        # We have at least one move that captures opponent stones
+        chosen = random.choice(best_moves)
+        return chosen, memory
+
+    # No captures – choose the empty point nearest to any of our stones
+    if me:
+        # Precompute distances
+        def min_dist_to_me(pt):
+            r, c = pt
+            return min(abs(r - mr) + abs(c - mc) for mr, mc in me)
+
+        min_distance = min(min_dist_to_me(pt) for pt in empty_points)
+        candidate_moves = [pt for pt in empty_points if min_dist_to_me(pt) == min_distance]
+
+        # From candidates, pick a legal one (they all should be legal because we didn't check suicide)
+        # We'll verify legality quickly
+        legal_candidates = []
+        for pt in candidate_moves:
+            trial_board = [row[:] for row in board]
+            legal, _ = simulate_move(trial_board, pt, MY, OP)
+            if legal:
+                legal_candidates.append(pt)
+
+        if legal_candidates:
+            chosen = random.choice(legal_candidates)
+            return chosen, memory
+        # If none of the nearest points are legal (rare), fall back to any legal move below
+
+    # 3. Fallback: any legal move (random)
+    legal_moves = []
+    for pt in empty_points:
+        trial_board = [row[:] for row in board]
+        legal, _ = simulate_move(trial_board, pt, MY, OP)
+        if legal:
+            legal_moves.append(pt)
+
+    if legal_moves:
+        chosen = random.choice_moves)
+        return chosen, memory
+
+    # If we reach here, no legal moves exist (should only happen on a full board)
+    return (0, 0), memory
+</code>

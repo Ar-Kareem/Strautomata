@@ -1,0 +1,65 @@
+
+import random
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # 1. Immediate Checkmate
+    for move in legal_moves:
+        if move.endswith('#'):
+            return move
+
+    # Piece values for captures
+    values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    def get_move_score(move):
+        score = 0
+        
+        # Priority: Promotions
+        if '=Q' in move: score += 8
+        elif '=' in move: score += 4
+        
+        # Priority: Captures
+        if 'x' in move:
+            # Try to identify what was captured
+            # This is an approximation since we don't have the board state after the move
+            target_sq = ""
+            if '=' in move: # e.g., "axb8=Q"
+                target_sq = move.split('x')[1].split('=')[0]
+            elif '+' in move or '#' in move: # e.g., "Rxf7+"
+                target_sq = move.split('x')[1][:-1]
+            else: # e.g., "Bxe5"
+                target_sq = move.split('x')[1]
+            
+            # Use disambiguation logic for target square (take last 2 chars)
+            target_sq = target_sq[-2:]
+            captured_piece = pieces.get(target_sq, "")
+            if captured_piece:
+                score += 10 + values.get(captured_piece[1], 0)
+        
+        # Priority: Checks
+        if '+' in move:
+            score += 2
+            
+        # Positional heuristics based on move string
+        # Control center
+        if any(sq in move for sq in ['d4', 'd5', 'e4', 'e5']):
+            score += 1
+            
+        # Castling
+        if move in ['O-O', 'O-O-O']:
+            score += 3
+            
+        # Avoid early Queen moves unless capture
+        if move.startswith('Q') and 'x' not in move:
+            score -= 1
+            
+        return score
+
+    # Sort moves by our heuristic score
+    scored_moves = [(move, get_move_score(move)) for move in legal_moves]
+    scored_moves.sort(key=lambda x: x[1], reverse=True)
+    
+    # Pick from the best moves (handle ties randomly)
+    max_score = scored_moves[0][1]
+    best_moves = [m for m, s in scored_moves if s == max_score]
+    
+    return random.choice(best_moves)

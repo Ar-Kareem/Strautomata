@@ -1,0 +1,211 @@
+The strategy for this policy is to use a minimax algorithm with alpha-beta pruning and iterative deepening to search for the best move. The evaluation function considers material advantage, piece advancement, center control, and mobility. The algorithm uses a transposition table to cache states and avoid redundant calculations, allowing it to explore deeper into the game tree within the time constraint.
+
+```python
+import sys
+from functools import lru_cache
+
+# Helper function to generate legal moves for a given state and color
+def generate_moves(current_pieces, opponent_pieces, color):
+    moves = []
+    if color == 'b':
+        direction = -1
+    else:
+        direction = 1
+    
+    opponent_set = set(opponent_pieces)
+    
+    for (r, c) in current_pieces:
+        # Forward move
+        nr = r + direction
+        nc = c
+        if 0 <= nr < 8:
+            current_pieces_set = set(current_pieces)
+            current_pieces_set.discard((r, c))
+            all_pieces = current_pieces_set | opponent_set
+            if (nr, nc) not in all_pieces:
+                moves.append(((r, c), (nr, nc)))
+        
+        # Diagonal left
+        nr = r + direction
+        nc = c - 1
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            if (nr, nc) in opponent_set:
+                moves.append(((r, c), (nr, nc)))
+            else:
+                current_pieces_set = set(current_pieces)
+                current_pieces_set.discard((r, c))
+                all_pieces = current_pieces_set | opponent_set
+                if (nr, nc) not in all_pieces:
+                    moves.append(((r, c), (nr, nc)))
+        
+        # Diagonal right
+        nr = r + direction
+        nc = c + 1
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            if (nr, nc) in opponent_set:
+                moves.append(((r, c), (nr, nc)))
+            else:
+                current_pieces_set = set(current_pieces)
+                current_pieces_set.discard((r, c))
+                all_pieces = current_pieces_set | opponent_set
+                if (nr, nc) not in all_pieces:
+                    moves.append(((r, c), (nr, nc)))
+    
+    return moves
+
+# Simulate a move and return the new state
+def simulate_move(state, move):
+    (from_r, from_c), (to_r, to_c) = move
+    current_pieces = list(state[0])
+    opponent_pieces = list(state[1])
+    color_current = state[2]
+    
+    current_pieces.remove((from_r, from_c))
+    if (to_r, to_c) in opponent_pieces:
+        opponent_pieces.remove((to_r, to_c))
+    current_pieces.append((to_r, to_c))
+    
+    new_color = 'b' if color_current == 'w' else 'w'
+    new_state = (tuple(sorted(current_pieces)), tuple(sorted(opponent_pieces)), new_color)
+    return new_state
+
+# Evaluate the state from the root player's perspective
+def evaluate(me, opp, root_color):
+    material = (len(me) - len(opp)) * 100
+    
+    advancement_our = 0
+    for (r, c) in me:
+        if root_color == 'b':
+            advancement_our += (7 - r)
+        else:
+            advancement_our += r
+    
+    advancement_opp = 0
+    for (r, c) in opp:
+        if root_color == 'b':
+            advancement_opp += r
+        else:
+            advancement_opp += (7 - r)
+    
+    center_our = sum(1 for (r, c) in me if c in [3, 4])
+    center_opp = sum(1 for (r, c) in opp if c in [3, 4])
+    
+    score = material + advancement_our - advancement_opp + (center_our - center_opp) * 10
+    return score
+
+# Minimax with alpha-beta pruning and caching
+def minimax(state, depth, alpha, beta, root_color, cache=None):
+    if cache is None:
+        cache = {}
+    
+    # Convert state to root perspective for evaluation and terminal checks
+    if root_color == state[2]:
+        me = list(state[0])
+        opp = list(state[1])
+    else:
+        me = list(state[1])
+        opp = list(state[0])
+    
+    # Terminal states
+    if len(opp) == 0:
+        return 10000
+    if len(me) == 0:
+        return -10000
+    
+    # Check if root has a piece on opponent's home row
+    for (r, c) in me:
+        if (root_color == 'b' and r == 0) or (root_color == 'w' and r == 7):
+            return 10000
+    
+    # Check if opponent has a piece on our home row
+    for (r, c) in opp:
+        if (root_color == 'b' and r == 7) or (root_color == 'w' and r == 0):
+            return -10000
+    
+    if depth == 0:
+        return evaluate(me, opp, root_color)
+    
+    # Cache key includes depth
+    key = (state[0], state[1], state[2], depth)
+    if key in cache:
+        return cache[key]
+    
+    moves = generate_moves(list(state[0]), list(state[1]), state[2])
+    if not moves:
+        if state[2] == root_color:
+            result = -10000
+        else:
+            result = 10000
+        cache[key] = result
+        return result
+    
+    if state[2] == root_color:
+        best = -float('inf')
+        for move in moves:
+            new_state = simulate_move(state, move)
+            score = minimax(new_state, depth - 1, alpha, beta, root_color, cache)
+            best = max(best, score)
+            alpha = max(alpha, best)
+            if beta <= alpha:
+                break
+        cache[key] = best
+        return best
+    else:
+        best = float('inf')
+        for move in moves:
+            new_state = simulate_move(state, move)
+            score = minimax(new_state, depth - 1, alpha, beta, root_color, cache)
+            best = min(best, score)
+            beta = min(beta, best)
+            if beta <= alpha:
+                break
+        cache[key] = best
+        return best
+
+def policy(me, opp, color):
+    initial_state = (tuple(sorted(me)), tuple(sorted(opp)), color)
+    moves = generate_moves(me, opp, color)
+    
+    if not moves:
+        # Should not happen, but return first piece's forward move as fallback
+        if me:
+            piece = me[0]
+            if color == 'b':
+                new_pos = (piece[0] - 1, piece[1])
+            else:
+                new_pos = (piece[0] + 1, piece[1])
+            return (piece, new_pos)
+        return ((0,0), (0,0))  # Default fallback
+    
+    best_move = None
+    best_value = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Use iterative deepening to find best move within time
+    for depth in range(1, 5):  # Try depths 1-4
+        try:
+            local_best_move = None
+            local_best_value = -float('inf'
+            local_alpha = -float('inf')
+            local_beta = float('inf')
+            cache = {}
+            
+            for move in moves:
+                new_state = simulate_move(initial_state, move)
+                value = minimax(new_state, depth - 1, local_alpha, local_beta, color, cache)
+                if value > local_best_value:
+                    local_best_value = value
+                    local_best_move = move
+                local_alpha = max(local_alpha, local_best_value)
+                if local_beta <= local_alpha:
+                    break
+            
+            if local_best_value > best_value:
+                best_value = local_best_value
+                best_move = local_best_move
+        except:
+            break  # Time out or error
+    
+    return best_move
+```

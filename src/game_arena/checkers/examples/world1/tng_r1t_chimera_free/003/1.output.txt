@@ -1,0 +1,128 @@
+
+
+The strategy for this policy is to prioritize maximum captures, especially of kings, and prefer moves that promote men to kings. When no captures are available, it selects moves that advance men towards promotion or improve board control.
+
+<code>
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    from collections import deque
+
+    # Create board representation
+    board = [[None for _ in range(8)] for _ in range(8)]
+    for (r, c) in my_men:
+        board[r][c] = 'm'
+    for (r, c) in my_kings:
+        board[r][c] = 'k'
+    for (r, c) in opp_men:
+        board[r][c] = 'M'
+    for (r, c) in opp_kings:
+        board[r][c] = 'K'
+
+    best_capture = None
+    max_captured = 0
+    max_kings = 0
+
+    # Check all pieces for possible captures
+    for piece in my_men + my_kings:
+        r, c = piece
+        if board[r][c] not in ('m', 'k'):
+            continue  # invalid or not our piece
+
+        is_king = board[r][c] == 'k'
+        queue = deque()
+        queue.append( (r, c, is_king, set(), []) )  # (r, c, is_king, captured, path)
+        local_best = None
+        local_max = 0
+        local_kings = 0
+
+        while queue:
+            curr_r, curr_c, king, captured, path = queue.popleft()
+            if len(path) == 0:
+                path = [(curr_r, curr_c)]
+
+            # Determine possible directions
+            if king:
+                dirs = [(-2, -2), (-2, 2), (2, -2), (2, 2)]
+            elif color == 'b':
+                dirs = [(-2, -2), (-2, 2)]
+            else:
+                dirs = [(2, -2), (2, 2)]
+
+            for dr, dc in dirs:
+                nr, nc = curr_r + dr, curr_c + dc
+                jr, jc = curr_r + dr//2, curr_c + dc//2
+                if 0 <= nr <8 and 0 <= nc <8 and (nr + nc) % 2 == 0 and board[nr][nc] is None:
+                    if 0 <= jr <8 and 0 <= jc <8 and (jr, jc) not in captured:
+                        target = board[jr][jc]
+                        if target in ('M', 'K'):
+                            new_captured = set(captured)
+                            new_captured.add( (jr, jc) )
+                            new_path = path + [(nr, nc)]
+                            new_king = king or ((color == 'b' and nr == 0) or (color == 'w' and nr ==7))
+                            queue.append( (nr, nc, new_king, new_captured, new_path) )
+
+                            # Update best if this capture is better
+                            num_captured = len(new_captured)
+                            num_kings = sum(1 for (jr,jc) in new_captured if board[jr][jc] == 'K')
+                            if num_captured > local_max or (num_captured == local_max and num_kings > local_kings):
+                                local_max = num_captured
+                                local_kings = num_kings
+                                local_best = ( (r, c), (nr, nc) )
+
+        # Update global best
+        if local_max > max_captured or (local_max == max_captured and local_kings > max_kings):
+            best_capture = local_best
+            max_captured = local_max
+            max_kings = local_kings
+
+    if best_capture:
+        return best_capture
+
+    # No captures available; find best regular move
+    best_move = None
+    best_score = -1
+
+    for piece in my_men:
+        r, c = piece
+        dirs = []
+        if color == 'b':
+            dirs = [(-1, -1), (-1, 1)]
+        else:
+            dirs = [(1, -1), (1, 1)]
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr <8 and 0 <= nc <8 and (nr + nc) %2 ==0 and board[nr][nc] is None:
+                score = 0
+                if (color == 'b' and nr ==0) or (color == 'w' and nr ==7):
+                    score = 100  # promotion
+                else:
+                    score = abs(nc - 3.5) + (7 - nr if color == 'b' else nr)  # center and progress
+                if score > best_score:
+                    best_score = score
+                    best_move = ( (r, c), (nr, nc) )
+
+    for piece in my_kings:
+        r, c = piece
+        for dr in (-1, 1):
+            for dc in (-1, 1):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr <8 and 0 <= nc <8 and (nr + nc) %2 ==0 and board[nr][nc] is None:
+                    score = abs(nc - 3.5) + (nr if color == 'w' else 7 - nr)  # toward opponent side
+                    if score > best_score:
+                        best_score = score
+                        best_move = ( (r, c), (nr, nc) )
+
+    if best_move:
+        return best_move
+
+    # Fallback: return first legal move (shouldn't reach here)
+    for piece in my_men + my_kings:
+        r, c = piece
+        if board[r][c] in ('m', 'k'):
+            dirs = [(-1,-1), (-1,1), (1,-1), (1,1)] if board[r][c]=='k' else ( [(-1,-1), (-1,1)] if color=='b' else [(1,-1), (1,1)] )
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr <8 and 0 <= nc <8 and (nr + nc) %2 ==0 and board[nr][nc] is None:
+                    return ((r,c), (nr,nc))
+    # No move found (game over?)
+    return ((0,0), (0,0))  # should not happen
+</code>

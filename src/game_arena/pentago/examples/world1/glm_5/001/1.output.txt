@@ -1,0 +1,218 @@
+The strategy for this policy is to search for the best move by evaluating all possible legal moves at a depth of 1. The board is represented as a 6x6 grid where the AI's marbles are 1, the opponent's are -1, and empty cells are 0. The policy iterates through every empty cell and every possible rotation (4 quadrants, 2 directions). For each potential move, it simulates the state of the board and uses a heuristic evaluation function to score it.
+
+The heuristic scoring prioritizes immediate wins. It also looks for "potential wins" by counting sequences of marbles (lines of 4, 3, etc.) that can lead to a win. The evaluation considers both the AI's attacking potential and the opponent's threats. If an immediate win is detected, that move is chosen instantly. Otherwise, the move with the highest heuristic score is selected. To ensure valid output, the logic carefully handles the placement and rotation mechanics of Pentago.
+
+<code>
+import numpy as np
+import random
+
+def policy(you, opponent):
+    """
+    Calculates the best move for the current board state.
+    you: 6x6 array, 1 where your marbles are, 0 otherwise.
+    opponent: 6x6 array, 1 where opponent marbles are, 0 otherwise.
+    Returns: string "row,col,quad,dir"
+    """
+    
+    # Convert inputs to a single board representation
+    # 1 = me, -1 = opponent, 0 = empty
+    you_arr = np.array(you, dtype=int)
+    opp_arr = np.array(opponent, dtype=int)
+    board = you_arr - opp_arr
+    
+    # Identify empty cells
+    empty_cells = list(zip(*np.where(board == 0)))
+    if not empty_cells:
+        return "" # Should not happen based on prompt constraints
+
+    random.shuffle(empty_cells) # Add variability for equal-score moves
+    
+    best_score = -float('inf')
+    best_move = None
+    
+    # Define quadrant slices
+    # 0: top-left, 1: top-right, 2: bottom-left, 3: bottom-right
+    quadrants = [
+        (slice(0, 3), slice(0, 3)),
+        (slice(0, 3), slice(3, 6)),
+        (slice(3, 6), slice(0, 3)),
+        (slice(3, 6), slice(3, 6))
+    ]
+
+    # Iterate over all possible moves
+    for r, c in empty_cells:
+        # Place marble
+        board[r, c] = 1
+        
+        for q_idx, (rs, cs) in enumerate(quadrants):
+            for direction in (-1, 1): # -1 for Right (CW), 1 for Left (CCW)
+                # Simulate rotation
+                # np.rot90 k=1 is CCW (Left), k=3 or k=-1 is CW (Right)
+                sub = board[rs, cs]
+                # We use k to define rotation: 
+                # Prompt: L = anticlockwise (k=1), R = clockwise (k=-1 or 3)
+                k = direction
+                rotated_sub = np.rot90(sub, k=k)
+                
+                # Apply rotation to board copy or revert logic
+                # To avoid full copy overhead, we apply, eval, then revert
+                original_sub = sub.copy()
+                board[rs, cs] = rotated_sub
+                
+                # Evaluate
+                score = evaluate_board(board)
+                
+                # Check for immediate win
+                if score >= 1000000:
+                    # Verify not a draw (opponent also winning)
+                    # Our evaluate prioritizes our win, but let's be safe
+                    # Actually, if score is this high, we have 5 in a row.
+                    # If opponent also has 5, it's a draw.
+                    # A draw is better than a loss, but we look for max score.
+                    # The evaluate function handles draw scoring (0 usually or lower than win).
+                    # Let's just take the win if score suggests it.
+                    # The evaluate function returns 1,000,000 for win.
+                    # It returns 0 for draw (both win).
+                    # So if score is 1M, it's a pure win.
+                    d_str = "L" if direction == 1 else "R"
+                    return f"{r+1},{c+1},{q_idx},{d_str}"
+                
+                if score > best_score:
+                    best_score = score
+                    d_str = "L" if direction == 1 else "R"
+                    best_move = f"{r+1},{c+1},{q_idx},{d_str}"
+                
+                # Revert rotation
+                board[rs, cs] = original_sub
+        
+        # Revert placement
+        board[r, c] = 0
+        
+    return best_move
+
+def evaluate_board(board):
+    """
+    Evaluates the board state.
+    Returns a score.
+    High positive: Good for me (player 1).
+    High negative: Good for opponent (player -1).
+    """
+    my_win, opp_win = check_win(board)
+    
+    if my_win and opp_win:
+        return 0 # Draw
+    if my_win:
+        return 1000000 # Win
+    if opp_win:
+        return -1000000 # Loss
+    
+    score = 0
+    
+    # Heuristic: Count potential lines
+    # We look at all 5-cell windows on the board
+    
+    # Horizontal
+    for r in range(6):
+        for c in range(2):
+            window = board[r, c:c+5]
+            score += score_window(window)
+            
+    # Vertical
+    for c in range(6):
+        for r in range(2):
+            window = board[r:r+5, c]
+            score += score_window(window)
+            
+    # Diagonals (Main)
+    for r in range(2):
+        for c in range(2):
+            # window is board[r+i, c+i] for i in 0..4
+            window = np.array([board[r+i, c+i] for i in range(5)])
+            score += score_window(window)
+            
+    # Diagonals (Anti)
+    for r in range(2):
+        for c in range(4, 6):
+            # window is board[r+i, c-i] for i in 0..4
+            window = np.array([board[r+i, c-i] for i in range(5)])
+            score += score_window(window)
+            
+    return score
+
+def check_win(board):
+    """
+    Checks if player 1 or player -1 has won.
+    Returns (my_win, opp_win).
+    """
+    my_win = False
+    opp_win = False
+    
+    # Horizontal
+    for r in range(6):
+        for c in range(2):
+            s = np.sum(board[r, c:c+5])
+            if s >= 5: my_win = True
+            if s <= -5: opp_win = True
+            
+    # Vertical
+    for c in range(6):
+        for r in range(2):
+            s = np.sum(board[r:r+5, c])
+            if s >= 5: my_win = True
+            if s <= -5: opp_win = True
+
+    # Diagonals
+    # Main diags length 5+
+    # offsets for diagonal extraction: -1, 0, 1
+    for offset in [-1, 0, 1]:
+        d = np.diagonal(board, offset)
+        # Check all length 5 windows in this diagonal
+        # length of d is 6-abs(offset). 
+        # if len is 6, indices 0-4, 1-5. 
+        # if len is 5, indices 0-4.
+        limit = len(d) - 4
+        for i in range(limit):
+            s = np.sum(d[i:i+5])
+            if s >= 5: my_win = True
+            if s <= -5: opp_win = True
+
+    # Anti diags (flip board)
+    board_flipped = np.fliplr(board)
+    for offset in [-1, 0, 1]:
+        d = np.diagonal(board_flipped, offset)
+        limit = len(d) - 4
+        for i in range(limit):
+            s = np.sum(d[i:i+5])
+            if s >= 5: my_win = True
+            if s <= -5: opp_win = True
+            
+    return my_win, opp_win
+
+def score_window(window):
+    """
+    Scores a window of 5 cells.
+    """
+    count_me = np.count_nonzero(window == 1)
+    count_opp = np.count_nonzero(window == -1)
+    
+    # If both players have marbles in the window, it's blocked for both
+    if count_me > 0 and count_opp > 0:
+        return 0
+        
+    # Score based on potential
+    if count_me == 4:
+        return 100
+    if count_me == 3:
+        return 10
+    if count_me == 2:
+        return 1
+        
+    if count_opp == 4:
+        return -100
+    if count_opp == 3:
+        return -10
+    if count_opp == 2:
+        return -1
+        
+    return 0
+</code>

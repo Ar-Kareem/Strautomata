@@ -1,0 +1,170 @@
+The strategy for this policy is...
+- Parse all knights on the board from `state`.
+- For the side to move (`role`), generate all legal knight moves that go **forward** only (using the game’s rule: knights move like chess knights but cannot move backward).
+- Use a greedy evaluation that prefers:
+  1) immediate winning moves (reach opponent back rank),
+  2) moves that advance furthest (larger “progress” toward the goal),
+  3) moves that land on squares closer to being unblockable (avoid giving the opponent an immediate win by doing a quick one-ply safety check).
+- Always return a syntactically valid `move(a, r, b, c)` string in Stanford syntax for one of the legal moves found.
+
+<code>
+import re
+from typing import List, Tuple, Optional
+
+FILES = "abcdefgh"
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Extract pieces
+    # state facts like ["cell", file, rank, color]
+    pieces = []  # (file_char, rank_int, color)
+    for fact in state:
+        if isinstance(fact, list) and len(fact) >= 4 and fact[0] == "cell":
+            f = str(fact[1])
+            r = int(fact[2])
+            c = str(fact[3])
+            pieces.append((f, r, c))
+
+    my_color = role.strip()
+    opp_color = "black" if my_color == "white" else "white"
+
+    my_knights = [(f, r) for (f, r, c) in pieces if c == my_color]
+    if not my_knights:
+        # Fallback: should not happen in legal play, but return a harmless default
+        return "move(a,1,b,3)"
+
+    def in_bounds(file_char: str, rank: int) -> bool:
+        return file_char in FILES and 1 <= rank <= 8
+
+    # Knight deltas
+    # We map to (df, dr) where file changes by df and rank changes by dr
+    knight_deltas = [
+        (1, 2), (2, 1), (2, -1), (1, -2),
+        (-1, -2), (-2, -1), (-2, 1), (-1, 2)
+    ]
+
+    # Forward direction: white increases rank; black decreases rank
+    forward_sign = 1 if my_color == "white" else -1
+
+    # Occupancy map
+    occ = {(f, r): c for (f, r, c) in pieces}
+
+    def is_forward_move(dr: int) -> bool:
+        return dr * forward_sign > 0  # strictly forward
+
+    def square_empty_or_opponent(dest: Tuple[str, int]) -> bool:
+        return dest not in occ or occ[dest] == opp_color
+
+    def progress(dest_rank: int) -> int:
+        # Higher is better for both colors
+        return dest_rank if my_color == "white" else (9 - dest_rank)
+
+    def is_winning(dest_rank: int) -> bool:
+        # White wins by reaching rank 8; black wins by reaching rank 1
+        return dest_rank == (8 if my_color == "white" else 1)
+
+    # Safety: ensure we don't give opponent immediate win on their next turn
+    # Quick one-ply: for each candidate move, see if opponent has any winning move.
+    def opponent_has_immediate_win() -> bool:
+        for f, r in my_knights:  # not used; kept for structure
+            pass
+        # We'll compute based on resulting position after our move elsewhere.
+        return False
+
+    # Generate legal moves for current position
+    legal_moves = []  # (from_file, from_rank, to_file, to_rank)
+    for f, r in my_knights:
+        x = FILES.index(f)
+        for df, dr in knight_deltas:
+            if not is_forward_move(dr):
+                continue
+            nx = x + df
+            ny = r + dr
+            if 0 <= nx < 8 and 1 <= ny <= 8:
+                nf = FILES[nx]
+                dest = (nf, ny)
+                if square_empty_or_opponent(dest):
+                    legal_moves.append((f, r, nf, ny))
+
+    # If somehow no forward moves exist, pick any backward-agnostic move (shouldn't occur)
+    if not legal_moves:
+        # Try relaxing forward constraint (still keep knight legality + in bounds)
+        for f, r in my_knights:
+            x = FILES.index(f)
+            for df, dr in knight_deltas:
+                nx = x + df
+                ny = r + dr
+                if 0 <= nx < 8 and 1 <= ny <= 8:
+                    nf = FILES[nx]
+                    dest = (nf, ny)
+                    if square_empty_or_opponent(dest):
+                        legal_moves.append((f, r, nf, ny))
+        if not legal_moves:
+            return "move(a,1,b,3)"
+
+    # For each candidate, evaluate with:
+    # - win (big)
+    # - progress (medium)
+    # - avoid giving opponent immediate win (large penalty)
+    def find_knights_after_move(move_tuple):
+        # create occupancy after our move
+        f1, r1, f2, r2 = move_tuple
+        new_occ = dict(occ)
+        # remove captured opponent piece if any
+        if (f2, r2) in new_occ:
+            del new_occ[(f2, r2)]
+        # move our knight
+        del new_occ[(f1, r1)]
+        new_occ[(f2, r2)] = my_color
+        return new_occ
+
+    def opponent_knights_from_occ(new_occ):
+        return [(f, r) for (f, r), c in new_occ.items() if c == opp_color]
+
+    def opponent_legal_moves_with_occ(new_occ):
+        opp_knights = opponent_knights_from_occ(new_occ)
+        forward_sign_opp = 1 if opp_color == "white" else -1
+        moves = []
+        for f, r in opp_knights:
+            x = FILES.index(f)
+            for df, dr in knight_deltas:
+                if dr * forward_sign_opp <= 0:
+                    continue
+                nx = x + df
+                ny = r + dr
+                if 0 <= nx < 8 and 1 <= ny <= 8:
+                    nf = FILES[nx]
+                    dest = (nf, ny)
+                    if dest not in new_occ or new_occ[dest] == my_color:
+                        moves.append((f, r, nf, ny))
+        return moves
+
+    best_move = None
+    best_score = None
+
+    for mv in legal_moves:
+        f1, r1, f2, r2 = mv
+        score = 0
+        if is_winning(r2):
+            score += 10_000_000
+        score += progress(r2) * 1000
+
+        # Safety / one-ply: if opponent can win next, penalize heavily
+        new_occ = find_knights_after_move(mv)
+        opp_moves = opponent_legal_moves_with_occ(new_occ)
+        opp_can_win = any(is_winning(mv2[3]) for mv2 in opp_moves)  # dest_rank is mv2[3]
+        if opp_can_win:
+            score -= 5_000_000
+
+        # Small tie-breaker: prefer moves that keep knights in upper-middle for opposition
+        # (centralization-ish)
+        file_idx = FILES.index(f2)
+        center_dist = abs(file_idx - 3.5)  # 0..~3.5
+        score -= int(center_dist * 10)
+
+        if best_score is None or score > best_score:
+            best_score = score
+            best_move = mv
+
+    f1, r1, f2, r2 = best_move
+    return f"move({f1},{r1},{f2},{r2})"
+</code>

@@ -1,0 +1,211 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Initialize 21x21 board with padding (0=empty, 1=me, 2=opponent)
+    board = np.zeros((21, 21), dtype=np.int8)
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opponent:
+        board[r, c] = 2
+    
+    prev_board = memory.get('board')
+    dirs = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+    
+    legal_moves = []
+    capture_moves = []  # (move, capture_count)
+    save_moves = []     # (move, save_count)
+    
+    # Generate all legal moves
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r, c] != 0:
+                continue
+            
+            # Simulate move
+            board[r, c] = 1
+            is_legal = False
+            capture_count = 0
+            captured_groups = []
+            
+            # Check for opponent captures
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if board[nr, nc] == 2:
+                    if not has_liberty(board, nr, nc, 2):
+                        cnt = count_group(board, nr, nc, 2)
+                        capture_count += cnt
+                        captured_groups.append((nr, nc))
+            
+            # Check suicide
+            if not has_liberty(board, r, c, 1):
+                if capture_count == 0:
+                    is_legal = False
+                else:
+                    is_legal = True
+            else:
+                is_legal = True
+            
+            # Ko detection: check if result equals previous board
+            if is_legal and capture_count > 0 and prev_board is not None:
+                temp = board.copy()
+                for gr, gc in captured_groups:
+                    remove_group(temp, gr, gc, 2)
+                if np.array_equal(temp, prev_board):
+                    is_legal = False
+            
+            # Check if this move saves any of our groups in atari
+            save_count = 0
+            if is_legal:
+                board[r, c] = 0  # Undo to check original position
+                for dr, dc in dirs:
+                    nr, nc = r + dr, c + dc
+                    if board[nr, nc] == 1:
+                        if count_liberties(board, nr, nc, 1) == 1:
+                            save_count += count_group(board, nr, nc, 1)
+                board[r, c] = 1
+            
+            board[r, c] = 0  # Reset board
+            
+            if is_legal:
+                move = (r, c)
+                legal_moves.append(move)
+                if capture_count > 0:
+                    capture_moves.append((move, capture_count))
+                elif save_count > 0:
+                    save_moves.append((move, save_count))
+    
+    # Store current board for next ko check
+    memory['board'] = board.copy()
+    
+    # Priority 1: Capture (largest group)
+    if capture_moves:
+        capture_moves.sort(key=lambda x: -x[1])
+        return (capture_moves[0][0], memory)
+    
+    # Priority 2: Save own stones (largest group)
+    if save_moves:
+        save_moves.sort(key=lambda x: -x[1])
+        return (save_moves[0][0], memory)
+    
+    # Priority 3: Heuristic selection
+    if not legal_moves:
+        return ((0, 0), memory)
+    
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        score = evaluate_move(board, move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return (best_move, memory)
+
+def has_liberty(board, r, c, color):
+    """Check if group at r,c has any liberty using BFS"""
+    q = deque([(r, c)])
+    seen = {(r, c)}
+    while q:
+        cr, cc = q.popleft()
+        for dr, dc in [(0,1),(0,-1),(1,0),(-1,0)]:
+            nr, nc = cr+dr, cc+dc
+            if board[nr, nc] == 0:
+                return True
+            if board[nr, nc] == color and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                q.append((nr, nc))
+    return False
+
+def count_liberties(board, r, c, color):
+    """Count liberties of group at r,c"""
+    q = deque([(r, c)])
+    seen = {(r, c)}
+    libs = set()
+    while q:
+        cr, cc = q.popleft()
+        for dr, dc in [(0,1),(0,-1),(1,0),(-1,0)]:
+            nr, nc = cr+dr, cc+dc
+            if board[nr, nc] == 0:
+                libs.add((nr, nc))
+            elif board[nr, nc] == color and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                q.append((nr, nc))
+    return len(libs)
+
+def count_group(board, r, c, color):
+    """Count stones in group"""
+    q = deque([(r, c)])
+    seen = {(r, c)}
+    count = 0
+    while q:
+        cr, cc = q.popleft()
+        count += 1
+        for dr, dc in [(0,1),(0,-1),(1,0),(-1,0)]:
+            nr, nc = cr+dr, cc+dc
+            if board[nr, nc] == color and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                q.append((nr, nc))
+    return count
+
+def remove_group(board, r, c, color):
+    """Remove a group from the board (for ko simulation)"""
+    q = deque([(r, c)])
+    seen = {(r, c)}
+    while q:
+        cr, cc = q.popleft()
+        board[cr, cc] = 0
+        for dr, dc in [(0,1),(0,-1),(1,0),(-1,0)]:
+            nr, nc = cr+dr, cc+dc
+            if board[nr, nc] == color and (nr, nc) not in seen:
+                seen.add((nr, nc))
+                q.append((nr, nc))
+
+def evaluate_move(board, move):
+    """Heuristic evaluation of a move"""
+    r, c = move
+    score = 0
+    
+    # Line preference (3rd and 4th lines are best for territory)
+    line = min(r-1, 19-r, c-1, 19-c) + 1
+    if line == 3 or line == 4:
+        score += 20
+    elif line == 2 or line == 5:
+        score += 10
+    elif line == 6:
+        score += 4
+    elif line == 1:
+        score -= 15  # First line is usually bad
+    
+    # Adjacent stones analysis
+    my_adj = 0
+    opp_adj = 0
+    empty_adj = 0
+    
+    for dr, dc in [(0,1),(0,-1),(1,0),(-1,0)]:
+        v = board[r+dr, c+dc]
+        if v == 1:
+            my_adj += 1
+        elif v == 2:
+            opp_adj += 1
+        else:
+            empty_adj += 1
+    
+    # Connection bonus
+    score += my_adj * 5
+    # Attack bonus
+    score += opp_adj * 3
+    # Liberty potential
+    score += empty_adj * 2
+    
+    # Penalty for filling own eye
+    if my_adj == 4:
+        score -= 100
+    
+    # Slight preference for center influence
+    dist_center = abs(r - 10) + abs(c - 10)
+    score += (18 - dist_center) * 0.5
+    
+    return score

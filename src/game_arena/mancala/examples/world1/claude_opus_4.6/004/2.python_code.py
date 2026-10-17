@@ -1,0 +1,126 @@
+
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    TIME_LIMIT = 0.85
+    
+    def simulate_move(you, opponent, move):
+        y = list(you)
+        o = list(opponent)
+        seeds = y[move]
+        y[move] = 0
+        pos = move
+        side = 0  # 0 = your side, 1 = opponent side
+        
+        while seeds > 0:
+            pos += 1
+            if side == 0:
+                if pos <= 5:
+                    y[pos] += 1
+                    seeds -= 1
+                elif pos == 6:
+                    y[6] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        return y, o, True  # extra turn
+                    pos = -1
+                    side = 1
+                else:
+                    pos = -1
+                    side = 1
+            else:  # opponent side
+                if pos <= 5:
+                    o[pos] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        last_side = 1
+                        last_pos = pos
+                elif pos >= 6:
+                    # skip opponent store
+                    pos = -1
+                    side = 0
+                    continue
+        
+        # Check capture: last seed on your side in empty house
+        if side == 0 and 0 <= pos <= 5 and y[pos] == 1:
+            opp_pos = 5 - pos
+            if o[opp_pos] > 0:
+                y[6] += y[pos] + o[opp_pos]
+                y[pos] = 0
+                o[opp_pos] = 0
+        
+        return y, o, False
+    
+    def game_over(y, o):
+        return all(s == 0 for s in y[:6]) or all(s == 0 for s in o[:6])
+    
+    def finalize(y, o):
+        y = list(y); o = list(o)
+        y[6] += sum(y[:6]); o[6] += sum(o[:6])
+        for i in range(6): y[i] = 0; o[i] = 0
+        return y, o
+    
+    def evaluate(y, o):
+        return (y[6] - o[6]) * 10 + (sum(y[:6]) - sum(o[:6]))
+    
+    def get_moves(y):
+        return [i for i in range(6) if y[i] > 0]
+    
+    def order_moves(y, o):
+        moves = get_moves(y)
+        scored = []
+        for m in moves:
+            ny, no, extra = simulate_move(y, o, m)
+            s = 0
+            if extra: s += 100
+            if ny[6] > y[6] + y[m]: s += 50  # capture likely
+            s += ny[6] - y[6]
+            scored.append((s, m))
+        scored.sort(reverse=True)
+        return [m for _, m in scored]
+    
+    def minimax(y, o, depth, alpha, beta, maximizing):
+        if time.time() - start_time > TIME_LIMIT:
+            return evaluate(y, o), -1
+        if game_over(y, o):
+            fy, fo = finalize(y, o)
+            return (fy[6] - fo[6]) * 1000, -1
+        if depth == 0:
+            return evaluate(y, o), -1
+        
+        if maximizing:
+            moves = order_moves(y, o)
+            best_val = -999999; best_move = moves[0]
+            for m in moves:
+                ny, no, extra = simulate_move(y, o, m)
+                if extra:
+                    val, _ = minimax(ny, no, depth, alpha, beta, True)
+                else:
+                    val, _ = minimax(no, ny, depth - 1, -beta, -alpha, True)
+                    val = -val
+                if val > best_val:
+                    best_val = val; best_move = m
+                alpha = max(alpha, val)
+                if alpha >= beta: break
+                if time.time() - start_time > TIME_LIMIT: break
+            return best_val, best_move
+        return 0, -1  # shouldn't reach
+    
+    legal = get_moves(you)
+    if len(legal) == 1:
+        return legal[0]
+    
+    best_move = legal[0]
+    for depth in range(1, 30):
+        if time.time() - start_time > TIME_LIMIT:
+            break
+        val, move = minimax(you, opponent, depth, -999999, 999999, True)
+        if time.time() - start_time > TIME_LIMIT:
+            if move >= 0 and you[move] > 0:
+                best_move = move
+            break
+        if move >= 0 and you[move] > 0:
+            best_move = move
+    
+    return best_move

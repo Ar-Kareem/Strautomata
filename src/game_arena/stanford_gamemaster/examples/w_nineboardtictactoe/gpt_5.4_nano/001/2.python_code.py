@@ -1,0 +1,212 @@
+
+import re
+from typing import List, Tuple, Optional
+
+# Nineboard Tic-Tac-Toe: cells are markable with mark(i,j,bi,bj)
+# State facts look like: ["cell", <board_row>, <board_col>, <cell_row>, <cell_col>, <value>]
+# value is 'b' (blank) or 'x'/'o'
+# Also: ["current", <A>, <B>] indicates forced sub-board (A,B).
+# Also: ["control", <role>] indicates turn, but we trust the input `role`.
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse state into structures
+    mark_self = role
+    mark_opp = "o" if role == "x" else "x"
+
+    # board_sub[r][c] is 3x3 of cells containing 'x','o', or 'b'
+    sub = [[['b'] * 4 for _ in range(4)] for __ in range(4)]  # indices 1..3 used; extra for safety
+
+    forced = None  # (A,B)
+    any_empty: List[Tuple[int,int,int,int]] = []  # (bi,bj,ci,cj) where sub-cell is blank anywhere
+
+    for fact in state:
+        if not fact:
+            continue
+        if fact[0] == "current" and len(fact) >= 3:
+            try:
+                forced = (int(fact[1]), int(fact[2]))
+            except Exception:
+                pass
+        if fact[0] == "cell" and len(fact) >= 6:
+            # ["cell", br, bc, cr, cc, val]
+            try:
+                br = int(fact[1])
+                bc = int(fact[2])
+                cr = int(fact[3])
+                cc = int(fact[4])
+                val = str(fact[5])
+            except Exception:
+                continue
+            # store
+            sub[br][bc][(cr, cc)] = val  # not used; we'll use a different structure below
+
+    # Build a proper accessible representation
+    grid = [[[['b' for _ in range(4)] for __ in range(4)] for ___ in range(4)] for ____ in range(4)]
+    # grid[br][bc][cr][cc]
+    for fact in state:
+        if fact and fact[0] == "cell" and len(fact) >= 6:
+            try:
+                br = int(fact[1]); bc = int(fact[2]); cr = int(fact[3]); cc = int(fact[4]); val = str(fact[5])
+            except Exception:
+                continue
+            if 1 <= br <= 3 and 1 <= bc <= 3 and 1 <= cr <= 3 and 1 <= cc <= 3:
+                grid[br][bc][cr][cc] = val
+                if val == "b":
+                    any_empty.append((br, bc, cr, cc))
+
+    # Helper to get empty cells on a specific forced sub-board
+    def empty_cells_on(br: int, bc: int) -> List[Tuple[int,int]]:
+        res = []
+        for cr in range(1, 4):
+            for cc in range(1, 4):
+                if grid[br][bc][cr][cc] == "b":
+                    res.append((cr, cc))
+        return res
+
+    def lines_for(cr: int, cc: int):
+        # Return the set of lines (each as list of (r,c)) that include (cr,cc)
+        lines = []
+        # row
+        lines.append([(cr, j) for j in range(1,4)])
+        # col
+        lines.append([(i, cc) for i in range(1,4)])
+        # diagonals
+        if cr == cc:
+            lines.append([(i,i) for i in range(1,4)])
+        if cr + cc == 4:
+            lines.append([(i,4-i) for i in range(1,4)])
+        # unique
+        uniq = []
+        for ln in lines:
+            if ln not in uniq:
+                uniq.append(ln)
+        return uniq
+
+    # Determine forced sub-board
+    if forced is None:
+        # fallback: choose best available anywhere (shouldn't happen)
+        br, bc, cr, cc = any_empty[0]
+        return f"mark({cr},{cc},{br},{bc})"
+
+    A, B = forced
+    candidates = empty_cells_on(A, B)
+
+    if not candidates:
+        # forced board full: draw by rules, but still must return a legal move if any exist.
+        if any_empty:
+            br, bc, cr, cc = any_empty[0]
+            return f"mark({cr},{cc},{br},{bc})"
+        # no legal move; should be terminal. Return syntactically valid but arbitrary (risk).
+        return "mark(1,1,1,1)"
+
+    # Evaluate a move in local 3x3
+    # Big weights to win/block
+    WIN_SCORE = 100000
+    BLOCK_SCORE = 90000
+    TWO_SCORE = 1200
+    POS_CENTER = 30
+    POS_CORNER = 20
+    POS_EDGE = 8
+
+    local = [[grid[A][B][r][c] for c in range(1,4)] for r in range(1,4)]  # 0..2 mapped
+    # We'll do counts on the fly.
+
+    def get_val(r, c):
+        return local[r-1][c-1]
+
+    def set_val_temp(r, c, v):
+        local[r-1][c-1] = v
+
+    def undo_val_temp(r, c, old):
+        local[r-1][c-1] = old
+
+    def local_win(val: str) -> bool:
+        # check 8 lines
+        for r in range(1,4):
+            if all(get_val(r, c) == val for c in range(1,4)):
+                return True
+        for c in range(1,4):
+            if all(get_val(r, c) == val for r in range(1,4)):
+                return True
+        if all(get_val(i, i) == val for i in range(1,4)):
+            return True
+        if all(get_val(i, 4-i) == val for i in range(1,4)):
+            return True
+        return False
+
+    def count_two_in_row(val: str) -> int:
+        # count lines where exactly two are val and third is blank
+        cnt = 0
+        # rows
+        for r in range(1,4):
+            vals = [get_val(r,c) for c in range(1,4)]
+            if vals.count(val) == 2 and vals.count('b') == 1:
+                cnt += 1
+        for c in range(1,4):
+            vals = [get_val(r,c) for r in range(1,4)]
+            if vals.count(val) == 2 and vals.count('b') == 1:
+                cnt += 1
+        vals = [get_val(i,i) for i in range(1,4)]
+        if vals.count(val) == 2 and vals.count('b') == 1:
+            cnt += 1
+        vals = [get_val(i,4-i) for i in range(1,4)]
+        if vals.count(val) == 2 and vals.count('b') == 1:
+            cnt += 1
+        return cnt
+
+    def pos_bonus(r, c):
+        if r == 2 and c == 2:
+            return POS_CENTER
+        if (r in (1,3)) and (c in (1,3)):
+            return POS_CORNER
+        return POS_EDGE
+
+    best_move = None
+    best_score = -1
+
+    for (cr, cc) in candidates:
+        old = get_val(cr, cc)
+        # apply move for self
+        set_val_temp(cr, cc, mark_self)
+
+        # immediate win?
+        if local_win(mark_self):
+            score = WIN_SCORE
+        else:
+            # check if opponent would win immediately after this move (block priority)
+            # We'll compute opponent win for any single reply in this local board.
+            opp_can_win = False
+            # Temporarily examine without modifying local (simple simulate)
+            for (orow, ocol) in empty_cells_on(A, B):
+                if orow == cr and ocol == cc:
+                    continue  # now filled
+                # place opp mark at (orow,ocol)
+                old2 = get_val(orow, ocol)
+                set_val_temp(orow, ocol, mark_opp)
+                if local_win(mark_opp):
+                    opp_can_win = True
+                    undo_val_temp(orow, ocol, old2)
+                    break
+                undo_val_temp(orow, ocol, old2)
+
+            if opp_can_win:
+                score = BLOCK_SCORE
+            else:
+                # build threats
+                score = 0
+                score += TWO_SCORE * count_two_in_row(mark_self)
+
+                # also lightly account for preventing opponent two-in-row
+                # simulate block effect by seeing how many opponent two-in-row lines remain
+                score -= 450 * count_two_in_row(mark_opp)
+
+                score += pos_bonus(cr, cc)
+
+        undo_val_temp(cr, cc, old)
+
+        if score > best_score:
+            best_score = score
+            best_move = (cr, cc)
+
+    cr, cc = best_move
+    return f"mark({cr},{cc},{A},{B})"

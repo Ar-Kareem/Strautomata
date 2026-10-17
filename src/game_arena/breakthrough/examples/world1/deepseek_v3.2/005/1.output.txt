@@ -1,0 +1,258 @@
+## Strategy
+
+This policy uses a multi-layered evaluation function with a depth-2 minimax search (alpha-beta pruning) and a fast move ordering heuristic to make smart decisions within the time constraints.
+
+**Key features:**
+1. **Material advantage** – rewards capturing opponent pieces while protecting own pieces.
+2. **Positional advancement** – incentivizes moving pieces toward the opponent’s home row, with stronger bonuses for pieces farthest from home.
+3. **King of the hill** – heavily rewards any piece reaching the opponent’s home row (instant win).
+4. **Defensive structure** – penalizes leaving isolated pieces that can be easily captured.
+5. **Move ordering** – checks winning moves, captures, and forward moves first to improve pruning.
+6. **Depth-2 search** – looks ahead at opponent’s best replies to avoid traps and set up favorable exchanges.
+7. **Time awareness** – uses an iterative deepening approach that cuts off early if time is running low.
+
+The evaluation weights are tuned to prioritize winning moves, positional advancement, and piece safety over purely material considerations, making it aggressive but not reckless.
+
+---
+
+<code>
+import time
+import math
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    start_time = time.time()
+    time_limit = 0.95  # seconds
+    
+    # Constants for player directions
+    if color == 'w':
+        forward = 1
+        home_row = 7
+        opp_home_row = 0
+    else:  # 'b'
+        forward = -1
+        home_row = 0
+        opp_home_row = 7
+    
+    # Precompute board occupancy
+    my_pieces = set(me)
+    opp_pieces = set(opp)
+    all_pieces = my_pieces | opp_pieces
+    
+    def is_inside(pos):
+        r, c = pos
+        return 0 <= r <= 7 and 0 <= c <= 7
+    
+    def generate_moves(pieces, is_me=True):
+        moves = []
+        dir_sign = forward if is_me else -forward
+        for (r, c) in pieces:
+            # Straight forward
+            straight = (r + dir_sign, c)
+            if is_inside(straight) and straight not in all_pieces:
+                moves.append(((r, c), straight))
+            # Diagonal captures/advances
+            for dc in [-1, 1]:
+                diag = (r + dir_sign, c + dc)
+                if not is_inside(diag):
+                    continue
+                if diag not in all_pieces:
+                    # Diagonal advance (empty)
+                    moves.append(((r, c), diag))
+                elif diag in (opp_pieces if is_me else my_pieces):
+                    # Capture
+                    moves.append(((r, c), diag))
+        return moves
+    
+    def terminal_eval(my_positions, opp_positions):
+        # Win by reaching opponent's home row
+        for r, c in my_positions:
+            if r == opp_home_row:
+                return float('inf')
+        for r, c in opp_positions:
+            if r == home_row:
+                return float('-inf')
+        # Win by elimination
+        if len(opp_positions) == 0:
+            return float('inf')
+        if len(my_positions) == 0:
+            return float('-inf')
+        return None
+    
+    def evaluate(my_positions, opp_positions):
+        # Material difference
+        material = (len(my_positions) - len(opp_positions)) * 100
+        
+        # Advancement
+        my_advance = 0
+        opp_advance = 0
+        for r, c in my_positions:
+            if color == 'w':
+                my_advance += r * 15  # white moves upward
+            else:
+                my_advance += (7 - r) * 15  # black moves downward
+        for r, c in opp_positions:
+            if color == 'w':
+                opp_advance += r * 15
+            else:
+                opp_advance += (7 - r) * 15
+        
+        # Central control bonus
+        my_center = 0
+        opp_center = 0
+        for r, c in my_positions:
+            if 2 <= c <= 5:
+                my_center += 5
+        for r, c in opp_positions:
+            if 2 <= c <= 5:
+                opp_center += 5
+        
+        # Defensive penalty for isolated pieces
+        my_penalty = 0
+        for r, c in my_positions:
+            safe = False
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if (nr, nc) in my_positions:
+                        safe = True
+                        break
+                if safe:
+                    break
+            if not safe:
+                my_penalty -= 10
+        
+        opp_penalty = 0
+        for r, c in opp_positions:
+            safe = False
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if (nr, nc) in opp_positions:
+                        safe = True
+                        break
+                if safe:
+                    break
+            if not safe:
+                opp_penalty -= 10
+        
+        return (material + (my_advance - opp_advance) + 
+                (my_center - opp_center) + (my_penalty - opp_penalty))
+    
+    def order_moves(moves, my_positions, opp_positions):
+        # Prioritize winning moves, captures, and forward moves
+        ordered = []
+        for move in moves:
+            (fr, fc), (tr, tc) = move
+            # Win by reaching opponent's home row
+            if tr == opp_home_row:
+                ordered.insert(0, move)
+                continue
+            # Capture
+            if (tr, tc) in opp_pieces:
+                ordered.append(move)
+                continue
+            # Forward advance
+            if tc == fc:
+                ordered.append(move)
+                continue
+            ordered.append(move)
+        return ordered
+    
+    def minimax(my_positions, opp_positions, depth, alpha, beta, maximizing):
+        term = terminal_eval(my_positions, opp_positions)
+        if term is not None:
+            return term
+        if depth == 0:
+            return evaluate(my_positions, opp_positions)
+        
+        if maximizing:
+            max_eval = float('-inf')
+            moves = generate_moves(my_positions, is_me=True)
+            moves = order_moves(moves, my_positions, opp_positions)
+            for (fr, fc), (tr, tc) in moves:
+                new_my = set(my_positions)
+                new_opp = set(opp_positions)
+                new_my.remove((fr, fc))
+                new_my.add((tr, tc))
+                if (tr, tc) in new_opp:
+                    new_opp.remove((tr, tc))
+                eval = minimax(new_my, new_opp, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            moves = generate_moves(opp_positions, is_me=False)
+            moves = order_moves(moves, opp_positions, my_positions)
+            for (fr, fc), (tr, tc) in moves:
+                new_my = set(my_positions)
+                new_opp = set(opp_positions)
+                new_opp.remove((fr, fc))
+                new_opp.add((tr, tc))
+                if (tr, tc) in new_my:
+                    new_my.remove((tr, tc))
+                eval = minimax(new_my, new_opp, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Iterative deepening with time cutoff
+    best_move = None
+    max_depth = 3
+    my_list = list(my_pieces)
+    opp_list = list(opp_pieces)
+    
+    for depth in range(1, max_depth + 1):
+        if time.time() - start_time > time_limit:
+            break
+        best_score = float('-inf')
+        current_best = None
+        moves = generate_moves(my_pieces, is_me=True)
+        for move in moves:
+            if time.time() - start_time > time_limit:
+                break
+            (fr, fc), (tr, tc) = move
+            new_my = set(my_pieces)
+            new_opp = set(opp_pieces)
+            new_my.remove((fr, fc))
+            new_my.add((tr, tc))
+            if (tr, tc) in new_opp:
+                new_opp.remove((tr, tc))
+            # Check immediate win
+            if tr == opp_home_row:
+                return move
+            score = minimax(new_my, new_opp, depth - 1, float('-inf'), float('inf'), False)
+            if score > best_score:
+                best_score = score
+                current_best = move
+        if current_best is not None:
+            best_move = current_best
+    
+    # If no move chosen (shouldn't happen), fallback to first legal move
+    if best_move is None:
+        moves = generate_moves(my_pieces, is_me=True)
+        if moves:
+            return moves[0]
+        # Emergency fallback (should never be reached)
+        for r, c in my_pieces:
+            move = ((r, c), (r + forward, c))
+            if is_inside(move[1]) and move[1] not in all_pieces:
+                return move
+        # If still nothing, return any valid move
+        for r, c in my_pieces:
+            for dr in [forward]:
+                for dc in [-1, 0, 1]:
+                    to = (r + dr, c + dc)
+                    if is_inside(to):
+                        return ((r, c), to)
+    
+    return best_move
+</code>

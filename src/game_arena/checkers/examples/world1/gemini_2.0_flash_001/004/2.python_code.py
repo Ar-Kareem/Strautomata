@@ -1,0 +1,129 @@
+
+import random
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Chooses the next move for a Checkers game.
+
+    Args:
+        my_men: List of squares containing your regular pieces.
+        my_kings: List of squares containing your kings.
+        opp_men: List of squares containing opponent regular pieces.
+        opp_kings: List of squares containing opponent kings.
+        color: Your color ('b' for black, 'w' for white).
+
+    Returns:
+        A tuple: ((from_row, from_col), (to_row, to_col)).
+    """
+
+    board_size = 8
+    board = [[0 for _ in range(board_size)] for _ in range(board_size)]
+
+    # Represent the board:  1=my_men, 2=my_kings, 3=opp_men, 4=opp_kings
+    for row, col in my_men:
+        board[row][col] = 1
+    for row, col in my_kings:
+        board[row][col] = 2
+    for row, col in opp_men:
+        board[row][col] = 3
+    for row, col in opp_kings:
+        board[row][col] = 4
+
+    def get_possible_moves(row, col, is_king):
+        moves = []
+        direction = 1 if color == 'w' else -1
+        
+        # Normal moves
+        if is_king or color == 'w':
+            if row + 1 < board_size and col - 1 >= 0 and board[row + 1][col - 1] == 0:
+                moves.append(((row, col), (row + 1, col - 1), []))  # Last element is captured list
+            if row + 1 < board_size and col + 1 < board_size and board[row + 1][col + 1] == 0:
+                moves.append(((row, col), (row + 1, col + 1), []))
+        if is_king or color == 'b':
+            if row - 1 >= 0 and col - 1 >= 0 and board[row - 1][col - 1] == 0:
+                moves.append(((row, col), (row - 1, col - 1), []))
+            if row - 1 >= 0 and col + 1 < board_size and board[row - 1][col + 1] == 0:
+                moves.append(((row, col), (row - 1, col + 1), []))
+        return moves
+
+    def get_possible_captures(row, col, is_king):
+        captures = []
+        direction = 1 if color == 'w' else -1
+        opponent_men = 3
+        opponent_king = 4
+
+        piece_types = [opponent_men, opponent_king]  #opponent_men if color == 'w' else (3,4) if color == 'b' else (3,4)
+        
+        # Captures
+        if is_king or color == 'w':
+            if row + 1 < board_size and col - 1 >= 0 and board[row + 1][col - 1] in piece_types and row + 2 < board_size and col - 2 >= 0 and board[row + 2][col - 2] == 0:
+                captures.append(((row, col), (row + 2, col - 2), [(row + 1, col - 1)]))
+            if row + 1 < board_size and col + 1 < board_size and board[row + 1][col + 1] in piece_types and row + 2 < board_size and col + 2 < board_size and board[row + 2][col + 2] == 0:
+                captures.append(((row, col), (row + 2, col + 2), [(row + 1, col + 1)]))
+        if is_king or color == 'b':
+            if row - 1 >= 0 and col - 1 >= 0 and board[row - 1][col - 1] in piece_types and row - 2 >= 0 and col - 2 >= 0 and board[row - 2][col - 2] == 0:
+                captures.append(((row, col), (row - 2, col - 2), [(row - 1, col - 1)]))
+            if row - 1 >= 0 and col + 1 < board_size and board[row - 1][col + 1] in piece_types and row - 2 >= 0 and col + 2 < board_size and board[row - 2][col + 2] == 0:
+                captures.append(((row, col), (row - 2, col + 2), [(row - 1, col + 1)]))
+        return captures
+
+    def find_all_captures(row, col, is_king, current_captures, captured_pieces):
+        all_captures = []
+        
+        captures = get_possible_captures(row, col, is_king)
+        
+        if not captures:
+            if current_captures:
+                all_captures.append((current_captures[0][0], current_captures[-1][1], captured_pieces))  # from, to, captured
+            return all_captures
+
+        for move in captures:
+            _, (new_row, new_col), captured = move
+            new_captured_pieces = captured_pieces + captured
+            new_captures = current_captures + [move]
+            
+            results = find_all_captures(new_row, new_col, is_king, new_captures, new_captured_pieces)
+            all_captures.extend(results)
+
+        return all_captures
+
+    my_pieces = my_men + my_kings
+    all_possible_captures = []
+
+    for row, col in my_pieces:
+        is_king = (row, col) in my_kings
+        all_possible_captures.extend(find_all_captures(row, col, is_king, [], []))
+
+    if all_possible_captures:
+        # Choose the capture sequence that captures the most pieces.
+        best_capture = max(all_possible_captures, key=lambda x: len(x[2]))
+        return best_capture[0], best_capture[1]
+
+    # No captures available, so find a normal move
+    possible_moves = []
+    for row, col in my_pieces:
+        is_king = (row, col) in my_kings
+        possible_moves.extend(get_possible_moves(row, col, is_king))
+
+    if possible_moves:
+        # Prioritize moving men towards opponent's side to become kings.
+        if color == 'w':
+            #Find moves by regular men.
+            advancing_moves = [move for move in possible_moves if (move[0] in my_men ) and (move[1][0] > move[0][0]) ]
+            if advancing_moves:
+                return random.choice(advancing_moves)[0], random.choice(advancing_moves)[1]
+        else: #color == 'b'
+            #Find moves by regular men.
+            advancing_moves = [move for move in possible_moves if (move[0] in my_men) and (move[1][0] < move[0][0])]
+            if advancing_moves:
+                return random.choice(advancing_moves)[0], random.choice(advancing_moves)[1]
+        
+        return random.choice(possible_moves)[0], random.choice(possible_moves)[1]
+
+    # If no moves are available (very rare), return a random legal move to avoid disqualification.
+    #Should really never get here.
+    for row, col in my_men+my_kings:
+        possible_moves = get_possible_moves(row,col, (row, col) in my_kings )
+        if possible_moves:
+             return possible_moves[0][0], possible_moves[0][1]
+    return ((0, 0), (1, 1))  # Default move - should not be reached.

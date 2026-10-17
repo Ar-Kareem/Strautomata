@@ -1,0 +1,137 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    def get_box_sides(h, v, row, col):
+        """Count how many sides a box has filled."""
+        if row < 0 or row >= 4 or col < 0 or col >= 4:
+            return -1  # Invalid box
+        count = 0
+        if h[row, col] != 0: count += 1      # top
+        if h[row+1, col] != 0: count += 1    # bottom
+        if v[row, col] != 0: count += 1      # left
+        if v[row, col+1] != 0: count += 1    # right
+        return count
+    
+    def would_complete_box(h, v, row, col, direction):
+        """Check if placing this edge completes any box."""
+        h_copy = h.copy()
+        v_copy = v.copy()
+        if direction == 'H':
+            h_copy[row, col] = 1
+        else:
+            v_copy[row, col] = 1
+        
+        boxes_completed = 0
+        if direction == 'H':
+            # Check box above (row-1, col) and below (row, col)
+            if row > 0 and get_box_sides(h_copy, v_copy, row-1, col) == 4:
+                boxes_completed += 1
+            if row < 4 and get_box_sides(h_copy, v_copy, row, col) == 4:
+                boxes_completed += 1
+        else:  # V
+            # Check box to the left (row, col-1) and right (row, col)
+            if col > 0 and get_box_sides(h_copy, v_copy, row, col-1) == 4:
+                boxes_completed += 1
+            if col < 4 and get_box_sides(h_copy, v_copy, row, col) == 4:
+                boxes_completed += 1
+        return boxes_completed
+    
+    def creates_three_sided_box(h, v, row, col, direction):
+        """Check if placing this edge creates a box with exactly 3 sides."""
+        h_copy = h.copy()
+        v_copy = v.copy()
+        if direction == 'H':
+            h_copy[row, col] = 1
+        else:
+            v_copy[row, col] = 1
+        
+        if direction == 'H':
+            if row > 0 and get_box_sides(h_copy, v_copy, row-1, col) == 3:
+                return True
+            if row < 4 and get_box_sides(h_copy, v_copy, row, col) == 3:
+                return True
+        else:
+            if col > 0 and get_box_sides(h_copy, v_copy, row, col-1) == 3:
+                return True
+            if col < 4 and get_box_sides(h_copy, v_copy, row, col) == 3:
+                return True
+        return False
+    
+    # Get all legal moves
+    legal_moves = []
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+    
+    if not legal_moves:
+        return "0,0,H"  # Shouldn't happen
+    
+    # Priority 1: Moves that complete boxes
+    capturing_moves = []
+    for r, c, d in legal_moves:
+        boxes = would_complete_box(horizontal, vertical, r, c, d)
+        if boxes > 0:
+            capturing_moves.append((r, c, d, boxes))
+    
+    if capturing_moves:
+        # Take the move that captures the most boxes
+        capturing_moves.sort(key=lambda x: -x[3])
+        r, c, d, _ = capturing_moves[0]
+        return f"{r},{c},{d}"
+    
+    # Priority 2: Safe moves that don't create 3-sided boxes
+    safe_moves = []
+    risky_moves = []
+    
+    for r, c, d in legal_moves:
+        if creates_three_sided_box(horizontal, vertical, r, c, d):
+            risky_moves.append((r, c, d))
+        else:
+            safe_moves.append((r, c, d))
+    
+    if safe_moves:
+        # Prefer moves in the center of the board
+        def center_score(move):
+            r, c, d = move
+            return -((r - 2)**2 + (c - 2)**2)
+        safe_moves.sort(key=center_score, reverse=True)
+        r, c, d = safe_moves[0]
+        return f"{r},{c},{d}"
+    
+    # Priority 3: Must make a risky move - choose the one that gives away fewest boxes
+    if risky_moves:
+        def count_boxes_given(move):
+            r, c, d = move
+            h_copy = horizontal.copy()
+            v_copy = vertical.copy()
+            if d == 'H':
+                h_copy[r, c] = 1
+            else:
+                v_copy[r, c] = 1
+            
+            count = 0
+            if d == 'H':
+                if r > 0 and get_box_sides(h_copy, v_copy, r-1, c) == 3:
+                    count += 1
+                if r < 4 and get_box_sides(h_copy, v_copy, r, c) == 3:
+                    count += 1
+            else:
+                if c > 0 and get_box_sides(h_copy, v_copy, r, c-1) == 3:
+                    count += 1
+                if c < 4 and get_box_sides(h_copy, v_copy, r, c) == 3:
+                    count += 1
+            return count
+        
+        risky_moves.sort(key=count_boxes_given)
+        r, c, d = risky_moves[0]
+        return f"{r},{c},{d}"
+    
+    # Fallback
+    r, c, d = legal_moves[0]
+    return f"{r},{c},{d}"

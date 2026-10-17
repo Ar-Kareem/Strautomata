@@ -1,0 +1,307 @@
+The strategy for this policy is a hybrid:
+
+- Represent the 5x6 board as fast 30-bit bitboards.
+- Generate only legal Clobber captures.
+- Look for immediate wins first.
+- Use an exact recursive win/loss solver in smaller endgames.
+- Otherwise use iterative-deepening alpha-beta search with move ordering and a structural heuristic.
+- Always keep a legal fallback move, so the policy always returns a legal move string.
+
+<code>
+import time
+
+ROWS = 5
+COLS = 6
+N = ROWS * COLS
+ALL_MASK = (1 &lt;&lt; N) - 1
+MATE = 100000
+INF = 10**9
+
+COL0_MASK = 0
+COL5_MASK = 0
+for r in range(ROWS):
+    COL0_MASK |= 1 &lt;&lt; (r * COLS)
+    COL5_MASK |= 1 &lt;&lt; (r * COLS + (COLS - 1))
+
+NOT_COL0 = ALL_MASK ^ COL0_MASK
+NOT_COL5 = ALL_MASK ^ COL5_MASK
+
+MOVES_FROM = [[] for _ in range(N)]
+for r in range(ROWS):
+    for c in range(COLS):
+        s = r * COLS + c
+        if r &gt; 0:
+            MOVES_FROM[s].append((s - COLS, 'U'))
+        if c &lt; COLS - 1:
+            MOVES_FROM[s].append((s + 1, 'R'))
+        if r &lt; ROWS - 1:
+            MOVES_FROM[s].append((s + COLS, 'D'))
+        if c &gt; 0:
+            MOVES_FROM[s].append((s - 1, 'L'))
+
+
+def _cell(arr, r, c):
+    try:
+        return arr[r][c]
+    except Exception:
+        try:
+            return arr[r, c]
+        except Exception:
+            return arr[r * COLS + c]
+
+
+def _boards_to_bits(you, opponent):
+    me = 0
+    opp = 0
+    bit = 1
+    for r in range(ROWS):
+        for c in range(COLS):
+            if _cell(you, r, c):
+                me |= bit
+            elif _cell(opponent, r, c):
+                opp |= bit
+            bit &lt;&lt;= 1
+    return me, opp
+
+
+def _adjacent(mask):
+    return (
+        ((mask &amp; NOT_COL0) &gt;&gt; 1) |
+        ((mask &amp; NOT_COL5) &lt;&lt; 1) |
+        (mask &gt;&gt; COLS) |
+        ((mask &lt;&lt; COLS) &amp; ALL_MASK)
+    )
+
+
+def _same_adj_edges(mask):
+    horiz = (((mask &amp; NOT_COL5) &lt;&lt; 1) &amp; mask).bit_count()
+    vert = ((((mask &lt;&lt; COLS) &amp; ALL_MASK) &amp; mask)).bit_count()
+    return horiz + vert
+
+
+def _contact_edges(me, opp):
+    horiz = ((((me &amp; NOT_COL5) &lt;&lt; 1) &amp; opp)).bit_count()
+    horiz += ((((opp &amp; NOT_COL5) &lt;&lt; 1) &amp; me)).bit_count()
+    vert = ((((me &lt;&lt; COLS) &amp; ALL_MASK) &amp; opp)).bit_count()
+    vert += ((((opp &lt;&lt; COLS) &amp; ALL_MASK) &amp; me)).bit_count()
+    return horiz + vert
+
+
+def _gen_moves(me, opp):
+    live = me &amp; _adjacent(opp)
+    moves = []
+    x = live
+    while x:
+        lsb = x &amp; -x
+        s = lsb.bit_length() - 1
+        x ^= lsb
+        for d, ch in MOVES_FROM[s]:
+            if (opp &gt;&gt; d) &amp; 1:
+                moves.append((s, d, ch))
+    return moves
+
+
+def _apply_swapped(me, opp, s, d):
+    sbit = 1 &lt;&lt; s
+    dbit = 1 &lt;&lt; d
+    next_me = opp ^ dbit
+    next_opp = (me ^ sbit) | dbit
+    return next_me, next_opp
+
+
+def _move_str(s, ch):
+    return f"{s // COLS},{s % COLS},{ch}"
+
+
+def _static_eval(me, opp):
+    contacts = _contact_edges(me, opp)
+    if contacts == 0:
+        return -MATE
+
+    adj_opp = _adjacent(opp)
+    adj_me = _adjacent(me)
+
+    live_me = (me &amp; adj_opp).bit_count()
+    live_opp = (opp &amp; adj_me).bit_count()
+
+    pieces_me = me.bit_count()
+    pieces_opp = opp.bit_count()
+
+    same_me = _same_adj_edges(me)
+    same_opp = _same_adj_edges(opp)
+
+    # Heuristic:
+    # - more live pieces is good
+    # - a small piece edge is good
+    # - being clumped is usually bad
+    # - fewer contact edges tends to simplify toward the end
+    return (
+        80 * (live_me - live_opp) +
+        12 * (pieces_me - pieces_opp) -
+        8 * (same_me - same_opp) -
+        3 * contacts
+    )
+
+
+class _Timeout(Exception):
+    pass
+
+
+class _Engine:
+    def __init__(self, deadline):
+        self.deadline = deadline
+        self.nodes = 0
+        self.tt = {}
+        self.win_cache = {}
+
+    def _tick(self):
+        self.nodes += 1
+        if (self.nodes &amp; 1023) == 0 and time.perf_counter() &gt;= self.deadline:
+            raise _Timeout
+
+    def ordered_children(self, me, opp, moves=None):
+        if moves is None:
+            moves = _gen_moves(me, opp)
+        children = []
+        for s, d, ch in moves:
+            cme, copp = _apply_swapped(me, opp, s, d)
+            ev = _static_eval(cme, copp)
+            children.append((ev, s, d, ch, cme, copp))
+        children.sort(key=lambda t: t[0])  # low child eval is good for us
+        return children
+
+    def can_win_exact(self, me, opp):
+        self._tick()
+        key = (me, opp)
+        if key in self.win_cache:
+            return self.win_cache[key]
+
+        moves = _gen_moves(me, opp)
+        if not moves:
+            self.win_cache[key] = False
+            return False
+
+        for _, s, d, ch, cme, copp in self.ordered_children(me, opp, moves):
+            if not self.can_win_exact(cme, copp):
+                self.win_cache[key] = True
+                return True
+
+        self.win_cache[key] = False
+        return False
+
+    def negamax(self, me, opp, depth, alpha, beta, ply):
+        self._tick()
+
+        key = (me, opp, depth)
+        if key in self.tt:
+            return self.tt[key]
+
+        moves = _gen_moves(me, opp)
+        if not moves:
+            return -MATE + ply
+
+        if depth == 0:
+            return _static_eval(me, opp)
+
+        best = -INF
+        searched_all = True
+
+        for _, s, d, ch, cme, copp in self.ordered_children(me, opp, moves):
+            score = -self.negamax(cme, copp, depth - 1, -beta, -alpha, ply + 1)
+            if score &gt; best:
+                best = score
+            if score &gt; alpha:
+                alpha = score
+            if alpha &gt;= beta:
+                searched_all = False
+                break
+
+        if searched_all:
+            self.tt[key] = best
+        return best
+
+    def choose(self, me, opp):
+        moves = _gen_moves(me, opp)
+        if not moves:
+            return "0,0,U"  # unreachable in valid arena states
+
+        if len(moves) == 1:
+            s, d, ch = moves[0]
+            return _move_str(s, ch)
+
+        ordered = self.ordered_children(me, opp, moves)
+
+        # Immediate win.
+        for _, s, d, ch, cme, copp in ordered:
+            if not _gen_moves(cme, copp):
+                return _move_str(s, ch)
+
+        # Exact endgame solve when small enough.
+        total_pieces = (me | opp).bit_count()
+        if total_pieces &lt;= 16 or (total_pieces &lt;= 20 and len(moves) &lt;= 5):
+            try:
+                for _, s, d, ch, cme, copp in ordered:
+                    if not self.can_win_exact(cme, copp):
+                        return _move_str(s, ch)
+            except _Timeout:
+                pass
+
+        # Fallback from heuristic ordering.
+        best_item = ordered[0]
+        root_items = ordered
+
+        # Iterative deepening alpha-beta.
+        try:
+            for depth in range(3, 15):
+                alpha = -INF
+                beta = INF
+                best_score = -INF
+                scored = []
+
+                for item in root_items:
+                    _, s, d, ch, cme, copp = item
+                    score = -self.negamax(cme, copp, depth - 1, -beta, -alpha, 1)
+                    scored.append((score, item))
+
+                    if score &gt; best_score:
+                        best_score = score
+                        best_item = item
+                    if score &gt; alpha:
+                        alpha = score
+
+                scored.sort(key=lambda t: t[0], reverse=True)
+                root_items = [item for _, item in scored]
+
+                if best_score &gt;= MATE - 1000:
+                    break
+        except _Timeout:
+            pass
+
+        _, s, d, ch, cme, copp = best_item
+        return _move_str(s, ch)
+
+
+def policy(you, opponent):
+    me, opp = _boards_to_bits(you, opponent)
+    moves = _gen_moves(me, opp)
+
+    # Safety: always return a legal move if one exists.
+    if not moves:
+        return "0,0,U"
+
+    if len(moves) == 1:
+        s, d, ch = moves[0]
+        return _move_str(s, ch)
+
+    deadline = time.perf_counter() + 0.92
+    engine = _Engine(deadline)
+
+    try:
+        move = engine.choose(me, opp)
+    except Exception:
+        # Hard fallback: first legal move.
+        s, d, ch = moves[0]
+        move = _move_str(s, ch)
+
+    return move
+</code>

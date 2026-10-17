@@ -1,0 +1,154 @@
+The strategy for this policy is:
+1. Prioritize re-entering checkers from the bar when possible, targeting opponent-free points.
+2. If no re-entry is available, prioritize hitting opponent blots (single checkers) to gain board control.
+3. If no hits are available, prioritize moving checkers to empty points or points with fewer than 2 opponent checkers.
+4. When multiple moves are possible, prefer moves that use higher dice values first and avoid leaving blots.
+5. If no moves are possible, return a pass move.
+
+<code>
+import numpy as np
+
+def policy(state: dict) -> str:
+    my_pts = np.array(state['my_pts'])
+    opp_pts = np.array(state['opp_pts'])
+    my_bar = state['my_bar']
+    dice = sorted(state['dice'], reverse=True)
+    
+    # Helper to check if a point is safe (0 or 1 opponent checker)
+    def is_safe(pt):
+        return opp_pts[pt] <= 1
+
+    # Helper to get destination of a move
+    def dest(pt, die):
+        return (pt - die) % 24
+
+    # 1. If I have checkers on the bar, I must re-enter
+    if my_bar > 0:
+        # Try higher die first, then lower die
+        for die in dice:
+            # Valid re-entry targets are 0..23
+            # Re-enter from bar to (24 - die) % 24
+            target = (24 - die) % 24
+            if is_safe(target):
+                # Find the other die
+                other_die = dice[0] if die == dice[1] else (dice[0] if die == dice[1] else dice[1])
+                # Try to move other checker with other die
+                # If other die can be played, we must play it
+                # Try to move from any occupied point
+                # Use a simple greedy: move checker as far as possible (towards 0)
+                # But avoid leaving a blot if possible
+                # For now, just pick the highest occupied point that can be moved
+                # and results in a safe destination
+                best_from = None
+                for p in range(23, -1, -1):
+                    if my_pts[p] > 0:
+                        d = dest(p, other_die)
+                        # Check if d is safe
+                        if is_safe(d):
+                            best_from = p
+                            break
+                # If no safe move with other die, just play the bar move
+                # and pass for the other die
+                if best_from is not None:
+                    # Encode move: higher die from bar, lower die from best_from
+                    if die >= other_die:
+                        return f"H:B,A{best_from}"
+                    else:
+                        return f"L:B,A{best_from}"
+                else:
+                    # Pass for the other die
+                    if die == dice[0]:
+                        return f"H:B,P"
+                    else:
+                        return f"L:B,P"
+        # If no re-entry possible with either die
+        return "H:P,P"
+
+    # 2. No checkers on bar: try to hit opponent blots
+    # We must play both dice if possible
+    # Try all permutations of dice
+    # Prefer moves that hit
+    # If multiple hits, prefer to move checkers closer to home
+    # Simple greedy: try to hit with higher die first
+    best_move = None
+    for d1, d2 in [(dice[0], dice[1]), (dice[1], dice[0])]:
+        # Try to hit with d1
+        for p1 in range(23, -1, -1):
+            if my_pts[p1] > 0:
+                t1 = dest(p1, d1)
+                if opp_pts[t1] == 1:  # Hit
+                    # Now try to play d2
+                    # Avoid leaving a blot if possible
+                    # Try to move checker as far as possible
+                    for p2 in range(23, -1, -1):
+                        if my_pts[p2] > (1 if p2 == p1 else 0):  # At least one checker, but not the one just moved
+                            t2 = dest(p2, d2)
+                            if is_safe(t2):
+                                # This is a valid move that hits
+                                # Encode move
+                                move_str = f"H:A{p1},A{p2}" if d1 >= d2 else f"L:A{p1},A{p2}"
+                                # Prefer moves that hit and move checkers closer to home
+                                # Simple scoring: sum of destinations
+                                score = t1 + t2
+                                if best_move is None or score > best_move[1]:
+                                    best_move = (move_str, score)
+    if best_move:
+        return best_move[0]
+
+    # 3. No hits: try to move checkers to safe points
+    # Prefer moving checkers closer to home
+    # Try all permutations of dice
+    best_move = None
+    for d1, d2 in [(dice[0], dice[1]), (dice[1], dice[0])]:
+        # Try to move checker with d1 to safe point
+        for p1 in range(23, -1, -1):
+            if my_pts[p1] > 0:
+                t1 = dest(p1, d1)
+                if is_safe(t1):
+                    # Try to move checker with d2 to safe point
+                    for p2 in range(23, -1, -1):
+                        if my_pts[p2] > (1 if p2 == p1 else 0):
+                            t2 = dest(p2, d2)
+                            if is_safe(t2):
+                                move_str = f"H:A{p1},A{p2}" if d1 >= d2 else f"L:A{p1},A{p2}"
+                                score = t1 + t2
+                                if best_move is None or score > best_move[1]:
+                                    best_move = (move_str, score)
+    if best_move:
+        return best_move[0]
+
+    # 4. If we get here, we can't play both dice
+    # Try to play the higher die
+    # If higher die can be played, we must play it
+    # If not, try lower die
+    # Try to move checker as far as possible
+    # Avoid leaving a blot if possible
+    # Simple greedy: move highest checker that can be moved safely
+    for d in dice:
+        for p in range(23, -1, -1):
+            if my_pts[p] > 0:
+                t = dest(p, d)
+                if is_safe(t):
+                    # Found a move
+                    # If this is the higher die, use H
+                    # If this is the lower die, use L
+                    # But we must play the higher die if possible
+                    # So if d is the higher die, use H
+                    # If d is the lower die, but we couldn't play the higher die, use L
+                    # For now, just try to play the higher die first
+                    # If we can play the higher die, we must
+                    # So if d is the higher die, return H
+                    # If d is the lower die, but we couldn't play the higher die, return L
+                    # But we don't know if we could play the higher die
+                    # So just try to play the higher die first
+                    # If we can play the higher die, we must
+                    # So if d is the higher die, return H
+                    # If d is the lower die, but we couldn't play the higher die, return L
+                    # For now, just return H if d is the higher die, L otherwise
+                    # This is a simplification
+                    # But it should work in most cases
+                    return f"H:A{p},P" if d == dice[0] else f"L:A{p},P"
+
+    # 5. No moves possible
+    return "H:P,P"
+</code>

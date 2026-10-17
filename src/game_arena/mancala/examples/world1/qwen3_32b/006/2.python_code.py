@@ -1,0 +1,68 @@
+
+import copy
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    best_move = None
+    best_score = float('-inf')
+    best_extra_turn = False
+    
+    for move_i in range(6):
+        if you[move_i] == 0:
+            continue
+        
+        new_you = you.copy()
+        new_opponent = opponent.copy()
+        seeds = new_you[move_i]
+        new_you[move_i] = 0
+        index_in_order = move_i + 1
+        last_pos = None
+        extra_turn = False
+        
+        for _ in range(seeds):
+            if 0 <= index_in_order <= 5:
+                new_you[index_in_order] += 1
+                last_pos = ('you', index_in_order)
+            elif index_in_order == 6:
+                new_you[6] += 1
+                last_pos = ('store', 6)
+            else:
+                opp_house = index_in_order - 7
+                new_opponent[opp_house] += 1
+                last_pos = ('opponent', opp_house)
+            index_in_order = (index_in_order + 1) % 13
+        
+        if last_pos[0] == 'you' and 0 <= last_pos[1] <= 5:
+            house_idx = last_pos[1]
+            if new_you[house_idx] == 1:
+                opposite_idx = 5 - house_idx
+                if new_opponent[opposite_idx] > 0:
+                    new_you[6] += new_you[house_idx] + new_opponent[opposite_idx]
+                    new_you[house_idx] = 0
+                    new_opponent[opposite_idx] = 0
+        elif last_pos[0] == 'store':
+            extra_turn = True
+        
+        your_houses_empty = all(h == 0 for h in new_you[:6])
+        opp_houses_empty = all(h == 0 for h in new_opponent[:6])
+        
+        if your_houses_empty or opp_houses_empty:
+            if your_houses_empty:
+                new_opponent[6] += sum(new_opponent[:6])
+                new_opponent[:6] = [0]*6
+            if opp_houses_empty:
+                new_you[6] += sum(new_you[:6])
+                new_you[:6] = [0]*6
+        
+        score = new_you[6] - new_opponent[6]
+        if extra_turn:
+            score += 10
+        
+        if score > best_score:
+            best_score = score
+            best_move = move_i
+            best_extra_turn = extra_turn
+        elif score == best_score and extra_turn and not best_extra_turn:
+            best_move = move_i
+            best_extra_turn = extra_turn
+    
+    return best_move

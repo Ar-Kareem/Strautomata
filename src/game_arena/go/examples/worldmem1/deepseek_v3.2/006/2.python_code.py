@@ -1,0 +1,366 @@
+
+import random
+import time
+import math
+import sys
+from collections import defaultdict
+
+# Bitboard representation: 19x19 board -> 361 bits, stored in 6 x 64-bit ints
+# But simpler: represent as two 64-bit ints? Actually 361 bits need 6 ints.
+# We'll just use Python int as bitboard (unbounded).
+def idx(r, c):
+    return (r-1)*19 + (c-1)
+
+# 3x3 patterns around a point
+PATTERNS = {}
+
+class GoBoard:
+    __slots__ = ('black', 'white')
+    def __init__(self, black=0, white=0):
+        self.black = black
+        self.white = white
+    
+    def get(self, r, c):
+        pos = idx(r, c)
+        if (self.black >> pos) & 1:
+            return 1
+        if (self.white >> pos) & 1:
+            return -1
+        return 0
+    
+    def place(self, r, c, color):
+        pos = idx(r, c)
+        if color == 1:
+            self.black |= 1 << pos
+        else:
+            self.white |= 1 << pos
+    
+    def remove(self, r, c):
+        pos = idx(r, c)
+        self.black &= ~(1 << pos)
+        self.white &= ~(1 << pos)
+    
+    def copy(self):
+        return GoBoard(self.black, self.white)
+    
+    def occupied(self):
+        return self.black | self.white
+    
+    def empty(self):
+        return ~self.occupied() & ((1 << 361) - 1)
+    
+    def neighbors(self, r, c):
+        pos = idx(r, c)
+        res = []
+        if r > 1:
+            res.append(idx(r-1, c))
+        if r < 19:
+            res.append(idx(r+1, c))
+        if c > 1:
+            res.append(idx(r, c-1))
+        if c < 19:
+            res.append(idx(r, c+1))
+        return res
+    
+    def liberties_of_group(self, r, c):
+        color = self.get(r, c)
+        if color == 0:
+            return set()
+        seen = set()
+        stack = [idx(r, c)]
+        libs = set()
+        while stack:
+            p = stack.pop()
+            if p in seen:
+                continue
+            seen.add(p)
+            rr = p // 19 + 1
+            cc = p % 19 + 1
+            for nb in self.neighbors(rr, cc):
+                if self.get_by_idx(nb) == 0:
+                    libs.add(nb)
+                elif self.get_by_idx(nb) == color and nb not in seen:
+                    stack.append(nb)
+        return libs
+    
+    def get_by_idx(self, p):
+        if (self.black >> p) & 1:
+            return 1
+        if (self.white >> p) & 1:
+            return -1
+        return 0
+    
+    def remove_group(self, group):
+        mask = 0
+        for p in group:
+            mask |= 1 << p
+        self.black &= ~mask
+        self.white &= ~mask
+
+def capture_moves(board, color):
+    # color is player to move
+    opp = -color
+    moves = []
+    empty = board.empty()
+    p = 0
+    while empty:
+        if empty & 1:
+            r, c = p // 19 + 1, p % 19 + 1
+            # test if capturing any opponent group
+            test = board.copy()
+            test.place(r, c, color)
+            # check each adjacent opponent stone
+            for nb in test.neighbors(r, c):
+                nb_color = test.get_by_idx(nb)
+                if nb_color == opp:
+                    libs = test.liberties_of_group(nb // 19 + 1, nb % 19 + 1)
+                    if len(libs) == 0:
+                        moves.append((r, c))
+                        break
+        empty >>= 1
+        p += 1
+    return moves
+
+def legal_moves(board, color, last_move=None):
+    # basic ko: avoid repeating board (simplify: just prevent immediate re-capture of single stone)
+    moves = []
+    empty = board.empty()
+    p = 0
+    while empty:
+        if empty & 1:
+            r, c = p // 19 + 1, p % 19 + 1
+            if is_legal(board, r, c, color, last_move):
+                moves.append((r, c))
+        empty >>= 1
+        p += 1
+    return moves
+
+def is_legal(board, r, c, color, last_move=None):
+    if board.get(r, c) != 0:
+        return False
+    test = board.copy()
+    test.place(r, c, color)
+    # check suicide
+    libs = test.liberties_of_group(r, c)
+    if len(libs) > 0:
+        return True
+    # suicide only allowed if capturing
+    for nb in test.neighbors(r, c):
+        nb_color = test.get_by_idx(nb)
+        if nb_color == -color:
+            g_libs = test.liberties_of_group(nb // 19 + 1, nb % 19 + 1)
+            if len(g_libs) == 0:
+                return True
+    return False
+
+def play_move(board, r, c, color):
+    # returns new board and captured count
+    newb = board.copy()
+    newb.place(r, c, color)
+    captured = []
+    opp = -color
+    for nb in newb.neighbors(r, c):
+        nb_color = newb.get_by_idx(nb)
+        if nb_color == opp:
+            libs = newb.liberties_of_group(nb // 19 + 1, nb % 19 + 1)
+            if len(libs) == 0:
+                # capture whole group
+                group = set()
+                stack = [nb]
+                while stack:
+                    p = stack.pop()
+                    group.add(p)
+                    rr = p // 19 + 1
+                    cc = p % 19 + 1
+                    for nn in newb.neighbors(rr, cc):
+                        if newb.get_by_idx(nn) == opp and nn not in group:
+                            stack.append(nn)
+                for p in group:
+                    captured.append(p)
+    for p in captured:
+        newb.remove(p // 19 + 1, p % 19 + 1)
+    return newb, len(captured)
+
+class MCTSNode:
+    __slots__ = ('move', 'parent', 'children', 'visits', 'value', 'untried_moves')
+    def __init__(self, move=None, parent=None):
+        self.move = move
+        self.parent = parent
+        self.children = []
+        self.visits = 0
+        self.value = 0.0
+        self.untried_moves = []
+
+def ucb1(node, C=1.4):
+    if node.visits == 0:
+        return float('inf')
+    return node.value / node.visits + C * math.sqrt(math.log(node.parent.visits) / node.visits)
+
+def select(node, board, color):
+    while node.untried_moves == [] and node.children != []:
+        node = max(node.children, key=lambda n: ucb1(n))
+        r, c = n.move
+        board, _ = play_move(board, r, c, color)
+        color = -color
+    return node, board, color
+
+def expand(node, board, color):
+    if not node.untried_moves:
+        return node, board, color
+    move = node.untried_moves.pop()
+    r, c = move
+    new_board, _ = play_move(board, r, c, color)
+    child = MCTSNode(move=move, parent=node)
+    node.children.append(child)
+    return child, new_board, -color
+
+def rollout(board, color, move_limit=30):
+    # pattern-guided random rollout
+    b = board.copy()
+    col = color
+    for _ in range(move_limit):
+        moves = legal_moves(b, col)
+        if not moves:
+            break
+        # prefer moves near stones
+        scored = []
+        for (r, c) in moves:
+            score = random.random()
+            # bonus for adjacent to existing stones
+            for nb in b.neighbors(r, c):
+                if b.get_by_idx(nb) != 0:
+                    score += 0.3
+            scored.append((score, (r, c)))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        move = scored[0][1]
+        b, _ = play_move(b, move[0], move[1], col)
+        col = -col
+    # evaluate: stone difference
+    black_cnt = bin(b.black).count('1')
+    white_cnt = bin(b.white).count('1')
+    if color == 1:
+        return black_cnt - white_cnt
+    else:
+        return white_cnt - black_cnt
+
+def backpropagate(node, result):
+    while node is not None:
+        node.visits += 1
+        node.value += result
+        node = node.parent
+        result = -result  # alternate perspective
+
+def mcts_move(board, color, time_limit=0.95):
+    root = MCTSNode()
+    root.untried_moves = legal_moves(board, color)
+    start = time.time()
+    iters = 0
+    while time.time() - start < time_limit and root.untried_moves:
+        node = root
+        b = board.copy()
+        col = color
+        # select
+        while node.untried_moves == [] and node.children != []:
+            node = max(node.children, key=lambda n: ucb1(n))
+            b, _ = play_move(b, node.move[0], node.move[1], col)
+            col = -col
+        # expand
+        if node.untried_moves:
+            move = node.untried_moves.pop()
+            child = MCTSNode(move=move, parent=node)
+            node.children.append(child)
+            node = child
+            b, _ = play_move(b, move[0], move[1], col)
+            col = -col
+        # rollout
+        result = rollout(b, col)
+        # backprop
+        backpropagate(node, result)
+        iters += 1
+    
+    if root.children:
+        best = max(root.children, key=lambda n: n.visits)
+        return best.move
+    return None
+
+# opening book
+OPENING_BOOK = [
+    (3, 3), (15, 3), (3, 15), (15, 15),  # corners
+    (3, 9), (15, 9), (9, 3), (9, 15),   # side star
+    (9, 9),  # tengen
+]
+
+def policy(me, opponent, memory):
+    # initialize board
+    board = GoBoard()
+    for (r, c) in me:
+        board.place(r, c, 1)
+    for (r, c) in opponent:
+        board.place(r, c, -1)
+    
+    # game phase
+    total_stones = len(me) + len(opponent)
+    phase = 'opening' if total_stones < 20 else 'mid' if total_stones < 100 else 'end'
+    
+    # check urgent captures/defense
+    my_color = 1
+    opp_color = -1
+    
+    # 1. killing moves
+    kill_moves = capture_moves(board, my_color)
+    if kill_moves:
+        # choose one with largest group kill potential
+        best_kill = None
+        best_size = 0
+        for (r, c) in kill_moves:
+            test, cap = play_move(board, r, c, my_color)
+            if cap > best_size:
+                best_size = cap
+                best_kill = (r, c)
+        if best_kill:
+            memory.setdefault('tree', None)
+            memory['phase'] = phase
+            return best_kill, memory
+    
+    # 2. prevent being killed (if opponent has group with 1 liberty)
+    # find our groups with 1 liberty
+    our_groups_at_risk = []
+    for (r, c) in me:
+        libs = board.liberties_of_group(r, c)
+        if len(libs) == 1:
+            our_groups_at_risk.append((r, c, list(libs)[0]))
+    if our_groups_at_risk:
+        # defend by filling liberty
+        lib = our_groups_at_risk[0][2]
+        r, c = lib // 19 + 1, lib % 19 + 1
+        if is_legal(board, r, c, my_color):
+            memory.setdefault('tree', None)
+            memory['phase'] = phase
+            return (r, c), memory
+    
+    # 3. opening book
+    if total_stones < 6:
+        for (r, c) in OPENING_BOOK:
+            if board.get(r, c) == 0 and is_legal(board, r, c, my_color):
+                memory.setdefault('tree', None)
+                memory['phase'] = phase
+                memory['opening_idx'] = memory.get('opening_idx', 0) + 1
+                return (r, c), memory
+    
+    # 4. MCTS
+    move = mcts_move(board, my_color, time_limit=0.8)
+    if move is None:
+        # fallback: first legal move
+        moves = legal_moves(board, my_color)
+        move = moves[0] if moves else (0, 0)
+    
+    memory.setdefault('tree', None)
+    memory['phase'] = phase
+    return move, memory
+
+if __name__ == "__main__":
+    # quick self-test
+    me = [(10, 10)]
+    opp = [(10, 11)]
+    mem = {}
+    print(policy(me, opp, mem))

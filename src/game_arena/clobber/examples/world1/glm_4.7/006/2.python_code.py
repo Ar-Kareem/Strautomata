@@ -1,0 +1,184 @@
+
+import sys
+import random
+
+sys.setrecursionlimit(10000)
+
+# Constants
+ROWS, COLS = 5, 6
+SIZE = ROWS * COLS
+
+# Precompute neighbors for each cell index (0-29)
+# NEIGHBORS[i] stores a list of (neighbor_index, direction_string)
+# This avoids repeated boundary checks and coordinate calculations during move generation.
+NEIGHBORS = [[] for _ in range(SIZE)]
+for i in range(SIZE):
+    r, c = divmod(i, COLS)
+    if r > 0: NEIGHBORS[i].append((i - COLS, 'U'))
+    if r < ROWS - 1: NEIGHBORS[i].append((i + COLS, 'D'))
+    if c > 0: NEIGHBORS[i].append((i - 1, 'L'))
+    if c < COLS - 1: NEIGHBORS[i].append((i + 1, 'R'))
+
+def to_flat(board):
+    """
+    Converts the input board (either 2D list of lists or 1D list) 
+    into a flat list of integers of length SIZE.
+    """
+    if not board:
+        return [0] * SIZE
+    if isinstance(board[0], list):
+        # Input is 2D: [row1, row2, ...]
+        return [int(val) for row in board for val in row]
+    else:
+        # Input is already 1D
+        return [int(val) for val in board]
+
+def get_moves(me, opp):
+    """
+    Returns a list of legal moves for 'me'.
+    Each move is a tuple (start_index, end_index, direction_string).
+    """
+    moves = []
+    for i in range(SIZE):
+        if me[i]:
+            for ni, d in NEIGHBORS[i]:
+                if opp[ni]:
+                    moves.append((i, ni, d))
+    return moves
+
+def evaluate(me, opp):
+    """
+    Heuristic evaluation function.
+    Returns a score where higher is better for 'me'.
+    Primary metric: Mobility (difference in number of legal moves).
+    Secondary metric: Piece count difference.
+    """
+    my_moves = len(get_moves(me, opp))
+    opp_moves = len(get_moves(opp, me))
+    
+    # Mobility is heavily weighted as it determines the loss condition.
+    score = (my_moves - opp_moves) * 100
+    
+    # Piece count acts as a tie-breaker.
+    score += (sum(me) - sum(opp))
+    return score
+
+def negamax(me, opp, depth, alpha, beta):
+    """
+    Negamax search algorithm with Alpha-Beta pruning.
+    'me' is the player to move in the current state.
+    """
+    moves = get_moves(me, opp)
+    
+    # Terminal state: if no moves, current player loses.
+    if not moves:
+        return -100000
+    
+    if depth == 0:
+        return evaluate(me, opp)
+        
+    # Move Ordering:
+    # Sort moves to try those that reduce opponent's mobility first.
+    # This improves Alpha-Beta pruning efficiency.
+    # Only perform sorting at higher depths to save time.
+    if depth > 2: 
+        def score_move(move):
+            s, e, _ = move
+            # Make temporary move
+            me[s] = 0
+            me[e] = 1
+            opp[e] = 0
+            
+            # Score is negative opponent mobility (we want to minimize it)
+            val = -len(get_moves(opp, me))
+            
+            # Undo move
+            me[s] = 1
+            me[e] = 0
+            opp[e] = 1
+            return val
+        moves.sort(key=score_move)
+
+    best_val = -float('inf')
+    
+    for s, e, d in moves:
+        # Make move
+        me[s] = 0
+        me[e] = 1
+        opp[e] = 0
+        
+        # Recursive call with swapped roles and negated alpha/beta
+        val = -negamax(opp, me, depth - 1, -beta, -alpha)
+        
+        # Undo move
+        me[s] = 1
+        me[e] = 0
+        opp[e] = 1
+        
+        if val > best_val:
+            best_val = val
+        if val > beta:
+            return val # Prune
+        alpha = max(alpha, val)
+        
+    return best_val
+
+def policy(you, opponent):
+    """
+    Main function called by the game engine.
+    """
+    # Convert inputs to flat lists (mutable)
+    me = to_flat(you)
+    opp = to_flat(opponent)
+    
+    # Get all legal moves for the current state
+    moves = get_moves(me, opp)
+    
+    # If no moves, return a dummy move (loss is inevitable)
+    if not moves:
+        return "0,0,U"
+    
+    # Dynamic Depth Selection:
+    # Deeper search in endgame, shallower in opening due to branching factor.
+    total_pieces = sum(me) + sum(opp)
+    if total_pieces < 15:
+        depth = 6
+    elif total_pieces < 25:
+        depth = 5
+    else:
+        depth = 4
+
+    best_move = moves[0]
+    best_val = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Iterative search over root moves
+    for s, e, d in moves:
+        # Make move
+        me[s] = 0
+        me[e] = 1
+        opp[e] = 0
+        
+        # Search
+        val = -negamax(opp, me, depth - 1, -beta, -alpha)
+        
+        # Undo move
+        me[s] = 1
+        me[e] = 0
+        opp[e] = 1
+        
+        if val > best_val:
+            best_val = val
+            best_move = (s, e, d)
+        
+        # Update alpha for root
+        alpha = max(alpha, val)
+        
+        # If a winning move is found, stop searching
+        if val > 90000:
+            break
+            
+    # Convert best move index back to row,col string
+    r, c = divmod(best_move[0], COLS)
+    return f"{r},{c},{best_move[2]}"

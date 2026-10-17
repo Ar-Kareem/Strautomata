@@ -1,0 +1,235 @@
+
+import time
+import random
+
+# Configuration
+MAX_DEPTH = 4
+TIME_LIMIT = 0.95
+
+# Piece values in centipawns
+PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+
+# Piece-square tables (from White's perspective)
+PAWN_TABLE = [0,0,0,0,0,0,0,0,50,50,50,50,50,50,50,50,10,10,20,30,30,20,10,10,5,5,10,25,25,10,5,5,
+              0,0,0,20,20,0,0,0,5,-5,-10,0,0,-10,-5,5,5,10,10,-20,-20,10,10,5,0,0,0,0,0,0,0,0]
+
+KNIGHT_TABLE = [-50,-40,-30,-30,-30,-30,-40,-50,-40,-20,0,0,0,0,-20,-40,-30,0,10,15,15,10,0,-30,
+                -30,5,15,20,20,15,5,-30,-30,0,15,20,20,15,0,-30,-30,5,10,15,15,10,5,-30,
+                -40,-20,0,5,5,0,-20,-40,-50,-40,-30,-30,-30,-30,-40,-50]
+
+BISHOP_TABLE = [-20,-10,-10,-10,-10,-10,-10,-20,-10,0,0,0,0,0,0,-10,-10,0,5,10,10,5,0,-10,
+                -10,5,5,10,10,5,5,-10,-10,0,10,10,10,10,0,-10,-10,10,10,10,10,10,10,-10,
+                -10,5,0,0,0,0,5,-10,-20,-10,-10,-10,-10,-10,-10,-20]
+
+ROOK_TABLE = [0,0,0,0,0,0,0,0,5,10,10,10,10,10,10,5,-5,0,0,0,0,0,0,-5,-5,0,0,0,0,0,0,-5,
+              -5,0,0,0,0,0,0,-5,-5,0,0,0,0,0,0,-5,0,0,0,5,5,0,0,0]
+
+QUEEN_TABLE = [-20,-10,-10,-5,-5,-10,-10,-20,-10,0,0,0,0,0,0,-10,-10,0,5,5,5,5,0,-10,
+               -5,0,5,5,5,5,0,-5,0,0,5,5,5,5,0,-5,-10,5,5,5,5,5,5,-10,
+               -10,0,0,0,0,0,0,-10,-20,-10,-10,-5,-5,-10,-10,-20]
+
+KING_TABLE = [-30,-40,-40,-50,-50,-40,-40,-30,-30,-40,-40,-50,-50,-40,-40,-30,-30,-40,-40,-50,-50,-40,-40,-30,
+              -30,-40,-40,-50,-50,-40,-40,-30,-20,-30,-30,-40,-40,-30,-30,-20,-10,-20,-20,-20,-20,-20,-20,-10,
+              20,20,0,0,0,0,20,20,20,30,10,0,0,10,30,20]
+
+TABLES = {'P': PAWN_TABLE, 'N': KNIGHT_TABLE, 'B': BISHOP_TABLE, 'R': ROOK_TABLE, 'Q': QUEEN_TABLE, 'K': KING_TABLE}
+
+def square_to_coords(square):
+    """Convert 'e4' to (row, col) where row 0 is rank 8"""
+    return 8 - int(square[1]), ord(square[0]) - ord('a')
+
+def coords_to_square(row, col):
+    """Convert (row, col) to 'e4'"""
+    return chr(ord('a') + col) + str(8 - row)
+
+def evaluate(pieces_dict, perspective):
+    """Evaluate position from given perspective"""
+    score = 0
+    for square, piece in pieces_dict.items():
+        if not piece:
+            continue
+        color, ptype = piece[0], piece[1]
+        row, col = square_to_coords(square)
+        
+        # Material
+        material = PIECE_VALUES[ptype]
+        
+        # Position bonus
+        if color == 'w':
+            pos_bonus = TABLES[ptype][row * 8 + col]
+        else:
+            pos_bonus = TABLES[ptype][(7 - row) * 8 + col]
+        
+        total = material + pos_bonus
+        
+        if color == 'w':
+            score += total
+        else:
+            score -= total
+    
+    return score if perspective == 'white' else -score
+
+def apply_move(board_dict, move_str, to_play):
+    """Apply algebraic move to board dict, return new board dict"""
+    # Remove check/mate symbols
+    clean = move_str[:-1] if move_str[-1] in '+#' else move_str
+    
+    # Castling
+    if clean == 'O-O':
+        rank = '1' if to_play == 'white' else '8'
+        new_board = board_dict.copy()
+        new_board['g' + rank] = to_play[0] + 'K'
+        new_board['f' + rank] = to_play[0] + 'R'
+        new_board['e' + rank] = new_board['h' + rank] = ''
+        return new_board
+    if clean == 'O-O-O':
+        rank = '1' if to_play == 'white' else '8'
+        new_board = board_dict.copy()
+        new_board['c' + rank] = to_play[0] + 'K'
+        new_board['d' + rank] = to_play[0] + 'R'
+        new_board['e' + rank] = new_board['a' + rank] = ''
+        return new_board
+    
+    # Promotion
+    promotion = None
+    if '=' in clean:
+        parts = clean.split('=')
+        clean = parts[0]
+        promotion = parts[1]
+    
+    # Destination square
+    dest = clean[-2:]
+    dest_row, dest_col = square_to_coords(dest)
+    
+    # Determine piece type and disambiguation
+    if clean[0] in 'NBRQK':
+        piece_type = clean[0]
+        disambiguation = clean[1:-2].replace('x', '')
+    else:
+        piece_type = 'P'
+        disambiguation = clean[0] if len(clean) > 2 else ''
+    
+    # Find source square
+    color = to_play[0]
+    candidates = [sq for sq, pc in board_dict.items() if pc == color + piece_type]
+    
+    # Filter by disambiguation
+    if disambiguation:
+        if len(disambiguation) == 2:
+            candidates = [disambiguation]
+        elif disambiguation in 'abcdefgh':
+            candidates = [c for c in candidates if c[0] == disambiguation]
+        else:
+            candidates = [c for c in candidates if c[1] == disambiguation]
+    
+    # Find first candidate that can reach destination
+    source = None
+    for cand in candidates:
+        if cand == dest:
+            continue
+        crow, ccol = square_to_coords(cand)
+        dr, dc = dest_row - crow, dest_col - ccol
+        
+        # Quick validation
+        valid = False
+        if piece_type == 'N':
+            valid = (abs(dr), abs(dc)) in [(2, 1), (1, 2)]
+        elif piece_type == 'K':
+            valid = max(abs(dr), abs(dc)) == 1
+        elif piece_type == 'B':
+            valid = abs(dr) == abs(dc) and dr != 0
+        elif piece_type == 'R':
+            valid = (dr == 0) != (dc == 0)
+        elif piece_type == 'Q':
+            valid = dr == 0 or dc == 0 or abs(dr) == abs(dc)
+        elif piece_type == 'P':
+            direction = -1 if color == 'w' else 1
+            if dc == 0:
+                valid = dr == direction or (dr == 2 * direction and crow in (1, 6))
+            else:
+                valid = abs(dc) == 1 and dr == direction
+        
+        if valid:
+            source = cand
+            break
+    
+    if not source:
+        source = candidates[0] if candidates else None
+    
+    # Apply move
+    new_board = board_dict.copy()
+    piece = new_board[source]
+    
+    # Handle promotion
+    if promotion:
+        piece = piece[0] + promotion
+    
+    # Handle en passant
+    if piece_type == 'P' and dest[0] != source[0] and dest not in new_board:
+        capture_sq = dest[0] + source[1]
+        if capture_sq in new_board:
+            del new_board[capture_sq]
+    
+    new_board[dest] = piece
+    del new_board[source]
+    return new_board
+
+def policy(pieces, to_play, legal_moves):
+    start = time.time()
+    
+    # Quick forced moves
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Immediate checkmate
+    for move in legal_moves:
+        if move.endswith('#'):
+            return move
+    
+    # Prioritize captures and checks
+    ordered = sorted(legal_moves, key=lambda m: ('x' in m, '+' in m), reverse=True)
+    
+    best_move = ordered[0]
+    best_score = -100000
+    
+    # Iterative deepening
+    for depth in (1, 2, 3):
+        if time.time() - start > TIME_LIMIT:
+            break
+        
+        for move in ordered:
+            # Apply move
+            new_board = apply_move(pieces, move, to_play)
+            
+            # Evaluate
+            score = evaluate(new_board, to_play)
+            
+            # Opponent's best reply (simplified)
+            if depth > 1:
+                opp = 'black' if to_play == 'white' else 'white'
+                # Generate opponent moves from new_board
+                opp_moves = []
+                for sq, pc in new_board.items():
+                    if pc and pc[0] == opp[0]:
+                        # Simplified generation, just captures for speed
+                        if pc[1] == 'P':
+                            # Pawn captures
+                            row, col = sq_to_coords(sq)
+                            for dc in (-1, 1):
+                                nrow = row + (-1 if pc[0] == 'w' else 1)
+                                ncol = col + dc
+                                if 0 <= nrow < 8 and 0 <= ncol < 8:
+                                    tdest = coords_to_square(nrow, ncol)
+                                    target = new_board.get(tdest, '')
+                                    if target and target[0] != pc[0]:
+                                        opp_moves.append(f"x{tdest}")
+                
+                if opp_moves:
+                    worst = min(evaluate(apply_move(new_board, om, opp), to_play) for om in opp_moves[:5])
+                    score = score * 0.7 - worst * 0.3
+            
+            if score > best_score:
+                best_score = score
+                best_move = move
+    
+    return best_move

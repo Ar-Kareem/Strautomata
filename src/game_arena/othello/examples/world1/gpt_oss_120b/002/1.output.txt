@@ -1,0 +1,94 @@
+**Strategy Overview**
+
+The policy follows a classic Othello heuristic that balances immediate gain with long‑term board stability:
+
+1. **Legal‑move generation** – For every empty square we check the eight directions and keep a move if it would flip at least one opponent disc.
+2. **Move evaluation** –  
+   * *Flip count*: the number of opponent discs that would be flipped by the move.  
+   * *Positional weight*: a static 8×8 matrix that rewards corners, penalises squares adjacent to empty corners and gives modest scores to edges and inner squares.  
+   The total score of a move is `flip_count + weight`.
+3. **Selection** – The move with the highest score is chosen. In case of a tie a random legal move among the best is returned.
+4. **Pass handling** – If no legal moves exist the function returns `"pass"`.
+
+The approach is fast (O(64 × 8) per call) and consistently selects strong moves without exceeding the 1‑second limit.
+
+```python
+<code>
+import numpy as np
+import random
+
+# static positional weights – higher is better
+_POS_WEIGHT = np.array([
+    [100, -20,  10,   5,   5,  10, -20, 100],
+    [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+    [ 10,  -2,  -1,  -1,  -1,  -1,  -2,  10],
+    [  5,  -2,  -1,  -1,  -1,  -1,  -2,   5],
+    [  5,  -2,  -1,  -1,  -1,  -1,  -2,   5],
+    [ 10,  -2,  -1,  -1,  -1,  -1,  -2,  10],
+    [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+    [100, -20,  10,   5,   5,  10, -20, 100],
+], dtype=int)
+
+_DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
+               ( 0, -1),          ( 0, 1),
+               ( 1, -1), ( 1, 0), ( 1, 1)]
+
+def _on_board(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def _flips_for_move(r, c, you, opponent):
+    """Return list of positions that would be flipped if we play at (r,c)."""
+    flips = []
+    for dr, dc in _DIRECTIONS:
+        cur_r, cur_c = r + dr, c + dc
+        line = []
+        while _on_board(cur_r, cur_c) and opponent[cur_r, cur_c] == 1:
+            line.append((cur_r, cur_c))
+            cur_r += dr
+            cur_c += dc
+        if line and _on_board(cur_r, cur_c) and you[cur_r, cur_c] == 1:
+            flips.extend(line)
+    return flips
+
+def _legal_moves(you, opponent):
+    """Yield (r,c,flips) for every legal move for the player `you`."""
+    empty = np.logical_not(np.logical_or(you, opponent))
+    for r in range(8):
+        for c in range(8):
+            if not empty[r, c]:
+                continue
+            flips = _flips_for_move(r, c, you, opponent)
+            if flips:                     # at least one direction flips
+                yield (r, c, flips)
+
+def _to_alg(r, c):
+    """Convert board indices to algebraic notation (e.g., (3,0) -> 'a4')."""
+    file = chr(ord('a') + c)
+    rank = str(r + 1)               # rows are 1‑based
+    return file + rank
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Return the best legal move for `you` given the current board.
+    If no move is possible, return "pass".
+    """
+    best_score = -float('inf')
+    best_moves = []   # list of (r,c) with the same best_score
+
+    for r, c, flips in _legal_moves(you, opponent):
+        # simple evaluation: flips + positional weight
+        score = len(flips) + _POS_WEIGHT[r, c]
+        if score > best_score:
+            best_score = score
+            best_moves = [(r, c)]
+        elif score == best_score:
+            best_moves.append((r, c))
+
+    if not best_moves:                     # no legal move
+        return "pass"
+
+    # pick a random move among equally good candidates
+    chosen_r, chosen_c = random.choice(best_moves)
+    return _to_alg(chosen_r, chosen_c)
+</code>
+```

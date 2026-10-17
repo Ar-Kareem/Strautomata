@@ -1,0 +1,108 @@
+
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    # Directions for checking lines in 3D space
+    directions = [
+        # Straight lines
+        (1, 0, 0), (-1, 0, 0),
+        (0, 1, 0), (0, -1, 0),
+        (0, 0, 1), (0, 0, -1),
+        # Diagonals in planes
+        (1, 1, 0), (1, -1, 0),
+        (1, 0, 1), (1, 0, -1),
+        (0, 1, 1), (0, 1, -1),
+        # Space diagonals
+        (1, 1, 1), (1, 1, -1),
+        (1, -1, 1), (1, -1, -1)
+    ]
+
+    def is_winning_move(i: int, j: int, k: int, player: int) -> bool:
+        """Check if placing a piece at (i,j,k) would win the game for player."""
+        for di, dj, dk in directions:
+            count = 0
+            # Check in positive direction
+            ni, nj, nk = i + di, j + dj, k + dk
+            while 0 <= ni < 3 and 0 <= nj < 3 and 0 <= nk < 3:
+                if board[ni][nj][nk] == player:
+                    count += 1
+                else:
+                    break
+                ni += di
+                nj += dj
+                nk += dk
+
+            # Check in negative direction
+            ni, nj, nk = i - di, j - dj, k - dk
+            while 0 <= ni < 3 and 0 <= nj < 3 and 0 <= nk < 3:
+                if board[ni][nj][nk] == player:
+                    count += 1
+                else:
+                    break
+                ni -= di
+                nj -= dj
+                nk -= dk
+
+            if count >= 2:  # We already have the current position
+                return True
+        return False
+
+    def evaluate_move(i: int, j: int, k: int) -> int:
+        """Evaluate the strategic value of a move."""
+        score = 0
+
+        # Center control
+        if i == 1 and j == 1 and k == 1:
+            score += 10
+
+        # Corner control
+        if (i, j, k) in [(0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+                         (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)]:
+            score += 5
+
+        # Edge control
+        if (i in {0, 2} and j in {0, 2} and k == 1) or \
+           (i in {0, 2} and j == 1 and k in {0, 2}) or \
+           (i == 1 and j in {0, 2} and k in {0, 2}):
+            score += 3
+
+        return score
+
+    # First check for immediate winning moves
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    if is_winning_move(i, j, k, 1):
+                        return (i, j, k)
+
+    # Then check for opponent winning moves to block
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    if is_winning_move(i, j, k, -1):
+                        return (i, j, k)
+
+    # If no immediate threats, evaluate all possible moves
+    best_move = None
+    best_score = -1
+    empty_cells = []
+
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    score = evaluate_move(i, j, k)
+                    if score > best_score:
+                        best_score = score
+                        best_move = (i, j, k)
+                    empty_cells.append((i, j, k))
+
+    # If we found a strategic move, return it
+    if best_move is not None:
+        return best_move
+
+    # Otherwise, return a random empty cell
+    return random.choice(empty_cells)

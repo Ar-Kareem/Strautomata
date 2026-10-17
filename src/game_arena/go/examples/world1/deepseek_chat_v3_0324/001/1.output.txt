@@ -1,0 +1,151 @@
+Here's a strategy and implementation for a basic but competent Go-playing policy:
+
+**Strategy:**
+1. First, implement capture logic to take opponent stones when possible
+2. Place stones adjacent to our existing groups to strengthen them
+3. If no obvious moves, look for patterns that could lead to capturing opportunities
+4. Fall back to a simple heuristic of playing near opponent stones to reduce their liberties
+5. Always ensure the move is legal (doesn't suicide and follows Go rules)
+6. As a last resort, pass if no legal moves are available
+
+The implementation uses a simple heuristic of maximizing our liberties while minimizing opponent liberties, and has basic capture detection.
+
+<code>
+import numpy as np
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    size = 19
+    # Create board representation
+    board = np.zeros((size+2, size+2), dtype=int)  # 1-indexed with padding
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opponent:
+        board[r, c] = -1
+
+    # Helper functions
+    def is_on_board(r, c):
+        return 1 <= r <= size and 1 <= c <= size
+
+    def has_liberties(group, visited=None):
+        if visited is None:
+            visited = set()
+        for r, c in group:
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if is_on_board(nr, nc) and board[nr, nc] == 0:
+                    return True
+                if is_on_board(nr, nc) and board[nr, nc] == board[r,c] and (nr,nc) not in visited:
+                    visited.add((nr,nc))
+                    if has_liberties([(nr,nc)], visited):
+                        return True
+        return False
+
+    def get_group(r, c):
+        color = board[r, c]
+        group = set()
+        queue = [(r, c)]
+        while queue:
+            x, y = queue.pop()
+            if (x, y) in group:
+                continue
+            group.add((x, y))
+            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nx, ny = x+dx, y+dy
+                if is_on_board(nx, ny) and board[nx, ny] == color and (nx, ny) not in group:
+                    queue.append((nx, ny))
+        return group
+
+    def count_liberties(r, c):
+        liberties = set()
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if is_on_board(nr, nc) and board[nr, nc] == 0:
+                liberties.add((nr, nc))
+        return len(liberties)
+
+    def is_legal_move(r, c):
+        if (r, c) == (0, 0):
+            return True
+        if not is_on_board(r, c) or board[r, c] != 0:
+            return False
+        
+        # Ko rule (simplified)
+        if len(opponent) == 1 and len(me) == 1:
+            last_opponent = opponent[0]
+            if (r, c) == last_opponent and count_liberties(r, c) == 1:
+                return False  # Basic ko
+
+        # Check suicide
+        board[r, c] = 1  # Temp place stone
+        group = get_group(r, c)
+        legal = has_liberties(group)
+        
+        # Check captures
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if is_on_board(nr, nc) and board[nr, nc] == -1:
+                opp_group = get_group(nr, nc)
+                if not has_liberties(opp_group):
+                    legal = True
+                    break
+        
+        board[r, c] = 0  # Remove temp stone
+        return legal
+
+    # 1. First try to capture opponent stones
+    capture_moves = set()
+    for r, c in opponent:
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if is_on_board(nr, nc) and board[nr, nc] == 0 and is_legal_move(nr, nc):
+                board[nr, nc] = 1  # Temp place stone
+                opp_group = get_group(r, c)
+                if not has_liberties(opp_group):
+                    capture_moves.add((nr, nc))
+                board[nr, nc] = 0  # Remove temp stone
+                
+    if capture_moves:
+        return capture_moves.pop()
+
+    # 2. Try to reinforce our weak groups (1 liberty)
+    defend_moves = set()
+    for r, c in me:
+        if count_liberties(r, c) == 1:
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if is_on_board(nr, nc) and board[nr, nc] == 0 and is_legal_move(nr, nc):
+                    defend_moves.add((nr, nc))
+    if defend_moves:
+        return defend_moves.pop()
+
+    # 3. Try to attack opponent groups with 2 liberties
+    attack_moves = []
+    for r, c in opponent:
+        if count_liberties(r, c) == 2:
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if is_on_board(nr, nc) and board[nr, nc] == 0 and is_legal_move(nr, nc):
+                    attack_moves.append((nr, nc))
+    if attack_moves:
+        return attack_moves[0]
+
+    # 4. Try to play near opponent stones
+    adjacent_moves = []
+    for r, c in opponent:
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if is_on_board(nr, nc) and board[nr, nc] == 0 and is_legal_move(nr, nc):
+                adjacent_moves.append((nr, nc))
+    if adjacent_moves:
+        return adjacent_moves[0]
+
+    # 5. Try to play anywhere legal
+    for r in range(1, size+1):
+        for c in range(1, size+1):
+            if board[r, c] == 0 and is_legal_move(r, c):
+                return (r, c)
+
+    # 6. No legal moves, pass
+    return (0, 0)
+</code>

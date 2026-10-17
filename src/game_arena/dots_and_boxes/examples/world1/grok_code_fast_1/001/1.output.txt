@@ -1,0 +1,81 @@
+The strategy for this policy is to prioritize completing boxes whenever possible, as this immediately scores points and allows chaining additional turns. If no completing move is available, it selects a move that does not leave any affected box with exactly three sides filled (to avoid setting up the opponent for an easy complete in their next turn). If no such "safe" move exists, it falls back to any legal move. This heuristic approach avoids shortsighted play while being computationally lightweight for the 1-second time constraint, making it effective against less strategic opponents.
+
+<code>
+import numpy as np
+
+def completes_box(horizontal, vertical, r, c, d):
+    """
+    Check if the move at (r, c, d) completes at least one box.
+    """
+    affected_boxes = []
+    if d == 'H':
+        if r > 0:
+            affected_boxes.append((r-1, c))
+        if r < 4:
+            affected_boxes.append((r, c))
+    else:  # d == 'V'
+        if c > 0:
+            affected_boxes.append((r, c-1))
+        if c < 4:
+            affected_boxes.append((r, c))
+    
+    for br, bc in affected_boxes:
+        sides = [horizontal[br, bc], horizontal[br+1, bc], vertical[br, bc], vertical[br, bc+1]]
+        drawn = sum(1 for x in sides if x != 0)
+        if drawn == 3:  # This move would fill the fourth side
+            return True
+    return False
+
+def fills_to_three(horizontal, vertical, r, c, d):
+    """
+    Check if the move at (r, c, d) fills any affected box to exactly three sides.
+    """
+    affected_boxes = []
+    if d == 'H':
+        if r > 0:
+            affected_boxes.append((r-1, c))
+        if r < 4:
+            affected_boxes.append((r, c))
+    else:  # d == 'V'
+        if c > 0:
+            affected_boxes.append((r, c-1))
+        if c < 4:
+            affected_boxes.append((r, c))
+    
+    for br, bc in affected_boxes:
+        sides = [horizontal[br, bc], horizontal[br+1, bc], vertical[br, bc], vertical[br, bc+1]]
+        drawn = sum(1 for x in sides if x != 0)
+        if drawn == 2:  # Would increase to 3
+            return True
+    return False
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Generate all legal moves
+    legal_moves = []
+    for r in range(5):
+        for c in range(5):
+            for d in ['H', 'V']:
+                arr = horizontal if d == 'H' else vertical
+                if arr[r, c] == 0:
+                    legal_moves.append((r, c, d))
+    
+    if not legal_moves:
+        # Should never happen, but just in case
+        return '0,0,H'
+    
+    # First, prioritize moves that complete at least one box
+    completing_moves = [move for move in legal_moves if completes_box(horizontal, vertical, *move)]
+    if completing_moves:
+        # Pick the first one (could randomize in future for variety)
+        move = completing_moves[0]
+        return f'{move[0]},{move[1]},{move[2]}'
+    
+    # Otherwise, find moves that do not fill any box to exactly three sides
+    safe_moves = [move for move in legal_moves if not fills_to_three(horizontal, vertical, *move)]
+    if safe_moves:
+        move = safe_moves[0]
+    else:
+        # Fallback to any legal move
+        move = legal_moves[0]
+    return f'{move[0]},{move[1]},{move[2]}'
+</code>

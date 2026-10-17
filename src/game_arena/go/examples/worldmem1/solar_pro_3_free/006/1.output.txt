@@ -1,0 +1,180 @@
+ strategy for this policy is a lightweight, purely local Go heuristic that focuses on **capturing opponent groups with a single liberty**, **maximizing territory** by preferring points surrounded by many empty neighbours, and **strictly avoiding illegal suicide moves**.  
+
+The algorithm works as follows:
+
+1. Convert the two stone lists (`me` and `opponent`) into two 19 × 19 boolean NumPy arrays (`board_me`, `board_opp`).  
+2. Find all connected groups of my stones and the opponent’s stones using BFS.  
+3. For every group compute its set of liberties (empty neighbour points).  
+4. Any empty point that is the *only* liberty of one of my groups is marked as *dangerous* – playing there would be a suicide move and is therefore excluded.  
+5. For every safe empty point compute a simple score  
+   - **capture_score** – +10 per opponent group that would be captured (i.e. the point is the sole liberty of that group).  
+   - **empty_neighbors** – +5 per empty neighbour (territory potential).  
+   - **own_neighbors** – –2 per my neighbour (defence).  
+   - **opponent_neighbors** – –1 per opponent neighbour (neutral).  
+   This scoring heavily favours attacking at‑aris and territorial points while penalising crowded or self‑dangerous locations.  
+6. Choose the empty point with the highest score; if multiple points tie, pick one at random.  
+7. If every empty point is dangerous (i.e. all safe moves would be suicide), return a pass (`(0, 0)`).  
+8. Return the chosen move together with an empty `memory` dict (the function may reuse the dict between calls but we recompute everything each turn, so it stays empty).
+
+The implementation is deliberately simple and runs comfortably within the 1 s CPU limit.
+
+<code>
+import numpy as np
+import random
+
+def _find_groups(board):
+    """Return a dict mapping group_id -> list of (r,c) coordinates and a map
+    from stone coordinate to group_id."""
+    groups = {}
+    group_id_map = {}
+    visited = np.zeros(board.shape, dtype=bool)
+    dirs = [(-1, -1), (-1, 0), (-1, 1),
+            (0, -1), (0, 1),
+            (1, -1), (1, 0), (1, 1)]
+    for i in range(board.shape[0]):
+        for j in range(board.shape[1]):
+            if board[i, j] and not visited[i, j]:
+                stack = [(i, j)]
+                visited[i, j] = True
+                component = []
+                while stack:
+                    r, c = stack.pop()
+                    component.append((r, c))
+                    for dr, dc in dirs:
+                        nr, nc = r + dr, c + dc
+                        if (0 <= nr < board.shape[0] and
+                            0 <= nc < board.shape[1] and
+                            board[nr, nc] and not visited[nr, nc]):
+                            visited[nr, nc] = True
+                            stack.append((nr, nc))
+                gid = len(groups)
+                groups[gid] = component
+                # fill group_id_map
+                for pt in component:
+                    group_id_map[pt] = gid
+    return groups, group_id_map
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    """
+    Return the next legal move (row, col) or (0,0) to pass.
+    """
+    # ------------------------------------------------------------------
+    # Convert input lists into 0‑based NumPy arrays of shape (19, 19)
+    # ------------------------------------------------------------------
+    board_me = np.zeros((19, 19), dtype=bool)
+    board_opp = np.zeros((19, 19), dtype=bool)
+
+    for r, c in me:
+        board_me[r - 1, c - 1] = True
+    for r, c in opponent:
+        board_opp[r - 1, c - 1] = True
+
+    # ------------------------------------------------------------------
+    # Find all groups and map each stone to its group
+    # ------------------------------------------------------------------
+    groups_me, group_id_map_me = _find_groups(board_me)
+    groups_opp, group_id_map_opp = _find_groups(board_opp)
+
+    # ------------------------------------------------------------------
+    # Compute liberties for each group (empty neighbours)
+    # ------------------------------------------------------------------
+    dirs = [(-1, -1), (-1, 0), (-1, 1),
+            (0, -1), (0, 1),
+            (1, -1), (1, 0), (1, 1)]
+    opp_liberties = {}
+    for gid, component in groups_opp.items():
+        liberties = set()
+        for r, c in component:
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if (0 <= nr < 19 and 0 <= nc < 19 and
+                    not board_me[nr, nc] and not board_opp[nr, nc]):
+                    liberties.add((nr, nc))
+        opp_liberties[gid] = liberties
+
+    # ------------------------------------------------------------------
+    # Identify dangerous (suicide) points: empty points that are the
+    # sole liberty of one of *my* groups.
+    # ------------------------------------------------------------------
+    dangerous_points = set()
+    for component in groups_me.values():
+        liberties = set()
+        for r, c in component:
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if (0 <= nr < 19 and 0 <= nc < 19 and
+                    not board_me[nr, nc] and not board_opp[nr, nc]):
+                    liberties.add((nr, nc))
+        if len(liberties) == 1:
+            dangerous_points.update(liberties)
+
+    # ------------------------------------------------------------------
+    # Determine all empty positions (legal moves)
+    # ------------------------------------------------------------------
+    empty_points = [(r, c) for r in range(19) for c in range(19)
+                    if not board_me[r, c] and not board_opp[r, c]]
+
+    if not empty_points:
+        # Board is full – we must pass
+        return (0, 0), memory
+
+    # ------------------------------------------------------------------
+    # Score each safe empty point
+    # ------------------------------------------------------------------
+    best_score = -10**9
+    best_actions = []
+
+    for (r, c) in empty_points:
+        # Skip suicide moves
+        if (r, c) in dangerous_points:
+            continue
+
+        # Count neighbours
+        own_neighbors = 0
+        opp_neighbors = 0
+        empty_neighbors = 0
+        capture_score = 0
+        visited_opp_gids = set()
+
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if not (0 <= nr < 19 and 0 <= nc < 19):
+                continue
+            if board_me[nr, nc]:
+                own_neighbors += 1
+            if board_opp[nr, nc]:
+                opp_neighbors += 1
+            if not board_me[nr, nc] and not board_opp[nr, nc]:
+                empty_neighbors += 1
+
+            # Could this be a capture of an opponent group with exactly one liberty?
+            if board_opp[nr, nc]:
+                gid = group_id_map_opp.get((nr, nc), None)
+                if gid is not None and (r, c) in opp_liberties.get(gid, set()):
+                    if gid not in visited_opp_gids:
+                        if len(opp_liberties[gid]) == 1:
+                            capture_score += 1
+                            visited_opp_gids.add(gid)
+
+        # Simple weighted score
+        score = (capture_score * 10) + (empty_neighbors * 5) - (own_neighbors * 2) - (opp_neighbors * 1)
+
+        if score > best_score:
+            best_score = score
+            best_actions = [(r, c)]
+        elif score == best_score:
+            best_actions.append((r, c))
+
+    # ------------------------------------------------------------------
+    # Choose the best action (random tie‑break)
+    # ------------------------------------------------------------------
+    if not best_actions:
+        # No legal, non‑suicidal moves left – pass
+        return (0, 0), memory
+
+    chosen = random.choice(best_actions)
+
+    # Convert back to 1‑based coordinates for the API
+    return ((chosen[0] + 1, chosen[1] + 1), {})
+
+</code>

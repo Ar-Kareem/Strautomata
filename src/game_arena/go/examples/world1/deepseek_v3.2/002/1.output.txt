@@ -1,0 +1,413 @@
+**Strategy Overview:**
+
+This policy implements a simplified Monte Carlo Tree Search (MCTS) with Upper Confidence Bound (UCT) for move selection. It prioritizes capturing enemy groups, protecting its own weak groups, and making territorial claims in corners and sides. Key components:
+
+1. **Board Representation:**  
+   - Uses a 19x19 array with values: 0 = empty, 1 = friendly, -1 = opponent.
+   
+2. **Legal Move Generation:**  
+   - Computes all empty intersections, applies basic Ko rule (simple board comparison), and respects suicide prevention.
+   
+3. **Group Analysis:**  
+   - Fast flood-fill to identify connected groups and liberties.
+   - Capturing moves are identified and prioritized if they remove opponent groups.
+   
+4. **MCTS Rollout:**  
+   - Uses a fast random playout with weighted random moves (corner/side preference).
+   - Evaluates final position using Tromp–Taylor scoring (area + komi) with a small random perturbation.
+   
+5. **UCT Selection:**  
+   - Balances exploration vs. exploitation using the UCB1 formula.
+   - Expands only one child per iteration to manage time constraints.
+   
+6. **Fallback Heuristics:**  
+   - If MCTS fails or times out, a heuristic fallback chooses:  
+     a) Immediate capturing moves.  
+     b) Moves that expand territory in corners/sides.  
+     c) Moves that threaten to split the opponent.
+   
+7. **Time Management:**  
+   - Uses `time.perf_counter()` to stop searching after ~0.9 seconds.
+   - Returns the best move found so far.
+
+<code>
+import random
+import math
+import time
+import collections
+
+EMPTY = 0
+FRIENDLY = 1
+OPPONENT = -1
+
+# ------------------------------
+# Board utilities
+# ------------------------------
+
+def make_board(me, opponent):
+    board = [[EMPTY] * 20 for _ in range(20)]  # 1-indexed
+    for r, c in me:
+        board[r][c] = FRIENDLY
+    for r, c in opponent:
+        board[r][c] = OPPONENT
+    return board
+
+def copy_board(board):
+    return [row[:] for row in board]
+
+def place_stone(board, r, c, color):
+    board[r][c] = color
+
+def remove_stone(board, r, c):
+    board[r][c] = EMPTY
+
+def on_board(r, c):
+    return 1 <= r <= 19 and 1 <= c <= 19
+
+# ------------------------------
+# Group & liberties
+# ------------------------------
+
+def find_group(board, r, c, visited=None):
+    if visited is None:
+        visited = [[False] * 20 for _ in range(20)]
+    color = board[r][c]
+    if color == EMPTY:
+        return [], set()
+    stack = [(r, c)]
+    group = []
+    liberties = set()
+    while stack:
+        cr, cc = stack.pop()
+        if visited[cr][cc]:
+            continue
+        visited[cr][cc] = True
+        group.append((cr, cc))
+        for dr, dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+            nr, nc = cr + dr, cc + dc
+            if not on_board(nr, nc):
+                continue
+            if board[nr][nc] == EMPTY:
+                liberties.add((nr, nc))
+            elif board[nr][nc] == color and not visited[nr][nc]:
+                stack.append((nr, nc))
+    return group, liberties
+
+def find_all_groups(board, color):
+    visited = [[False] * 20 for _ in range(20)]
+    groups = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r][c] == color and not visited[r][c]:
+                group, libs = find_group(board, r, c, visited)
+                groups.append((group, libs))
+    return groups
+
+def is_suicide(board, r, c, color):
+    # Temporarily place stone
+    board[r][c] = color
+    # Check if it has liberties
+    _, libs = find_group(board, r, c)
+    if libs:
+        board[r][c] = EMPTY
+        return False
+    # Check if it captures any opponent group
+    opponent_color = -color
+    for dr, dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+        nr, nc = r + dr, c + dc
+        if on_board(nr, nc) and board[nr][nc] == opponent_color:
+            _, opp_libs = find_group(board, nr, nc)
+            if len(opp_libs) == 0:
+                board[r][c] = EMPTY
+                return False
+    board[r][c] = EMPTY
+    return True
+
+def capture_stones(board, r, c, color):
+    captured = []
+    opponent_color = -color
+    for dr, dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+        nr, nc = r + dr, c + dc
+        if on_board(nr, nc) and board[nr][nc] == opponent_color:
+            group, libs = find_group(board, nr, nc)
+            if len(libs) == 0:
+                captured.extend(group)
+    return captured
+
+def legal_moves(board, color, prev_board=None):
+    moves = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r][c] != EMPTY:
+                continue
+            # Suicide rule
+            if is_suicide(board, r, c, color):
+                continue
+            # Simple Ko: cannot repeat previous board state (only one-step Ko)
+            if prev_board:
+                # Simulate move
+                b2 = copy_board(board)
+                place_stone(b2, r, c, color)
+                captured = capture_stones(b2, r, c, color)
+                for cr, cc in captured:
+                    remove_stone(b2, cr, cc)
+                # Compare with previous board
+                same = True
+                for rr in range(1, 20):
+                    for cc in range(1, 20):
+                        if b2[rr][cc] != prev_board[rr][cc]:
+                            same = False
+                            break
+                    if not same:
+                        break
+                if same:
+                    continue
+            moves.append((r, c))
+    return moves
+
+# ------------------------------
+# MCTS Node
+# ------------------------------
+
+class Node:
+    __slots__ = ('move', 'parent', 'children', 'wins', 'visits', 'untried_moves', 'color')
+    def __init__(self, move=None, parent=None, color=FRIENDLY):
+        self.move = move
+        self.parent = parent
+        self.children = []
+        self.wins = 0.0
+        self.visits = 0
+        self.untried_moves = []
+        self.color = color
+
+    def ucb(self, exploration=1.414):
+        if self.visits == 0:
+            return float('inf')
+        return self.wins / self.visits + exploration * math.sqrt(math.log(self.parent.visits) / self.visits)
+
+    def best_child(self):
+        return max(self.children, key=lambda c: c.ucb())
+
+    def expand(self, board, prev_board):
+        if not self.untried_moves:
+            return None
+        move = self.untried_moves.pop()
+        # Make move on board
+        b2 = copy_board(board)
+        place_stone(b2, move[0], move[1], self.color)
+        captured = capture_stones(b2, move[0], move[1], self.color)
+        for cr, cc in captured:
+            remove_stone(b2, cr, cc)
+        child = Node(move=move, parent=self, color=-self.color)
+        child.untried_moves = legal_moves(b2, child.color, prev_board)
+        self.children.append(child)
+        return child, b2, b2  # new board becomes previous board for Ko
+
+    def rollout(self, board, prev_board, color):
+        b = copy_board(board)
+        cur_color = color
+        cur_prev = prev_board
+        # Fast random playout with a small bias for corners/sides
+        moves = legal_moves(b, cur_color, cur_prev)
+        step = 0
+        while moves and step < 50:  # limit rollout length
+            # Weight moves: corners > edges > center
+            weights = []
+            for r, c in moves:
+                dist_edge = min(r-1, 19-r, c-1, 19-c)
+                weight = 10.0 / (dist_edge + 1) + random.random()*0.1
+                weights.append(weight)
+            total = sum(weights)
+            if total == 0:
+                chosen = random.choice(moves)
+            else:
+                rnd = random.random() * total
+                accum = 0
+                for i, w in enumerate(weights):
+                    accum += w
+                    if accum >= rnd:
+                        chosen = moves[i]
+                        break
+                else:
+                    chosen = moves[-1]
+            # Apply move
+            r, c = chosen
+            place_stone(b, r, c, cur_color)
+            captured = capture_stones(b, r, c, cur_color)
+            for cr, cc in captured:
+                remove_stone(b, cr, cc)
+            cur_prev = copy_board(b)
+            cur_color = -cur_color
+            moves = legal_moves(b, cur_color, cur_prev)
+            step += 1
+        # Evaluate final position
+        score = evaluate_board(b)
+        # Add small random noise to avoid ties
+        score += random.uniform(-0.01, 0.01)
+        return 1 if score > 0 else 0 if score == 0 else -1
+
+    def update(self, result):
+        self.visits += 1
+        self.wins += result
+
+def evaluate_board(board):
+    # Tromp–Taylor-like area scoring
+    komi = 6.5
+    area_friendly = 0
+    area_opponent = 0
+    visited = [[False] * 20 for _ in range(20)]
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if visited[r][c]:
+                continue
+            if board[r][c] == FRIENDLY:
+                area_friendly += 1
+                visited[r][c] = True
+            elif board[r][c] == OPPONENT:
+                area_opponent += 1
+                visited[r][c] = True
+            else:
+                # empty point: determine owner by flood fill
+                stack = [(r, c)]
+                region = []
+                touches_friendly = False
+                touches_opponent = False
+                while stack:
+                    cr, cc = stack.pop()
+                    if visited[cr][cc]:
+                        continue
+                    visited[cr][cc] = True
+                    region.append((cr, cc))
+                    for dr, dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+                        nr, nc = cr + dr, cc + dc
+                        if not on_board(nr, nc):
+                            continue
+                        if board[nr][nc] == FRIENDLY:
+                            touches_friendly = True
+                        elif board[nr][nc] == OPPONENT:
+                            touches_opponent = True
+                        elif not visited[nr][nc]:
+                            stack.append((nr, nc))
+                if touches_friendly and not touches_opponent:
+                    area_friendly += len(region)
+                elif touches_opponent and not touches_friendly:
+                    area_opponent += len(region)
+                # if both or none touch, it's neutral (no area)
+    return area_friendly - area_opponent - komi
+
+# ------------------------------
+# Heuristic fallback
+# ------------------------------
+
+def heuristic_move(board, color, prev_board):
+    moves = legal_moves(board, color, prev_board)
+    if not moves:
+        return (0, 0)  # pass
+    
+    # 1. Capture moves
+    best_capture = None
+    best_capture_size = 0
+    for r, c in moves:
+        captured = capture_stones(board, r, c, color)
+        if captured and len(captured) > best_capture_size:
+            best_capture_size = len(captured)
+            best_capture = (r, c)
+    if best_capture:
+        return best_capture
+    
+    # 2. Protect own groups with 1 liberty
+    my_groups = find_all_groups(board, color)
+    danger_moves = []
+    for group, libs in my_groups:
+        if len(libs) == 1:
+            danger_moves.extend(libs)
+    if danger_moves:
+        # Choose one that also expands influence
+        for r, c in danger_moves:
+            if board[r][c] == EMPTY and not is_suicide(board, r, c, color):
+                return (r, c)
+    
+    # 3. Corner/side preference
+    corner_side_moves = []
+    for r, c in moves:
+        dist = min(r-1, 19-r, c-1, 19-c)
+        if dist <= 3:
+            corner_side_moves.append(((r, c), dist))
+    if corner_side_moves:
+        corner_side_moves.sort(key=lambda x: x[1])
+        return corner_side_moves[0][0]
+    
+    # 4. Random move from remaining
+    return random.choice(moves)
+
+# ------------------------------
+# Main policy
+# ------------------------------
+
+def policy(me, opponent):
+    start_time = time.perf_counter()
+    board = make_board(me, opponent)
+    # No Ko history initially
+    prev_board = None
+    color = FRIENDLY
+    
+    # If first move, play in corner
+    if not me and not opponent:
+        return (1, 1)
+    
+    # Generate legal moves
+    moves = legal_moves(board, color, prev_board)
+    if not moves:
+        return (0, 0)
+    
+    # If only one legal move, play it
+    if len(moves) == 1:
+        return moves[0]
+    
+    # Try MCTS within time limit
+    root = Node(move=None, parent=None, color=color)
+    root.untried_moves = moves[:]  # copy
+    
+    while time.perf_counter() - start_time < 0.9:  # leave 0.1s buffer
+        node = root
+        b = copy_board(board)
+        cur_prev = prev_board
+        cur_color = color
+        
+        # Selection
+        while node.untried_moves == [] and node.children != []:
+            node = node.best_child()
+            # Apply move on board
+            r, c = node.move
+            place_stone(b, r, c, cur_color)
+            captured = capture_stones(b, r, c, cur_color)
+            for cr, cc in captured:
+                remove_stone(b, cr, cc)
+            cur_prev = copy_board(b)
+            cur_color = -cur_color
+        
+        # Expansion
+        if node.untried_moves != []:
+            child_data = node.expand(b, cur_prev)
+            if child_data is None:
+                break
+            child, b, cur_prev = child_data
+            cur_color = child.color
+            node = child
+        
+        # Rollout
+        result = node.rollout(b, cur_prev, cur_color)
+        
+        # Backpropagation
+        while node is not None:
+            node.update(result)
+            node = node.parent
+    
+    # Choose best move from MCTS results
+    if root.children:
+        best = max(root.children, key=lambda c: c.visits)
+        return best.move
+    
+    # Fallback to heuristic
+    return heuristic_move(board, color, prev_board)
+</code>

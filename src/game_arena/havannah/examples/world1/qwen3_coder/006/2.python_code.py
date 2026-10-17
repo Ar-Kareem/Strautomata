@@ -1,0 +1,216 @@
+
+import numpy as np
+from collections import deque
+
+# Havannah board size
+BOARD_SIZE = 15
+
+# Define the 6 directions for hexagonal neighbors
+DIRECTIONS = [
+    (-1, 0), (-1, 1), (0, -1), 
+    (0, 1), (1, -1), (1, 0)
+]
+
+# Define corner positions for bridge detection
+CORNERS = [
+    (0, 0), (0, 14), 
+    (7, 0), (7, 14), 
+    (14, 0), (14, 14)
+]
+
+# Define edge positions (excluding corners) for fork detection
+EDGES = set()
+for i in range(BOARD_SIZE):
+    for j in range(BOARD_SIZE):
+        on_edge = (i == 0 or i == BOARD_SIZE - 1 or j == 0 or j == BOARD_SIZE - 1)
+        is_corner = (i, j) in CORNERS
+        if on_edge and not is_corner:
+            EDGES.add((i, j))
+
+def is_in_bounds(r, c):
+    return 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE
+
+def get_neighbors(r, c):
+    neighbors = []
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        if is_in_bounds(nr, nc):
+            neighbors.append((nr, nc))
+    return neighbors
+
+def bfs_connected_group(start_r, start_c, stones_set):
+    """Find all stones connected to (start_r, start_c) using BFS."""
+    visited = set()
+    queue = deque([(start_r, start_c)])
+    group = []
+    
+    while queue:
+        r, c = queue.popleft()
+        if (r, c) in visited:
+            continue
+        visited.add((r, c))
+        group.append((r, c))
+        
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in stones_set and (nr, nc) not in visited:
+                queue.append((nr, nc))
+                
+    return group
+
+def check_ring(me_set, r, c):
+    """Check if placing at (r,c) completes a ring."""
+    # Temporarily add the stone
+    me_set.add((r, c))
+    
+    # For a ring, the new stone should be part of a cycle.
+    # We can check this by seeing if removing it disconnects neighbors.
+    neighbors = [(nr, nc) for nr, nc in get_neighbors(r, c) if (nr, nc) in me_set]
+    
+    if len(neighbors) < 2:
+        me_set.remove((r, c))
+        return False
+    
+    # Check if there's a path between any two neighbors that doesn't go through (r,c)
+    for i in range(len(neighbors)):
+        for j in range(i+1, len(neighbors)):
+            start = neighbors[i]
+            goal = neighbors[j]
+            
+            # BFS to find path from start to goal without going through (r,c)
+            visited = set()
+            queue = deque([start])
+            found_path = False
+            
+            while queue and not found_path:
+                cr, cc = queue.popleft()
+                if (cr, cc) in visited:
+                    continue
+                visited.add((cr, cc))
+                
+                if (cr, cc) == goal:
+                    found_path = True
+                    break
+                
+                for nr, nc in get_neighbors(cr, cc):
+                    if (nr, nc) == (r, c) or (nr, nc) in visited:
+                        continue
+                    if (nr, nc) in me_set:
+                        queue.append((nr, nc))
+            
+            if found_path:
+                me_set.remove((r, c))
+                return True
+    
+    me_set.remove((r, c))
+    return False
+
+def check_bridge(me_set, r, c):
+    """Check if placing at (r,c) completes a bridge."""
+    # Temporarily add the stone
+    me_set.add((r, c))
+    
+    # Find all connected components to the new stone
+    connected_to_new = set(bfs_connected_group(r, c, me_set))
+    
+    # Check how many corners are in this component
+    corners_in_component = [corner for corner in CORNERS if corner in connected_to_new]
+    
+    me_set.remove((r, c))
+    return len(corners_in_component) >= 2
+
+def check_fork(me_set, r, c):
+    """Check if placing at (r,c) completes a fork."""
+    # Temporarily add the stone
+    me_set.add((r, c))
+    
+    # Find all connected components to the new stone
+    connected_to_new = set(bfs_connected_group(r, c, me_set))
+    
+    # Check how many edges (non-corner) are in this component
+    edges_in_component = [edge for edge in EDGES if edge in connected_to_new]
+    
+    # To determine distinct edges, we need a more complex analysis.
+    # For simplicity, we'll just count unique edge points touched.
+    me_set.remove((r, c))
+    return len(edges_in_component) >= 3
+
+def is_winning_move(me_set, r, c):
+    """Check if placing at (r,c) wins the game."""
+    return (check_ring(me_set, r, c) or 
+            check_bridge(me_set, r, c) or 
+            check_fork(me_set, r, c))
+
+def evaluate_move(r, c, me, opp, me_set, opp_set):
+    """Evaluate the strategic value of a move."""
+    score = 0
+    
+    # 1. Immediate win check
+    if is_winning_move(me_set, r, c):
+        return 10000
+    
+    # 2. Block opponent win
+    temp_opp_set = opp_set.copy()
+    if is_winning_move(temp_opp_set, r, c):
+        score += 5000
+    
+    # 3. Connectivity to own stones
+    neighbor_count = 0
+    for nr, nc in get_neighbors(r, c):
+        if (nr, nc) in me_set:
+            neighbor_count += 1
+    score += neighbor_count * 10
+    
+    # 4. Distance to corners (for bridge potential)
+    min_corner_dist = min(abs(r - cr) + abs(c - cc) for cr, cc in CORNERS)
+    score += (15 - min_corner_dist) * 2  # Prefer moves closer to corners
+    
+    # 5. Edge proximity (for fork potential)
+    if (r == 0 or r == BOARD_SIZE - 1 or c == 0 or c == BOARD_SIZE - 1) and (r, c) not in CORNERS:
+        score += 15
+    
+    # 6. Central control
+    center_r, center_c = BOARD_SIZE // 2, BOARD_SIZE // 2
+    dist_to_center = abs(r - center_r) + abs(c - center_c)
+    score += (BOARD_SIZE - dist_to_center) * 0.5
+    
+    return score
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Get all valid moves
+    valid_moves = [(r, c) for r in range(BOARD_SIZE) for c in range(BOARD_SIZE) 
+                   if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set]
+    
+    if not valid_moves:
+        # Should not happen, but if no valid moves, return first valid position
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if valid_mask[r][c]:
+                    return (r, c)
+    
+    # Check for immediate win
+    for r, c in valid_moves:
+        if is_winning_move(me_set, r, c):
+            return (r, c)
+    
+    # Check for opponent immediate win to block
+    for r, c in valid_moves:
+        if is_winning_move(opp_set, r, c):
+            return (r, c)
+    
+    # Evaluate all moves
+    best_score = -1
+    best_moves = []
+    
+    for r, c in valid_moves:
+        score = evaluate_move(r, c, me, opp, me_set, opp_set)
+        if score > best_score:
+            best_score = score
+            best_moves = [(r, c)]
+        elif score == best_score:
+            best_moves.append((r, c))
+    
+    # Return a random choice among the best moves
+    return best_moves[np.random.randint(len(best_moves))]

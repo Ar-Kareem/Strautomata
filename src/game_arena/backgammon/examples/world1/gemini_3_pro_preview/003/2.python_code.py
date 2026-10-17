@@ -1,0 +1,268 @@
+
+def policy(state: dict) -> str:
+    """
+    Determines the best move for a Backgammon turn using a 1-ply search 
+    with a heuristic evaluation function.
+    """
+    
+    # --- Parse State ---
+    my_pts = list(state['my_pts'])
+    opp_pts = list(state['opp_pts'])
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    dice = list(state['dice'])
+
+    # Handle no dice case (sanity check)
+    if not dice:
+        return "H:P,P"
+
+    # --- Helper Functions ---
+
+    def can_bear_off(m_pts, m_bar):
+        """Check if bearing off is allowed (all checkers in home board 0-5)."""
+        if m_bar > 0:
+            return False
+        # Checkers on 6 to 23 must be 0
+        for i in range(6, 24):
+            if m_pts[i] > 0:
+                return False
+        return True
+
+    def is_blocked(idx, o_pts):
+        """Check if a point is blocked by 2+ opponent checkers."""
+        # Check bounds (though logic usually handles bounds before calling)
+        if 0 <= idx <= 23:
+            return o_pts[idx] >= 2
+        return False
+
+    def get_valid_single_moves(die, m_pts, o_pts, m_bar, allow_bear):
+        """
+        Generate all valid single checker moves for a specific die.
+        Returns list of tuples: (source_str, dest_idx)
+        """
+        moves = []
+        
+        # 1. Moves from Bar
+        if m_bar > 0:
+            # My movement is 23 -> 0. Entry from Bar acts like 24.
+            dest = 24 - die
+            if dest >= 0:
+                if not is_blocked(dest, o_pts):
+                    moves.append(('B', dest))
+            # If on bar, must move from bar. No other moves valid.
+            return moves
+
+        # 2. Moves from Board
+        for i in range(23, -1, -1):
+            if m_pts[i] > 0:
+                dest = i - die
+                
+                # Normal move
+                if dest >= 0:
+                    if not is_blocked(dest, o_pts):
+                        moves.append((f'A{i}', dest))
+                
+                # Bearing off
+                else: 
+                    if allow_bear:
+                        # Exact bear off
+                        if dest == -1:
+                            moves.append((f'A{i}', -1))
+                        # Overshoot bear off (only allowed if no checkers on higher points)
+                        else:
+                            # Check points > i up to 5 (limit of home board)
+                            has_higher = False
+                            for j in range(i + 1, 6):
+                                if m_pts[j] > 0:
+                                    has_higher = True
+                                    break
+                            if not has_higher:
+                                moves.append((f'A{i}', -1))
+        return moves
+
+    def apply_action(m_pts, o_pts, m_bar, o_bar, m_off, src_str, dest_idx):
+        """
+        Apply a move to a state and return the new state components.
+        Does not mutate original lists.
+        """
+        new_m_pts = m_pts[:]
+        new_o_pts = o_pts[:]
+        new_m_bar = m_bar
+        new_o_bar = o_bar
+        new_m_off = m_off
+
+        # Remove from source
+        if src_str == 'B':
+            new_m_bar -= 1
+        else:
+            idx = int(src_str[1:])
+            new_m_pts[idx] -= 1
+
+        # Add to dest
+        if dest_idx == -1:
+            new_m_off += 1
+        else:
+            # Check for hit
+            if new_o_pts[dest_idx] == 1:
+                new_o_pts[dest_idx] = 0
+                new_o_bar += 1 # Opponent sent to bar
+            new_m_pts[dest_idx] += 1
+
+        return new_m_pts, new_o_pts, new_m_bar, new_o_bar, new_m_off
+
+    def evaluate(m_pts, o_pts, m_bar, o_bar, m_off):
+        """
+        Heuristic evaluation of the board. Returns a float score.
+        Higher is better for 'me'.
+        """
+        score = 0.0
+
+        # 1. Pip Count (Race)
+        # Calculate my pip count (lower is better, so subtract)
+        my_pips = m_bar * 25 + sum((i + 1) * m_pts[i] for i in range(24))
+        # Calculate opp pip count (higher is better for me)
+        # Opponent moves 0->23. Distance for opp at i is 24-i.
+        opp_pips = o_bar * 25 + sum((24 - i) * o_pts[i] for i in range(24))
+        
+        score += (opp_pips - my_pips) * 2.0
+
+        # 2. Bearing Off
+        score += m_off * 50.0
+
+        # 3. Structure / Points
+        my_points = sum(1 for x in m_pts if x >= 2)
+        score += my_points * 10.0
+        
+        # 4. Anchors (Points in opponent home board 18-23)
+        anchors = sum(1 for i in range(18, 24) if m_pts[i] >= 2)
+        score += anchors * 15.0
+
+        # 5. Safety (Blots)
+        my_blots = sum(1 for x in m_pts if x == 1)
+        score -= my_blots * 20.0
+        
+        # 6. Attack Potential (Opponent Blots)
+        # opp_blots = sum(1 for x in o_pts if x == 1)
+        # score += opp_blots * 5.0
+
+        return score
+
+    # --- Search Logic ---
+    
+    scenarios = []
+    
+    d1 = dice[0]
+    d2 = dice[1] if len(dice) > 1 else None
+
+    # Determine orderings to check
+    # If 2 dice: H (High, Low) and L (Low, High)
+    # If 1 die: Just H check
+    orders = []
+    
+    if d2 is not None:
+        high_die, low_die = (d1, d2) if d1 >= d2 else (d2, d1)
+        orders.append(('H', [high_die, low_die]))
+        if high_die != low_die:
+            orders.append(('L', [low_die, high_die]))
+    else:
+        orders.append(('H', [d1]))
+
+    # Generate Scenarios
+    for code, d_list in orders:
+        # Move 1
+        cb1 = can_bear_off(my_pts, my_bar)
+        moves1 = get_valid_single_moves(d_list[0], my_pts, opp_pts, my_bar, cb1)
+        
+        if not moves1:
+            # Cannot move first die
+            scenarios.append({
+                'code': code,
+                'moves': ['P', 'P'],
+                'len': 0,
+                'final_state': None, # Cannot eval
+                'used_dice': []
+            })
+            continue
+
+        for m1 in moves1:
+            src1, dest1 = m1
+            # Apply M1
+            s1 = apply_action(my_pts, opp_pts, my_bar, opp_bar, my_off, src1, dest1)
+            
+            # If we have a second die, try Move 2
+            if len(d_list) > 1:
+                (m_p1, o_p1, m_b1, o_b1, m_o1) = s1
+                cb2 = can_bear_off(m_p1, m_b1)
+                moves2 = get_valid_single_moves(d_list[1], m_p1, o_p1, m_b1, cb2)
+                
+                if not moves2:
+                    # Can only play 1 die
+                    scenarios.append({
+                        'code': code,
+                        'moves': [src1, 'P'],
+                        'len': 1,
+                        'final_state': s1,
+                        'used_dice': [d_list[0]]
+                    })
+                else:
+                    for m2 in moves2:
+                        src2, dest2 = m2
+                        s2 = apply_action(m_p1, o_p1, m_b1, o_b1, m_o1, src2, dest2)
+                        scenarios.append({
+                            'code': code,
+                            'moves': [src1, src2],
+                            'len': 2,
+                            'final_state': s2,
+                            'used_dice': d_list
+                        })
+            else:
+                # Only 1 die originally
+                scenarios.append({
+                    'code': 'H',
+                    'moves': [src1, 'P'],
+                    'len': 1,
+                    'final_state': s1,
+                    'used_dice': [d1]
+                })
+
+    # --- Selection Rules ---
+    
+    if not scenarios:
+        return "H:P,P"
+
+    # Filter 1: Maximize length of move sequence
+    max_len = max(s['len'] for s in scenarios)
+    
+    if max_len == 0:
+        return "H:P,P"
+        
+    valid = [s for s in scenarios if s['len'] == max_len]
+
+    # Filter 2: If only 1 move possible, must use higher die if available
+    # (Only applies if original dice were 2 distinct dice and max_len is 1)
+    if d2 is not None and max_len == 1:
+        high_val = max(d1, d2)
+        # Check if any valid scenario uses high die
+        uses_high = any(s['used_dice'][0] == high_val for s in valid)
+        if uses_high:
+            valid = [s for s in valid if s['used_dice'][0] == high_val]
+
+    # --- Best Move Selection ---
+
+    best_score = -float('inf')
+    best_cmd = "H:P,P"
+
+    for s in valid:
+        # Move command
+        cmd = f"{s['code']}:{s['moves'][0]},{s['moves'][1]}"
+        
+        # State score
+        m_p, o_p, m_b, o_b, m_o = s['final_state']
+        score = evaluate(m_p, o_p, m_b, o_b, m_o)
+        
+        if score > best_score:
+            best_score = score
+            best_cmd = cmd
+
+    return best_cmd

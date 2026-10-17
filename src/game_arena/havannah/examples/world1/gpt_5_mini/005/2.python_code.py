@@ -1,0 +1,346 @@
+
+#!/usr/bin/env python3
+# Havannah policy for 15x15 board (or other NxN with valid_mask)
+# Implements immediate win detection (ring, bridge, fork), opponent-threat blocking,
+# and a simple heuristic scorer for other moves.
+
+import math
+import random
+from collections import deque, defaultdict
+
+# neighbor deltas consistent with the problem statement example
+_NEIGH_DELTAS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1)]
+
+def _in_bounds(r, c, N):
+    return 0 <= r < N and 0 <= c < N
+
+def _neighbors(r, c, valid_mask):
+    N = len(valid_mask)
+    for dr, dc in _NEIGH_DELTAS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]:
+            yield (nr, nc)
+
+class UnionFind:
+    def __init__(self):
+        self.p = dict()
+        self.rank = dict()
+    def make(self, x):
+        if x not in self.p:
+            self.p[x] = x
+            self.rank[x] = 0
+    def find(self, x):
+        # path compression
+        while self.p[x] != x:
+            self.p[x] = self.p[self.p[x]]
+            x = self.p[x]
+        return x
+    def union(self, a, b):
+        ra = self.find(a)
+        rb = self.find(b)
+        if ra == rb:
+            return False
+        if self.rank[ra] < self.rank[rb]:
+            self.p[ra] = rb
+        else:
+            self.p[rb] = ra
+            if self.rank[ra] == self.rank[rb]:
+                self.rank[ra] += 1
+        return True
+
+def _compute_border_structure(valid_mask):
+    # returns corners set, edge_id map: (r,c) -> edge_index or -1 for corners or None for interior
+    N = len(valid_mask)
+    valid = valid_mask
+    # border cells: valid cells with neighbor count < 6
+    border = set()
+    neigh_count = {}
+    for r in range(N):
+        for c in range(N):
+            if not valid[r][c]:
+                continue
+            cnt = 0
+            for nr, nc in _neighbors(r, c, valid_mask):
+                cnt += 1
+            neigh_count[(r,c)] = cnt
+            if cnt < 6:
+                border.add((r,c))
+    # corners: border cells with exactly 3 neighbors (on standard hex board)
+    corners = set([cell for cell in border if neigh_count[cell] == 3])
+    # if corners set is not exactly 6 (odd shapes), still use these heuristics
+    # Build ordered border cycle (walk)
+    if not border:
+        return corners, {}
+    # find starting border cell (prefer a corner if available)
+    start = next(iter(border))
+    for c in corners:
+        start = c
+        break
+    # Walk the border to create a cyclic sequence
+    seq = []
+    visited = set()
+    cur = start
+    prev = None
+    # To avoid infinite loops, cap steps
+    max_steps = len(border) * 3 + 10
+    steps = 0
+    while True:
+        seq.append(cur)
+        visited.add(cur)
+        # find next border neighbor not equal to prev; if multiple choose one that extends the border
+        nxt = None
+        for nb in _neighbors(cur[0], cur[1], valid_mask):
+            if nb in border and nb != prev:
+                # choose neighbor that is border; if multiple prefer one not visited yet
+                if nxt is None:
+                    nxt = nb
+                elif nxt in visited and nb not in visited:
+                    nxt = nb
+        if nxt is None:
+            break
+        prev, cur = cur, nxt
+        steps += 1
+        if cur == start or steps > max_steps:
+            break
+    # ensure sequence is closed; if not closed, try to include all border cells by simple BFS ordering fallback
+    if seq[-1] != start:
+        # fallback: BFS around border to produce some ordering
+        seq = []
+        visited = set()
+        q = deque([start])
+        while q:
+            cell = q.popleft()
+            if cell in visited:
+                continue
+            visited.add(cell)
+            seq.append(cell)
+            for nb in _neighbors(cell[0], cell[1], valid_mask):
+                if nb in border and nb not in visited:
+                    q.append(nb)
+    # find corners positions in seq (first occurrences)
+    corner_positions = []
+    for i, cell in enumerate(seq):
+        if cell in corners:
+            corner_positions.append((i, cell))
+    # sort by index
+    corner_positions.sort()
+    # If no corners in sequence (weird), then treat border cells as a single edge 0
+    edge_id = {}
+    if not corner_positions or len(corner_positions) < 2:
+        # treat all non-corner border as edge 0
+        for cell in border:
+            if cell in corners:
+                edge_id[cell] = -1
+            else:
+                edge_id[cell] = 0
+        return corners, edge_id
+    # assign edges between consecutive corners in sequence
+    corner_indices = [pos for pos, cell in corner_positions]
+    corner_cells = [cell for pos, cell in corner_positions]
+    m = len(seq)
+    # Build list of corner index positions cyclically
+    idxs = [pos for pos, _ in corner_positions]
+    # sort already; ensure cyclic wrap
+    for i in range(len(idxs)):
+        a = idxs[i]
+        b = idxs[(i+1)%len(idxs)]
+        # collect cells between a and b (exclusive of endpoints); careful if wrap
+        cells_between = []
+        j = (a + 1) % m
+        while j != b:
+            cells_between.append(seq[j])
+            j = (j + 1) % m
+        edge_idx = i
+        for cell in cells_between:
+            edge_id[cell] = edge_idx
+    # corners marked -1
+    for c in corners:
+        edge_id[c] = -1
+    return corners, edge_id
+
+def _detect_cycle_in_stones(stones_set, valid_mask):
+    # stones_set is set of (r,c) coords for a player
+    # Detect any cycle by union-find: iterate edges between adjacent stones.
+    uf = UnionFind()
+    for s in stones_set:
+        uf.make(s)
+    # iterate edges once (avoid double counting)
+    for s in stones_set:
+        r, c = s
+        for nb in _neighbors(r, c, valid_mask):
+            if nb in stones_set:
+                # to avoid double-check, only consider edge if nb > s (tuple ordering)
+                if nb <= s:
+                    continue
+                # if union would connect two already-connected vertices -> cycle exists
+                if not uf.union(s, nb):
+                    return True
+    return False
+
+def _connected_components(stones_set, valid_mask):
+    # return list of components; each component is set of coords
+    comps = []
+    seen = set()
+    for s in stones_set:
+        if s in seen:
+            continue
+        comp = set()
+        q = deque([s])
+        seen.add(s)
+        while q:
+            u = q.popleft()
+            comp.add(u)
+            for nb in _neighbors(u[0], u[1], valid_mask):
+                if nb in stones_set and nb not in seen:
+                    seen.add(nb)
+                    q.append(nb)
+        comps.append(comp)
+    return comps
+
+def _winning_moves_for_player(player_stones, valid_mask, corners, edge_id):
+    # returns set of moves (cells) such that playing there yields a win (bridge/fork/ring)
+    N = len(valid_mask)
+    valid_cells = [(r,c) for r in range(N) for c in range(N) if valid_mask[r][c]]
+    occupied = set(player_stones)  # will be combined with hypothetical move
+    # Precompute all empty cells
+    all_occupied = set(player_stones)
+    # We'll test all empty valid cells by simulating add
+    winning = set()
+    for r in range(N):
+        for c in range(N):
+            if not valid_mask[r][c]:
+                continue
+            if (r,c) in occupied:
+                continue
+            # simulate adding (r,c)
+            stones = set(player_stones)
+            stones.add((r,c))
+            # build connected components and check for bridge/fork/ring
+            comps = _connected_components(stones, valid_mask)
+            win = False
+            for comp in comps:
+                # bridge: touches two corners
+                touched_corners = set()
+                touched_edges = set()
+                for cell in comp:
+                    if cell in corners:
+                        touched_corners.add(cell)
+                    else:
+                        eid = edge_id.get(cell, None)
+                        if eid is not None and eid >= 0:
+                            touched_edges.add(eid)
+                if len(touched_corners) >= 2:
+                    win = True
+                    break
+                if len(touched_edges) >= 3:
+                    win = True
+                    break
+                # ring: cycle in the component
+                if _detect_cycle_in_stones(comp, valid_mask):
+                    win = True
+                    break
+            if win:
+                winning.add((r,c))
+    return winning
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    # Convert inputs to sets for efficiency
+    me_set = set(me)
+    opp_set = set(opp)
+    N = len(valid_mask)
+    # Precompute border/corner/edge structure
+    corners, edge_id = _compute_border_structure(valid_mask)
+    # 1) Immediate winning move for me?
+    me_wins = _winning_moves_for_player(me_set, valid_mask, corners, edge_id)
+    # Filter to legal/unoccupied cells
+    legal_moves = [(r,c) for r in range(N) for c in range(N) if valid_mask[r][c] and (r,c) not in me_set and (r,c) not in opp_set]
+    if legal_moves is None or len(legal_moves) == 0:
+        # No legal moves (shouldn't happen) - find any valid cell not occupied
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c] and (r,c) not in me_set and (r,c) not in opp_set:
+                    return (r,c)
+        # fallback: return (0,0)
+        return (0,0)
+    for mv in legal_moves:
+        if mv in me_wins:
+            return mv
+    # 2) Block opponent immediate wins
+    opp_wins = _winning_moves_for_player(opp_set, valid_mask, corners, edge_id)
+    # Choose any legal move that blocks opponent (i.e., is in opp_wins)
+    blocking_moves = [mv for mv in legal_moves if mv in opp_wins]
+    if blocking_moves:
+        # pick best blocking move by adjacency to our stones (prefer connecting move)
+        best = None
+        best_score = -1e9
+        for mv in blocking_moves:
+            score = 0
+            for nb in _neighbors(mv[0], mv[1], valid_mask):
+                if nb in me_set:
+                    score += 10
+                if nb in opp_set:
+                    score -= 1
+            # prefer center slightly
+            center = (N-1)/2.0
+            dist = math.hypot(mv[0]-center, mv[1]-center)
+            score -= 0.01 * dist
+            if score > best_score:
+                best_score = score
+                best = mv
+        return best
+    # 3) Heuristic choice
+    # Score each legal move by: adjacency to my stones, distance to center (closer better), small penalty for adjacency to opponent,
+    # small bonus for being on edge (to enable forks/bridges).
+    center = (N-1)/2.0
+    best_move = None
+    best_score = -1e9
+    for mv in legal_moves:
+        r, c = mv
+        score = 0.0
+        # adjacency to my stones
+        adj_me = 0
+        adj_opp = 0
+        for nb in _neighbors(r, c, valid_mask):
+            if nb in me_set:
+                adj_me += 1
+            elif nb in opp_set:
+                adj_opp += 1
+        score += 20.0 * adj_me
+        score -= 4.0 * adj_opp
+        # center control
+        dist = math.hypot(r-center, c-center)
+        score -= 0.8 * dist
+        # small edge bonus
+        if (r, c) in edge_id and edge_id.get((r, c), -2) >= 0:
+            score += 1.5
+        # connectivity potential: count empty neighbors (liberties)
+        empties = 0
+        for nb in _neighbors(r, c, valid_mask):
+            if nb not in me_set and nb not in opp_set:
+                empties += 1
+        score += 0.5 * empties
+        # prefer moves that are adjacent to multiple own groups (help join)
+        # compute how many distinct my-components neighbors belong to
+        neighbor_components = set()
+        for nb in _neighbors(r, c, valid_mask):
+            if nb in me_set:
+                neighbor_components.add(nb)
+        # small bonus if connecting separate groups: estimated by count
+        score += 2.0 * len(neighbor_components)
+        # choose best
+        if score > best_score:
+            best_score = score
+            best_move = mv
+    if best_move is None:
+        # fallback pick first legal move
+        return legal_moves[0]
+    return best_move
+
+# If module run standalone, a small random policy test (not used in the arena)
+if __name__ == "__main__":
+    # create a simple full 15x15 valid mask (as example)
+    N = 15
+    valid = [[True]*N for _ in range(N)]
+    # no stones
+    mv = policy([], [], valid)
+    print("Selected move:", mv)

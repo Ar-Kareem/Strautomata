@@ -1,0 +1,160 @@
+
+import copy
+from typing import List
+
+ROWS = 6
+COLS = 7
+
+def valid_moves(board: List[List[int]]) -> List[int]:
+    return [c for c in range(COLS) if board[0][c] == 0]
+
+def drop_piece(board: List[List[int]], col: int, player: int) -> List[List[int]]:
+    newb = [row.copy() for row in board]
+    for r in range(ROWS - 1, -1, -1):
+        if newb[r][col] == 0:
+            newb[r][col] = player
+            return newb
+    return newb  # should not happen if col valid
+
+def check_win(board: List[List[int]], player: int) -> bool:
+    # horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            if all(board[r][c + i] == player for i in range(4)):
+                return True
+    # vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            if all(board[r + i][c] == player for i in range(4)):
+                return True
+    # diag down-right
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if all(board[r + i][c + i] == player for i in range(4)):
+                return True
+    # diag up-right
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            if all(board[r - i][c + i] == player for i in range(4)):
+                return True
+    return False
+
+def segment_scores(board: List[List[int]], me: int) -> int:
+    opp = -me
+    score = 0
+    # weights
+    w = {0: 0, 1: 1, 2: 10, 3: 50, 4: 10000}
+    # horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            seg = [board[r][c + i] for i in range(4)]
+            cnt_me = seg.count(me)
+            cnt_opp = seg.count(opp)
+            if cnt_opp == 0:
+                score += w[cnt_me]
+            if cnt_me == 0:
+                score -= w[cnt_opp] // 2  # penalize opponent potential
+    # vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            seg = [board[r + i][c] for i in range(4)]
+            cnt_me = seg.count(me)
+            cnt_opp = seg.count(opp)
+            if cnt_opp == 0:
+                score += w[cnt_me]
+            if cnt_me == 0:
+                score -= w[cnt_opp] // 2
+    # diag down-right
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            seg = [board[r + i][c + i] for i in range(4)]
+            cnt_me = seg.count(me)
+            cnt_opp = seg.count(opp)
+            if cnt_opp == 0:
+                score += w[cnt_me]
+            if cnt_me == 0:
+                score -= w[cnt_opp] // 2
+    # diag up-right
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            seg = [board[r - i][c + i] for i in range(4)]
+            cnt_me = seg.count(me)
+            cnt_opp = seg.count(opp)
+            if cnt_opp == 0:
+                score += w[cnt_me]
+            if cnt_me == 0:
+                score -= w[cnt_opp] // 2
+    return score
+
+def policy(board: List[List[int]]) -> int:
+    me = 1
+    opp = -1
+    moves = valid_moves(board)
+    if not moves:
+        return 0  # no valid moves, shouldn't happen normally
+
+    # 1) immediate winning move
+    for c in moves:
+        nb = drop_piece(board, c, me)
+        if check_win(nb, me):
+            return c
+
+    # 2) immediate opponent winning moves - collect and try to block
+    opp_win_cols = []
+    for c in moves:
+        nb = drop_piece(board, c, opp)
+        if check_win(nb, opp):
+            opp_win_cols.append(c)
+    if opp_win_cols:
+        # Try to play directly in any of those columns to block
+        # Prefer the center-most blocking column
+        center = COLS // 2
+        opp_win_cols.sort(key=lambda x: abs(x - center))
+        for c in opp_win_cols:
+            if c in moves:
+                # ensure we don't make a move that immediately lets opponent win elsewhere
+                nb = drop_piece(board, c, me)
+                opp_moves_after = valid_moves(nb)
+                bad = False
+                for oc in opp_moves_after:
+                    nbb = drop_piece(nb, oc, opp)
+                    if check_win(nbb, opp):
+                        bad = True
+                        break
+                if not bad:
+                    return c
+        # if all blocks lead to immediate loss, still block one (choose center-most)
+        return opp_win_cols[0]
+
+    # 3) choose move maximizing heuristic while avoiding giving opponent immediate win
+    best_col = None
+    best_score = None
+    center = COLS // 2
+    for c in moves:
+        nb = drop_piece(board, c, me)
+        # avoid moves that let opponent win immediately if possible
+        opp_moves_after = valid_moves(nb)
+        opponent_can_win = False
+        for oc in opp_moves_after:
+            nbb = drop_piece(nb, oc, opp)
+            if check_win(nbb, opp):
+                opponent_can_win = True
+                break
+        sc = segment_scores(nb, me)
+        # tie-break with proximity to center
+        tie = -abs(c - center) / 100.0
+        sc += tie
+        # prefer safe moves
+        if opponent_can_win:
+            sc -= 1000  # penalize heavily
+        if best_score is None or sc > best_score:
+            best_score = sc
+            best_col = c
+
+    if best_col is not None:
+        return best_col
+
+    # fallback: pick center if valid, else first valid
+    if 3 in moves:
+        return 3
+    return moves[0]

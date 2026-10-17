@@ -1,0 +1,408 @@
+
+import math
+import random
+
+DIRS_8 = [(-1, -1), (-1, 0), (-1, 1),
+          (0, -1),           (0, 1),
+          (1, -1),  (1, 0),  (1, 1)]
+
+MOVE_DIRS = [(-1, -1), (-1, 0), (-1, 1),
+             (0, -1),           (0, 1),
+             (1, -1),  (1, 0),  (1, 1)]
+
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def copy_board(board):
+    return [row[:] for row in board]
+
+
+def piece_positions(board, side):
+    out = []
+    for r in range(8):
+        row = board[r]
+        for c in range(8):
+            if row[c] == side:
+                out.append((r, c))
+    return out
+
+
+def count_line_pieces(board, r, c, dr, dc):
+    total = 1
+
+    rr, cc = r + dr, c + dc
+    while in_bounds(rr, cc):
+        if board[rr][cc] != 0:
+            total += 1
+        rr += dr
+        cc += dc
+
+    rr, cc = r - dr, c - dc
+    while in_bounds(rr, cc):
+        if board[rr][cc] != 0:
+            total += 1
+        rr -= dr
+        cc -= dc
+
+    return total
+
+
+def legal_moves_for_side(board, side):
+    moves = []
+    for r, c in piece_positions(board, side):
+        for dr, dc in MOVE_DIRS:
+            dist = count_line_pieces(board, r, c, dr, dc)
+            tr, tc = r + dr * dist, c + dc * dist
+            if not in_bounds(tr, tc):
+                continue
+
+            # Path may jump own pieces but not enemy pieces.
+            blocked = False
+            rr, cc = r + dr, c + dc
+            for _ in range(dist - 1):
+                if board[rr][cc] == -side:
+                    blocked = True
+                    break
+                rr += dr
+                cc += dc
+            if blocked:
+                continue
+
+            # Destination cannot contain own piece.
+            if board[tr][tc] == side:
+                continue
+
+            moves.append((r, c, tr, tc))
+    return moves
+
+
+def apply_move(board, move, side):
+    r1, c1, r2, c2 = move
+    nb = copy_board(board)
+    nb[r1][c1] = 0
+    nb[r2][c2] = side
+    return nb
+
+
+def components_info(board, side):
+    pieces = piece_positions(board, side)
+    if not pieces:
+        return 0, 0, []
+
+    piece_set = set(pieces)
+    visited = set()
+    sizes = []
+
+    for start in pieces:
+        if start in visited:
+            continue
+        stack = [start]
+        visited.add(start)
+        sz = 0
+        while stack:
+            r, c = stack.pop()
+            sz += 1
+            for dr, dc in DIRS_8:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in piece_set and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    stack.append((nr, nc))
+        sizes.append(sz)
+
+    sizes.sort(reverse=True)
+    return len(sizes), sizes[0], sizes
+
+
+def is_connected(board, side):
+    cnt, biggest, _ = components_info(board, side)
+    total = len(piece_positions(board, side))
+    return total <= 1 or (cnt == 1 and biggest == total)
+
+
+def centralization_score(board, side):
+    s = 0.0
+    for r, c in piece_positions(board, side):
+        # Favor center around (3.5, 3.5)
+        d = abs(r - 3.5) + abs(c - 3.5)
+        s += (7.0 - d)
+    return s
+
+
+def spread_score(board, side):
+    pcs = piece_positions(board, side)
+    n = len(pcs)
+    if n <= 1:
+        return 0.0
+    total = 0.0
+    for i in range(n):
+        r1, c1 = pcs[i]
+        for j in range(i + 1, n):
+            r2, c2 = pcs[j]
+            total += abs(r1 - r2) + abs(c1 - c2)
+    avg = total / (n * (n - 1) / 2.0)
+    return -avg
+
+
+def edge_penalty(board, side):
+    p = 0
+    for r, c in piece_positions(board, side):
+        if r == 0 or r == 7:
+            p += 1
+        if c == 0 or c == 7:
+            p += 1
+    return -p
+
+
+def local_support_score(board, side):
+    myset = set(piece_positions(board, side))
+    score = 0
+    for r, c in myset:
+        neigh = 0
+        for dr, dc in DIRS_8:
+            if (r + dr, c + dc) in myset:
+                neigh += 1
+        score += neigh
+    return score
+
+
+def mobility(board, side):
+    return len(legal_moves_for_side(board, side))
+
+
+def immediate_winning_moves(board, side):
+    wins = []
+    for mv in legal_moves_for_side(board, side):
+        nb = apply_move(board, mv, side)
+        if is_connected(nb, side):
+            wins.append(mv)
+    return wins
+
+
+def move_order_key(board, move, side):
+    r1, c1, r2, c2 = move
+    capture = 1 if board[r2][tc if False else c2] == -side else 0  # harmless form avoided? keep valid below
+
+
+def ordered_moves(board, side):
+    moves = legal_moves_for_side(board, side)
+    scored = []
+    for mv in moves:
+        r1, c1, r2, c2 = mv
+        cap = 1 if board[r2][c2] == -side else 0
+        nb = apply_move(board, mv, side)
+        my_comp, my_big, _ = components_info(nb, side)
+        opp_comp, opp_big, _ = components_info(nb, -side)
+        score = 0
+        score += 10000 if is_connected(nb, side) else 0
+        score += 200 * cap
+        score += -150 * my_comp + 20 * my_big
+        score += 40 * opp_comp - 10 * opp_big
+        score += centralization_score(nb, side) - centralization_score(board, side)
+        scored.append((score, mv))
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [mv for _, mv in scored]
+
+
+def evaluate(board):
+    # Perspective: current player is +1 in this board representation.
+    if is_connected(board, 1):
+        return 1_000_000
+    if is_connected(board, -1):
+        return -1_000_000
+
+    my_count = len(piece_positions(board, 1))
+    opp_count = len(piece_positions(board, -1))
+
+    my_comp, my_big, my_sizes = components_info(board, 1)
+    opp_comp, opp_big, opp_sizes = components_info(board, -1)
+
+    score = 0.0
+
+    # Main LOA objective features
+    score += -220.0 * my_comp
+    score += 220.0 * opp_comp
+    score += 35.0 * my_big
+    score += -35.0 * opp_big
+
+    if len(my_sizes) > 1:
+        score += -18.0 * sum(my_sizes[1:])
+    if len(opp_sizes) > 1:
+        score += 18.0 * sum(opp_sizes[1:])
+
+    # Material matters somewhat because captures affect connectivity.
+    score += 22.0 * (my_count - opp_count)
+
+    # Shape / board control
+    score += 8.0 * (centralization_score(board, 1) - centralization_score(board, -1))
+    score += 14.0 * (spread_score(board, 1) - spread_score(board, -1))
+    score += 6.0 * (local_support_score(board, 1) - local_support_score(board, -1))
+    score += 4.0 * (edge_penalty(board, 1) - edge_penalty(board, -1))
+
+    # Mobility
+    my_mob = len(legal_moves_for_side(board, 1))
+    opp_mob = len(legal_moves_for_side(board, -1))
+    score += 2.0 * (my_mob - opp_mob)
+
+    # Threats
+    my_wins = len(immediate_winning_moves(board, 1))
+    opp_wins = len(immediate_winning_moves(board, -1))
+    score += 5000.0 * my_wins
+    score -= 7000.0 * opp_wins
+
+    return score
+
+
+def negamax(board, depth, alpha, beta, side, node_budget):
+    # side is player to move in actual board orientation; evaluation is always from +1 perspective.
+    if node_budget[0] <= 0:
+        return side * evaluate(oriented(board, side)), None
+    node_budget[0] -= 1
+
+    ob = oriented(board, side)
+
+    if depth == 0 or is_connected(ob, 1) or is_connected(ob, -1):
+        return side * evaluate(ob), None
+
+    moves = ordered_moves(ob, 1)
+    if not moves:
+        return side * evaluate(ob), None
+
+    # Tactical checks
+    for mv in moves:
+        nb = apply_move(ob, mv, 1)
+        if is_connected(nb, 1):
+            return 900000 + depth, mv
+
+    best_val = -10**18
+    best_move = moves[0]
+
+    # Beam a little if there are many moves.
+    limit = len(moves)
+    if depth >= 2 and limit > 18:
+        limit = 18
+    elif depth >= 1 and limit > 24:
+        limit = 24
+
+    for mv in moves[:limit]:
+        child = apply_move(ob, mv, 1)
+        child_real = oriented(child, -1)  # convert back to actual orientation where next side moves
+        val, _ = negamax(child_real, depth - 1, -beta, -alpha, -side, node_budget)
+        val = -val
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+
+    return best_val, best_move
+
+
+def oriented(board, side):
+    if side == 1:
+        return board
+    nb = []
+    for r in range(8):
+        row = []
+        for c in range(8):
+            row.append(-board[r][c])
+        nb.append(row)
+    return nb
+
+
+def move_to_str(mv):
+    r1, c1, r2, c2 = mv
+    return f"{r1},{c1}:{r2},{c2}"
+
+
+def choose_move(board):
+    moves = legal_moves_for_side(board, 1)
+    if not moves:
+        return None
+
+    # 1. Immediate win
+    for mv in ordered_moves(board, 1):
+        nb = apply_move(board, mv, 1)
+        if is_connected(nb, 1):
+            return mv
+
+    # 2. Block opponent immediate wins if possible
+    opp_wins_now = immediate_winning_moves(board, -1)
+    if opp_wins_now:
+        safe = []
+        ordered = ordered_moves(board, 1)
+        for mv in ordered:
+            nb = apply_move(board, mv, 1)
+            if not immediate_winning_moves(nb, -1):
+                safe.append(mv)
+        if safe:
+            # among safe moves, take best evaluated
+            best_mv = safe[0]
+            best_sc = -10**18
+            for mv in safe[:18]:
+                nb = apply_move(board, mv, 1)
+                sc = evaluate(nb)
+                if sc > best_sc:
+                    best_sc = sc
+                    best_mv = mv
+            return best_mv
+
+    # 3. Search depth based on branching
+    num_moves = len(moves)
+    if num_moves <= 10:
+        depth = 3
+        budget = 3500
+    elif num_moves <= 18:
+        depth = 3
+        budget = 2500
+    elif num_moves <= 28:
+        depth = 2
+        budget = 1800
+    else:
+        depth = 2
+        budget = 1000
+
+    val, mv = negamax(board, depth, -10**18, 10**18, 1, [budget])
+    if mv is not None:
+        return mv
+
+    # 4. Heuristic fallback
+    best_mv = moves[0]
+    best_sc = -10**18
+    for mv in ordered_moves(board, 1)[:20]:
+        nb = apply_move(board, mv, 1)
+        sc = evaluate(nb)
+        # avoid obvious blunders if possible
+        if immediate_winning_moves(nb, -1):
+            sc -= 100000
+        if sc > best_sc:
+            best_sc = sc
+            best_mv = mv
+    return best_mv
+
+
+def policy(board) -> str:
+    try:
+        mv = choose_move(board)
+        if mv is None:
+            # No legal moves should be rare/impossible in standard play; still guard.
+            # Return any syntactically valid string only if no moves exist.
+            return "0,0:0,0"
+
+        # Final legality safeguard
+        legal = set(legal_moves_for_side(board, 1))
+        if mv not in legal:
+            mv = next(iter(legal))
+        return move_to_str(mv)
+    except Exception:
+        # Absolute fallback: always return a legal move if possible.
+        try:
+            legal = legal_moves_for_side(board, 1)
+            if legal:
+                return move_to_str(legal[0])
+        except Exception:
+            pass
+        return "0,0:0,0"

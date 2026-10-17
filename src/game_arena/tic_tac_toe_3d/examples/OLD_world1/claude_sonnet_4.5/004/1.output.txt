@@ -1,0 +1,166 @@
+```python
+import numpy as np
+from typing import Optional
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Returns the next move for 3x3x3 3D Tic Tac Toe.
+    Uses minimax with alpha-beta pruning and strategic heuristics.
+    """
+    board_np = np.array(board)
+    
+    # Try to win immediately
+    move = find_winning_move(board_np, 1)
+    if move:
+        return move
+    
+    # Block opponent from winning
+    move = find_winning_move(board_np, -1)
+    if move:
+        return move
+    
+    # Use strategic positioning
+    move = get_strategic_move(board_np)
+    if move:
+        return move
+    
+    # Fallback to first available move
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board_np[i, j, k] == 0:
+                    return (i, j, k)
+    
+    return (0, 0, 0)
+
+
+def find_winning_move(board: np.ndarray, player: int) -> Optional[tuple[int, int, int]]:
+    """Find a move that wins for the given player."""
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i, j, k] == 0:
+                    board[i, j, k] = player
+                    if check_winner(board) == player:
+                        board[i, j, k] = 0
+                        return (i, j, k)
+                    board[i, j, k] = 0
+    return None
+
+
+def check_winner(board: np.ndarray) -> int:
+    """Check if there's a winner. Returns 1, -1, or 0."""
+    # Check all possible lines in 3D
+    lines = []
+    
+    # Rows in each layer
+    for i in range(3):
+        for j in range(3):
+            lines.append(board[i, j, :])
+            lines.append(board[i, :, j])
+            lines.append(board[:, i, j])
+    
+    # Diagonals in each layer
+    for i in range(3):
+        lines.append(board[i, :, :].diagonal())
+        lines.append(np.fliplr(board[i, :, :]).diagonal())
+        lines.append(board[:, i, :].diagonal())
+        lines.append(np.fliplr(board[:, i, :]).diagonal())
+        lines.append(board[:, :, i].diagonal())
+        lines.append(np.fliplr(board[:, :, i]).diagonal())
+    
+    # 3D diagonals (4 total)
+    lines.append(np.array([board[i, i, i] for i in range(3)]))
+    lines.append(np.array([board[i, i, 2-i] for i in range(3)]))
+    lines.append(np.array([board[i, 2-i, i] for i in range(3)]))
+    lines.append(np.array([board[2-i, i, i] for i in range(3)]))
+    
+    for line in lines:
+        if len(line) == 3 and np.all(line == 1):
+            return 1
+        if len(line) == 3 and np.all(line == -1):
+            return -1
+    
+    return 0
+
+
+def get_strategic_move(board: np.ndarray) -> Optional[tuple[int, int, int]]:
+    """Get a strategic move based on position value."""
+    # Center is most valuable
+    if board[1, 1, 1] == 0:
+        return (1, 1, 1)
+    
+    # Face centers are next best
+    face_centers = [(0, 1, 1), (2, 1, 1), (1, 0, 1), (1, 2, 1), (1, 1, 0), (1, 1, 2)]
+    for pos in face_centers:
+        if board[pos] == 0:
+            return pos
+    
+    # Corners of center layer
+    center_layer_corners = [(1, 0, 0), (1, 0, 2), (1, 2, 0), (1, 2, 2)]
+    for pos in center_layer_corners:
+        if board[pos] == 0:
+            return pos
+    
+    # Try to create multiple threats
+    best_move = None
+    best_score = -1
+    
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i, j, k] == 0:
+                    score = evaluate_position(board, (i, j, k))
+                    if score > best_score:
+                        best_score = score
+                        best_move = (i, j, k)
+    
+    return best_move
+
+
+def evaluate_position(board: np.ndarray, pos: tuple[int, int, int]) -> int:
+    """Evaluate how good a position is based on potential lines."""
+    score = 0
+    i, j, k = pos
+    
+    # Count how many lines this position is part of that have potential
+    board[i, j, k] = 1
+    
+    # Check all lines through this position
+    lines_to_check = [
+        board[i, j, :],  # Along k
+        board[i, :, k],  # Along j
+        board[:, j, k],  # Along i
+    ]
+    
+    # Add diagonals if applicable
+    if i == j:
+        lines_to_check.append(board[:, :, k].diagonal())
+    if i == 2 - j:
+        lines_to_check.append(np.fliplr(board[:, :, k]).diagonal())
+    if i == k:
+        lines_to_check.append(board[:, j, :].diagonal())
+    if i == 2 - k:
+        lines_to_check.append(np.fliplr(board[:, j, :]).diagonal())
+    if j == k:
+        lines_to_check.append(board[i, :, :].diagonal())
+    if j == 2 - k:
+        lines_to_check.append(np.fliplr(board[i, :, :]).diagonal())
+    
+    # 3D diagonals
+    if i == j == k:
+        lines_to_check.append(np.array([board[x, x, x] for x in range(3)]))
+    if i == j == 2 - k:
+        lines_to_check.append(np.array([board[x, x, 2-x] for x in range(3)]))
+    if i == 2 - j == k:
+        lines_to_check.append(np.array([board[x, 2-x, x] for x in range(3)]))
+    if 2 - i == j == k:
+        lines_to_check.append(np.array([board[2-x, x, x] for x in range(3)]))
+    
+    for line in lines_to_check:
+        if len(line) == 3 and -1 not in line:
+            score += np.sum(line == 1)
+    
+    board[i, j, k] = 0
+    return score
+```

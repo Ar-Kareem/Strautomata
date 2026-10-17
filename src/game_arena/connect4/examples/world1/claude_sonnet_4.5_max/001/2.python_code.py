@@ -1,0 +1,161 @@
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Connect 4 AI using minimax with alpha-beta pruning.
+    Returns the column (0-6) to play.
+    """
+    
+    def get_legal_moves(board):
+        """Returns list of columns that are not full."""
+        return [col for col in range(7) if board[0][col] == 0]
+    
+    def make_move(board, col, piece):
+        """Returns new board with piece dropped in column."""
+        new_board = [row[:] for row in board]
+        for row in range(5, -1, -1):
+            if new_board[row][col] == 0:
+                new_board[row][col] = piece
+                return new_board
+        return new_board
+    
+    def check_winner(board, piece):
+        """Check if piece has won."""
+        # Horizontal
+        for r in range(6):
+            for c in range(4):
+                if all(board[r][c+i] == piece for i in range(4)):
+                    return True
+        # Vertical
+        for r in range(3):
+            for c in range(7):
+                if all(board[r+i][c] == piece for i in range(4)):
+                    return True
+        # Diagonal /
+        for r in range(3, 6):
+            for c in range(4):
+                if all(board[r-i][c+i] == piece for i in range(4)):
+                    return True
+        # Diagonal \
+        for r in range(3):
+            for c in range(4):
+                if all(board[r+i][c+i] == piece for i in range(4)):
+                    return True
+        return False
+    
+    def evaluate_window(window, piece):
+        """Score a window of 4 positions."""
+        score = 0
+        opponent = -piece
+        
+        if window.count(piece) == 4:
+            score += 100
+        elif window.count(piece) == 3 and window.count(0) == 1:
+            score += 5
+        elif window.count(piece) == 2 and window.count(0) == 2:
+            score += 2
+        
+        if window.count(opponent) == 3 and window.count(0) == 1:
+            score -= 4
+        
+        return score
+    
+    def score_position(board, piece):
+        """Evaluate the board for the given piece."""
+        score = 0
+        
+        # Center column preference
+        center_array = [board[r][3] for r in range(6)]
+        score += center_array.count(piece) * 3
+        
+        # Score all windows
+        # Horizontal
+        for r in range(6):
+            for c in range(4):
+                window = [board[r][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+        
+        # Vertical
+        for c in range(7):
+            for r in range(3):
+                window = [board[r+i][c] for i in range(4)]
+                score += evaluate_window(window, piece)
+        
+        # Diagonal /
+        for r in range(3, 6):
+            for c in range(4):
+                window = [board[r-i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+        
+        # Diagonal \
+        for r in range(3):
+            for c in range(4):
+                window = [board[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+        
+        return score
+    
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        """Minimax with alpha-beta pruning."""
+        legal_moves = get_legal_moves(board)
+        is_terminal = check_winner(board, 1) or check_winner(board, -1) or len(legal_moves) == 0
+        
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if check_winner(board, 1):
+                    return (None, 100000000)
+                elif check_winner(board, -1):
+                    return (None, -100000000)
+                else:  # Draw
+                    return (None, 0)
+            else:  # Depth limit reached
+                return (None, score_position(board, 1))
+        
+        # Move ordering: try center columns first for better pruning
+        legal_moves.sort(key=lambda x: abs(3 - x))
+        
+        if maximizing_player:
+            value = float('-inf')
+            best_col = legal_moves[0]
+            for col in legal_moves:
+                b_copy = make_move(board, col, 1)
+                new_score = minimax(b_copy, depth-1, alpha, beta, False)[1]
+                if new_score > value:
+                    value = new_score
+                    best_col = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return best_col, value
+        else:
+            value = float('inf')
+            best_col = legal_moves[0]
+            for col in legal_moves:
+                b_copy = make_move(board, col, -1)
+                new_score = minimax(b_copy, depth-1, alpha, beta, True)[1]
+                if new_score < value:
+                    value = new_score
+                    best_col = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return best_col, value
+    
+    # Get legal moves
+    legal_moves = get_legal_moves(board)
+    
+    if not legal_moves:
+        return 3  # Should never happen, but return center as fallback
+    
+    # Check for immediate win
+    for col in legal_moves:
+        if check_winner(make_move(board, col, 1), 1):
+            return col
+    
+    # Check for blocking opponent's win
+    for col in legal_moves:
+        if check_winner(make_move(board, col, -1), -1):
+            return col
+    
+    # Use minimax for strategic play
+    col, _ = minimax(board, 5, float('-inf'), float('inf'), True)
+    return col if col is not None else legal_moves[0]

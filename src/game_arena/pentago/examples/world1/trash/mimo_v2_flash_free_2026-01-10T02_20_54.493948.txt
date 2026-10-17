@@ -1,0 +1,365 @@
+The strategy is to use a pure Monte Carlo Tree Search (MCTS) algorithm to select the best move. Since the game state space is large but move branching is limited (approximately 36 empty cells * 4 quadrants * 2 directions = ~288 moves), a randomized simulation approach is effective. I will implement the game mechanics (state transition, win checking) and the MCTS logic entirely within the Python file to ensure no dependencies on external libraries (like numpy, which might be missing or slow to import) and to maximize reliability. The algorithm will simulate random games from candidate moves within the time budget to estimate their win probability, prioritizing immediate wins and blocking opponent wins.
+
+```python
+import random
+import time
+
+def policy(you, opponent) -> str:
+    """
+    Implements a Monte Carlo Tree Search (MCTS) / Upper Confidence Bound (UCB1) 
+    strategy for Pentago.
+    """
+    
+    # --- Game Logic Helpers ---
+    
+    def get_board_state(you, opponent):
+        # Combine into a single board: 1=me, -1=opp, 0=empty
+        board = [[0] * 6 for _ in range(6)]
+        for r in range(6):
+            for c in range(6):
+                if you[r][c]:
+                    board[r][c] = 1
+                elif opponent[r][c]:
+                    board[r][c] = -1
+        return board
+
+    def is_full(board):
+        for r in range(6):
+            for c in range(6):
+                if board[r][c] == 0:
+                    return False
+        return True
+
+    def check_win(board):
+        # Returns 1 if me wins, -1 if opp wins, 0 if none, 2 if draw (both win)
+        # We only check if the current board state (after rotation) has a win.
+        # Since we only check after a move is fully applied, we only care about
+        # the mover's potential win or opponent's counter-win.
+        
+        # Check all lines for 5+ identical non-zero stones
+        def check_line(r, c, dr, dc):
+            val = board[r][c]
+            if val == 0: return 0
+            count = 0
+            # Check backwards to start of line
+            curr_r, curr_c = r, c
+            while 0 <= curr_r < 6 and 0 <= curr_c < 6 and board[curr_r][curr_c] == val:
+                curr_r -= dr
+                curr_c -= dc
+            # Step forward to the first valid cell
+            curr_r += dr
+            curr_c += dc
+            # Count forward
+            while 0 <= curr_r < 6 and 0 <= curr_c < 6 and board[curr_r][curr_c] == val:
+                count += 1
+                curr_r += dr
+                curr_c += dc
+            return val if count >= 5 else 0
+
+        # Directions: Horizontal, Vertical, Diag \, Diag /
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        
+        me_win = False
+        opp_win = False
+        
+        for r in range(6):
+            for c in range(6):
+                for dr, dc in directions:
+                    # Optimization: Only start counting if we are at the start of a line
+                    # or if checking arbitrary points is too slow.
+                    # For 6x6, brute force checking every start is fine.
+                    res = check_line(r, c, dr, dc)
+                    if res == 1: me_win = True
+                    elif res == -1: opp_win = True
+        
+        if me_win and opp_win: return 2 # Draw
+        if me_win: return 1
+        if opp_win: return -1
+        return 0
+
+    def rotate_quadrant(board, quad, direction):
+        # Quadrants:
+        # 0: (0-2, 0-2), 1: (0-2, 3-5), 2: (3-5, 0-2), 3: (3-5, 3-5)
+        # Returns a NEW board with the rotation applied
+        new_board = [row[:] for row in board] # Deep copy 2D list
+        
+        # Determine offsets
+        if quad == 0: r_off, c_off = 0, 0
+        elif quad == 1: r_off, c_off = 0, 3
+        elif quad == 2: r_off, c_off = 3, 0
+        else: r_off, c_off = 3, 3 # quad 3
+        
+        # Extract 3x3
+        sub = [[board[r_off + i][c_off + j] for j in range(3)] for i in range(3)]
+        
+        # Rotate
+        rotated = [[0]*3 for _ in range(3)]
+        for i in range(3):
+            for j in range(3):
+                if direction == 'R': # Clockwise
+                    rotated[j][2-i] = sub[i][j]
+                else: # L, Anti-clockwise
+                    rotated[2-j][i] = sub[i][j]
+        
+        # Paste back
+        for i in range(3):
+            for j in range(3):
+                new_board[r_off + i][c_off + j] = rotated[i][j]
+                
+        return new_board
+
+    # --- MCTS Setup ---
+    
+    # 1. Find all empty cells
+    empty_cells = []
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                empty_cells.append((r, c))
+    
+    # 2. Generate all candidate moves
+    # A move is (row, col, quad, dir)
+    # Map indices to 1-based strings later
+    moves = []
+    for r, c in empty_cells:
+        for q in range(4):
+            for d in ['L', 'R']:
+                moves.append(((r, c), q, d))
+    
+    if not moves:
+        # Should not happen based on prompt, but fallback
+        return "1,1,0,L"
+        
+    # 3. Immediate Win/Block Check (Heuristic Optimization)
+    # Before heavy simulation, check if any move wins immediately or blocks opponent's guaranteed win
+    # Note: Opponent doesn't rotate yet (it's our turn), but we rotate. 
+    # Wait, the opponent could rotate in a way that creates a win for them? 
+    # No, we move -> we rotate -> check win. Then turn ends. 
+    # So we only need to check our immediate win.
+    # However, if we don't win immediately, we must consider that ANY move we make 
+    # allows the opponent to move next. 
+    # The MCTS handles this implicitly, but explicit checks speed up leaf nodes.
+    
+    # We will run MCTS. To be safe, we prioritize moves that win immediately.
+    # Since the board is small, we can check all moves for immediate win.
+    
+    best_moves = []
+    best_score = -float('inf')
+    
+    # MCTS Parameters
+    time_budget = 0.85  # Seconds
+    start_time = time.time()
+    
+    # Stats: move_index -> (wins, total_simulations)
+    stats = {i: [0, 0] for i in range(len(moves))}
+    
+    # Pre-check immediate wins
+    for i, ((r, c), q, d) in enumerate(moves):
+        temp_board = get_board_state(you, opponent)
+        if temp_board[r][c] != 0: continue # Should not happen
+        
+        # Apply move
+        temp_board[r][c] = 1 # Place my stone
+        temp_board = rotate_quadrant(temp_board, q, d)
+        
+        res = check_win(temp_board)
+        if res == 1: # I win
+            return f"{r+1},{c+1},{q},{d}"
+        # If res == -1 (opponent wins), this is a bad move, but maybe not avoidable?
+        # Actually, if I place a stone and rotate, opponent can't win yet because it's my move.
+        # Wait, check_win checks the current board. If opponent wins, it means 
+        # my rotation created a line for them? Yes. So I must avoid this.
+        # Unless I also win (draw), but I prefer win.
+        # So if res == -1, this move loses immediately. Avoid.
+        if res == -1:
+            stats[i][0] = -1000 # Mark as bad
+            
+    # 4. MCTS Simulations
+    simulations_per_move = 0
+    while time.time() - start_time < time_budget:
+        # Select a move (UCB1 or Random if unvisited)
+        # We do one simulation per iteration, update stats
+        move_idx = -1
+        
+        # Exploration: find unvisited moves first
+        unvisited = [i for i in stats if stats[i][1] == 0 and stats[i][0] != -1000]
+        if unvisited:
+            move_idx = random.choice(unvisited)
+        else:
+            # UCB1 selection
+            best_ucb = -float('inf')
+            candidates = [i for i in stats if stats[i][0] != -1000]
+            if not candidates:
+                break
+            total_visits = sum(stats[i][1] for i in candidates)
+            if total_visits == 0:
+                move_idx = random.choice(candidates)
+            else:
+                for i in candidates:
+                    w = stats[i][0]
+                    n = stats[i][1]
+                    # UCB1 = (wins / sims) + C * sqrt(ln(total_sims) / sims)
+                    # We want to maximize wins. 
+                    if n == 0:
+                        ucb = float('inf')
+                    else:
+                        exploitation = w / n
+                        exploration = 1.414 * ( (total_visits * 1.0) / n ) ** 0.5 
+                        ucb = exploitation + exploration
+                    if ucb > best_ucb:
+                        best_ucb = ucb
+                        move_idx = i
+
+        if move_idx == -1:
+            break # No valid moves?
+
+        # Simulate
+        # Starting board
+        sim_board = get_board_state(you, opponent)
+        ((r, c), q, d) = moves[move_idx]
+        
+        # 1. My Placement & Rotation
+        if sim_board[r][c] != 0:
+            stats[move_idx][0] = -1000 # Invalid
+            continue
+        sim_board[r][c] = 1
+        sim_board = rotate_quadrant(sim_board, q, d)
+        
+        # Check immediate win for me
+        res = check_win(sim_board)
+        if res == 1:
+            stats[move_idx][0] += 100 # Massive weight
+            stats[move_idx][1] += 1
+            continue
+        if res == 2 or res == -1: # I lost or Draw (loss for me as I need to win)
+            stats[move_idx][0] -= 10 # Penalty
+            stats[move_idx][1] += 1
+            continue
+            
+        # 2. Rollout (Opponent plays randomly)
+        # Opponent acts 100 times or until game end
+        # Optimization: Since we are looking for the best move, we can limit rollouts.
+        # Let's do a short lookahead: 10-20 turns random play.
+        
+        current_sim_board = sim_board
+        game_over = False
+        depth = 0
+        max_depth = 10 # Limit lookahead to keep it fast
+        
+        while depth < max_depth:
+            depth += 1
+            
+            # Check if board is full
+            if is_full(current_sim_board):
+                game_over = True
+                break
+                
+            # Find opponent empty cells
+            opp_empties = []
+            for rr in range(6):
+                for cc in range(6):
+                    if current_sim_board[rr][cc] == 0:
+                        opp_empties.append((rr, cc))
+            
+            if not opp_empties:
+                game_over = True
+                break
+            
+            # Opponent Random Move
+            orr, occ = random.choice(opp_empties)
+            oq = random.randint(0, 3)
+            od = random.choice(['L', 'R'])
+            
+            # Apply Opponent Move
+            current_sim_board[orr][occ] = -1
+            current_sim_board = rotate_quadrant(current_sim_board, oq, od)
+            
+            # Check Opponent Win
+            res = check_win(current_sim_board)
+            if res == -1:
+                # Opponent won. This is a loss for me.
+                game_over = True
+                # Break with penalty
+                break
+            if res == 2:
+                # Draw
+                game_over = True
+                break
+            
+            # If game not over, it's my turn again in the rollout (randomly)
+            # Find my empty cells
+            my_empties = []
+            for rr in range(6):
+                for cc in range(6):
+                    if current_sim_board[rr][cc] == 0:
+                        my_empties.append((rr, cc))
+            
+            if not my_empties:
+                game_over = True
+                break
+            
+            mrr, mcc = random.choice(my_empties)
+            mq = random.randint(0, 3)
+            md = random.choice(['L', 'R'])
+            
+            current_sim_board[mrr][mcc] = 1
+            current_sim_board = rotate_quadrant(current_sim_board, mq, md)
+            
+            res = check_win(current_sim_board)
+            if res == 1:
+                # I won in rollout
+                game_over = True
+                # Win
+                break
+            if res == 2:
+                game_over = True
+                break
+        
+        # Update Stats
+        stats[move_idx][1] += 1
+        
+        if game_over:
+            if res == 1: stats[move_idx][0] += 1 # Win
+            elif res == -1: stats[move_idx][0] += 0 # Loss
+            elif res == 2: stats[move_idx][0] += 0.2 # Draw
+            else: stats[move_idx][0] += 0.1 # Draw by depth? prefer surviving
+        else:
+            # Game didn't end. Treat as draw/survival
+            stats[move_idx][0] += 0.1
+            
+    # 5. Selection
+    # Pick move with highest win rate among those with sufficient visits
+    # Or simply highest score if tie.
+    best_idx = -1
+    best_val = -float('inf')
+    
+    for i in moves:
+        if i not in stats: continue
+        if stats[i][1] == 0: continue # Was never simulated (time ran out or blocked)
+        if stats[i][0] == -1000: continue # Immediate loss
+        
+        win_rate = stats[i][0] / stats[i][1]
+        visits = stats[i][1]
+        
+        # Tie breaker: higher visits (explored) -> preferred
+        # Also, if win rate is similar, prefer visited more.
+        # We use a small epsilon for stability.
+        val = win_rate + (visits * 0.00001)
+        
+        if val > best_val:
+            best_val = val
+            best_idx = i
+            
+    if best_idx == -1:
+        # Fallback: pick random valid move if MCTS failed (unlikely)
+        # Filter out immediate losses
+        valid_indices = [i for i in range(len(moves)) if stats[i][0] != -1000]
+        if not valid_indices:
+             # Only bad moves exist, pick the one with least negative score or random
+             best_idx = 0
+        else:
+            best_idx = random.choice(valid_indices)
+
+    ((r, c), q, d) = moves[best_idx]
+    return f"{r+1},{c+1},{q},{d}"
+```

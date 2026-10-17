@@ -1,0 +1,164 @@
+
+from functools import lru_cache
+import itertools
+
+ALL_CARDS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+def _hand_value(hand, target):
+    """Calculate the optimal value of a hand (max <= target, or min > target if bust)."""
+    non_aces = [c for c in hand if c != "A"]
+    num_aces = len(hand) - len(non_aces)
+    
+    base = 0
+    for c in non_aces:
+        if c in ("J", "Q", "K"):
+            base += 10
+        else:
+            base += int(c)
+    
+    # Start with all aces as 1
+    total = base + num_aces
+    if total > target:
+        return total
+    
+    # Upgrade aces to 11 (adds 10) without busting
+    for _ in range(num_aces):
+        if total + 10 <= target:
+            total += 10
+        else:
+            break
+    return total
+
+@lru_cache(maxsize=None)
+def _get_strategy(target):
+    """Compute Nash equilibrium strategy for a given target."""
+    # Precompute all possible hands as frozensets
+    all_hands = []
+    for r in range(14):
+        for combo in itertools.combinations(ALL_CARDS, r):
+            all_hands.append(frozenset(combo))
+    
+    # Initialize with a simple heuristic: hit if far from target
+    strategy = {}
+    for hand in all_hands:
+        s = _hand_value(list(hand), target)
+        if s > target:
+            strategy[hand] = "STAY"
+        elif s < target - 4:
+            strategy[hand] = "HIT"
+        else:
+            strategy[hand] = "STAY"
+    
+    # Iterate to convergence (best response dynamics)
+    for _ in range(20):
+        # Step 1: Compute score distribution under current strategy (from empty hand)
+        dist_cache = {}
+        def get_dist(hand):
+            if hand in dist_cache:
+                return dist_cache[hand]
+            s = _hand_value(list(hand), target)
+            if strategy[hand] == "STAY" or s > target:
+                if s > target:
+                    d = {"bust": 1.0}
+                else:
+                    d = {s: 1.0}
+                dist_cache[hand] = d
+                return d
+            
+            remaining = [c for c in ALL_CARDS if c not in hand]
+            d = {}
+            for c in remaining:
+                new_hand = hand.union([c])
+                sub = get_dist(new_hand)
+                for val, prob in sub.items():
+                    d[val] = d.get(val, 0.0) + prob / len(remaining)
+            dist_cache[hand] = d
+            return d
+        
+        opp_dist = get_dist(frozenset())
+        
+        # Step 2: Compute best response values
+        value_cache = {}
+        def get_value(hand):
+            if hand in value_cache:
+                return value_cache[hand]
+            s = _hand_value(list(hand), target)
+            remaining = [c for c in ALL_CARDS if c not in hand]
+            
+            # Value of staying
+            if s > target:
+                v_stay = opp_dist.get("bust", 0.0) * 0.5
+            else:
+                v_stay = opp_dist.get("bust", 0.0)
+                for opp_s, prob in opp_dist.items():
+                    if opp_s == "bust":
+                        continue
+                    d_me = abs(target - s)
+                    d_opp = abs(target - opp_s)
+                    if d_opp > d_me:
+                        v_stay += prob
+                    elif d_opp == d_me:
+                        v_stay += 0.5 * prob
+            
+            if not remaining:
+                v = v_stay
+            else:
+                v_hit = 0.0
+                for c in remaining:
+                    v_hit += get_value(hand.union([c])) / len(remaining)
+                v = max(v_stay, v_hit)
+            value_cache[hand] = v
+            return v
+        
+        # Step 3: Update strategy
+        new_strategy = {}
+        changed = False
+        for hand in all_hands:
+            s = _hand_value(list(hand), target)
+            remaining = [c for c in ALL_CARDS if c not in hand]
+            
+            if s > target or not remaining:
+                new_strategy[hand] = "STAY"
+                if strategy[hand] != "STAY":
+                    changed = True
+                continue
+            
+            # Recalculate stay value
+            if s > target:
+                v_stay = opp_dist.get("bust", 0.0) * 0.5
+            else:
+                v_stay = opp_dist.get("bust", 0.0)
+                for opp_s, prob in opp_dist.items():
+                    if opp_s == "bust":
+                        continue
+                    d_me = abs(target - s)
+                    d_opp = abs(target - opp_s)
+                    if d_opp > d_me:
+                        v_stay += prob
+                    elif d_opp == d_me:
+                        v_stay += 0.5 * prob
+            
+            # Recalculate hit value
+            v_hit = 0.0
+            for c in remaining:
+                v_hit += get_value(hand.union([c])) / len(remaining)
+            
+            if v_hit > v_stay:
+                new_strategy[hand] = "HIT"
+            else:
+                new_strategy[hand] = "STAY"
+            
+            if new_strategy[hand] != strategy[hand]:
+                changed = True
+        
+        strategy = new_strategy
+        if not changed:
+            break
+    
+    return strategy
+
+def policy(hand, target):
+    """Return 'HIT' or 'STAY' based on the Nash equilibrium strategy."""
+    hand_set = frozenset(hand)
+    strat = _get_strategy(target)
+    return strat.get(hand_set, "STAY")

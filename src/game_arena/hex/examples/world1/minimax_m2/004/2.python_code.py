@@ -1,0 +1,133 @@
+
+import heapq
+import random
+
+def policy(me, opp, color):
+    """
+    Hex policy for an 11x11 board.
+    Returns a single move as a tuple (row, col).
+    """
+    N = 11                     # board dimension
+    # ----------------------------------------------------------------------
+    # board representation: 0 = empty, 1 = our stone, 2 = opponent stone
+    board = [[0] * N for _ in range(N)]
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opp:
+        board[r][c] = 2
+
+    # Hex‑grid neighbours (pointy‑top orientation)
+    NEIGHBORS = [(0, -1), (0, 1),
+                 (-1, 0), (-1, 1),
+                 (1, -1), (1, 0)]
+
+    INF = 10 ** 9
+
+    # ----------------------------------------------------------------------
+    # Dijkstra that returns the minimal number of empty cells that must be
+    # filled to create a connecting path for the given player.
+    # ----------------------------------------------------------------------
+    def compute_distance(state, my_color, is_me):
+        # which player are we evaluating?
+        player_val = 1 if is_me else 2
+        opponent_val = 2 if is_me else 1
+
+        # start / goal sides depend on the colour of the player
+        if my_color == 'b':          # black connects top ↔ bottom
+            if is_me:                 # we are black
+                start = [(0, c) for c in range(N)]
+                goal = [(N - 1, c) for c in range(N)]
+            else:                     # opponent is white
+                start = [(r, 0) for r in range(N)]
+                goal = [(r, N - 1) for r in range(N)]
+        else:                        # white connects left ↔ right
+            if is_me:                 # we are white
+                start = [(r, 0) for r in range(N)]
+                goal = [(r, N - 1) for r in range(N)]
+            else:                     # opponent is black
+                start = [(0, c) for c in range(N)]
+                goal = [(N - 1, c) for c in range(N)]
+
+        goal_set = set(goal)
+
+        # 0‑1 BFS (edge weights are 0 or 1) – using a heap works fine here
+        dist = [[INF] * N for _ in range(N)]
+        heap = []
+
+        for r, c in start:
+            cell = state[r][c]
+            if cell == player_val:
+                d = 0
+            elif cell == 0:
+                d = 1                # we would have to place a stone here
+            else:
+                continue              # opponent stone blocks the side
+            if d < dist[r][c]:
+                dist[r][c] = d
+                heapq.heappush(heap, (d, r, c))
+
+        while heap:
+            d, r, c = heapq.heappop(heap)
+            if d != dist[r][c]:
+                continue
+            # reached a goal cell (empty or our stone) – return distance
+            if (r, c) in goal_set and state[r][c] != opponent_val:
+                return d
+
+            for dr, dc in NEIGHBORS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < N and 0 <= nc < N:
+                    if state[nr][nc] == opponent_val:
+                        continue      # cannot step onto opponent stone
+                    nd = d + (0 if state[nr][nc] == player_val else 1)
+                    if nd < dist[nr][nc]:
+                        dist[nr][nc] = nd
+                        heapq.heappush(heap, (nd, nr, nc))
+
+        # No connection possible
+        return INF
+
+    # ----------------------------------------------------------------------
+    # Evaluate every empty cell
+    # ----------------------------------------------------------------------
+    best_move = None
+    best_score = -INF
+    best_tie = None
+    centre = (N // 2, N // 2)
+
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] != 0:
+                continue
+
+            # simulate our move
+            board2 = [row[:] for row in board]
+            board2[r][c] = 1                     # our stone
+
+            my_dist = compute_distance(board2, color, True)
+            if my_dist == 0:                     # immediate win
+                return (r, c)
+
+            opp_dist = compute_distance(board2, color, False)
+
+            # treat unreachable distances as a very large constant
+            opp_val = opp_dist if opp_dist < INF else 10 ** 6
+            my_val = my_dist if my_dist < INF else 10 ** 6
+
+            score = opp_val - my_val               # higher is better
+
+            # tie‑break by proximity to the centre
+            tie = abs(r - centre[0]) + abs(c - centre[1])
+            if score > best_score or (score == best_score and (best_move is None or tie < best_tie)):
+                best_score = score
+                best_move = (r, c)
+                best_tie = tie
+
+    # Fallback – should never happen, but safety first
+    if best_move is None:
+        for r in range(N):
+            for c in range(N):
+                if board[r][c] == 0:
+                    return (r, c)
+
+    return best_move

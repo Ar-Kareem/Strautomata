@@ -1,0 +1,184 @@
+The strategy for this policy is a hybrid "Hunt and Target" algorithm.
+
+1.  **Target Mode**: When the board contains one or more hits (`1`), the policy prioritizes cells adjacent to these hits to sink the damaged ship.
+    *   It groups hit cells into connected components using Breadth-First Search (BFS).
+    *   It checks if a component is "bounded" (surrounded by misses or walls). A bounded component is considered sunk.
+    *   Sunk ships are removed from the list of potential remaining ship lengths.
+    *   For active (un-sunk) components, the policy calculates a score for adjacent unknown cells. It prioritizes moves that extend the current axis of the hits (e.g., continuing a line vertically or horizontally).
+
+2.  **Hunt Mode**: When there are no active hits, the policy switches to a probabilistic search to find new ships.
+    *   It creates a "heat map" (score grid) of size 10x10.
+    *   For every remaining ship length (initially 5, 4, 3, 3, 2), it slides a virtual ship across the board in all valid positions.
+    *   A position is valid if all cells in that range are unknown (`0`).
+    *   For every valid placement, the score is incremented for all cells covered by that placement.
+    *   Additionally, it enforces the standard Battleship rule that ships cannot touch each other orthogonally. Cells adjacent to known misses (`-1`) and sunk ships are weighted as invalid.
+    *   The policy selects the cell with the highest probability score. Ties are broken randomly.
+
+This approach efficiently minimizes the expected number of shots to sink the fleet by focusing fire on damaged targets while maximizing information gain during the search phase.
+
+<code>
+import numpy as np
+import random
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert board to numpy array for easier manipulation
+    grid = np.array(board)
+    rows, cols = grid.shape
+    
+    # Initial ship sizes
+    remaining_ships = [5, 4, 3, 3, 2]
+    
+    # Directions: (dr, dc) for N, S, E, W
+    dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    # Helper to check bounds
+    def is_valid(r, c):
+        return 0 <= r < rows and 0 <= c < cols
+    
+    # 1. Identify connected components of hits
+    hits = np.argwhere(grid == 1)
+    visited = set()
+    components = [] # List of (set_of_coords, is_bounded, size)
+    
+    for r, c in hits:
+        if (r, c) in visited:
+            continue
+        
+        # BFS to find component
+        queue = deque([(r, c)])
+        comp_coords = []
+        visited.add((r, c))
+        
+        while queue:
+            cr, cc = queue.popleft()
+            comp_coords.append((cr, cc))
+            
+            for dr, dc in dirs:
+                nr, nc = cr + dr, cc + dc
+                if is_valid(nr, nc) and grid[nr, nc] == 1 and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        
+        # Check if bounded (sunk)
+        # A component is sunk if there are no 0s adjacent to it
+        is_bounded = True
+        perimeter = set()
+        
+        for (cr, cc) in comp_coords:
+            for dr, dc in dirs:
+                nr, nc = cr + dr, cc + dc
+                if is_valid(nr, nc):
+                    if grid[nr, nc] == 0:
+                        is_bounded = False
+                        perimeter.add((nr, nc))
+                # Edge of board counts as blocked, so doesn't make it unbounded
+        
+        components.append((comp_coords, is_bounded, perimeter, len(comp_coords)))
+
+    # Update remaining_ships list based on bounded (sunk) components
+    sunk_sizes = [c[3] for c in components if c[1]]
+    # Note: We remove one instance of each sunk size from remaining_ships
+    current_remaining = list(remaining_ships)
+    for s in sunk_sizes:
+        if s in current_remaining:
+            current_remaining.remove(s)
+            
+    # 2. Target Mode: Prioritize cells adjacent to unbounded hits
+    target_candidates = {} # (r, c) -> score
+    
+    for comp_coords, is_bounded, perimeter, size in components:
+        if not is_bounded:
+            # This is an active target
+            # Determine orientation heuristic
+            rs = [r for r, c in comp_coords]
+            cs = [c for r, c in comp_coords]
+            vertical = max(rs) - min(rs) > 0
+            horizontal = max(cs) - min(cs) > 0
+            
+            # Score perimeter cells
+            for (pr, pc) in perimeter:
+                score = 100 # Base priority for targeting
+                
+                # Bonus for extending existing lines
+                if vertical:
+                    if pr < min(rs) or pr > max(rs): score += 50
+                elif horizontal:
+                    if pc < min(cs) or pc > max(cs): score += 50
+                else:
+                    # Single hit, no orientation yet, check neighbors for other hits
+                    pass
+
+                if (pr, pc) not in target_candidates or target_candidates[(pr, pc)] < score:
+                    target_candidates[(pr, pc)] = score
+    
+    if target_candidates:
+        # Return move with highest score, random tie-break
+        best_move = max(target_candidates, key=lambda k: (target_candidates[k], random.random()))
+        return best_move
+
+    # 3. Hunt Mode: Probabilistic search
+    # Create a heatmap
+    heatmap = np.zeros((rows, cols))
+    
+    # Identify blocked cells:
+    # 1. Hits (1) - these are sunk ships now
+    # 2. Misses (-1)
+    # 3. Orthogonal neighbors of sunk ships (assuming standard rule: ships don't touch)
+    
+    blocked_mask = np.zeros((rows, cols), dtype=bool)
+    
+    # Mark misses and hits as blocked (we assume all hits are sunk in Hunt Mode)
+    blocked_mask[grid != 0] = True
+    
+    # Mark neighbors of sunk ships as blocked
+    for comp_coords, is_bounded, _, _ in components:
+        if is_bounded:
+            for (cr, cc) in comp_coords:
+                for dr, dc in dirs:
+                    nr, nc = cr + dr, cc + dc
+                    if is_valid(nr, nc):
+                        blocked_mask[nr, nc] = True
+
+    # Calculate probabilities for each remaining ship length
+    for length in current_remaining:
+        # Horizontal placements
+        for r in range(rows):
+            for c in range(cols - length + 1):
+                # Slice the grid
+                segment = grid[r, c : c + length]
+                # Check if segment is clear in original grid (only 0s)
+                if np.all(segment == 0):
+                    # Check validity against blocked_mask (which accounts for misses/sunk-ship-neighbors)
+                    # Note: blocked_mask includes original hits (sunk), so we check blocked_mask too
+                    if np.all(blocked_mask[r, c : c + length] == False):
+                        heatmap[r, c : c + length] += 1
+                        
+        # Vertical placements
+        for c in range(cols):
+            for r in range(rows - length + 1):
+                segment = grid[r : r + length, c]
+                if np.all(segment == 0):
+                    if np.all(blocked_mask[r : r + length, c] == False):
+                        heatmap[r : r + length, c] += 1
+
+    # Mask out already fired shots and blocked cells from results
+    heatmap[blocked_mask] = -1
+    
+    # Find max
+    max_val = np.max(heatmap)
+    
+    if max_val > 0:
+        candidates = np.argwhere(heatmap == max_val)
+        chosen = candidates[np.random.randint(len(candidates))]
+        return tuple(chosen)
+    
+    # Fallback: If no probabilistic moves (shouldn't happen in normal game until end)
+    # Pick any remaining 0
+    zeros = np.argwhere(grid == 0)
+    if len(zeros) > 0:
+        return tuple(zeros[np.random.randint(len(zeros))])
+        
+    # Should not reach here
+    return (0, 0)
+</code>

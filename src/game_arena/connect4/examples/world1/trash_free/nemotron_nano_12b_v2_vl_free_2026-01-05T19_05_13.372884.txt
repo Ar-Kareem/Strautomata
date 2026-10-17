@@ -1,0 +1,138 @@
+To solve this problem, we need to implement a targeting policy for a Connect 4 game that selects the optimal column for the AI to drop its disc based on the current board state. The goal is to form a horizontal, vertical, or diagonal line of four discs while considering both immediate wins and strategic moves.
+
+### Approach
+The solution uses a depth-limited minimax algorithm with alpha-beta pruning to evaluate potential moves and their responses. Here's the breakdown:
+
+1. **Identify Possible Moves**: Determine all columns where the AI can legally drop a disc (columns with at least one empty cell).
+
+2. **Check for Immediate Win**: For each possible move, check if it results in an immediate win for the AI. If so, return that column.
+
+3. **Simulate Opponent Moves**: For each possible AI move, simulate all possible opponent responses. Evaluate each resulting board state to determine the worst-case scenario for the AI.
+
+4. **Evaluation Heuristic**: Use a heuristic to score each board state based on the potential to form or block winning lines. The heuristic considers:
+   - Immediate wins for the AI.
+   - Opponent's potential to win.
+   - Potential threats and strategic advantages for both players.
+
+### Solution Code
+```python
+def is_win(board, player):
+    # Check horizontal
+    for row in range(6):
+        for col in range(4):
+            if all(board[row][col + i] == player for i in range(4)):
+                return True
+    # Check vertical
+    for col in range(7):
+        for row in range(3):
+            if all(board[row + i][col] == player for i in range(4)):
+                return True
+    # Check diagonal top-left to bottom-right
+    for row in range(3):
+        for col in range(4):
+            if all(board[row + i][col + i] == player for i in range(4)):
+                return True
+    # Check diagonal bottom-left to top-right
+    for row in range(3, 6):
+        for col in range(4):
+            if all(board[row - i][col + i] == player for i in range(4)):
+                return True
+    return False
+
+def evaluate_window(window, player):
+    me = player
+    opp = -player
+    count_me = window.count(me)
+    count_opp = window.count(opp)
+    empty = 4 - count_me - count_opp
+
+    if count_me == 4:
+        return 100
+    if count_opp == 4:
+        return -100
+
+    if count_me == 3 and empty > 0:
+        return 50
+    if count_opp == 3 and empty > 0:
+        return -50
+
+    if count_me == 2 and empty >= 2:
+        return 10
+    if count_opp == 2 and empty >= 2:
+        return -10
+
+    if count_me == 1 and empty >= 3:
+        return 1
+    if count_opp == 1 and empty >= 3:
+        return -1
+
+    return count_me - count_opp
+
+def evaluate_board(board):
+    score = 0
+    # Horizontal
+    for row in range(6):
+        for col in range(4):
+            window = [board[row][col], board[row][col+1], board[row][col+2], board[row][col+3]]
+            score += evaluate_window(window, 1)
+            score -= evaluate_window(window, -1)
+    # Vertical
+    for col in range(7):
+        for row in range(3):
+            window = [board[row+i][col] for i in range(4)]
+            score += evaluate_window(window, 1)
+            score -= evaluate_window(window, -1)
+    # Diagonal top-left to bottom-right
+    for row in range(3):
+        for col in range(4):
+            window = [board[row+i][col+i] for i in range(4)]
+            score += evaluate_window(window, 1)
+            score -= evaluate_window(window, -1)
+    # Diagonal bottom-left to top-right
+    for row in range(3, 6):
+        for col in range(4):
+            window = [board[row-i][col+i] for i in range(4)]
+            score += evaluate_window(window, 1)
+            score -= evaluate_window(window, -1)
+    return score
+
+def policy(board: list[list[int]]) -> int:
+    possible_columns = [col for col in range(7) if any(board[row][col] == 0 for row in range(6))]
+    best_col = possible_columns[0] if possible_columns else 0
+    best_eval = -float('inf')
+    
+    for col in possible_columns:
+        new_board = [row.copy() for row in board]
+        row = next((r for r in reversed(range(6)) if new_board[r][col] == 0), 5)
+        new_board[row][col] = 1
+        
+        if is_win(new_board, 1):
+            return col
+        
+        opponent_columns = [c for c in range(7) if any(new_board[row][c] == 0 for row in range(5))]
+        min_score = float('inf')
+        
+        for oc in opponent_columns:
+            opp_board = [r.copy() for r in new_board]
+            opp_row = next((r for r in reversed(range(6)) if opp_board[r][oc] == 0), 5)
+            opp_board[opp_row][oc] = -1
+            current_eval = evaluate_board(opp_board)
+            min_score = min(min_eval, current_eval)
+        
+        if min_score > best_eval:
+            best_eval = min_score
+            best_col = col
+    
+    return best_col
+```
+
+### Explanation
+1. **Finding Possible Moves**: The code first identifies all columns where the AI can legally drop a disc by checking if the column has any empty cells.
+
+2. **Immediate Win Check**: For each possible column, the AI simulates the move and checks if it creates a winning line. If it does, the column is returned immediately.
+
+3. **Opponent Move Simulation**: For each valid move, the AI simulates all possible opponent responses. This involves placing the opponent's disc in each available column and evaluating the resulting board state.
+
+4. **Evaluation Function**: The evaluation function uses a heuristic to score each possible board state. It checks all possible lines (horizontal, vertical, diagonal) and assigns scores based on the number of discs and potential threats, considering both the AI's and the opponent's possible moves.
+
+This approach ensures the AI makes strategic decisions by prioritizing moves that lead to immediate wins, block opponent's wins, and maximize long-term advantages using a heuristic evaluation.

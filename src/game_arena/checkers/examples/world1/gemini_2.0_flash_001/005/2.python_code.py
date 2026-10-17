@@ -1,0 +1,168 @@
+
+import random
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Selects the next move for a Checkers game.
+
+    Args:
+        my_men: A list of squares containing your regular pieces.
+        my_kings: A list of squares containing your kings.
+        opp_men: A list of squares containing opponent regular pieces.
+        opp_kings: A list of squares containing opponent kings.
+        color: Your color: 'b' for black and 'w' for white.
+
+    Returns:
+        A move as a tuple: ((from_row, from_col), (to_row, to_col)).
+    """
+
+    board = {}
+    for row in range(8):
+        for col in range(8):
+            board[(row, col)] = 0  # 0: empty
+
+    for (row, col) in my_men:
+        board[(row, col)] = 1  # 1: my man
+    for (row, col) in my_kings:
+        board[(row, col)] = 2  # 2: my king
+    for (row, col) in opp_men:
+        board[(row, col)] = -1  # -1: opponent man
+    for (row, col) in opp_kings:
+        board[(row, col)] = -2  # -2: opponent king
+
+
+    def get_possible_moves(board, my_men, my_kings, opp_men, opp_kings, color):
+        """
+        Generates all possible moves for the given player.
+        """
+        possible_moves = []
+
+        my_pieces = my_men + my_kings
+        for row, col in my_pieces:
+            piece_type = 1 if (row, col) in my_men else 2
+
+            # Check for captures
+            capture_moves = find_capture_moves(board, row, col, piece_type, color)
+            if capture_moves:
+                possible_moves.extend(capture_moves)
+            elif not possible_moves:  # Only add regular moves if no captures are available
+                # Check for regular moves
+                valid_moves = find_valid_moves(board, row, col, piece_type, color)
+                possible_moves.extend(valid_moves)
+
+        return possible_moves
+
+
+    def find_valid_moves(board, row, col, piece_type, color):
+        """
+        Finds all valid non-capture moves for a piece.
+        """
+        valid_moves = []
+        direction = 1 if color == 'w' else -1
+
+        # Men can move diagonally forward
+        if piece_type == 1:
+            moves = [(row + direction, col - 1), (row + direction, col + 1)]
+        else:  # Kings can move diagonally in both directions
+            moves = [(row + 1, col - 1), (row + 1, col + 1), (row - 1, col - 1), (row - 1, col + 1)]
+
+        for to_row, to_col in moves:
+            if 0 <= to_row <= 7 and 0 <= to_col <= 7 and board[(to_row, to_col)] == 0:
+                valid_moves.append(((row, col), (to_row, to_col)))
+
+        return valid_moves
+
+    def find_capture_moves(board, row, col, piece_type, color):
+        """
+        Finds all capture moves for a piece, including multi-jumps.
+        """
+        capture_moves = []
+
+        def check_capture(board, row, col, piece_type, color, move_sequence=None):
+            if move_sequence is None:
+                move_sequence = []
+
+            direction = 1 if color == 'w' else -1
+            opponent_pieces = [-1, -2] if color == 'w' else [1, 2]
+
+            possible_captures = []
+            if piece_type == 1:  # man
+                captures = [(row + 1 * direction, col - 1), (row + 1 * direction, col + 1)]
+                jumps = [(row + 2 * direction, col - 2), (row + 2 * direction, col + 2)]
+            else:  # king
+                captures = [(row + 1, col - 1), (row + 1, col + 1), (row - 1, col - 1), (row - 1, col + 1)]
+                jumps = [(row + 2, col - 2), (row + 2, col + 2), (row - 2, col - 2), (row - 2, col + 2)]
+
+            for i in range(len(captures)):
+                capture_row, capture_col = captures[i]
+                jump_row, jump_col = jumps[i]
+                if 0 <= capture_row <= 7 and 0 <= capture_col <= 7 and \
+                   0 <= jump_row <= 7 and 0 <= jump_col <= 7 and \
+                   board[(capture_row, capture_col)] in opponent_pieces and \
+                   board[(jump_row, jump_col)] == 0:
+
+                    new_board = board.copy()
+                    new_board[(jump_row, jump_col)] = new_board[(row, col)]
+                    new_board[(row, col)] = 0  # Empty the starting square
+                    new_board[(capture_row, capture_col)] = 0  # Remove the captured piece
+                    next_moves = check_capture(new_board, jump_row, jump_col, piece_type, color, move_sequence + [((row, col), (jump_row, jump_col))])
+
+
+                    if not next_moves:
+                        possible_captures.append(move_sequence + [((row, col), (jump_row, jump_col))])
+                    else:
+                        possible_captures.extend(next_moves)
+
+            return possible_captures
+
+        capture_moves = check_capture(board, row, col, piece_type, color)
+
+        return capture_moves
+
+    # Get all possible moves
+    possible_moves = get_possible_moves(board, my_men, my_kings, opp_men, opp_kings, color)
+
+    if not possible_moves:
+        # No possible moves, this should never happen, but return a default invalid move
+        return ((0, 0), (0, 0))  # Return dummy move
+
+    # Prioritize capture moves
+    capture_moves = [move for move_list in possible_moves if isinstance(move_list, list) for move in ([move_list] if isinstance(move_list,(tuple, list)) else move_list) if any(move_list) and isinstance(move, tuple) and len(move) == 2]
+    #Flatten capture moves:
+    capture_moves = sum([find_capture_moves(board, move[0][0], move[0][1], 1 if move[0] in my_men else 2, color) for move in possible_moves  if isinstance(move, list)],[]) if possible_moves and isinstance(possible_moves[0],list) else [move for move in possible_moves if any(move) and isinstance(move, tuple) and len(move) == 2]
+
+    if capture_moves :
+        # Choose the capture move that captures the most pieces or a King.
+
+        best_capture = None
+        max_captured = -1
+        for move in capture_moves:
+              captured_pieces = 0
+              from_row, from_col = move[0]
+              to_row, to_col = move[1]
+              # Find the piece that was captured and check if it was a king.
+              captured_row = (from_row + to_row) // 2
+              captured_col = (from_col + to_col) // 2
+
+              if (captured_row, captured_col) in opp_kings:
+                   captured_pieces += 2  # Prefer capturing a King
+              elif (captured_row, captured_col) in opp_men:
+                   captured_pieces += 1 # Only a man captured.
+              
+              # Check is Multi jump capture
+              new_board = board.copy()
+              new_board[(to_row, to_col)] = new_board[(from_row, from_col)]
+              new_board[(from_row, from_col)] = 0
+              new_board[(captured_row, captured_col)] = 0
+              if(find_capture_moves(new_board, to_row, to_col,1 if (from_row, from_col) in my_men else 2, color)):
+                     captured_pieces +=1
+
+              if captured_pieces > max_captured:
+                   max_captured = captured_pieces
+                   best_capture = move
+
+
+        return best_capture[0], best_capture[1]
+
+    # No captures available, choose a random valid move
+    return random.choice(possible_moves)

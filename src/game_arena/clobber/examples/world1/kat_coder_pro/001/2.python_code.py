@@ -1,0 +1,65 @@
+
+import numpy as np
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Convert lists to numpy arrays for easier manipulation
+    you = np.array(you).reshape(5, 6)
+    opp = np.array(opponent).reshape(5, 6)
+    
+    # Directions: Up, Right, Down, Left
+    dirs = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    
+    # Find all legal moves
+    legal_moves = []
+    for r in range(5):
+        for c in range(6):
+            if you[r, c] == 1:  # If we have a piece here
+                for dr, dc, d_str in dirs:
+                    nr, nc = r + dr, c + dc
+                    # Check if move is valid
+                    if 0 <= nr < 5 and 0 <= nc < 6 and opp[nr, nc] == 1:
+                        legal_moves.append((r, c, d_str, nr, nc))
+    
+    # If only one move, return it
+    if len(legal_moves) == 1:
+        r, c, d_str, _, _ = legal_moves[0]
+        return f"{r},{c},{d_str}"
+    
+    # Evaluate each move based on opponent's mobility after the move
+    best_moves = []
+    min_opp_moves = float('inf')
+    
+    for r, c, d_str, nr, nc in legal_moves:
+        # Simulate the move
+        # New you board: remove from (r,c), add to (nr,nc)
+        # New opp board: remove from (nr,nc)
+        new_you = you.copy()
+        new_opp = opp.copy()
+        
+        new_you[r, c] = 0
+        new_you[nr, nc] = 1
+        new_opp[nr, nc] = 0
+        
+        # Count opponent's moves
+        opp_moves = 0
+        for orow in range(5):
+            for ocol in range(6):
+                if new_opp[orow, ocol] == 1:
+                    for dr, dc, _ in dirs:
+                        onr, onc = orow + dr, ocol + dc
+                        if 0 <= onr < 5 and 0 <= onc < 6 and new_you[onr, onc] == 1:
+                            opp_moves += 1
+                            break  # Only need to know if at least one move exists
+        
+        # Update best moves
+        if opp_moves < min_opp_moves:
+            min_opp_moves = opp_moves
+            best_moves = [(r, c, d_str)]
+        elif opp_moves == min_opp_moves:
+            best_moves.append((r, c, d_str))
+    
+    # Randomly select from best moves (if multiple)
+    # Or just pick the first one for deterministic behavior
+    # Here we pick the first one for consistency
+    r, c, d_str = best_moves[0]
+    return f"{r},{c},{d_str}"

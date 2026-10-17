@@ -1,0 +1,73 @@
+
+WIN_SCORE = 10
+LOSS_SCORE = -10
+DRAW_SCORE = 0
+
+def check_win(board, mark):
+    # Check rows
+    for i in range(3):
+        if board[i][0] == mark and board[i][1] == mark and board[i][2] == mark:
+            return True
+    # Check columns
+    for j in range(3):
+        if board[0][j] == mark and board[1][j] == mark and board[2][j] == mark:
+            return True
+    # Check diagonals
+    if board[0][0] == mark and board[1][1] == mark and board[2][2] == mark:
+        return True
+    if board[0][2] == mark and board[1][1] == mark and board[2][0] == mark:
+        return True
+    return False
+
+def minimax(board, is_maximizing, alpha=float('-inf'), beta=float('inf')):
+    # Check terminal states
+    if check_win(board, 1):
+        return (WIN_SCORE, None)
+    if check_win(board, -1):
+        return (LOSS_SCORE, None)
+    if 0 not in [cell for row in board for cell in row]:
+        return (DRAW_SCORE, None)
+    
+    # Non-terminal: evaluate all possible moves
+    if is_maximizing:
+        best_score = float('-inf')
+        best_move = None
+        for row in range(3):
+            for col in range(3):
+                if board[row][col] == 0:
+                    board[row][col] = 1  # Player move
+                    score, _ = minimax(board, False, alpha, beta)
+                    board[row][col] = 0  # Undo move
+                    if score > best_score:
+                        best_score = score
+                        best_move = (row, col)
+                    alpha = max(alpha, best_score)
+                    if beta <= alpha:  # Alpha-beta cutoff
+                        break
+        return (best_score, best_move)
+    else:
+        best_score = float('inf')
+        best_move = None
+        for row in range(3):
+            for col in range(3):
+                if board[row][col] == 0:
+                    board[row][col] = -1  # Opponent move
+                    score, _ = minimax(board, True, alpha, beta)
+                    board[row][col] = 0  # Undo move
+                    if score < best_score:
+                        best_score = score
+                        best_move = (row, col)
+                    beta = min(beta, best_score)
+                    if beta <= alpha:  # Alpha-beta cutoff
+                        break
+        return (best_score, best_move)
+
+def policy(board):
+    # Determine whose turn it is
+    num_1 = sum(cell == 1 for row in board for cell in row)
+    num_neg1 = sum(cell == -1 for row in board for cell in row)
+    is_maximizing = (num_1 == num_neg1)  # True if it's our turn
+    
+    # Run minimax to get optimal move
+    score, move = minimax(board, is_maximizing)
+    return move

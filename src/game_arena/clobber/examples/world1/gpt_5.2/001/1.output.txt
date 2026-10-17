@@ -1,0 +1,264 @@
+The strategy for this policy is a fast iterative-deepening alpha–beta search (negamax) with a transposition table on a compact 30-bit bitboard representation. It always plays a legal capture move, prioritizes forced wins (moves that leave the opponent with no captures), and otherwise searches as deep as time allows (≈0.9s). When depth-limited, it uses a simple but effective heuristic favoring higher mobility (available captures) and material advantage, with strong move ordering based on reducing the opponent’s mobility.
+
+<code>
+import time
+from typing import List, Tuple, Optional, Dict, Any
+
+# Board: 5 rows x 6 cols => 30 cells
+R, C, N = 5, 6, 30
+
+# Directions
+DIRS = ['U', 'R', 'D', 'L']
+DRDC = {'U': (-1, 0), 'R': (0, 1), 'D': (1, 0), 'L': (0, -1)}
+
+# Precompute neighbor index for each square and direction
+NEI = [[-1] * 4 for _ in range(N)]  # [idx][dir_i] -> neighbor idx or -1
+for r in range(R):
+    for c in range(C):
+        i = r * C + c
+        for d_i, d in enumerate(DIRS):
+            dr, dc = DRDC[d]
+            rr, cc = r + dr, c + dc
+            if 0 <= rr < R and 0 <= cc < C:
+                NEI[i][d_i] = rr * C + cc
+
+WIN = 100000
+INF = 10**9
+
+# Time management
+_TIME_LIMIT = 0.90  # seconds
+_start_time = 0.0
+
+
+def _time_up() -> bool:
+    return (time.perf_counter() - _start_time) >= _TIME_LIMIT
+
+
+def _flatten(arr: Any) -> List[int]:
+    # Accept either flat length-30 or nested 5x6-like.
+    if not isinstance(arr, list):
+        return list(arr)
+    if len(arr) == N and all(isinstance(x, int) for x in arr):
+        return arr
+    out = []
+    for row in arr:
+        if isinstance(row, list):
+            out.extend(row)
+        else:
+            out.append(row)
+    return out
+
+
+def _to_bitboard(flat: List[int]) -> int:
+    b = 0
+    for i, v in enumerate(flat):
+        if v:
+            b |= (1 << i)
+    return b
+
+
+def _popcount(x: int) -> int:
+    return x.bit_count()
+
+
+def _gen_moves(p: int, o: int) -> List[Tuple[int, int, int]]:
+    """Generate legal capture moves for side to move.
+    Returns list of (from_idx, to_idx, dir_i).
+    """
+    moves = []
+    # Iterate pieces by scanning bits
+    bb = p
+    while bb:
+        lsb = bb & -bb
+        i = (lsb.bit_length() - 1)
+        bb ^= lsb
+        nei = NEI[i]
+        # check 4 dirs
+        for d_i in range(4):
+            j = nei[d_i]
+            if j != -1 and ((o >> j) & 1):
+                moves.append((i, j, d_i))
+    return moves
+
+
+def _mobility(p: int, o: int) -> int:
+    return len(_gen_moves(p, o))
+
+
+def _apply_move(p: int, o: int, mv: Tuple[int, int, int]) -> Tuple[int, int]:
+    i, j, _ = mv
+    # p has i, o has j
+    p2 = (p & ~(1 << i)) | (1 << j)
+    o2 = o & ~(1 << j)
+    return p2, o2
+
+
+def _heuristic(p: int, o: int) -> int:
+    # Mobility is usually the strongest practical signal in clobber-like capture games.
+    mp = _mobility(p, o)
+    mo = _mobility(o, p)
+    mat = _popcount(p) - _popcount(o)
+    return 10 * (mp - mo) + 2 * mat
+
+
+# Transposition table entry:
+# key -> (depth, value, flag, bestmove)
+# flag in {"EXACT","LOWER","UPPER"}
+TT: Dict[int, Tuple[int, int, str, Optional[Tuple[int, int, int]]]] = {}
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _tt_key(p: int, o: int) -> int:
+    # 30-bit each packed into a single int key
+    return (p << 30) ^ o
+
+
+def _order_moves(p: int, o: int, moves: List[Tuple[int, int, int]]) -> List[Tuple[int, int, int]]:
+    # Strong ordering:
+    # 1) immediate win (opponent has no moves after capture)
+    # 2) minimize opponent mobility after the move (since turn swaps)
+    scored = []
+    for mv in moves:
+        p2, o2 = _apply_move(p, o, mv)
+        # after move, opponent to play with pieces o2 vs p2
+        opp_moves = _mobility(o2, p2)
+        if opp_moves == 0:
+            score = 10**9
+        else:
+            # prefer smaller opp mobility; slight preference for our next mobility too
+            our_next = _mobility(p2, o2)
+            score = (1000 - opp_moves) * 10 + our_next
+        scored.append((score, mv))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [mv for _, mv in scored]
+
+
+def _negamax(p: int, o: int, depth: int, alpha: int, beta: int, ply: int) -> int:
+    if _time_up():
+        raise _Timeout()
+
+    moves = _gen_moves(p, o)
+    if not moves:
+        # No legal moves => current player loses.
+        return -WIN + ply
+
+    if depth == 0:
+        return _heuristic(p, o)
+
+    key = _tt_key(p, o)
+    if key in TT:
+        td, tv, flag, best = TT[key]
+        if td >= depth:
+            if flag == "EXACT":
+                return tv
+            if flag == "LOWER":
+                alpha = max(alpha, tv)
+            elif flag == "UPPER":
+                beta = min(beta, tv)
+            if alpha >= beta:
+                return tv
+
+    best_move = None
+
+    # Move ordering: TT best move first if present
+    tt_best = TT.get(key, (0, 0, "", None))[3]
+    if tt_best is not None and tt_best in moves:
+        ordered = [tt_best] + [m for m in moves if m != tt_best]
+    else:
+        ordered = moves
+    ordered = _order_moves(p, o, ordered)
+
+    orig_alpha = alpha
+    best_val = -INF
+
+    for mv in ordered:
+        p2, o2 = _apply_move(p, o, mv)
+        # swap sides for next ply
+        val = -_negamax(o2, p2, depth - 1, -beta, -alpha, ply + 1)
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        alpha = max(alpha, val)
+        if alpha >= beta:
+            break
+
+    # Store TT
+    flag = "EXACT"
+    if best_val <= orig_alpha:
+        flag = "UPPER"
+    elif best_val >= beta:
+        flag = "LOWER"
+    TT[key] = (depth, best_val, flag, best_move)
+    return best_val
+
+
+def _idx_to_rc(i: int) -> Tuple[int, int]:
+    return divmod(i, C)
+
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    global _start_time
+    _start_time = time.perf_counter()
+
+    y_flat = _flatten(you)
+    o_flat = _flatten(opponent)
+    p = _to_bitboard(y_flat)
+    o = _to_bitboard(o_flat)
+
+    moves = _gen_moves(p, o)
+    if not moves:
+        # Terminal: no legal move exists. (In a well-formed arena this state
+        # typically should not be queried.) Return a placeholder string.
+        return "0,0,U"
+
+    # Quick check for immediate winning move
+    ordered0 = _order_moves(p, o, moves)
+    for mv in ordered0:
+        p2, o2 = _apply_move(p, o, mv)
+        if _mobility(o2, p2) == 0:
+            i, _, d_i = mv
+            r, c = _idx_to_rc(i)
+            return f"{r},{c},{DIRS[d_i]}"
+
+    best_move = ordered0[0]
+
+    # Iterative deepening
+    max_depth = 20
+    for depth in range(1, max_depth + 1):
+        if _time_up():
+            break
+        try:
+            # Root search
+            alpha, beta = -INF, INF
+            local_best = None
+            local_best_val = -INF
+
+            # Use TT root best for stability
+            key = _tt_key(p, o)
+            tt_best = TT.get(key, (0, 0, "", None))[3]
+            root_moves = moves
+            if tt_best is not None and tt_best in root_moves:
+                root_moves = [tt_best] + [m for m in root_moves if m != tt_best]
+            root_moves = _order_moves(p, o, root_moves)
+
+            for mv in root_moves:
+                if _time_up():
+                    raise _Timeout()
+                p2, o2 = _apply_move(p, o, mv)
+                val = -_negamax(o2, p2, depth - 1, -beta, -alpha, 1)
+                if val > local_best_val:
+                    local_best_val = val
+                    local_best = mv
+                alpha = max(alpha, val)
+            if local_best is not None:
+                best_move = local_best
+        except _Timeout:
+            break
+
+    i, _, d_i = best_move
+    r, c = _idx_to_rc(i)
+    return f"{r},{c},{DIRS[d_i]}"
+</code>

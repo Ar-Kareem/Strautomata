@@ -1,0 +1,64 @@
+
+import numpy as np
+
+def policy(board):
+    # Generate all legal moves for player 1
+    def generate_moves(b, player):
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+        moves = []
+        for r in range(6):
+            for c in range(6):
+                if b[r][c] == player:
+                    for dr, dc in directions:
+                        step = 1
+                        while True:
+                            new_r = r + dr * step
+                            new_c = c + dc * step
+                            if not (0 <= new_r < 6 and 0 <= new_c < 6):
+                                break
+                            if b[new_r][new_c] != 0:
+                                break
+                            # Valid movement to new_r, new_c
+                            # Create temp board with the movement made
+                            temp_board = b.copy()
+                            temp_board[r][c] = 0
+                            temp_board[new_r][new_c] = player
+                            # Now generate arrow shots from (new_r, new_c)
+                            for adr, adc in directions:
+                                astep = 1
+                                while True:
+                                    aarrow_r = new_r + adr * astep
+                                    aarrow_c = new_c + adc * astep
+                                    if not (0 <= aarrow_r < 6 and 0 <= aarrow_c < 6):
+                                        break
+                                    if temp_board[aarrow_r][aarrow_c] != 0:
+                                        break
+                                    # Valid arrow shot
+                                    move_str = f"{r},{c}:{new_r},{new_c}:{aarrow_r},{aarrow_c}"
+                                    moves.append(move_str)
+                                    astep += 1
+                            step += 1
+        return moves
+
+    def apply_move(b, move_str):
+        parts = move_str.replace(':', ',').split(',')
+        fr, fc, tr, tc, ar, ac = map(int, parts)
+        new_board = b.copy()
+        new_board[fr][fc] = 0
+        new_board[tr][tc] = 1
+        new_board[ar][ac] = -1
+        return new_board
+
+    my_moves = generate_moves(board, 1)
+    if not my_moves:
+        return ""
+    best_move = None
+    min_opponent_moves = float('inf')
+    for move in my_moves:
+        new_board = apply_move(board, move)
+        opponent_moves = generate_moves(new_board, 2)
+        num_opponent_moves = len(opponent_moves)
+        if num_opponent_moves < min_opponent_moves:
+            min_opponent_moves = num_opponent_moves
+            best_move = move
+    return best_move

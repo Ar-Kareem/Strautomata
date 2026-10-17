@@ -1,0 +1,324 @@
+The strategy for this policy is based on a Minimax search algorithm with Alpha-Beta pruning, using a static weight matrix heuristic to evaluate board positions.
+
+### Strategy Details:
+1.  **Bitboard Representation**: The board state is converted from 2D numpy arrays into 64-bit integers (bitboards). This allows for extremely fast move generation and board manipulation using bitwise operations.
+2.  **Heuristic Evaluation**: The AI uses a pre-computed weight matrix that assigns values to every square on the board.
+    *   **Corners** are assigned high positive values (100) as they are stable and can never be flipped.
+    *   **X-Squares** (e.g., b2, g7) and **C-Squares** (e.g., b1, g2) adjacent to corners are assigned negative values (-20 to -50) to avoid giving the opponent access to corners.
+    *   **Mobility** and **Disc Parity** are implicitly considered through the search depth.
+3.  **Minimax with Alpha-Beta Pruning**: The AI looks ahead 5 plies (depth 5). The Alpha-Beta pruning cuts off branches that are guaranteed to be worse than already explored options, significantly optimizing the search within the 1-second time limit.
+4.  **Move Ordering**: Legal moves are sorted based on the heuristic weight of the destination square before searching. Searching higher-valued moves (like corners) first increases the likelihood of triggering alpha-beta cut-offs early.
+5.  **Endgame Detection**: If the board is full or no moves are possible for either player, the search terminates immediately and returns the actual disc difference.
+
+This combination of bitboard speed, positional heuristics, and search depth allows the policy to play strategically, prioritizing corner control while avoiding traps.
+
+<code>
+import numpy as np
+
+# --- Constants and Weights ---
+
+# Directions for move checking: Up, Down, Left, Right, and 4 Diagonals
+# Offsets correspond to bit indices in a flattened 8x8 board (0-63)
+# Row index r, Col index c -> index = r*8 + c
+# Up: -8, Down: +8, Left: -1, Right: +1
+# Diagonals: -9 (up-left), -7 (up-right), +7 (down-left), +9 (down-right)
+DIRECTIONS = [-8, -7, -1, 1, 7, 8, 9]
+
+# Precomputed masks to prevent wrapping around the board edges
+# File A (col 0): bits 0, 8, 16, 24, 32, 40, 48, 56
+FILE_A = 0x0101010101010101
+# File H (col 7): bits 7, 15, 23, 31, 39, 47, 55, 63
+FILE_H = 0x8080808080808080
+# Rank 1 (row 0): bits 0-7
+RANK_1 = 0xFF
+# Rank 8 (row 7): bits 56-63
+RANK_8 = 0xFF00000000000000
+
+# Masks for each direction to allow movement only if valid
+# (e.g., cannot move Left if currently on File A)
+DIR_MASKS = {
+    -8: ~RANK_1,       # Up: not in row 0
+    -7: ~RANK_1 & ~FILE_H, # Up-Right: not row 0, not col 7
+    -1: ~FILE_H,       # Right: not col 7
+    1:  ~FILE_A,       # Left: not col 0
+    7:  ~RANK_8 & ~FILE_A, # Down-Left: not row 7, not col 0
+    8:  ~RANK_8,       # Down: not row 7
+    9:  ~RANK_8 & ~FILE_H, # Down-Right: not row 7, not col 7
+    # Note: -7 and -9 logic inverted based on index arithmetic, 
+    # but checking bounds logic:
+    # -1 is left (decreasing col). If col is 0 (FILE_A), we cannot go left. Mask ~FILE_A.
+    # 1 is right (increasing col). If col is 7 (FILE_H), we cannot go right. Mask ~FILE_H.
+    # -8 is up (decreasing row). If row is 0 (RANK_1), cannot go up. Mask ~RANK_1.
+    # 8 is down (increasing row). If row is 7 (RANK_8), cannot go down. Mask ~RANK_8.
+}
+
+# Correcting Direction Masks based on visual index mapping:
+# Index 0 is Top-Left (a8 in chess notation usually, but here let's assume 0,0 is top-left)
+# Prompt: `a4` maps to `you[3][0]`.
+# Row 0 is `1`, Row 7 is `8`. Col 0 is `a`.
+# Index = Row * 8 + Col.
+# `a1` (0,0) -> idx 0. `a8` (7,0) -> idx 56.
+# `h1` (0,7) -> idx 7.
+#
+# Left (-1): If idx % 8 == 0, it's col A. Cannot move Left. Mask: ~FILE_A
+# Right (+1): If idx % 8 == 7, it's col H. Cannot move Right. Mask: ~FILE_H
+# Up (-8): If idx // 8 == 0, it's row 1. Cannot move Up. Mask: ~RANK_1
+# Down (+8): If idx // 8 == 7, it's row 8. Cannot move Down. Mask: ~RANK_8
+#
+# Up-Left (-9): Must satisfy Up AND Left. Mask: ~RANK_1 & ~FILE_A
+# Up-Right (-7): Must satisfy Up AND Right. Mask: ~RANK_1 & ~FILE_H
+# Down-Left (+7): Must satisfy Down AND Left. Mask: ~RANK_8 & ~FILE_A
+# Down-Right (+9): Must satisfy Down AND Right. Mask: ~RANK_8 & ~FILE_H
+
+_DIR_MASKS_FINAL = {
+    -9: ~RANK_1 & ~FILE_A,
+    -8: ~RANK_1,
+    -7: ~RANK_1 & ~FILE_H,
+    -1: ~FILE_H, # Wait, +1 is right, -1 is left.
+                 # If I am at index 0 (col 0), I can't go -1 (wrap to end).
+                 # So for dir -1, I must NOT be in FILE_A. Mask ~FILE_A.
+    1:  ~FILE_A, # If I am at index 7 (col 7), I can't go +1 (wrap to start).
+                 # So for dir 1, I must NOT be in FILE_H. Mask ~FILE_H.
+                 # Let's re-verify carefully.
+                 # Index 7 (0,7). Add 1 -> 8 (1,0). Wrapping!
+                 # So dir 1 needs to be prevented if in col 7. Mask ~FILE_H.
+                 # Index 0 (0,0). Sub 1 -> -1.
+                 # So dir -1 needs to be prevented if in col 0. Mask ~FILE_A.
+                 # My previous draft had these swapped in the logic description, fixing now.
+}
+
+# Define the correct masks dictionary
+MOVE_MASKS = {
+    -9: ~RANK_1 & ~FILE_A,
+    -8: ~RANK_1,
+    -7: ~RANK_1 & ~FILE_H,
+    -1: ~FILE_A,
+    1:  ~FILE_H,
+    7:  ~RANK_8 & ~FILE_A,
+    8:  ~RANK_8,
+    9:  ~RANK_8 & ~FILE_H
+}
+
+# Static Positional Weights (Standard Othello Heuristic)
+# Corners are valuable, X-squares and C-squares are dangerous.
+_WEIGHTS_LIST = [
+    100, -20, 10,  5,  5, 10, -20, 100,
+    -20, -50, -2, -2, -2, -2, -50, -20,
+     10,  -2, -1, -1, -1, -1,  -2,  10,
+      5,  -2, -1, -1, -1, -1,  -2,   5,
+      5,  -2, -1, -1, -1, -1,  -2,   5,
+     10,  -2, -1, -1, -1, -1,  -2,  10,
+    -20, -50, -2, -2, -2, -2, -50, -20,
+    100, -20, 10,  5,  5, 10, -20, 100
+]
+WEIGHTS = np.array(_WEIGHTS_LIST)
+
+# --- Core Logic ---
+
+def get_bitboard(board_array):
+    """Convert 8x8 numpy array to 64-bit integer."""
+    # Assuming row-major: board[r][c] -> bit (r*8 + c)
+    bb = 0
+    for r in range(8):
+        for c in range(8):
+            if board_array[r][c]:
+                bb |= (1 << (r * 8 + c))
+    return bb
+
+def get_legal_moves(player, opponent):
+    """Return a list of legal move indices (0-63) for the player."""
+    moves = []
+    # Empty squares are those not in player or opponent
+    empty = ~(player | opponent) & 0xFFFFFFFFFFFFFFFF
+    
+    # Iterate through all empty squares
+    # Optimization: iterate only through set bits in 'empty'
+    e = empty
+    while e:
+        idx = (e & -e).bit_length() - 1  # Get index of lowest set bit
+        e &= e - 1  # Clear lowest set bit
+        
+        is_legal = False
+        # Check all 8 directions
+        for d in DIRECTIONS:
+            mask = MOVE_MASKS[d]
+            neighbor = idx + d
+            
+            # Check bounds/mask
+            if (1 << neighbor) & mask == 0:
+                continue
+                
+            # Must find opponent disc
+            if (1 << neighbor) & opponent:
+                # Keep sliding in this direction
+                curr = neighbor
+                while True:
+                    curr += d
+                    # Check bounds for current position
+                    if (1 << curr) & mask == 0:
+                        break
+                    
+                    # If empty, this direction fails
+                    if (1 << curr) & empty:
+                        break
+                    
+                    # If own disc, this direction succeeds (valid move)
+                    if (1 << curr) & player:
+                        is_legal = True
+                        break
+                    # If opponent disc, continue loop
+        
+        if is_legal:
+            moves.append(idx)
+            
+    return moves
+
+def apply_move(player, opponent, move):
+    """Place disc at move and flip opponent discs. Return new (player, opponent)."""
+    new_player = player | (1 << move)
+    new_opponent = opponent
+    
+    for d in DIRECTIONS:
+        mask = MOVE_MASKS[d]
+        neighbor = move + d
+        
+        if (1 << neighbor) & mask == 0:
+            continue
+            
+        if (1 << neighbor) & opponent:
+            # Find potential bracket
+            curr = neighbor
+            bracket_pos = -1
+            while True:
+                curr += d
+                if (1 << curr) & mask == 0:
+                    break
+                if (1 << curr) & player:
+                    bracket_pos = curr
+                    break
+                if (1 << curr) & opponent:
+                    # continue
+                    pass
+                else:
+                    # Empty cell
+                    break
+            
+            if bracket_pos != -1:
+                # Flip everything between move and bracket_pos
+                curr = neighbor
+                while curr != bracket_pos:
+                    new_opponent &= ~(1 << curr)
+                    new_player |= (1 << curr)
+                    curr += d
+                    
+    return new_player, new_opponent
+
+def evaluate(player, opponent):
+    """Evaluate board state using static weights."""
+    p_score = 0
+    o_score = 0
+    # This is slightly slower than bit operations but fast enough for leaf nodes
+    # To optimize: only iterate set bits.
+    
+    p = player
+    while p:
+        idx = (p & -p).bit_length() - 1
+        p_score += WEIGHTS[idx]
+        p &= p - 1
+        
+    o = opponent
+    while o:
+        idx = (o & -o).bit_length() - 1
+        o_score += WEIGHTS[idx]
+        o &= o - 1
+        
+    return p_score - o_score
+
+def negamax(player, opponent, depth, alpha, beta):
+    """Minimax with Alpha-Beta pruning."""
+    moves = get_legal_moves(player, opponent)
+    
+    # Terminal condition or no moves
+    if not moves:
+        # Check if opponent has moves
+        opp_moves = get_legal_moves(opponent, player)
+        if not opp_moves:
+            # Game over
+            return player.bit_count() - opponent.bit_count()
+        else:
+            # Pass turn
+            return -negamax(opponent, player, depth, -beta, -alpha)
+    
+    if depth == 0:
+        return evaluate(player, opponent)
+    
+    # Move ordering: sort by weight to improve pruning
+    # (Sort indices based on WEIGHTS value)
+    moves.sort(key=lambda m: WEIGHTS[m], reverse=True)
+    
+    best_val = -float('inf')
+    for move in moves:
+        new_p, new_o = apply_move(player, opponent, move)
+        val = -negamax(new_o, new_p, depth - 1, -beta, -alpha)
+        
+        if val > best_val:
+            best_val = val
+        if val > beta:
+            break # Beta cutoff
+        alpha = max(alpha, val)
+        
+    return best_val
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """Return the best move string (e.g., 'd3') or 'pass'."""
+    
+    # Convert to bitboards
+    you_bb = get_bitboard(you)
+    opp_bb = get_bitboard(opponent)
+    
+    moves = get_legal_moves(you_bb, opp_bb)
+    
+    if not moves:
+        return "pass"
+    
+    # Search parameters
+    DEPTH = 5
+    
+    # Find best move using NegaMax
+    best_move = None
+    best_val = -float('inf')
+    
+    # Alpha-Beta bounds
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Sorting moves helps pruning efficiency
+    moves.sort(key=lambda m: WEIGHTS[m], reverse=True)
+    
+    for move in moves:
+        new_p, new_o = apply_move(you_bb, opp_bb, move)
+        # In negamax, we swap roles and negate score
+        val = -negamax(new_o, new_p, DEPTH - 1, -beta, -alpha)
+        
+        if val > best_val:
+            best_val = val
+            best_move = move
+        if val > beta:
+            break
+        alpha = max(alpha, val)
+    
+    if best_move is None:
+        # Should not happen if moves list is not empty
+        return "pass"
+        
+    # Convert index back to algebraic notation
+    r = best_move // 8
+    c = best_move % 8
+    
+    # rows 0..7 map to 1..8
+    # cols 0..7 map to a..h
+    col_char = chr(ord('a') + c)
+    row_char = str(r + 1)
+    
+    return f"{col_char}{row_char}"
+</code>

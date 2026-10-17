@@ -1,0 +1,251 @@
+The strategy for this policy is to use a depth-limited Minimax search algorithm with Alpha-Beta pruning to look ahead at the consequences of moves. The evaluation function focuses heavily on the primary objective of the game: reducing the number of connected groups of pieces. It rewards moves that merge groups of pieces and penalizes moves that leave pieces scattered. Additionally, it incorporates positional heuristics favoring compactness and control of the board center, as central pieces generally have more mobility and easier connectivity. The search depth is set to 2 to ensure the move is calculated within the strict 1-second time limit while still providing intelligence beyond a single-move greedy approach.
+
+<code>
+import numpy as np
+import random
+
+# Constants
+EMPTY = 0
+PLAYER = 1
+OPPONENT = -1
+
+# Directions for movement (dr, dc)
+DIRECTIONS = [
+    (0, 1), (0, -1), (1, 0), (-1, 0), 
+    (1, 1), (1, -1), (-1, 1), (-1, -1)
+]
+
+def get_legal_moves(board, player):
+    """
+    Generate all legal moves for the given player.
+    Returns a list of tuples (r1, c1, r2, c2).
+    """
+    moves = []
+    # Find all pieces for the player
+    rows, cols = np.where(board == player)
+    
+    for r, c in zip(rows, cols):
+        for dr, dc in DIRECTIONS:
+            # 1. Determine the number of pieces in the line of movement
+            count = 0
+            
+            if dr == 0:  # Horizontal
+                count = np.count_nonzero(board[r, :])
+            elif dc == 0:  # Vertical
+                count = np.count_nonzero(board[:, c])
+            elif (dr == 1 and dc == 1) or (dr == -1 and dc == -1):  # Main Diagonal (\)
+                # Diagonal offset is c - r
+                diag = np.diagonal(board, offset=c - r)
+                count = np.count_nonzero(diag)
+            else:  # Anti-Diagonal (/)
+                # Diagonal offset is r + c
+                # Manual iteration for clarity and speed
+                k = r + c
+                start_row = max(0, k - 7)
+                start_col = min(7, k)
+                cnt = 0
+                curr_r, curr_c = start_row, start_col
+                while curr_r < 8 and curr_c >= 0:
+                    if board[curr_r, curr_c] != 0:
+                        cnt += 1
+                    curr_r += 1
+                    curr_c -= 1
+                count = cnt
+            
+            # If no pieces in line, cannot move
+            if count == 0: continue
+            
+            # 2. Calculate target square
+            tr, tc = r + dr * count, c + dc * count
+            
+            # 3. Check bounds
+            if not (0 <= tr < 8 and 0 <= tc < 8):
+                continue
+            
+            # 4. Check path for opponent pieces
+            # Cannot jump over opponent. Can jump over self.
+            blocked = False
+            curr_r, curr_c = r + dr, c + dc
+            # Stop before target square
+            while curr_r != tr or curr_c != tc:
+                if board[curr_r, curr_c] == -player:
+                    blocked = True
+                    break
+                curr_r += dr
+                curr_c += dc
+            
+            if blocked:
+                continue
+                
+            # 5. Check landing square
+            # Must be empty or opponent
+            piece_at_target = board[tr, tc]
+            if piece_at_target == player:
+                continue # Cannot land on own piece
+            
+            # Valid move
+            moves.append((r, c, tr, tc))
+            
+    return moves
+
+def get_components(board, player):
+    """Returns the number of connected components (8-way) for the player."""
+    rows, cols = np.where(board == player)
+    if len(rows) == 0:
+        return 0
+    
+    pieces = set(zip(rows, cols))
+    visited = set()
+    components = 0
+    
+    for p in pieces:
+        if p not in visited:
+            components += 1
+            # BFS
+            queue = [p]
+            visited.add(p)
+            while queue:
+                curr = queue.pop()
+                r, c = curr
+                # Check 8 neighbors
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0: continue
+                        nr, nc = r + dr, c + dc
+                        if (nr, nc) in pieces and (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+    return components
+
+def evaluate_board(board):
+    """
+    Heuristic evaluation of the board state from perspective of PLAYER (1).
+    Positive score is good for PLAYER.
+    """
+    # Win/Loss detection
+    comps_p1 = get_components(board, PLAYER)
+    comps_p2 = get_components(board, OPPONENT)
+    
+    if comps_p1 == 1:
+        return 1000000
+    if comps_p2 == 1:
+        return -1000000
+        
+    # Heuristics
+    score = 0
+    
+    # 1. Component penalty (primary objective)
+    # Fewer components is better. Opponent's components are bad for us.
+    score += (comps_p2 - comps_p1) * 5000
+    
+    # 2. Compactness (Sum of Manhattan distances between all pairs of pieces)
+    # Minimizing distances helps connectivity.
+    pieces_p1 = np.argwhere(board == PLAYER)
+    pieces_p2 = np.argwhere(board == OPPONENT)
+    
+    if len(pieces_p1) > 1:
+        dist_sum = 0
+        for i in range(len(pieces_p1)):
+            for j in range(i + 1, len(pieces_p1)):
+                d = abs(pieces_p1[i][0] - pieces_p1[j][0]) + abs(pieces_p1[i][1] - pieces_p1[j][1])
+                dist_sum += d
+        score -= dist_sum * 10
+        
+    if len(pieces_p2) > 1:
+        dist_sum = 0
+        for i in range(len(pieces_p2)):
+            for j in range(i + 1, len(pieces_p2)):
+                d = abs(pieces_p2[i][0] - pieces_p2[j][0]) + abs(pieces_p2[i][1] - pieces_p2[j][1])
+                dist_sum += d
+        score += dist_sum * 10
+        
+    # 3. Centrality (Pieces closer to center have more mobility)
+    center = np.array([3.5, 3.5])
+    if len(pieces_p1) > 0:
+        dist_to_center = np.sum(np.abs(pieces_p1 - center))
+        score -= dist_to_center * 2
+        
+    return score
+
+def minimax(board, depth, alpha, beta, is_maximizing):
+    if depth == 0:
+        return evaluate_board(board), None
+    
+    current_player = PLAYER if is_maximizing else OPPONENT
+    moves = get_legal_moves(board, current_player)
+    
+    if not moves:
+        # If no moves, treat as a bad state (likely loss or terminal non-win)
+        return -100000 if is_maximizing else 100000, None
+        
+    best_move = None
+    
+    if is_maximizing:
+        max_eval = -float('inf')
+        for move in moves:
+            r1, c1, r2, c2 = move
+            # Make move
+            captured = board[r2, c2]
+            board[r2, c2] = PLAYER
+            board[r1, c1] = EMPTY
+            
+            eval_val, _ = minimax(board, depth - 1, alpha, beta, False)
+            
+            # Undo move
+            board[r1, c1] = PLAYER
+            board[r2, c2] = captured
+            
+            if eval_val > max_eval:
+                max_eval = eval_val
+                best_move = move
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            r1, c1, r2, c2 = move
+            captured = board[r2, c2]
+            board[r2, c2] = OPPONENT
+            board[r1, c1] = EMPTY
+            
+            eval_val, _ = minimax(board, depth - 1, alpha, beta, True)
+            
+            board[r1, c1] = OPPONENT
+            board[r2, c2] = captured
+            
+            if eval_val < min_eval:
+                min_eval = eval_val
+                best_move = move
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(board):
+    b = np.array(board, dtype=np.int8)
+    
+    moves = get_legal_moves(b, PLAYER)
+    
+    if not moves:
+        # If no moves available (rare/invalid state), return a dummy move to avoid disqualification
+        # though logically the game might be over.
+        return "0,0:0,0" 
+        
+    if len(moves) == 1:
+        r1, c1, r2, c2 = moves[0]
+        return f"{r1},{c1}:{r2},{c2}"
+        
+    # Perform search
+    # Depth 2 is chosen to fit within 1 second comfortably on standard hardware
+    score, move = minimax(b, 2, -float('inf'), float('inf'), True)
+    
+    if move:
+        r1, c1, r2, c2 = move
+        return f"{r1},{c1}:{r2},{c2}"
+    
+    # Fallback to random move if search fails
+    r1, c1, r2, c2 = random.choice(moves)
+    return f"{r1},{c1}:{r2},{c2}"
+</code>

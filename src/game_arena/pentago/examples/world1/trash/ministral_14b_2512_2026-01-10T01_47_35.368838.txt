@@ -1,0 +1,200 @@
+### Thinking Process
+
+The goal is to implement a move-selection policy for Pentago that always returns a legal move. Pentago is a complex game combining placement and rotation, so the policy needs to consider both aspects. Here's the approach:
+
+1. **Legal Move Generation**:
+   - First, generate all possible legal moves. A legal move consists of:
+     - Placing a marble in any empty cell (1-6, 1-6).
+     - Rotating any quadrant (0-3) in either direction (L or R).
+   - For each empty cell, we must ensure that after placing the marble and rotating a quadrant, the move is valid (i.e., no overlaps or invalid rotations).
+
+2. **Move Evaluation**:
+   - Since Pentago is a two-player game with perfect information, we can use a simple heuristic to evaluate moves. A good heuristic is to prioritize moves that:
+     - Create a winning position (5-in-a-row) for us.
+     - Block the opponent from creating a winning position.
+     - Otherwise, choose moves that maximize our potential for future wins (e.g., central control, symmetry).
+   - For simplicity, we can use a minimax-like approach with a shallow depth (e.g., 1-ply lookahead) to evaluate moves.
+
+3. **Win/Block Check**:
+   - After placing a marble and rotating a quadrant, we need to check if the resulting board has a 5-in-a-row for either player. This involves checking all possible lines (rows, columns, diagonals) in the 6x6 board.
+
+4. **Fallback Strategy**:
+   - If no winning or blocking move is found, default to a simple strategy like placing in the center and rotating a random quadrant.
+
+### Implementation Details
+
+1. **Board Representation**:
+   - The board is given as two 6x6 arrays (`you` and `opponent`). We can combine them into a single 6x6 array where:
+     - `you[r][c] == 1` → `board[r][c] = 1` (our marble).
+     - `opponent[r][c] == 1` → `board[r][c] = -1` (opponent's marble).
+     - Empty cell → `board[r][c] = 0`.
+
+2. **Quadrant Rotation**:
+   - For a given quadrant and direction, rotate the 3x3 sub-board in place. This affects both players' marbles in that quadrant.
+
+3. **Line Checks**:
+   - After placing a marble and rotating a quadrant, check all possible lines (rows, columns, diagonals) for 5-in-a-row of the same player.
+
+4. **Move Selection**:
+   - Iterate over all possible moves, simulate the move, and check for wins/blocks. If no immediate win/block is found, default to a simple move.
+
+### Edge Cases
+- Ensure that after rotation, no two marbles overlap (though the problem states inputs are valid, we must ensure our moves don't create overlaps).
+- Handle cases where multiple moves lead to a win or block.
+
+### Optimizations
+- Precompute possible lines to check for 5-in-a-row to avoid redundant checks.
+- Use numpy for efficient board manipulation and rotation.
+
+### Final Strategy
+1. Generate all possible legal moves.
+2. For each move, simulate the placement and rotation.
+3. Check if the resulting board has a 5-in-a-row for us (win) or the opponent (block).
+4. If a winning move exists, return it.
+5. If a blocking move exists, return it.
+6. Otherwise, return a default move (e.g., place in the center and rotate a random quadrant).
+
+### Code Implementation
+
+```python
+import numpy as np
+
+def policy(you, opponent):
+    # Convert to numpy arrays for easier manipulation
+    you_board = np.array(you, dtype=int)
+    opponent_board = np.array(opponent, dtype=int)
+
+    # Combine into a single board: 1 for you, -1 for opponent, 0 for empty
+    board = np.where(you_board == 1, 1, np.where(opponent_board == 1, -1, 0))
+
+    # Generate all possible legal moves
+    legal_moves = []
+    for row in range(6):
+        for col in range(6):
+            if board[row, col] == 0:  # Empty cell
+                for quad in range(4):
+                    for direction in ['L', 'R']:
+                        # Simulate the move
+                        new_board = board.copy()
+                        new_board[row, col] = 1  # Place our marble
+
+                        # Rotate the quadrant
+                        new_board = rotate_quadrant(new_board, quad, direction)
+
+                        # Check if the move is legal (no overlaps, etc.)
+                        # Since the problem states inputs are valid, we assume the move is legal
+                        legal_moves.append((row, col, quad, direction))
+
+    # Evaluate moves
+    best_move = None
+    for move in legal_moves:
+        row, col, quad, direction = move
+        # Simulate the move
+        new_board = board.copy()
+        new_board[row, col] = 1
+        new_board = rotate_quadrant(new_board, quad, direction)
+
+        # Check if we win
+        if check_win(new_board, 1):
+            return f"{row+1},{col+1},{quad},{direction}"
+
+    # If no winning move, check for blocking moves
+    for move in legal_moves:
+        row, col, quad, direction = move
+        # Simulate the move
+        new_board = board.copy()
+        new_board[row, col] = 1
+        new_board = rotate_quadrant(new_board, quad, direction)
+
+        # Check if opponent wins
+        if check_win(new_board, -1):
+            return f"{row+1},{col+1},{quad},{direction}"
+
+    # If no win or block, choose a default move (e.g., center and random rotation)
+    # Default to placing in the center (row=2, col=2) and rotating quad 0 left
+    # This is a fallback; in practice, you'd want a smarter default
+    default_row, default_col = 2, 2
+    if board[default_row, default_col] != 0:
+        # Find the first empty cell
+        for row in range(6):
+            for col in range(6):
+                if board[row, col] == 0:
+                    default_row, default_col = row, col
+                    break
+            else:
+                continue
+            break
+
+    # Choose a random quadrant and direction for the default move
+    import random
+    default_quad = random.choice([0, 1, 2, 3])
+    default_dir = random.choice(['L', 'R'])
+
+    return f"{default_row+1},{default_col+1},{default_quad},{default_dir}"
+
+def rotate_quadrant(board, quad, direction):
+    # Define the 3x3 quadrant boundaries
+    if quad == 0:  # top-left
+        rows, cols = slice(0, 3), slice(0, 3)
+    elif quad == 1:  # top-right
+        rows, cols = slice(0, 3), slice(3, 6)
+    elif quad == 2:  # bottom-left
+        rows, cols = slice(3, 6), slice(0, 3)
+    else:  # quad == 3, bottom-right
+        rows, cols = slice(3, 6), slice(3, 6)
+
+    quadrant = board[rows, cols]
+
+    if direction == 'L':
+        # Rotate 90 degrees anticlockwise
+        rotated = np.rot90(quadrant, k=1)
+    else:  # direction == 'R'
+        # Rotate 90 degrees clockwise
+        rotated = np.rot90(quadrant, k=-1)
+
+    # Place the rotated quadrant back
+    board[rows, cols] = rotated
+    return board
+
+def check_win(board, player):
+    # Check all rows
+    for row in range(6):
+        for col in range(2):  # Check lines of 5 starting at col 0 and 1
+            line = board[row, col:col+5]
+            if np.all(line == player):
+                return True
+
+    # Check all columns
+    for col in range(6):
+        for row in range(2):  # Check lines of 5 starting at row 0 and 1
+            line = board[row:row+5, col]
+            if np.all(line == player):
+                return True
+
+    # Check diagonals (top-left to bottom-right)
+    for row in range(2):
+        for col in range(2):
+            line = board[row:row+5, col:col+5]
+            if np.all(np.diag(line) == player):
+                return True
+
+    # Check diagonals (top-right to bottom-left)
+    for row in range(2):
+        for col in range(3, 6):
+            line = board[row:row+5, col-4:col+1]
+            if np.all(np.diag(np.fliplr(line)) == player):
+                return True
+
+    return False
+```
+
+### Explanation of the Code
+
+1. **Board Representation**:
+   - The `you` and `opponent` boards are combined into a single `board` where `1` represents our marble, `-1` represents the opponent's marble, and `0` represents an empty cell.
+
+2. **Legal Move Generation**:
+   - Iterate over all empty cells and all possible quadrant rotations to generate legal moves.
+
+3. **Move Simulation**:
+   - For

@@ -1,0 +1,423 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    """
+    Chess move selection policy that evaluates moves based on multiple strategic factors.
+    
+    Args:
+        pieces: Dictionary mapping squares to piece codes (e.g., 'e1': 'bK')
+        to_play: Either 'white' or 'black'
+        legal_moves: List of legal move strings
+    
+    Returns:
+        The best move string from legal_moves
+    """
+    
+    # Piece values for material evaluation
+    PIECE_VALUES = {
+        'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+    }
+    
+    # Center squares and their importance
+    CENTER_SQUARES = ['d4', 'e4', 'd5', 'e5']
+    EXTENDED_CENTER = ['c3', 'd3', 'e3', 'f3', 'c4', 'f4', 'c5', 'f5', 'c6', 'd6', 'e6', 'f6']
+    
+    def parse_piece(piece_code):
+        """Extract color and type from piece code like 'wQ' or 'bK'."""
+        color = piece_code[0]  # 'w' or 'b'
+        piece_type = piece_code[1]  # 'K', 'Q', 'R', 'B', 'N', 'P'
+        return color, piece_type
+    
+    def get_square_coords(square):
+        """Convert algebraic notation to coordinates (file: 0-7, rank: 0-7)."""
+        file_map = {'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7}
+        file = file_map[square[0]]
+        rank = int(square[1]) - 1
+        return file, rank
+    
+    def get_piece_at_square(square):
+        """Get piece at a specific square."""
+        return pieces.get(square, None)
+    
+    def is_our_piece(piece_code, our_color):
+        """Check if piece belongs to the player to move."""
+        if piece_code is None:
+            return False
+        color, _ = parse_piece(piece_code)
+        return color == our_color[0]
+    
+    def get_king_square(pieces_dict, color):
+        """Find the king's square for given color."""
+        king_code = color[0] + 'K'
+        for square, piece in pieces_dict.items():
+            if piece == king_code:
+                return square
+        return None
+    
+    def manhattan_distance(sq1, sq2):
+        """Calculate Manhattan distance between two squares."""
+        if sq1 is None or sq2 is None:
+            return 100
+        x1, y1 = get_square_coords(sq1)
+        x2, y2 = get_square_coords(sq2)
+        return abs(x1 - x2) + abs(y1 - y2)
+    
+    def evaluate_king_safety(pieces_dict, our_color, move):
+        """Evaluate king safety aspects of a move."""
+        score = 0
+        king_code = our_color[0] + 'K'
+        
+        # Find our king
+        our_king_sq = None
+        for square, piece in pieces_dict.items():
+            if piece == king_code:
+                our_king_sq = square
+                break
+        
+        if our_king_sq is None:
+            return 0
+        
+        # Parse the move to get destination
+        move_lower = move.lower()
+        
+        # Handle castling
+        if move.startswith('O-O'):
+            if 'O-O-O' in move:
+                # Castling queenside - king moves to c-file (or d-file after castling)
+                score += 50  # Castling is good for king safety
+            else:
+                # Castling kingside - king moves to g-file
+                score += 50
+            
+            # Check if castling moves king away from center (generally good)
+            king_file = 6 if 'O-O-O' not in move else 2
+            if king_file in [6, 2]:  # g or c file
+                score += 10
+            return score
+        
+        # For regular moves, determine destination
+        dest_sq = None
+        if '=' in move:  # Promotion move
+            dest_sq = move[:2]
+        elif 'x' in move:  # Capture
+            dest_sq = move.split('x')[1]
+        elif move[0] in 'KQRBN':  # Piece move
+            if len(move) == 3:  # Simple move like "Nf3"
+                dest_sq = move[1:]
+            else:  # Disambiguation like "Nec3"
+                dest_sq = move[-2:]
+        else:  # Pawn move
+            dest_sq = move[:2]
+        
+        if dest_sq is None:
+            return score
+        
+        # Score based on distance from center
+        file_idx, rank_idx = get_square_coords(dest_sq)
+        center_file, center_rank = 3.5, 3.5
+        dist_from_center = abs(file_idx - center_file) + abs(rank_idx - center_rank)
+        score += (7 - dist_from_center) * 5  # Closer to center is better for safety
+        
+        return score
+    
+    def evaluate_attack_on_king(pieces_dict, our_color, move):
+        """Evaluate if move attacks or checks opponent's king."""
+        score = 0
+        opp_color = 'black' if our_color == 'white' else 'white'
+        opp_king_sq = get_king_square(pieces_dict, opp_color)
+        
+        if opp_king_sq is None:
+            return 0
+        
+        # Parse move to get destination
+        move_lower = move.lower()
+        
+        dest_sq = None
+        if '=' in move:
+            dest_sq = move[:2]
+        elif 'x' in move:
+            dest_sq = move.split('x')[1]
+        elif move[0] in 'KQRBN':
+            if len(move) == 3:
+                dest_sq = move[1:]
+            else:
+                dest_sq = move[-2:]
+        else:
+            dest_sq = move[:2]
+        
+        if dest_sq is None:
+            return 0
+        
+        # Check if move attacks opponent's king
+        if manhattan_distance(dest_sq, opp_king_sq) <= 2:
+            score += 100  # Attacking king vicinity
+        
+        # Check for discovered attacks on king
+        # This is simplified - a full implementation would use ray casting
+        
+        return score
+    
+    def evaluate_center_control(pieces_dict, our_color, move):
+        """Evaluate how much a move controls the center."""
+        score = 0
+        
+        # Parse move to get destination
+        move_lower = move.lower()
+        
+        dest_sq = None
+        if '=' in move:
+            dest_sq = move[:2]
+        elif 'x' in move:
+            dest_sq = move.split('x')[1]
+        elif move[0] in 'KQRBN':
+            if len(move) == 3:
+                dest_sq = move[1:]
+            else:
+                dest_sq = move[-2:]
+        else:
+            dest_sq = move[:2]
+        
+        if dest_sq is None:
+            return 0
+        
+        # Score for controlling center squares
+        if dest_sq in CENTER_SQUARES:
+            score += 30
+        elif dest_sq in EXTENDED_CENTER:
+            score += 15
+        
+        return score
+    
+    def evaluate_piece_activity(pieces_dict, our_color, move):
+        """Evaluate piece activity and development."""
+        score = 0
+        color_initial = our_color[0]
+        
+        # Parse move to get piece type and destination
+        piece_type = None
+        dest_sq = None
+        
+        if move.startswith('O-O'):
+            return 20  # Castling develops king
+        elif '=' in move:  # Promotion
+            piece_type = move[-1]  # Q, R, B, or N
+            dest_sq = move[:2]
+        elif 'x' in move:  # Capture
+            capture_part = move.split('x')
+            if capture_part[0] and capture_part[0][0] in 'KQRBN':
+                piece_type = capture_part[0][0] if len(capture_part[0]) == 1 else capture_part[0][0]
+            else:
+                piece_type = 'P'  # Pawn capture
+            dest_sq = capture_part[1]
+        elif move[0] in 'KQRBN':
+            piece_type = move[0]
+            if len(move) == 3:
+                dest_sq = move[1:]
+            else:
+                dest_sq = move[-2:]
+        else:
+            piece_type = 'P'
+            dest_sq = move[:2]
+        
+        if dest_sq is None:
+            return 0
+        
+        # Development bonuses for knights and bishops
+        if piece_type == 'N':
+            # Knights should be developed to active squares
+            file_idx, rank_idx = get_square_coords(dest_sq)
+            # Prefer squares not on back rank
+            if (color_initial == 'w' and rank_idx > 0) or (color_initial == 'b' and rank_idx < 7):
+                score += 20
+            # Prefer center-proximate squares
+            center_dist = abs(file_idx - 3.5) + abs(rank_idx - 3.5)
+            score += (7 - center_dist) * 3
+        elif piece_type == 'B':
+            # Bishops should be developed
+            file_idx, rank_idx = get_square_coords(dest_sq)
+            if (color_initial == 'w' and rank_idx > 0) or (color_initial == 'b' and rank_idx < 7):
+                score += 15
+        elif piece_type == 'Q' or piece_type == 'R':
+            # Heavy pieces - prefer not to move early
+            if our_color == 'white' and move[0] in 'QR':
+                if get_square_coords(dest_sq)[1] == 0:
+                    score -= 10  # Don't move queen/rook back to first rank
+            elif our_color == 'black' and move[0] in 'QR':
+                if get_square_coords(dest_sq)[1] == 7:
+                    score -= 10
+        
+        return score
+    
+    def evaluate_capture(pieces_dict, our_color, move):
+        """Evaluate material gain from captures."""
+        if 'x' not in move:
+            return 0
+        
+        score = 0
+        color_initial = our_color[0]
+        
+        # Parse capture to get captured piece
+        capture_part = move.split('x')[1]
+        dest_sq = capture_part
+        
+        captured_piece = get_piece_at_square(dest_sq)
+        if captured_piece is None:
+            return 0
+        
+        opp_color, opp_piece_type = parse_piece(captured_piece)
+        
+        # Get our piece value
+        our_piece_type = None
+        if move.startswith('O-O'):
+            return 0
+        elif '=' in move:
+            our_piece_type = move[-1]
+        elif 'x' in move:
+            capture_part_before = move.split('x')[0]
+            if capture_part_before and capture_part_before[0] in 'KQRBN':
+                our_piece_type = capture_part_before[0]
+            else:
+                our_piece_type = 'P'
+        elif move[0] in 'KQRBN':
+            our_piece_type = move[0]
+        else:
+            our_piece_type = 'P'
+        
+        if our_piece_type is None:
+            return 0
+        
+        our_value = PIECE_VALUES.get(our_piece_type, 0)
+        opp_value = PIECE_VALUES.get(opp_piece_type, 0)
+        
+        # Material advantage score
+        score = opp_value - our_value
+        
+        # Bonus for capturing protected pieces (risky but sometimes necessary)
+        # This is a simplified check - real implementation would verify protection
+        
+        return score
+    
+    def evaluate_promotion(pieces_dict, our_color, move):
+        """Evaluate promotion moves."""
+        if '=' not in move:
+            return 0
+        
+        score = 500  # Base score for promotion
+        promotion_piece = move[-1]
+        
+        # Queen promotion is best
+        if promotion_piece == 'Q':
+            score += 100
+        elif promotion_piece == 'R':
+            score += 50
+        elif promotion_piece == 'B':
+            score += 25
+        elif promotion_piece == 'N':
+            score += 30
+        
+        return score
+    
+    def evaluate_check(pieces_dict, our_color, move):
+        """Evaluate if move gives check."""
+        if '+' not in move and '#' not in move:
+            return 0
+        
+        # Check is good, checkmate is better
+        if '#' in move:
+            return 10000  # Immediate win
+        else:
+            return 150  # Check gives tactical opportunity
+    
+    def evaluate_positional_factors(pieces_dict, our_color, move):
+        """Evaluate various positional factors."""
+        score = 0
+        color_initial = our_color[0]
+        
+        # Parse move
+        move_lower = move.lower()
+        
+        dest_sq = None
+        if '=' in move:
+            dest_sq = move[:2]
+        elif 'x' in move:
+            dest_sq = move.split('x')[1]
+        elif move[0] in 'KQRBN':
+            if len(move) == 3:
+                dest_sq = move[1:]
+            else:
+                dest_sq = move[-2:]
+        else:
+            dest_sq = move[:2]
+        
+        if dest_sq is None:
+            return 0
+        
+        file_idx, rank_idx = get_square_coords(dest_sq)
+        
+        # Pawn advancement (especially for control)
+        if move and (move[0] == 'P' or (move[0].islower() and len(move) == 2)):
+            # Pawn push
+            if color_initial == 'w':
+                if rank_idx >= 4:  # Advanced pawn
+                    score += rank_idx * 3
+            else:
+                if rank_idx <= 3:  # Advanced pawn
+                    score += (3 - rank_idx) * 3
+        
+        # Avoid moving to squares that can be easily attacked
+        # Simplified: avoid moving pieces to squares with no support
+        # This would need more sophisticated piece coordination analysis
+        
+        return score
+    
+    def evaluate_move(move):
+        """Comprehensive evaluation of a single move."""
+        total_score = 0
+        
+        # Priority 1: Checkmate
+        mate_score = evaluate_check(pieces, to_play, move)
+        if mate_score >= 10000:
+            return mate_score
+        total_score += mate_score
+        
+        # Priority 2: Promotion
+        total_score += evaluate_promotion(pieces, to_play, move)
+        
+        # Priority 3: Material gains from captures
+        total_score += evaluate_capture(pieces, to_play, move)
+        
+        # Priority 4: Attack opponent's king
+        total_score += evaluate_attack_on_king(pieces, to_play, move)
+        
+        # Priority 5: King safety
+        total_score += evaluate_king_safety(pieces, to_play, move)
+        
+        # Priority 6: Center control
+        total_score += evaluate_center_control(pieces, to_play, move)
+        
+        # Priority 7: Piece development and activity
+        total_score += evaluate_piece_activity(pieces, to_play, move)
+        
+        # Priority 8: Positional factors
+        total_score += evaluate_positional_factors(pieces, to_play, move)
+        
+        # Small random factor to add variety and avoid repetition
+        import random
+        total_score += random.uniform(-2, 2)
+        
+        return total_score
+    
+    # If no legal moves (shouldn't happen in normal play), return first move
+    if not legal_moves:
+        return ""
+    
+    # Evaluate all moves and select the best one
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        score = evaluate_move(move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

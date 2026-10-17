@@ -1,0 +1,208 @@
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Determines the optimal move in a simplified Blackjack game.
+    
+    Strategy:
+    1. Calculate the current value of the hand, handling Aces intelligently 
+       (maximizing value without busting).
+    2. Identify available cards by excluding cards currently in hand from the deck.
+    3. Simulate drawing each available card.
+    4. Calculate the probability of "Improving" (getting closer to target without busting)
+       versus "Busting".
+    5. Make a decision based on a risk-adjusted probability threshold.
+       If we are significantly below target, we become more aggressive.
+    """
+    
+    # 1. Define Card Values
+    CARD_VALUES = {
+        "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, 
+        "10": 10, "J": 10, "Q": 10, "K": 10
+    }
+    
+    # 2. Analyze Current Hand
+    # We need to calculate the current sum and identify the status of Aces.
+    # We want the highest sum <= target. If no such sum exists (total > target), 
+    # we treat the hand value as the lowest possible sum (just above target) 
+    # to represent how much we are over.
+    
+    ace_count = hand.count("A")
+    non_ace_sum = sum(CARD_VALUES[card] for card in hand if card != "A")
+    
+    # Calculate the "best" current value (highest <= target)
+    current_value = 0
+    has_soft_ace = False
+    
+    # Iterate through possible Ace values (1 or 11)
+    # Since Ace can be 1 or 11, with N Aces we have values: Sum + N*1, Sum + (N-1)*1 + 11, ..., Sum + 0*1 + N*11
+    # We look for the one closest to target without exceeding.
+    
+    best_valid_val = -1
+    
+    for i in range(ace_count + 1):
+        # i aces counted as 11, (ace_count - i) counted as 1
+        val = non_ace_sum + i * 11 + (ace_count - i) * 1
+        if val <= target:
+            if val > best_valid_val:
+                best_valid_val = val
+                # If we use at least one Ace as 11, we have a "soft" hand (can absorb an Ace)
+                has_soft_ace = (i > 0)
+    
+    current_value = best_valid_val
+    
+    # If all valid sums are > target, current_value remains -1.
+    # In this case, we are technically Bust, but we can still hit if we can reduce 
+    # the effective value using flexible Aces.
+    # However, usually if best_valid_val is -1, it means the minimum sum is > target.
+    # We should STAY if we cannot improve.
+    
+    if current_value == target:
+        return "STAY"
+        
+    # 3. Determine Available Cards
+    full_deck = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    hand_counts = {card: hand.count(card) for card in hand}
+    available_cards = []
+    for card in full_deck:
+        count_in_deck = 1
+        count_in_hand = hand_counts.get(card, 0)
+        available_cards.extend([card] * (count_in_deck - count_in_hand))
+        
+    total_available = len(available_cards)
+    if total_available == 0:
+        return "STAY" # Should not happen in a valid game, but safe fallback
+
+    # 4. Probabilistic Lookahead
+    prob_improve = 0.0
+    prob_bust = 0.0
+    
+    # If we are valid (current_value != -1), use it as baseline.
+    # If we are invalid (current_value == -1), we are below target? No, if -1 we are strictly over.
+    # Let's treat "current" as the state we are trying to improve from.
+    
+    base_val = current_value if current_value != -1 else target + 1 
+    # If current_value is -1, we are already over target. We can't "improve" sum-wise, 
+    # but we might find a card that lowers the sum to valid range?
+    # Wait, if current_value is -1, it means min_possible_sum > target.
+    # So any card drawn will result in a sum that is either:
+    # - Still > target (Bust)
+    # - <= target (Improvement, because we went from Bust to Valid)
+    # Since we treat current_value as > target, we need to handle the "Bust -> Valid" transition.
+    
+    # Let's refine the base state for comparison:
+    # If we are valid (<= target), base is current_value.
+    # If we are invalid (> target), base is effectively target + 1 (any valid hit is an improvement).
+    
+    is_bust_state = (current_value == -1)
+    
+    for card in available_cards:
+        # Simulate value of this card
+        if card == "A":
+            card_val_1 = 1
+            # Card can be 11 if adding 11 doesn't exceed target? Or if we have soft aces?
+            # The rule: "A" -> 11 when sum <= target, else 1.
+            # We need to determine the resulting state.
+            
+            # Scenario A: Card is 1
+            # New sum = base_val + 1 (if base was valid) or min_possible_sum + 1 (if base was bust)
+            # We need to re-evaluate the hand with this new Ace.
+            # Let's simulate strictly using the rules.
+            
+            # Helper to get value of hand + new card
+            def get_hand_value(cards):
+                # cards is list of strings
+                c_sum = sum(CARD_VALUES[c] for c in cards if c != "A")
+                a_cnt = cards.count("A")
+                # Try to maximize sum <= target
+                best = -1
+                for i in range(a_cnt + 1):
+                    val = c_sum + i*11 + (a_cnt-i)*1
+                    if val <= target: best = max(best, val)
+                return best
+
+            # New hand is hand + [card]
+            new_hand = hand + [card]
+            new_val = get_hand_value(new_hand)
+            
+            if new_val == -1: 
+                prob_bust += 1.0
+            elif new_val > base_val:
+                prob_improve += 1.0
+            # else: neutral
+            
+        else:
+            val = CARD_VALUES[card]
+            # For non-aces, calculation is simpler
+            # If we are currently bust (is_bust_state is True, base_val > target)
+            if is_bust_state:
+                # We need to check if we can become valid with this card?
+                # Actually, if we are bust, our sum is > target.
+                # Since we only have non-Aces (or we treat Aces simply here), adding a positive value keeps us > target.
+                # So we stay bust.
+                prob_bust += 1.0
+            else:
+                # Current is valid. Add value.
+                # Note: We must consider flexible Aces.
+                # If we have soft aces, adding a card might keep us valid even if sum + val > target?
+                # No, rules say: A -> 11 if sum <= target, else 1.
+                # But if we have a hand like A, 6 (17 target). Sum is 17 (A=11 + 6). 
+                # If we hit 5. New sum 22. A becomes 1. Total 16.
+                # So we must re-calculate.
+                
+                # Let's use the helper for accuracy
+                new_val = get_hand_value(new_hand)
+                
+                if new_val == -1:
+                    prob_bust += 1.0
+                elif new_val > base_val:
+                    prob_improve += 1.0
+
+    # 5. Decision Logic
+    
+    # Normalize to probabilities (divide by total cards, but we can work with counts)
+    
+    # Heuristic: 
+    # If we are significantly below target (e.g., > 12 points away), we must hit aggressively.
+    # If we are close, we must be careful.
+    
+    gap = target - base_val
+    
+    # If we are effectively bust (gap < 0), we only hit if we can become valid (improve > 0)
+    # Usually, if we are bust, any non-bust outcome is an improvement.
+    # If we are bust and all outcomes are bust, we STAY.
+    
+    if is_bust_state:
+        # We are over target. We can only hope to find a sequence of Aces to go back down? 
+        # No, we draw one card at a time. 
+        # If we are over target, drawing any card (value >= 1) will result in sum > target (if strictly over).
+        # Unless we have flexible Aces? 
+        # Example: Target 10. Hand A, A. Values: A=11, A=11 -> 22 > 10. Bust.
+        # But rules: A -> 1 if sum > target. So sum is 2.
+        # Wait, if I have A, A. Sum is 2 (since 22 > 10). I am not bust!
+        # My logic above for current_value handles this.
+        # If current_value returned -1, it means even the lowest sum (all Aces=1) > target.
+        # This only happens if sum of non-aces + ace_count > target.
+        # In that case, drawing a card makes it worse.
+        return "STAY"
+
+    # If we are valid:
+    # Basic rule: Hit if prob_improve > prob_bust * 0.3 (Conservative)
+    # Aggressive rule: Hit if gap > 12 (We need to catch up)
+    
+    if prob_improve == 0:
+        return "STAY"
+        
+    if gap > 12:
+        # We are far behind, need to catch up. Risk it if there's any chance to improve
+        return "HIT"
+    
+    # Risk adjusted check
+    # If prob_bust is 0, we always HIT (unless we are at target, checked earlier)
+    if prob_bust == 0:
+        return "HIT"
+        
+    # Standard check
+    if prob_improve > 0.3 * prob_bust:
+        return "HIT"
+        
+    return "STAY"

@@ -1,0 +1,247 @@
+<div class="corewar-section">
+  <div class="corewar-section-head">
+    <h3>Warriors</h3>
+    @if (!isSimpleMode) {
+      <div class="corewar-bot-actions">
+        <button
+          class="ghost-button corewar-icon-button"
+          type="button"
+          (click)="openSeedDialog()"
+          [disabled]="loading || warriors.length === 0"
+          aria-label="Seed match"
+          title="Seed match"
+        >
+          <i class="fa-solid fa-seedling" aria-hidden="true"></i>
+        </button>
+        <button
+          class="ghost-button corewar-icon-button"
+          type="button"
+          (click)="requestOpenConfig()"
+          [disabled]="loading"
+          aria-label="Core Configuration"
+          title="Core Configuration"
+        >
+          <i class="fa-solid fa-gear" aria-hidden="true"></i>
+        </button>
+      </div>
+    }
+  </div>
+
+  @if (error) {
+    <div class="corewar-error">{{ error }}</div>
+  }
+
+  <div class="corewar-mode-toggle">
+    <span class="corewar-mode-label">Game Settings:</span>
+    <label>
+      <input
+        type="radio"
+        name="corewar-mode"
+        [checked]="setupMode === 'simple'"
+        (change)="setSetupMode('simple')"
+      />
+      Simple
+    </label>
+    <label>
+      <input
+        type="radio"
+        name="corewar-mode"
+        [checked]="setupMode === 'advanced'"
+        (change)="setSetupMode('advanced')"
+      />
+      Advanced
+    </label>
+  </div>
+
+  <div class="corewar-bot-list">
+    @for (slot of selections; track $index) {
+      <div class="corewar-bot-row" [class.corewar-bot-row--error]="errorIndices.has($index)">
+        <label>Bot {{ $index + 1 }}</label>
+        <p-select
+          [(ngModel)]="selections[$index]"
+          (ngModelChange)="onSelectionChange()"
+          [options]="groupedWarriorOptions"
+          [group]="true"
+          optionLabel="label"
+          optionValue="value"
+          optionGroupLabel="label"
+          optionGroupChildren="items"
+          [filter]="true"
+          filterBy="label"
+          filterMatchMode="contains"
+          filterPlaceholder="Search warriors"
+          [autofocusFilter]="true"
+          [disabled]="loading || warriors.length === 0"
+          [scrollHeight]="'520px'"
+          [virtualScroll]="true"
+          [virtualScrollItemSize]="38"
+          [appendTo]="'body'"
+          styleClass="corewar-prime-select"
+          panelStyleClass="corewar-prime-select-panel"
+        >
+          <ng-template let-group #group>
+            <div class="corewar-select-group">
+              @if (group.value === 'drq') {
+                <i class="fa-solid fa-fish-fins" aria-hidden="true"></i>
+              } @else if (group.value === 'gw') {
+                <i class="fa-brands fa-openai" aria-hidden="true"></i>
+              } @else {
+                <i class="fa-brands fa-github" aria-hidden="true"></i>
+              }
+              <span>{{ group.label }}</span>
+            </div>
+          </ng-template>
+        </p-select>
+        <div class="corewar-bot-actions">
+          @if (!isSimpleMode) {
+            <button
+              class="ghost-button corewar-icon-button"
+              type="button"
+              (click)="openBotPreview($index)"
+              [disabled]="loading || warriors.length === 0"
+              aria-label="View bot source"
+              title="View bot source"
+            >
+              <i class="fa-solid fa-pen" aria-hidden="true"></i>
+            </button>
+          }
+          <button
+            class="ghost-button corewar-icon-button"
+            type="button"
+            (click)="randomizeSlot($index)"
+            [disabled]="loading || warriors.length === 0"
+            aria-label="Shuffle bot"
+            title="Shuffle bot"
+          >
+            <i class="fa-solid fa-shuffle" aria-hidden="true"></i>
+          </button>
+          <button
+            class="ghost-button corewar-icon-button corewar-remove-button"
+            type="button"
+            (click)="removeSlot($index)"
+            [disabled]="selections.length <= 2"
+            [class.corewar-remove-button--disabled]="selections.length <= 2"
+            aria-label="Remove bot"
+            title="Remove bot"
+          >
+            <i class="fa-solid fa-trash" aria-hidden="true"></i>
+          </button>
+        </div>
+      </div>
+    }
+  </div>
+  <button
+    class="corewar-add-slot"
+    type="button"
+    (click)="addSlot()"
+    [disabled]="loading"
+  >
+    <i class="pi pi-plus" aria-hidden="true"></i>
+    Add bot
+  </button>
+</div>
+
+@if (isBotPreviewOpen) {
+  <div class="corewar-modal-backdrop" (click)="requestCloseBotPreview()">
+    <div
+      class="corewar-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="corewarBotPreviewTitle"
+      (click)="$event.stopPropagation()"
+    >
+      <div class="corewar-modal-head">
+        <div class="corewar-modal-info">
+          <div class="corewar-modal-kicker">Bot source</div>
+          <h4 id="corewarBotPreviewTitle" class="corewar-modal-title">{{ botPreviewName }}</h4>
+        </div>
+        <div class="corewar-modal-actions">
+          <div class="corewar-modal-warning-slot" [class.is-visible]="hasUnsavedChanges">
+            <div class="corewar-modal-warning">Unsaved changes</div>
+          </div>
+          <button class="ghost-button corewar-modal-close" type="button" (click)="requestCloseBotPreview()">
+            Discard
+          </button>
+          @if (!botPreviewReadOnly) {
+            <button class="ghost-button" type="button" (click)="saveBotPreview()">
+              Save
+            </button>
+          }
+        </div>
+      </div>
+      <div class="corewar-modal-body">
+        <div
+          class="corewar-modal-error-slot"
+          [class.is-visible]="!!botPreviewCompileError"
+        >
+          <div class="corewar-modal-error">{{ botPreviewCompileError || '' }}</div>
+        </div>
+        <div class="corewar-code-editor">
+          <div class="corewar-code-gutter" #codeGutter>
+            @for (line of botPreviewLineNumbers; track line) {
+              <div class="corewar-code-line" [class.corewar-code-line--error]="line === botPreviewCompileErrorLine">
+                <span class="corewar-code-line-number">{{ line }}</span>
+                <i
+                  class="fa-solid fa-circle-exclamation corewar-code-line-icon"
+                  [class.is-visible]="line === botPreviewCompileErrorLine"
+                  [pTooltip]="line === botPreviewCompileErrorLine ? (botPreviewCompileError || undefined) : undefined"
+                  [autoHide]="false"
+                  tooltipPosition="right"
+                  tooltipStyleClass="corewar-error-tooltip"
+                  aria-hidden="true"
+                ></i>
+              </div>
+            }
+          </div>
+          <textarea
+            class="corewar-modal-textarea"
+            [(ngModel)]="botPreviewCode"
+            (input)="onBotPreviewInput($event)"
+            (scroll)="onBotPreviewScroll($event)"
+            [readOnly]="botPreviewReadOnly"
+            wrap="off"
+          ></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+}
+
+
+<p-dialog
+  header="Seed match"
+  [(visible)]="isSeedDialogOpen"
+  [modal]="true"
+  [draggable]="false"
+  [resizable]="false"
+  [dismissableMask]="true"
+  [appendTo]="'body'"
+  [style]="{ width: '25rem' }"
+  (onHide)="onSeedDialogHide()"
+  (onShow)="onSeedDialogShow()"
+>
+  <div class="corewar-seed-body">
+    <span class="corewar-seed-hint">Format: N--a-b-c... (N bots, 1-based)</span>
+    <div class="corewar-seed-row">
+      <label class="corewar-seed-label" for="corewar-seed-input">Seed</label>
+      <input
+        id="corewar-seed-input"
+        #seedInput
+        class="corewar-seed-input"
+        type="text"
+        pInputText
+        [(ngModel)]="seedValue"
+        (keydown.enter)="applySeed()"
+        placeholder="e.g. 2--15-23"
+      />
+    </div>
+    @if (seedError) {
+      <div class="corewar-seed-error">{{ seedError }}</div>
+    }
+    <div class="corewar-seed-tip">Tip: Copy/Paste the code above to use the same bot lineup.</div>
+    <div class="corewar-seed-actions">
+      <button class="ghost-button" type="button" (click)="closeSeedDialog()">Cancel</button>
+      <button class="primary-button" type="button" (click)="applySeed()">Apply</button>
+    </div>
+  </div>
+</p-dialog>

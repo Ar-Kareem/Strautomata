@@ -1,0 +1,137 @@
+The strategy for this policy is: we perform a depth‑limited minimax search (depth = 3) with alpha‑beta pruning, guided by a fast evaluation that checks whether the player already has a stone on both of their side rows/columns (immediate win detection). The evaluation heuristic counts side‑adjacency: for each side cell (top/bottom for black, left/right for white) we count how many of our stones and how many of the opponent’s stones are adjacent to it, returning the difference (our adjacency minus opponent’s). This gives a quick estimate of how close each side is to completing its connection. The search selects the move that yields the smallest minimax score for the opponent, which tends to extend our side adjacency while reducing the opponent’s, making it competitive against simple random or greedy baselines.
+
+<code>
+import random
+from collections import deque
+from typing import List, Tuple
+
+# Offsets for the six hexagonal neighbours
+NEIGHBOR_OFFSETS: List[Tuple[int, int]] = [
+    (0, -1), (0, 1),
+    (-1, -1), (-1, 1),
+    (1, -1), (1, 1)
+]
+
+def check_win_fast(board: List[List[str]], color: str) -> bool:
+    """Fast win detection: a player wins if they occupy at least one cell on both
+    of their side rows/columns (top/bottom for black, left/right for white)."""
+    opp_color = 'w' if color == 'b' else 'b'
+    if color == 'b':
+        # black: top row vs bottom row
+        top_cells = [(0, c) for c in range(11)]
+        bottom_cells = [(10, c) for c in range(11)]
+        has_top = any(board[r][c] == color for r, c in top_cells)
+        has_bottom = any(board[r][c] == color for r, c in bottom_cells)
+        return has_top and has_bottom
+    else:
+        # white: left column vs right column
+        left_cells = [(r, 0) for r in range(11)]
+        right_cells = [(r, 10) for r in range(11)]
+        has_left = any(board[r][c] == color for r, c in left_cells)
+        has_right = any(board[r][c] == color for r, c in right_cells)
+        return has_left and has_right
+
+def evaluate(board: List[List[str]], player_color: str) -> float:
+    """Return a simple numeric score:
+    +1 if player_color wins, -1 if opponent wins,
+    otherwise (our side adjacency) – (opponent side adjacency)."""
+    opp_color = 'w' if player_color == 'b' else 'b'
+    if check_win_fast(board, player_color):
+        return 1
+    if check_win_fast(board, opp_color):
+        return -1
+
+    # Count side‑adjacency for each side cell (both start and target sides)
+    side_cells: List[Tuple[int, int]]
+    if player_color == 'b':
+        side_cells = [(0, c) for c in range(11)] + [(10, c) for c in range(11)]
+    else:
+        side_cells = [(r, 0) for r in range(11)] + [(r, 10) for r in range(11)]
+
+    my_adj = 0
+    opp_adj = 0
+    for r, c in side_cells:
+        for dr, dc in NEIGHBOR_OFFSETS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 11 and 0 <= nc < 11:
+                if board[nr][nc] == player_color:
+                    my_adj += 1
+                elif board[nr][nc] == opp_color:
+                    opp_adj += 1
+
+    return my_adj - opp_adj
+
+def minimax(board: List[List[str]],
+            player_color: str,
+            depth: int,
+            alpha: float,
+            beta: float) -> float:
+    """Depth‑limited minimax (maximizing from the player’s perspective)."""
+    if depth == 0 or check_win_fast(board, player_color) or check_win_fast(board, opp_color):
+        return evaluate(board, player_color)
+
+    # Generate legal moves for the current player
+    legal: List[Tuple[int, int]] = []
+    for r in range(11):
+        for c in range(11):
+            if board[r][c] == '.':
+                legal.append((r, c))
+
+    # No moves (should never happen in a valid Hex state)
+    if not legal:
+        return evaluate(board, player_color)
+
+    # Sort moves by evaluation to improve pruning (maximizer tries best first)
+    legal.sort(key=lambda m: evaluate(board, player_color), reverse=True)
+
+    best = -float('inf')
+    opp_color = 'w' if player_color == 'b' else 'b'
+    for (r, c) in legal:
+        new_board = [row[:] for row in board]
+        new_board[r][c] = player_color
+        score = minimax(new_board, opp_color, depth - 1, alpha, beta)
+        if score > best:
+            best = score
+            alpha = max(alpha, best)
+        if beta <= alpha:
+            break
+    return best
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str) -> Tuple[int, int]:
+    """Select a legal move for the current player."""
+    opp_color = 'w' if color == 'b' else 'b'
+    # Build board from the provided stone lists
+    board: List[List[str]] = [['.' for _ in range(11)] for _ in range(11)]
+    for (r, c) in me:
+        board[r][c] = color
+    for (r, c) in opp:
+        board[r][c] = opp_color
+
+    # All currently empty cells are legal moves
+    legal_moves = [(r, c) for r in range(11) for c in range(11) if board[r][c] == '.']
+
+    # Depth‑limited search (3 plies after our move)
+    MAX_DEPTH = 3
+    best_score: float | None = None
+    best_move: Tuple[int, int] | None = None
+
+    for move in legal_moves:
+        r, c = move
+        new_board = [row[:] for row in board]
+        new_board[r][c] = color
+        # Evaluate from opponent’s perspective (they are maximising)
+        score = minimax(new_board, opp_color, MAX_DEPTH,
+                        -float('inf'), float('inf'))
+        if best_score is None or score < best_score:
+            best_score = score
+            best_move = (r, c)
+
+    # Fallback (should never be triggered unless the board is full)
+    if best_move is None:
+        import random
+        best_move = random.choice(legal_moves)
+
+    return best_move
+</code>

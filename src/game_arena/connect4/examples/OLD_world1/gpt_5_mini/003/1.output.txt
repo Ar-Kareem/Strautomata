@@ -1,0 +1,155 @@
+```python
+# Connect 4 targeting policy
+# Returns a column index (0-6) to drop the current player's piece (encoded as 1).
+# Board is a list of 6 rows x 7 columns, rows indexed 0 (top) -> 5 (bottom).
+
+from typing import List, Optional
+
+ROWS = 6
+COLS = 7
+PLAYER = 1
+OPPONENT = -1
+
+def is_valid_location(board: List[List[int]], col: int) -> bool:
+    return board[0][col] == 0
+
+def get_next_open_row(board: List[List[int]], col: int) -> Optional[int]:
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return None
+
+def make_move(board: List[List[int]], col: int, piece: int) -> List[List[int]]:
+    new_board = [row.copy() for row in board]
+    r = get_next_open_row(new_board, col)
+    if r is not None:
+        new_board[r][col] = piece
+    return new_board
+
+def winning_move(board: List[List[int]], piece: int) -> bool:
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            if all(board[r][c + i] == piece for i in range(4)):
+                return True
+    # Vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            if all(board[r + i][c] == piece for i in range(4)):
+                return True
+    # Positive diag (/)
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            if all(board[r - i][c + i] == piece for i in range(4)):
+                return True
+    # Negative diag (\)
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if all(board[r + i][c + i] == piece for i in range(4)):
+                return True
+    return False
+
+def evaluate_window(window: List[int], piece: int) -> int:
+    score = 0
+    opp_piece = -piece
+    cnt_piece = window.count(piece)
+    cnt_opp = window.count(opp_piece)
+    cnt_empty = window.count(0)
+
+    if cnt_piece == 4:
+        score += 100000
+    elif cnt_piece == 3 and cnt_empty == 1:
+        score += 100
+    elif cnt_piece == 2 and cnt_empty == 2:
+        score += 10
+
+    if cnt_opp == 3 and cnt_empty == 1:
+        score -= 80
+    elif cnt_opp == 2 and cnt_empty == 2:
+        score -= 5
+
+    return score
+
+def score_position(board: List[List[int]], piece: int) -> int:
+    score = 0
+    center_col = COLS // 2
+    # Center column preference
+    center_count = sum(1 for r in range(ROWS) if board[r][center_col] == piece)
+    score += center_count * 6
+
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            window = [board[r][c + i] for i in range(4)]
+            score += evaluate_window(window, piece)
+
+    # Vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            window = [board[r + i][c] for i in range(4)]
+            score += evaluate_window(window, piece)
+
+    # Positive diagonal (/)
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r - i][c + i] for i in range(4)]
+            score += evaluate_window(window, piece)
+
+    # Negative diagonal (\)
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r + i][c + i] for i in range(4)]
+            score += evaluate_window(window, piece)
+
+    return score
+
+def policy(board: List[List[int]]) -> int:
+    valid_cols = [c for c in range(COLS) if is_valid_location(board, c)]
+    if not valid_cols:
+        return 0  # no valid moves (shouldn't happen in normal play)
+
+    # 1) Win immediately if possible
+    for col in valid_cols:
+        r = get_next_open_row(board, col)
+        if r is None:
+            continue
+        b2 = make_move(board, col, PLAYER)
+        if winning_move(b2, PLAYER):
+            return col
+
+    # 2) Block opponent immediate wins
+    opp_winning_cols = []
+    for col in valid_cols:
+        b2 = make_move(board, col, OPPONENT)
+        if winning_move(b2, OPPONENT):
+            opp_winning_cols.append(col)
+    if opp_winning_cols:
+        # If multiple, pick one that maximizes our heuristic after blocking
+        best_col = None
+        best_score = None
+        for col in opp_winning_cols:
+            b_after = make_move(board, col, PLAYER)  # block by playing here
+            sc = score_position(b_after, PLAYER)
+            if best_score is None or sc > best_score or (sc == best_score and abs(col - COLS // 2) < abs(best_col - COLS // 2)):
+                best_score = sc
+                best_col = col
+        return best_col
+
+    # 3) Otherwise choose column with best heuristic score after our move
+    best_col = None
+    best_score = None
+    # prefer center columns slightly when tie, so include that in ordering
+    for col in valid_cols:
+        b2 = make_move(board, col, PLAYER)
+        sc = score_position(b2, PLAYER)
+        if best_score is None or sc > best_score or (sc == best_score and abs(col - COLS // 2) < abs(best_col - COLS // 2)):
+            best_score = sc
+            best_col = col
+
+    # 4) Fallback to center-most valid if something odd
+    if best_col is None:
+        # choose closest to center among valid
+        center = COLS // 2
+        best_col = min(valid_cols, key=lambda c: (abs(c - center), c))
+    return best_col
+```

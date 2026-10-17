@@ -1,0 +1,581 @@
+
+from __future__ import annotations
+
+from collections import deque, defaultdict
+import math
+from typing import Dict, Tuple, List, Set, Iterable, Optional
+
+
+# --- Global cache keyed by valid_mask signature (bytes) ---
+_CACHE: dict = {}
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    """
+    Return a legal move (row, col) for Havannah on an NxN array board with hex-adjacency.
+
+    me:  list of (r,c) stones for player to move (player 0).
+    opp: list of (r,c) stones for opponent (player 1).
+    valid_mask: 2D array-like of booleans, True means cell exists on Havannah board.
+    """
+    N = len(valid_mask)
+    # Basic safety: in case of odd inputs, always return some legal move.
+    # (We still do our best to play well.)
+    board = _get_board_structures(valid_mask)
+
+    valid_cells: List[Tuple[int, int]] = board["valid_cells"]
+    valid_set: Set[Tuple[int, int]] = board["valid_set"]
+    neigh: Dict[Tuple[int, int], List[Tuple[int, int]]] = board["neighbors"]
+    corners: Set[Tuple[int, int]] = board["corners"]
+    edge_id_of: Dict[Tuple[int, int], int] = board["edge_id_of"]
+    touches_outside: Set[Tuple[int, int]] = board["touches_outside"]
+    centroid = board["centroid"]
+
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+
+    # All legal moves
+    legal = [rc for rc in valid_cells if rc not in occupied]
+    if not legal:
+        # Should not happen in real games, but must return something legal.
+        # Try to return any valid cell (will be illegal if full, but no better option).
+        return valid_cells[0] if valid_cells else (0, 0)
+
+    # If board empty, play the most central valid cell.
+    if not occupied:
+        return min(legal, key=lambda rc: _dist2(rc, centroid))
+
+    # 1) Immediate win for me
+    for mv in _ordered_fast(legal, me_set, opp_set, neigh, centroid):
+        if _is_win_after_move(mv, me_set, opp_set, valid_set, neigh, corners, edge_id_of, touches_outside):
+            return mv
+
+    # 2) Block opponent immediate win
+    opp_wins = []
+    for mv in legal:
+        if _is_win_after_move(mv, opp_set, me_set, valid_set, neigh, corners, edge_id_of, touches_outside):
+            opp_wins.append(mv)
+    if opp_wins:
+        # If multiple blocks exist, pick the one that gives us best resulting position.
+        best_mv = None
+        best_sc = -1e18
+        for mv in opp_wins:
+            sc = _eval_position_after_move(
+                mv, me_set, opp_set, valid_set, neigh, corners, edge_id_of, touches_outside, centroid
+            )
+            if sc > best_sc:
+                best_sc, best_mv = sc, mv
+        return best_mv if best_mv is not None else opp_wins[0]
+
+    # 3) Frontier pruning: consider moves near existing stones (radius 2).
+    frontier = _frontier_moves(legal, occupied, neigh, radius=2)
+    candidates = frontier if len(frontier) >= 20 else legal
+
+    # Pre-rank by fast heuristic; take top K for 2-ply search
+    ranked = []
+    for mv in candidates:
+        ranked.append((mv, _fast_move_score(mv, me_set, opp_set, neigh, centroid, edge_id_of, corners)))
+    ranked.sort(key=lambda x: x[1], reverse=True)
+
+    K = 18
+    top_my = [mv for mv, _ in ranked[:K]] if ranked else candidates[:K]
+
+    # 2-ply minimax: choose mv maximizing worst opponent reply (minimizing our eval).
+    best_mv = None
+    best_val = -1e18
+
+    # Precompute a deterministic tie-break based on state hash
+    tie = _state_tiebreak(me_set, opp_set)
+
+    for mv in top_my:
+        if mv in occupied:
+            continue
+        me2 = me_set | {mv}
+
+        # If we win, play it (should have been caught, but keep as safety).
+        if _is_win_state(me2, valid_set, neigh, corners, edge_id_of, touches_outside, last_move=mv):
+            return mv
+
+        # Opponent legal replies
+        opp_legal = [x for x in legal if x != mv]
+
+        # If opponent has any immediate winning reply, this move is very bad.
+        losing = False
+        for omv in opp_legal:
+            if _is_win_after_move(omv, opp_set, me2, valid_set, neigh, corners, edge_id_of, touches_outside):
+                losing = True
+                break
+        if losing:
+            val = -1e12
+        else:
+            # Choose a small set of strong opponent replies
+            opp_ranked = []
+            for omv in _frontier_moves(opp_legal, occupied | {mv}, neigh, radius=2) or opp_legal:
+                # Score from opponent perspective (higher means better for opponent),
+                # so as a proxy for reply strength we use negative of our fast score
+                opp_ranked.append((omv, _fast_move_score(omv, opp_set, me2, neigh, centroid, edge_id_of, corners)))
+            opp_ranked.sort(key=lambda x: x[1], reverse=True)
+            L = 12
+            top_opp = [omv for omv, _ in opp_ranked[:L]] if opp_ranked else opp_legal[:L]
+
+            # Worst-case evaluation after opponent reply (opponent minimizes our evaluation)
+            worst = 1e18
+            for omv in top_opp:
+                if omv in me2 or omv in opp_set:
+                    continue
+                opp2 = opp_set | {omv}
+                # If opponent wins here, it's terrible (should not happen due to losing check, but safe).
+                if _is_win_state(opp2, valid_set, neigh, corners, edge_id_of, touches_outside, last_move=omv):
+                    worst = -1e12
+                    break
+                sc = _eval_position(me2, opp2, valid_set, neigh, corners, edge_id_of, touches_outside, centroid)
+                if sc < worst:
+                    worst = sc
+            val = worst if worst < 1e17 else _eval_position(me2, opp_set, valid_set, neigh, corners, edge_id_of, touches_outside, centroid)
+
+        # deterministic but stable tie-breaker
+        val2 = val + 1e-9 * _move_tiebreak(mv, tie)
+        if val2 > best_val:
+            best_val, best_mv = val2, mv
+
+    if best_mv is not None:
+        return best_mv
+
+    # Fallback: always return a legal move
+    return legal[0]
+
+
+# ---------------- Hex board helpers ----------------
+
+# Neighbor directions as specified by the prompt example:
+# (r,c) touches: (r+1,c), (r-1,c), (r,c-1), (r-1,c-1), (r,c+1), (r-1,c+1)
+_DIRS = [(1, 0), (-1, 0), (0, -1), (-1, -1), (0, 1), (-1, 1)]
+
+
+def _get_board_structures(valid_mask):
+    """Compute and cache topology derived purely from valid_mask."""
+    # Build a hashable signature
+    try:
+        # numpy arrays have .tobytes(); list-of-lists won't.
+        sig = valid_mask.tobytes()
+    except Exception:
+        sig = bytes(int(bool(valid_mask[r][c])) for r in range(len(valid_mask)) for c in range(len(valid_mask)))
+
+    if sig in _CACHE:
+        return _CACHE[sig]
+
+    N = len(valid_mask)
+    valid_cells = [(r, c) for r in range(N) for c in range(N) if bool(valid_mask[r][c])]
+    valid_set = set(valid_cells)
+
+    neighbors: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
+    deg: Dict[Tuple[int, int], int] = {}
+    missing_dirs: Dict[Tuple[int, int], Tuple[int, ...]] = {}
+    touches_outside = set()
+
+    for (r, c) in valid_cells:
+        ns = []
+        miss = []
+        for i, (dr, dc) in enumerate(_DIRS):
+            rr, cc = r + dr, c + dc
+            if (rr, cc) in valid_set:
+                ns.append((rr, cc))
+            else:
+                miss.append(i)
+        neighbors[(r, c)] = ns
+        deg[(r, c)] = len(ns)
+        missing_dirs[(r, c)] = tuple(miss)
+        if miss:
+            touches_outside.add((r, c))
+
+    # Detect corners: usually exactly 6 cells with degree 3 (missing 3 dirs).
+    corner_candidates = [rc for rc in valid_cells if (6 - deg[rc]) >= 3]
+    if len(corner_candidates) != 6:
+        # Fallback: pick 6 farthest-apart low-degree boundary points (farthest-first).
+        boundary = sorted(valid_cells, key=lambda rc: deg[rc])
+        # start from the most "outside" point (min degree, then min r+c)
+        start = min(boundary, key=lambda rc: (deg[rc], rc[0] + rc[1], rc[0], rc[1]))
+        chosen = [start]
+        while len(chosen) < 6 and len(chosen) < len(boundary):
+            nxt = max(boundary, key=lambda rc: min(_hex_like_l1(rc, ch) for ch in chosen))
+            if nxt in chosen:
+                break
+            chosen.append(nxt)
+        corner_candidates = chosen[:6]
+
+    corners = set(corner_candidates)
+
+    # Classify edges by missing-direction signature among non-corner boundary cells.
+    edge_cells = [rc for rc in valid_cells if rc not in corners and (6 - deg[rc]) >= 2]
+    sig_counts = defaultdict(int)
+    for rc in edge_cells:
+        sig_counts[missing_dirs[rc]] += 1
+    # Choose up to 6 most common signatures (should be exactly 6).
+    sigs_sorted = sorted(sig_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    top_sigs = [s for s, _ in sigs_sorted[:6]]
+    sig_to_id = {s: i for i, s in enumerate(top_sigs)}
+
+    edge_id_of: Dict[Tuple[int, int], int] = {}
+    for rc in edge_cells:
+        s = missing_dirs[rc]
+        if s in sig_to_id:
+            edge_id_of[rc] = sig_to_id[s]
+        else:
+            # If some rare signature appears, map it to the closest common signature by overlap.
+            if top_sigs:
+                best = max(top_sigs, key=lambda t: len(set(t).intersection(s)))
+                edge_id_of[rc] = sig_to_id[best]
+
+    # Centroid (for centrality heuristic)
+    if valid_cells:
+        cr = sum(r for r, _ in valid_cells) / len(valid_cells)
+        cc = sum(c for _, c in valid_cells) / len(valid_cells)
+    else:
+        cr, cc = 0.0, 0.0
+    centroid = (cr, cc)
+
+    data = {
+        "N": N,
+        "valid_cells": valid_cells,
+        "valid_set": valid_set,
+        "neighbors": neighbors,
+        "corners": corners,
+        "edge_id_of": edge_id_of,
+        "touches_outside": touches_outside,
+        "centroid": centroid,
+    }
+    _CACHE[sig] = data
+    return data
+
+
+def _dist2(a: Tuple[int, int], centroid: Tuple[float, float]) -> float:
+    return (a[0] - centroid[0]) ** 2 + (a[1] - centroid[1]) ** 2
+
+
+def _hex_like_l1(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+    # Not exact hex distance for this coordinate system, but adequate for "spread".
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def _frontier_moves(legal: List[Tuple[int, int]], occupied: Set[Tuple[int, int]], neigh, radius: int = 2) -> List[Tuple[int, int]]:
+    if not occupied:
+        return []
+    # BFS from all occupied to collect empties within radius
+    dist = {}
+    q = deque()
+    for s in occupied:
+        dist[s] = 0
+        q.append(s)
+    near = set()
+    legal_set = set(legal)
+    while q:
+        u = q.popleft()
+        du = dist[u]
+        if du == radius:
+            continue
+        for v in neigh.get(u, []):
+            if v not in dist:
+                dist[v] = du + 1
+                q.append(v)
+            if v in legal_set:
+                near.add(v)
+    return list(near)
+
+
+def _ordered_fast(legal, me_set, opp_set, neigh, centroid):
+    # Quick ordering for immediate win scan: try central + adjacency first
+    def key(mv):
+        fn = sum((n in me_set) for n in neigh[mv])
+        on = sum((n in opp_set) for n in neigh[mv])
+        return (-fn, -on, _dist2(mv, centroid))
+    return sorted(legal, key=key)
+
+
+# ---------------- Win detection ----------------
+
+def _is_win_after_move(
+    mv: Tuple[int, int],
+    player_set: Set[Tuple[int, int]],
+    other_set: Set[Tuple[int, int]],
+    valid_set: Set[Tuple[int, int]],
+    neigh,
+    corners: Set[Tuple[int, int]],
+    edge_id_of: Dict[Tuple[int, int], int],
+    touches_outside: Set[Tuple[int, int]],
+) -> bool:
+    if mv in player_set or mv in other_set or mv not in valid_set:
+        return False
+    ps = player_set | {mv}
+    return _is_win_state(ps, valid_set, neigh, corners, edge_id_of, touches_outside, last_move=mv)
+
+
+def _is_win_state(
+    player_set: Set[Tuple[int, int]],
+    valid_set: Set[Tuple[int, int]],
+    neigh,
+    corners: Set[Tuple[int, int]],
+    edge_id_of: Dict[Tuple[int, int], int],
+    touches_outside: Set[Tuple[int, int]],
+    last_move: Optional[Tuple[int, int]] = None,
+) -> bool:
+    # Check bridge/fork using the component containing last_move if provided, else any component.
+    if last_move is not None and last_move in player_set:
+        comps = [_component_from(last_move, player_set, neigh)]
+    else:
+        comps = _all_components(player_set, neigh)
+
+    for comp in comps:
+        c_touch = len(comp & corners)
+        if c_touch >= 2:
+            return True  # bridge
+        edges = set()
+        for rc in comp:
+            eid = edge_id_of.get(rc, None)
+            if eid is not None:
+                edges.add(eid)
+        if len(edges) >= 3:
+            return True  # fork
+
+    # Ring: only worth checking if player_set is "capable" (needs some interior structure).
+    # We do a gating check: if last_move exists, require >=2 friendly neighbors and not on boundary.
+    if last_move is not None:
+        if last_move in touches_outside:
+            return False
+        friendly_n = 0
+        for n in neigh[last_move]:
+            if n in player_set:
+                friendly_n += 1
+                if friendly_n >= 2:
+                    break
+        if friendly_n < 2:
+            return False
+
+    return _has_ring(player_set, valid_set, neigh, touches_outside)
+
+
+def _component_from(start: Tuple[int, int], stones: Set[Tuple[int, int]], neigh) -> Set[Tuple[int, int]]:
+    comp = set()
+    q = deque([start])
+    comp.add(start)
+    while q:
+        u = q.popleft()
+        for v in neigh[u]:
+            if v in stones and v not in comp:
+                comp.add(v)
+                q.append(v)
+    return comp
+
+
+def _all_components(stones: Set[Tuple[int, int]], neigh) -> List[Set[Tuple[int, int]]]:
+    seen = set()
+    comps = []
+    for s in stones:
+        if s in seen:
+            continue
+        comp = _component_from(s, stones, neigh)
+        seen |= comp
+        comps.append(comp)
+    return comps
+
+
+def _has_ring(player_set: Set[Tuple[int, int]], valid_set: Set[Tuple[int, int]], neigh, touches_outside: Set[Tuple[int, int]]) -> bool:
+    """
+    Ring detection by enclosure:
+    Consider the graph of non-player cells (valid cells not occupied by player).
+    Flood-fill from all non-player boundary cells (cells that touch outside the board).
+    If any non-player cell is not reachable, it is enclosed by player's stones -> ring exists.
+    """
+    non_player = valid_set - player_set
+    if not non_player:
+        return False
+
+    # Start from non-player cells that touch outside (boundary)
+    start = [rc for rc in non_player if rc in touches_outside]
+    if not start:
+        # Entire non-player region is enclosed (degenerate), treat as ring.
+        return True
+
+    seen = set(start)
+    q = deque(start)
+    while q:
+        u = q.popleft()
+        for v in neigh[u]:
+            if v in non_player and v not in seen:
+                seen.add(v)
+                q.append(v)
+
+    return len(seen) != len(non_player)
+
+
+# ---------------- Evaluation / Search ----------------
+
+def _fast_move_score(mv, me_set, opp_set, neigh, centroid, edge_id_of, corners) -> float:
+    # Local tactical heuristic to rank candidate moves quickly.
+    fn = sum((n in me_set) for n in neigh[mv])
+    on = sum((n in opp_set) for n in neigh[mv])
+
+    # Prefer connecting to edges/corners, but do not over-weight corners (bridge is later).
+    edge_bonus = 0.0
+    if mv in corners:
+        edge_bonus += 2.0
+    eid = edge_id_of.get(mv, None)
+    if eid is not None:
+        edge_bonus += 1.5
+
+    # Centrality (early game)
+    cent = -0.03 * _dist2(mv, centroid)
+
+    # Mild preference to interact, but connecting to self matters most.
+    return 2.4 * fn + 0.8 * on + edge_bonus + cent
+
+
+def _eval_position_after_move(
+    mv: Tuple[int, int],
+    me_set: Set[Tuple[int, int]],
+    opp_set: Set[Tuple[int, int]],
+    valid_set: Set[Tuple[int, int]],
+    neigh,
+    corners: Set[Tuple[int, int]],
+    edge_id_of: Dict[Tuple[int, int], int],
+    touches_outside: Set[Tuple[int, int]],
+    centroid,
+) -> float:
+    if mv in me_set or mv in opp_set:
+        return -1e18
+    me2 = me_set | {mv}
+    if _is_win_state(me2, valid_set, neigh, corners, edge_id_of, touches_outside, last_move=mv):
+        return 1e12
+    return _eval_position(me2, opp_set, valid_set, neigh, corners, edge_id_of, touches_outside, centroid)
+
+
+def _eval_position(
+    me_set: Set[Tuple[int, int]],
+    opp_set: Set[Tuple[int, int]],
+    valid_set: Set[Tuple[int, int]],
+    neigh,
+    corners: Set[Tuple[int, int]],
+    edge_id_of: Dict[Tuple[int, int], int],
+    touches_outside: Set[Tuple[int, int]],
+    centroid,
+) -> float:
+    # Terminal checks (rare because we check immediate wins earlier)
+    if me_set and _is_win_state(me_set, valid_set, neigh, corners, edge_id_of, touches_outside, last_move=next(iter(me_set))):
+        return 1e12
+    if opp_set and _is_win_state(opp_set, valid_set, neigh, corners, edge_id_of, touches_outside, last_move=next(iter(opp_set))):
+        return -1e12
+
+    my_feat = _best_component_features(me_set, neigh, corners, edge_id_of)
+    op_feat = _best_component_features(opp_set, neigh, corners, edge_id_of)
+
+    # Mobility-ish: count empty adjacencies (approx)
+    occupied = me_set | opp_set
+    my_lib = 0
+    for s in me_set:
+        for n in neigh[s]:
+            if n in valid_set and n not in occupied:
+                my_lib += 1
+    op_lib = 0
+    for s in opp_set:
+        for n in neigh[s]:
+            if n in valid_set and n not in occupied:
+                op_lib += 1
+
+    # Global edge/corner coverage (encourages multi-side plans)
+    my_edges = _distinct_edges_touched(me_set, edge_id_of)
+    op_edges = _distinct_edges_touched(opp_set, edge_id_of)
+    my_corners = len(me_set & corners)
+    op_corners = len(opp_set & corners)
+
+    # Centrality of mass: keep presence nearer center (small weight)
+    my_cent = _center_of_mass_score(me_set, centroid)
+    op_cent = _center_of_mass_score(opp_set, centroid)
+
+    # Weighted sum tuned for: build fork threats, deny opponent fork/bridge, keep groups connected
+    val = 0.0
+    val += 0.55 * my_feat["size"] + 18.0 * my_feat["edges"] + 26.0 * my_feat["corners"]
+    val -= 0.60 * op_feat["size"] + 20.0 * op_feat["edges"] + 28.0 * op_feat["corners"]
+
+    val += 6.0 * (my_edges - op_edges) + 4.0 * (my_corners - op_corners)
+    val += 0.05 * (my_lib - op_lib)
+
+    val += 0.15 * (my_cent - op_cent)
+
+    return val
+
+
+def _best_component_features(stones: Set[Tuple[int, int]], neigh, corners: Set[Tuple[int, int]], edge_id_of: Dict[Tuple[int, int], int]):
+    if not stones:
+        return {"size": 0, "edges": 0, "corners": 0}
+
+    seen = set()
+    best = {"size": 0, "edges": 0, "corners": 0}
+    best_score = -1e18
+
+    for s in stones:
+        if s in seen:
+            continue
+        comp = _component_from(s, stones, neigh)
+        seen |= comp
+
+        edges = set()
+        for rc in comp:
+            eid = edge_id_of.get(rc, None)
+            if eid is not None:
+                edges.add(eid)
+        cor = len(comp & corners)
+        size = len(comp)
+
+        # Component internal score: forks and bridges are the main goal.
+        score = 1.0 * size + 22.0 * len(edges) + 30.0 * cor
+        if score > best_score:
+            best_score = score
+            best = {"size": size, "edges": len(edges), "corners": cor}
+
+    return best
+
+
+def _distinct_edges_touched(stones: Set[Tuple[int, int]], edge_id_of: Dict[Tuple[int, int], int]) -> int:
+    edges = set()
+    for s in stones:
+        eid = edge_id_of.get(s, None)
+        if eid is not None:
+            edges.add(eid)
+    return len(edges)
+
+
+def _center_of_mass_score(stones: Set[Tuple[int, int]], centroid: Tuple[float, float]) -> float:
+    if not stones:
+        return 0.0
+    # Negative average squared distance to centroid
+    tot = 0.0
+    for s in stones:
+        tot += _dist2(s, centroid)
+    return -tot / len(stones)
+
+
+def _state_tiebreak(me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]]) -> int:
+    # Deterministic pseudo-hash without importing random.
+    x = 1469598103934665603
+    for r, c in sorted(me_set):
+        x ^= (r * 31 + c + 1)
+        x *= 1099511628211
+        x &= (1 << 64) - 1
+    x ^= 0x9e3779b97f4a7c15
+    for r, c in sorted(opp_set):
+        x ^= (r * 131 + c + 7)
+        x *= 1099511628211
+        x &= (1 << 64) - 1
+    return x
+
+
+def _move_tiebreak(mv: Tuple[int, int], tie: int) -> float:
+    # Small deterministic jitter in [-0.5, 0.5]
+    r, c = mv
+    x = tie ^ (r * 0x9E3779B1) ^ (c * 0x85EBCA77)
+    x ^= (x >> 33)
+    x *= 0xff51afd7ed558ccd
+    x &= (1 << 64) - 1
+    # map to [0,1)
+    u = (x & ((1 << 53) - 1)) / float(1 << 53)
+    return u - 0.5

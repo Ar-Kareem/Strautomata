@@ -1,0 +1,301 @@
+```python
+def policy(you, opponent) -> str:
+    """
+    Pentago move policy: Greedy immediate win -> Immediate block -> Rotation control.
+    """
+    import copy
+
+    # Helper to convert 0-indexed coordinates to 1-indexed
+    def to_str(r, c, q, d):
+        return f"{r+1},{c+1},{q},{d}"
+
+    # Helper to get quadrant index from row, col (0-indexed)
+    # 0: TL (r 0-2, c 0-2), 1: TR (r 0-2, c 3-5)
+    # 2: BL (r 3-5, c 0-2), 3: BR (r 3-5, c 3-5)
+    def get_quad(r, c):
+        if r < 3:
+            return 0 if c < 3 else 1
+        else:
+            return 2 if c < 3 else 3
+
+    # Helper to perform rotation on a temporary board state
+    # direction: 'L' (anticlockwise), 'R' (clockwise)
+    def rotate_quadrant(y, o, q, d):
+        # Create deep copies to avoid modifying originals in simulation
+        y_new = [row[:] for row in y]
+        o_new = [row[:] for row in o]
+        
+        # Determine quad coordinates
+        if q == 0: r_s, r_e, c_s, c_e = 0, 3, 0, 3
+        elif q == 1: r_s, r_e, c_s, c_e = 0, 3, 3, 6
+        elif q == 2: r_s, r_e, c_s, c_e = 3, 6, 0, 3
+        else: r_s, r_e, c_s, c_e = 3, 6, 3, 6
+
+        # Extract sub-grid
+        y_grid = [[y[r][c] for c in range(c_s, c_e)] for r in range(r_s, r_e)]
+        o_grid = [[o[r][c] for c in range(c_s, c_e)] for r in range(r_s, r_e)]
+
+        # Rotate
+        if d == 'R': # Clockwise
+            y_rot = [list(row) for row in zip(*y_grid[::-1])]
+            o_rot = [list(row) for row in zip(*o_grid[::-1])]
+        else: # 'L' Anti-clockwise
+            y_rot = [list(row) for row in zip(*y_grid)][::-1]
+            o_rot = [list(row) for row in zip(*o_grid)][::-1]
+
+        # Place back
+        for r in range(3):
+            for c in range(3):
+                y_new[r_s + r][c_s + c] = y_rot[r][c]
+                o_new[r_s + r][c_s + c] = o_rot[r][c]
+                
+        return y_new, o_new
+
+    # Helper to check win
+    def check_win(board):
+        # Check all horizontal
+        for r in range(6):
+            for c in range(2):
+                if board[r][c] == board[r][c+1] == board[r][c+2] == board[r][c+3] == board[r][c+4] == 1:
+                    return True
+        # Vertical
+        for r in range(2):
+            for c in range(6):
+                if board[r][c] == board[r+1][c] == board[r+2][c] == board[r+3][c] == board[r+4][c] == 1:
+                    return True
+        # Diagonals
+        for r in range(2):
+            for c in range(2):
+                if board[r][c] == board[r+1][c+1] == board[r+2][c+2] == board[r+3][c+3] == board[r+4][c+4] == 1:
+                    return True
+        for r in range(4, 6):
+            for c in range(2):
+                if board[r][c] == board[r-1][c+1] == board[r-2][c+2] == board[r-3][c+3] == board[r-4][c+4] == 1:
+                    return True
+        return False
+
+    # Pre-calculate all empty cells
+    empty_cells = []
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                empty_cells.append((r, c))
+
+    # STEP 1: Check for winning move
+    # Iterate all empty cells
+    for r, c in empty_cells:
+        current_quad = get_quad(r, c)
+        
+        # Try both rotations
+        for d in ['L', 'R']:
+            # Simulate: Place me -> Rotate
+            # We must check if the rotation moves MY placed piece away from a win line that included it?
+            # Yes, rotation happens AFTER placement.
+            # So we apply both.
+            
+            # Optimized simulation:
+            # Copy board, place piece, rotate, check win.
+            y_sim = [row[:] for row in you]
+            o_sim = [row[:] for row in opponent]
+            y_sim[r][c] = 1
+            
+            y_rot, o_rot = rotate_quadrant(y_sim, o_sim, current_quad, d)
+            
+            if check_win(y_rot):
+                return to_str(r, c, current_quad, d)
+
+    # STEP 2: Check for immediate loss (Opponent wins next turn if we don't block)
+    # Iterate all empty cells (simulating opponent placing there)
+    # Note: Opponent could win by placement + rotation.
+    for r, c in empty_cells:
+        current_quad = get_quad(r, c)
+        
+        for d in ['L', 'R']:
+            # Simulate opponent move
+            y_sim = [row[:] for row in you]
+            o_sim = [row[:] for row in opponent]
+            o_sim[r][c] = 1 # Opponent places
+            
+            y_rot, o_rot = rotate_quadrant(y_sim, o_sim, current_quad, d)
+            
+            if check_win(o_rot):
+                # Opponent wins. We MUST block this.
+                # We block by placing at (r, c) ourselves?
+                # If we place at (r, c), opponent cannot place there.
+                # However, we must check if WE can win by placing there first.
+                # If we can't win, just blocking by placing there is safe.
+                # But wait, if we place there, we might open a win for opponent elsewhere?
+                # No, we just need to prevent THIS win.
+                # Can we rotate differently to break their win? No, they are the ones rotating.
+                # If we place at (r, c), they cannot place there. So the threat is removed.
+                # But we must also check if placing there creates a win for US (checked in Step 1).
+                # Since we passed Step 1, we don't win by placing there.
+                # Is there any other way to block?
+                # If we block (r, c), we are safe.
+                # But wait! What if the opponent's win is only guaranteed by the ROTATION they chose?
+                # If we place at (r, c), we prevent the placement. That blocks.
+                # However, maybe there is a move where we don't block (r,c) but rotate a quadrant to break their potential?
+                # No, they rotate THEIR quadrant. We can't change their rotation.
+                # So the only block is to fill the cell they need.
+                
+                # Exception: What if (r, c) is in Quad A, and they rotate Quad B.
+                # We fill (r, c). They can't place there. Blocked.
+                # What if we can break their win by rotating Quad A (where (r,c) is) to put OUR piece in the way?
+                # We can't rotate Quad A if we are placing in it? We can rotate the quadrant we placed in.
+                # So if the opponent's win line involves (r, c) and other cells in Quad A, and we place in Quad A, we can rotate Quad A.
+                # If the opponent's win line involves (r, c) in Quad A, and other cells in Quad B, and we rotate Quad A, we might move our piece blocking the line?
+                # Wait. The opponent wins by placing at (r,c) and rotating Quad X (which might be A or B).
+                # We don't know WHICH rotation they use until we check.
+                # We iterate (r, c) and (quad, dir) in our simulation.
+                # If `opponent(r, c, quad, dir)` wins, that is a threat.
+                # How do we block `opponent(r, c, quad, dir)`?
+                # We can place at (r, c). (Direct block).
+                # Can we place elsewhere and rotate to break it?
+                # The threat is specific: Opponent places at (r,c) and rotates Q.
+                # If we rotate Q (if we place in Q) BEFORE they act, we can't, it's their turn.
+                # So we must block the placement (r, c) if they can win by placing there (with any rotation).
+                # If they can win by placing at (r,c), we MUST fill (r,c).
+                
+                # Wait. What if the win line involves 4 of their pieces and the empty spot is (r,c).
+                # If we fill (r,c), they can't win there.
+                # So we return that move.
+                
+                # However, what if we have a move that blocks (r,c) by placing elsewhere and rotating?
+                # No. We can't affect their placement slot.
+                # So we must fill (r,c).
+                
+                # BUT: If multiple threats exist?
+                # If one threat is at (r1, c1) and another at (r2, c2), we can't block both with one move.
+                # So we check if we can win by placing at (r1, c1) (Step 1 covers this).
+                # If not, we block (r1, c1).
+                # But we might lose to (r2, c2) next turn.
+                # In that case, we pick the move that leads to the best outcome (e.g., creates a double threat).
+                # But the prompt asks for a complete policy. A greedy block is standard.
+                
+                # Let's refine: 
+                # If we find a threat at (r, c) for opponent, we must block it.
+                # But we should check if we can block it AND win or threaten.
+                # Since we didn't win in Step 1, placing at (r, c) doesn't win immediately.
+                # But wait! What if we block (r, c) with a different rotation?
+                # We are iterating `for d in ['L', 'R']`. 
+                # We found `opponent(r, c, quad, dir)` wins.
+                # We try to block by placing at (r, c).
+                # We can place at (r, c) and rotate ANY quad (0-3, L/R).
+                # We should check if there is a rotation (maybe the same quad, maybe different) 
+                # that results in US winning (or at least not losing).
+                # But we can't lose if we block (r,c).
+                # So we just need to find *any* legal move where we place at (r,c).
+                # We can pick arbitrary quad/dir.
+                # To be safe, we pick the one that maximizes our score.
+                
+                # Let's iterate all possible moves that fill (r, c)
+                for q in range(4):
+                    for d_block in ['L', 'R']:
+                        y_sim = [row[:] for row in you]
+                        o_sim = [row[:] for row in opponent]
+                        y_sim[r][c] = 1
+                        
+                        y_b, o_b = rotate_quadrant(y_sim, o_sim, q, d_block)
+                        
+                        # Check if we win
+                        if check_win(y_b):
+                             return to_str(r, c, q, d_block)
+                        
+                        # We don't lose (since we blocked).
+                        # We can prioritize moves that threaten the opponent.
+                        # For now, just return the first valid block (preferably rotating the quad where we placed).
+                        # Or rotate the quad where the threat was?
+                        # Let's prioritize rotating the quadrant we placed in.
+                        if q == current_quad:
+                             return to_str(r, c, q, d_block)
+                
+                # Fallback: just block with arbitrary rotation (should not reach here if loop logic is correct)
+                return to_str(r, c, current_quad, 'L')
+
+    # STEP 3: No immediate win, no immediate loss.
+    # Play a move that sets up a win or controls the board.
+    # Heuristic:
+    # 1. Try to place near center (connectivity).
+    # 2. Try to create 4-in-a-row (threats).
+    # 3. Avoid letting opponent set up 4-in-a-row.
+    
+    # Let's score moves.
+    best_score = -float('inf')
+    best_move = None
+    
+    for r, c in empty_cells:
+        current_quad = get_quad(r, c)
+        for q in range(4): # We can rotate any quad
+            for d in ['L', 'R']:
+                # Simulate
+                y_sim = [row[:] for row in you]
+                o_sim = [row[:] for row in opponent]
+                y_sim[r][c] = 1
+                
+                y_rot, o_rot = rotate_quadrant(y_sim, o_sim, q, d)
+                
+                # Check win (should be covered by Step 1, but check again)
+                if check_win(y_rot):
+                    return to_str(r, c, q, d)
+                
+                # Scoring
+                score = 0
+                
+                # 1. Center bonus (r=2,3 c=2,3 0-indexed)
+                if 2 <= r <= 3 and 2 <= c <= 3:
+                    score += 2
+                
+                # 2. Create threats (count 4-in-a-row potential)
+                # Simple check: count lines of 3 or 4 with no opponents
+                lines = []
+                # Horizontal
+                for i in range(6):
+                    for j in range(2):
+                        lines.append([(i, j+k) for k in range(5)])
+                # Vertical
+                for i in range(2):
+                    for j in range(6):
+                        lines.append([(i+k, j) for k in range(5)])
+                # Diag 1
+                for i in range(2):
+                    for j in range(2):
+                        lines.append([(i+k, j+k) for k in range(5)])
+                # Diag 2
+                for i in range(4, 6):
+                    for j in range(2):
+                        lines.append([(i-k, j+k) for k in range(5)])
+                
+                for line in lines:
+                    # Count in rotated state
+                    me = sum(1 for (rr, cc) in line if y_rot[rr][cc] == 1)
+                    opp = sum(1 for (rr, cc) in line if o_rot[rr][cc] == 1)
+                    if opp == 0:
+                        if me == 4: score += 100
+                        elif me == 3: score += 10
+                        elif me == 2: score += 2
+                
+                # 3. Block opponent future (Minimize opponent max line length)
+                # We check opponent's max line length in the new state
+                max_opp = 0
+                for line in lines:
+                    opp = sum(1 for (rr, cc) in line if o_rot[rr][cc] == 1)
+                    me = sum(1 for (rr, cc) in line if y_rot[rr][cc] == 1)
+                    if me == 0: 
+                        if opp > max_opp: max_opp = opp
+                score -= max_opp * 10
+                
+                # 4. Prefer rotating the quadrant we placed in (usually opens up connections)
+                if q == current_quad: score += 3
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c, q, d)
+                
+    # Fallback (should not happen if empty cells exist)
+    if best_move:
+        r, c, q, d = best_move
+        return to_str(r, c, q, d)
+    
+    # Emergency fallback
+    return f"{empty_cells[0][0]+1},{empty_cells[0][1]+1},0,L"
+```

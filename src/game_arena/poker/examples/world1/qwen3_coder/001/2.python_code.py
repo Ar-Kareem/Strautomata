@@ -1,0 +1,148 @@
+
+import math
+
+def evaluate_preflop_strength(card):
+    """Heuristic evaluation of preflop card strength."""
+    rank = card['rank']
+    suit = card['suit']
+    
+    # High card value
+    high_card_value = 0
+    if rank >= 13:  # Ace
+        high_card_value = 4
+    elif rank >= 12:  # King
+        high_card_value = 3
+    elif rank >= 11:  # Queen
+        high_card_value = 2
+    elif rank >= 10:  # Jack
+        high_card_value = 1
+    
+    # Add some value for suited cards
+    suited_bonus = 1 if suit is not None else 0
+    
+    return high_card_value + suited_bonus
+
+def evaluate_hand_strength(private_cards, public_cards):
+    """Basic heuristic to estimate hand strength."""
+    if not public_cards:
+        return evaluate_preflop_strength(private_cards[0])
+    
+    # Count ranks and suits
+    ranks = [card['rank'] for card in private_cards + public_cards]
+    suits = [card['suit'] for card in private_cards + public_cards]
+    
+    rank_counts = {}
+    for r in ranks:
+        rank_counts[r] = rank_counts.get(r, 0) + 1
+        
+    max_same_rank = max(rank_counts.values())
+    unique_ranks = len(rank_counts)
+    unique_suits = len(set(suits))
+    
+    # Basic strength estimation
+    strength = 0
+    if max_same_rank >= 4:
+        strength = 8  # Four of a kind
+    elif max_same_rank == 3 and 2 in rank_counts.values():
+        strength = 7  # Full house
+    elif unique_suits == 1:
+        strength = 6  # Flush
+    elif unique_ranks <= 5 and len(public_cards) >= 3:
+        strength = 5  # Straight possibility
+    elif max_same_rank == 3:
+        strength = 4  # Three of a kind
+    elif list(rank_counts.values()).count(2) >= 2:
+        strength = 3  # Two pair
+    elif max_same_rank == 2:
+        strength = 2  # One pair
+    else:
+        strength = 1  # High card
+    
+    # Bonus for high cards
+    high_card_bonus = sum(1 for r in ranks if r >= 12)  # J, Q, K, A
+    return strength + high_card_bonus * 0.5
+
+def policy(state):
+    private_cards = state['private_cards']
+    public_cards = state['public_cards']
+    pot = state['pot']
+    my_spent = state['my_spent']
+    opponent_spent = state['opponent_spent']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    
+    # Default to checking/folding if no action available
+    if not allowed_actions:
+        return 'fold'
+        
+    # Evaluate hand strength
+    strength = evaluate_hand_strength(private_cards, public_cards)
+    
+    # Calculate pot odds
+    pot_odds = to_call / (pot + to_call) if (pot + to_call) > 0 else 0
+    
+    # Aggression thresholds based on street
+    street = len(public_cards)
+    
+    # Preflop adjustments
+    if street == 0:
+        if strength >= 4:  # Strong pocket card
+            if to_call == 0 and 'raise' in allowed_actions:
+                return 'raise'
+            elif to_call > 0 and strength >= 5 and 'raise' in allowed_actions:
+                return 'raise'
+            elif 'call' in allowed_actions:
+                return 'call'
+        elif strength >= 2:  # Medium pocket card
+            if to_call == 0 and 'call' in allowed_actions:
+                return 'call'
+            elif pot_odds < 0.3 and 'call' in allowed_actions:
+                return 'call'
+            elif 'fold' in allowed_actions:
+                return 'fold'
+        else:  # Weak pocket card
+            if to_call == 0 and 'call' in allowed_actions:
+                return 'call'
+            elif pot_odds < 0.2 and 'call' in allowed_actions:
+                return 'call'
+            elif 'fold' in allowed_actions:
+                return 'fold'
+                
+    # Postflop play
+    else:
+        if strength >= 7:  # Strong hand (full house or better)
+            if 'all-in' in allowed_actions:
+                return 'all-in'
+            elif 'raise' in allowed_actions:
+                return 'raise'
+            elif 'call' in allowed_actions:
+                return 'call'
+        elif strength >= 4:  # Decent hand (pair+)
+            if to_call == 0 and 'raise' in allowed_actions:
+                return 'raise'
+            elif pot_odds < 0.4 and 'call' in allowed_actions:
+                return 'call'
+            elif 'fold' in allowed_actions:
+                return 'fold'
+        elif strength >= 2:  # Weak pair or draw
+            if to_call == 0 and 'call' in allowed_actions:
+                return 'call'
+            elif pot_odds < 0.25 and 'call' in allowed_actions:
+                return 'call'
+            elif 'fold' in allowed_actions:
+                return 'fold'
+        else:  # High card or weak draw
+            if to_call == 0 and 'call' in allowed_actions:
+                return 'call'
+            elif pot_odds < 0.15 and 'call' in allowed_actions:
+                return 'call'
+            elif 'fold' in allowed_actions:
+                return 'fold'
+    
+    # Fallback logic: if we haven't returned yet, pick a safe option
+    if to_call == 0 and 'call' in allowed_actions:
+        return 'call'
+    elif 'fold' in allowed_actions:
+        return 'fold'
+    else:
+        return allowed_actions[0]  # At least do something legal

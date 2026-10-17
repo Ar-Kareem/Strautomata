@@ -1,0 +1,144 @@
+The strategy for this policy is to use alpha-beta pruning with iterative deepening to find the best move. Key elements include:
+
+1. **Extra move priority**: Moves that land the last seed in the store grant another turn, which is extremely valuable. These are checked immediately and prioritized in search.
+
+2. **Capture detection**: Moves that capture opponent seeds (landing in an empty house on our side with seeds opposite) are heavily weighted.
+
+3. **Move ordering**: In alpha-beta search, moves are ordered by extra moves first, then captures, then others. This improves pruning efficiency.
+
+4. **Evaluation function**: Considers score difference (most important), seed count on board (potential), and extra move opportunities for both players.
+
+5. **Iterative deepening**: Searches progressively deeper until time runs out, ensuring the best move found so far is always available.
+
+6. **Game end handling**: Properly handles endgame by moving remaining seeds to stores when one side empties.
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    
+    MAX_TIME = 0.8
+    start_time = time.time()
+    
+    def get_legal(houses):
+        return [i for i in range(6) if houses[i] > 0]
+    
+    def make_move(y, o, m):
+        y, o = list(y), list(o)
+        s = y[m]
+        y[m] = 0
+        lp = (m + s) % 13
+        
+        for k in range(1, s + 1):
+            p = (m + k) % 13
+            if p <= 5:
+                y[p] += 1
+            elif p == 6:
+                y[6] += 1
+            else:
+                o[p - 7] += 1
+        
+        extra = (lp == 6)
+        
+        if lp <= 5 and y[lp] == 1 and o[5 - lp] > 0:
+            y[6] += 1 + o[5 - lp]
+            y[lp] = 0
+            o[5 - lp] = 0
+        
+        if not any(y[:6]) or not any(o[:6]):
+            y[6] += sum(y[:6])
+            o[6] += sum(o[:6])
+            for i in range(6):
+                y[i] = 0
+                o[i] = 0
+        
+        return y, o, extra
+    
+    def evaluate(y, o):
+        ys, os = sum(y[:6]), sum(o[:6])
+        if ys == 0 or os == 0:
+            return (y[6] + ys - o[6] - os) * 1000
+        
+        score_diff = y[6] - o[6]
+        y_extra = sum(1 for i in range(6) if y[i] > 0 and (i + y[i]) % 13 == 6)
+        o_extra = sum(1 for i in range(6) if o[i] > 0 and (i + o[i]) % 13 == 6)
+        
+        return score_diff * 100 + (ys - os) * 2 + (y_extra - o_extra) * 20
+    
+    def order_moves(y, o, moves):
+        extra, capture, other = [], [], []
+        for m in moves:
+            lp = (m + y[m]) % 13
+            if lp == 6:
+                extra.append(m)
+            elif lp <= 5 and y[lp] == 0 and o[5 - lp] > 0:
+                capture.append(m)
+            else:
+                other.append(m)
+        return extra + capture + other
+    
+    def alpha_beta(y, o, depth, alpha, beta, maximizing):
+        if time.time() - start_time > MAX_TIME:
+            return evaluate(y, o), None, True
+        
+        y_moves = get_legal(y[:6])
+        o_moves = get_legal(o[:6])
+        
+        if depth == 0 or not y_moves or not o_moves:
+            return evaluate(y, o), None, False
+        
+        if maximizing:
+            y_moves = order_moves(y, o, y_moves)
+            max_eval = float('-inf')
+            best = y_moves[0]
+            
+            for m in y_moves:
+                ny, no, extra = make_move(y, o, m)
+                ev, _, timeout = alpha_beta(ny, no, depth - 1, alpha, beta, extra)
+                
+                if timeout:
+                    return max_eval, best, True
+                
+                if ev > max_eval:
+                    max_eval = ev
+                    best = m
+                alpha = max(alpha, ev)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best, False
+        else:
+            o_moves = order_moves(o, y, o_moves)
+            min_eval = float('inf')
+            
+            for m in o_moves:
+                no, ny, extra = make_move(o, y, m)
+                ev, _, timeout = alpha_beta(ny, no, depth - 1, alpha, beta, not extra)
+                
+                if timeout:
+                    return min_eval, None, True
+                
+                min_eval = min(min_eval, ev)
+                beta = min(beta, ev)
+                if beta <= alpha:
+                    break
+            
+            return min_eval, None, False
+    
+    legal = get_legal(you[:6])
+    if len(legal) == 1:
+        return legal[0]
+    
+    for m in legal:
+        if (m + you[m]) % 13 == 6:
+            return m
+    
+    best = legal[0]
+    for depth in range(1, 30):
+        _, move, timeout = alpha_beta(you, opponent, depth, float('-inf'), float('inf'), True)
+        if move is not None:
+            best = move
+        if timeout:
+            break
+    
+    return best
+</code>

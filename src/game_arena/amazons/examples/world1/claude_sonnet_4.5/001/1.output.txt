@@ -1,0 +1,178 @@
+I'll create a competitive Amazons policy that uses a combination of heuristics and tactical evaluation.
+
+## Strategy
+
+My policy uses the following approach:
+
+1. **Move Generation & Legality**: Efficiently generate all legal moves using queen-like movement patterns.
+
+2. **Evaluation Heuristics**:
+   - **Mobility**: Count available moves for both players - having more mobility is critical in Amazons
+   - **Territory Control**: Evaluate which areas of the board each player controls using a flood-fill approach
+   - **Centralization**: Prefer positions closer to the center early in the game
+   - **Arrow Placement**: Strategically place arrows to maximize opponent blocking while preserving our mobility
+
+3. **Tactical Considerations**:
+   - Prioritize moves that reduce opponent mobility significantly
+   - Avoid moves that trap our own amazons
+   - In endgame (many blocked squares), focus heavily on territory and mobility difference
+
+4. **Search**: Evaluate all legal moves with a simple one-ply lookahead, scoring based on the position after our move and opponent's best response mobility.
+
+<code>
+import numpy as np
+
+def policy(board) -> str:
+    """
+    Returns the best move for the current player (player 1).
+    """
+    legal_moves = get_all_legal_moves(board, 1)
+    
+    if not legal_moves:
+        # Should not happen, but return a dummy move
+        return "0,0:0,0:0,0"
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        score = evaluate_move(board, move, 1)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def get_all_legal_moves(board, player):
+    """Generate all legal moves for a player."""
+    moves = []
+    amazons = np.argwhere(board == player)
+    
+    for amazon in amazons:
+        from_r, from_c = amazon
+        # Get all valid destinations for this amazon
+        destinations = get_reachable_squares(board, from_r, from_c)
+        
+        for to_r, to_c in destinations:
+            # Temporarily move the amazon
+            temp_board = board.copy()
+            temp_board[from_r, from_c] = 0
+            temp_board[to_r, to_c] = player
+            
+            # Get all valid arrow positions
+            arrow_positions = get_reachable_squares(temp_board, to_r, to_c)
+            
+            for arrow_r, arrow_c in arrow_positions:
+                move = f"{from_r},{from_c}:{to_r},{to_c}:{arrow_r},{arrow_c}"
+                moves.append(move)
+    
+    return moves
+
+def get_reachable_squares(board, row, col):
+    """Get all squares reachable from (row, col) in queen-like movement."""
+    reachable = []
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    
+    for dr, dc in directions:
+        r, c = row + dr, col + dc
+        while 0 <= r < 6 and 0 <= c < 6:
+            if board[r, c] != 0:
+                break
+            reachable.append((r, c))
+            r += dr
+            c += dc
+    
+    return reachable
+
+def apply_move(board, move_str):
+    """Apply a move to the board and return the new board."""
+    parts = move_str.split(':')
+    from_r, from_c = map(int, parts[0].split(','))
+    to_r, to_c = map(int, parts[1].split(','))
+    arrow_r, arrow_c = map(int, parts[2].split(','))
+    
+    new_board = board.copy()
+    player = new_board[from_r, from_c]
+    new_board[from_r, from_c] = 0
+    new_board[to_r, to_c] = player
+    new_board[arrow_r, arrow_c] = -1
+    
+    return new_board
+
+def count_mobility(board, player):
+    """Count total number of moves available to a player."""
+    count = 0
+    amazons = np.argwhere(board == player)
+    
+    for amazon in amazons:
+        from_r, from_c = amazon
+        destinations = get_reachable_squares(board, from_r, from_c)
+        count += len(destinations)
+    
+    return count
+
+def evaluate_position(board, player):
+    """Evaluate the board position for the given player."""
+    opponent = 2 if player == 1 else 1
+    
+    # Mobility difference
+    my_mobility = count_mobility(board, player)
+    opp_mobility = count_mobility(board, opponent)
+    
+    if opp_mobility == 0 and my_mobility > 0:
+        return 10000  # We win
+    if my_mobility == 0:
+        return -10000  # We lose
+    
+    mobility_score = (my_mobility - opp_mobility) * 10
+    
+    # Territory control (simple flood fill from each amazon)
+    my_territory = count_territory(board, player)
+    opp_territory = count_territory(board, opponent)
+    territory_score = (my_territory - opp_territory) * 5
+    
+    # Centralization bonus
+    my_amazons = np.argwhere(board == player)
+    center_score = 0
+    for r, c in my_amazons:
+        center_dist = abs(r - 2.5) + abs(c - 2.5)
+        center_score -= center_dist
+    
+    return mobility_score + territory_score + center_score
+
+def count_territory(board, player):
+    """Count squares accessible to player (flood fill)."""
+    visited = np.zeros((6, 6), dtype=bool)
+    amazons = np.argwhere(board == player)
+    count = 0
+    
+    for amazon in amazons:
+        stack = [tuple(amazon)]
+        while stack:
+            r, c = stack.pop()
+            if visited[r, c]:
+                continue
+            visited[r, c] = True
+            count += 1
+            
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 6 and 0 <= nc < 6 and not visited[nr, nc] and board[nr, nc] == 0:
+                    stack.append((nr, nc))
+    
+    return count
+
+def evaluate_move(board, move_str, player):
+    """Evaluate a specific move."""
+    new_board = apply_move(board, move_str)
+    
+    # Basic position evaluation
+    score = evaluate_position(new_board, player)
+    
+    # Small penalty for opponent's best response
+    opponent = 2 if player == 1 else 1
+    opp_mobility = count_mobility(new_board, opponent)
+    score -= opp_mobility * 2
+    
+    return score
+</code>

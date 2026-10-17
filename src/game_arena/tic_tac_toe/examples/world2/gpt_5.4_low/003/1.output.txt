@@ -1,0 +1,277 @@
+The strategy for this policy is:
+
+1. **Always play a legal move**: as a safety guarantee, the policy first collects all empty cells and always has a fallback move.
+2. **Tactical priorities first**:
+   - If there is an **immediate winning move**, take it.
+   - Otherwise, if the opponent has an **immediate winning move next turn**, block it.
+3. **Strong game-tree search**:
+   - Use a **negamax search with alpha-beta pruning**.
+   - Search deeper in late-game positions and shallower in early-game positions to stay within the time limit.
+   - Use **move ordering** so the best-looking moves are searched first, improving pruning.
+4. **Heuristic evaluation**:
+   - Favor lines (rows, columns, diagonals) that contain only our marks and empty cells.
+   - Penalize lines that contain only opponent marks and empty cells.
+   - Strongly reward 3-in-a-row-with-space and especially terminal wins.
+   - Slightly prefer central squares and active positions.
+
+This gives a policy that is tactically safe, strategically strong, and efficient enough for the arena.
+
+<code>
+from functools import lru_cache
+
+N = 4
+
+# All winning lines in 4x4 tic tac toe: 4 rows, 4 cols, 2 diagonals
+LINES = []
+for r in range(N):
+    LINES.append(tuple((r, c) for c in range(N)))
+for c in range(N):
+    LINES.append(tuple((r, c) for r in range(N)))
+LINES.append(tuple((i, i) for i in range(N)))
+LINES.append(tuple((i, N - 1 - i) for i in range(N)))
+
+# Positional preference: center-ish cells are slightly better
+POS_WEIGHTS = [
+    [3, 4, 4, 3],
+    [4, 5, 5, 4],
+    [4, 5, 5, 4],
+    [3, 4, 4, 3],
+]
+
+WIN_SCORE = 10**9
+LINE_WEIGHTS = {
+    0: 0,
+    1: 2,
+    2: 20,
+    3: 200,
+    4: WIN_SCORE,
+}
+
+
+def _board_to_tuple(board):
+    return tuple(cell for row in board for cell in row)
+
+
+def _tuple_to_board(bt):
+    return [list(bt[i * N:(i + 1) * N]) for i in range(N)]
+
+
+def _empty_cells(board):
+    out = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                out.append((r, c))
+    return out
+
+
+def _winner(board):
+    for line in LINES:
+        s = sum(board[r][c] for r, c in line)
+        if s == N:
+            return 1
+        if s == -N:
+            return -1
+    return 0
+
+
+def _is_full(board):
+    for row in board:
+        for v in row:
+            if v == 0:
+                return False
+    return True
+
+
+def _immediate_wins(board, player):
+    wins = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                board[r][c] = player
+                if _winner(board) == player:
+                    wins.append((r, c))
+                board[r][c] = 0
+    return wins
+
+
+def _evaluate(board):
+    w = _winner(board)
+    if w == 1:
+        return WIN_SCORE
+    if w == -1:
+        return -WIN_SCORE
+    if _is_full(board):
+        return 0
+
+    score = 0
+
+    # Line-based evaluation
+    for line in LINES:
+        ours = 0
+        opp = 0
+        for r, c in line:
+            if board[r][c] == 1:
+                ours += 1
+            elif board[r][c] == -1:
+                opp += 1
+
+        if ours and opp:
+            continue
+        if ours:
+            score += LINE_WEIGHTS[ours]
+        elif opp:
+            score -= LINE_WEIGHTS[opp]
+
+    # Positional preference
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1:
+                score += POS_WEIGHTS[r][c]
+            elif board[r][c] == -1:
+                score -= POS_WEIGHTS[r][c]
+
+    # Tactical pressure: number of immediate wins available
+    my_wins = len(_immediate_wins(board, 1))
+    opp_wins = len(_immediate_wins(board, -1))
+    score += 500 * my_wins
+    score -= 700 * opp_wins
+
+    return score
+
+
+def _ordered_moves(board):
+    moves = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                # Basic ordering: positional weight + line participation
+                priority = POS_WEIGHTS[r][c]
+                for line in LINES:
+                    if (r, c) in line:
+                        vals = [board[rr][cc] for rr, cc in line]
+                        if -1 not in vals:
+                            priority += vals.count(1) * 3
+                        if 1 not in vals:
+                            priority += vals.count(-1) * 2
+                moves.append((priority, (r, c)))
+    moves.sort(reverse=True)
+    return [mv for _, mv in moves]
+
+
+@lru_cache(maxsize=200000)
+def _negamax(board_t, player, depth, alpha, beta):
+    board = _tuple_to_board(board_t)
+    w = _winner(board)
+    if w != 0:
+        return player * (WIN_SCORE if w == 1 else -WIN_SCORE)
+    if depth == 0 or _is_full(board):
+        return player * _evaluate(board)
+
+    # Tactical shortcut: if current player can win immediately, do it.
+    wins = _immediate_wins(board, player)
+    if wins:
+        return WIN_SCORE - 1
+
+    best = -10**18
+    moves = _ordered_moves(board)
+
+    # Restrict move set slightly in early game for speed
+    if depth <= 2:
+        pass
+    else:
+        empties = len(moves)
+        if empties >= 12:
+            moves = moves[:8]
+        elif empties >= 9:
+            moves = moves[:10]
+
+    for r, c in moves:
+        board[r][c] = player
+        child_t = _board_to_tuple(board)
+        val = -_negamax(child_t, -player, depth - 1, -beta, -alpha)
+        board[r][c] = 0
+
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    empties = _empty_cells(board)
+    if not empties:
+        return (0, 0)  # Should not happen in normal play, but keeps API total.
+
+    # Safety fallback: always legal
+    fallback = empties[0]
+
+    # 1) Immediate win
+    my_wins = _immediate_wins(board, 1)
+    if my_wins:
+        return my_wins[0]
+
+    # 2) Immediate block
+    opp_wins = _immediate_wins(board, -1)
+    if opp_wins:
+        # If multiple threats exist, try to block one that also gives us best position
+        best_block = None
+        best_score = -10**18
+        for mv in opp_wins:
+            r, c = mv
+            if board[r][c] != 0:
+                continue
+            board[r][c] = 1
+            score = _evaluate(board)
+            board[r][c] = 0
+            if score > best_score:
+                best_score = score
+                best_block = mv
+        return best_block if best_block is not None else opp_wins[0]
+
+    # Adaptive depth
+    n_empty = len(empties)
+    if n_empty >= 13:
+        depth = 4
+    elif n_empty >= 9:
+        depth = 5
+    elif n_empty >= 6:
+        depth = 7
+    else:
+        depth = n_empty  # solve near endgame
+
+    best_move = fallback
+    best_val = -10**18
+    alpha = -10**18
+    beta = 10**18
+
+    moves = _ordered_moves(board)
+    if n_empty >= 13:
+        moves = moves[:8]
+    elif n_empty >= 10:
+        moves = moves[:10]
+
+    for r, c in moves:
+        if board[r][c] != 0:
+            continue
+        board[r][c] = 1
+        val = -_negamax(_board_to_tuple(board), -1, depth - 1, -beta, -alpha)
+        board[r][c] = 0
+
+        if val > best_val:
+            best_val = val
+            best_move = (r, c)
+        if val > alpha:
+            alpha = val
+
+    # Final legality check
+    r, c = best_move
+    if 0 <= r < 4 and 0 <= c < 4 and board[r][c] == 0:
+        return best_move
+
+    return fallback
+</code>

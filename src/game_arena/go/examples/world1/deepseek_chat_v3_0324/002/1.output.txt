@@ -1,0 +1,190 @@
+Here's a strategy for a basic but competent Go AI policy:
+
+Strategy:
+1. First, implement basic move safety checks to ensure we don't make illegal moves
+2. Prioritize capturing opponent stones when possible
+3. Look for patterns to extend existing groups
+4. For opening moves, follow joseki (standard opening patterns)
+5. In the middle game, focus on territory while maintaining group safety
+6. Fight for eyespace when groups are in danger
+7. As a fallback, use a weighted random move favoring center and existing stone proximity
+
+This implementation uses heuristics for capturing, extending, and pattern matching while ensuring legal moves.
+
+<code>
+import random
+import numpy as np
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    SIZE = 19
+    me_set = set(me)
+    opponent_set = set(opponent)
+    all_stones = me_set.union(opponent_set)
+    
+    # Helper functions
+    def is_on_board(row, col):
+        return 1 <= row <= SIZE and 1 <= col <= SIZE
+    
+    def get_neighbors(row, col):
+        return [(row+1, col), (row-1, col), (row, col+1), (row, col-1)]
+    
+    def get_liberties(group, all_stones):
+        liberties = set()
+        for r, c in group:
+            for nr, nc in get_neighbors(r, c):
+                if is_on_board(nr, nc) and (nr, nc) not in all_stones:
+                    liberties.add((nr, nc))
+        return liberties
+    
+    # Find all opponent groups and their liberties
+    opponent_groups = []
+    visited = set()
+    for stone in opponent:
+        if stone in visited:
+            continue
+        stack = [stone]
+        group = set()
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in group:
+                continue
+            group.add((r, c))
+            visited.add((r, c))
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opponent_set and (nr, nc) not in group:
+                    stack.append((nr, nc))
+        opponent_groups.append(group)
+    
+    # Look for capturing moves (opponent groups with only 1 liberty)
+    capture_moves = []
+    for group in opponent_groups:
+        liberties = get_liberties(group, all_stones)
+        if len(liberties) == 1:
+            capture_moves.extend(liberties)
+    
+    if capture_moves:
+        # Prefer captures with fewest follow-up captures
+        legal_capture_moves = [m for m in capture_moves if m not in all_stones]
+        if legal_capture_moves:
+            # Choose the capture that removes the largest group
+            largest_group = None
+            best_capture = None
+            for move in legal_capture_moves:
+                for group in opponent_groups:
+                    libs = get_liberties(group, all_stones)
+                    if len(libs) == 1 and move in libs:
+                        if largest_group is None or len(group) > len(largest_group):
+                            largest_group = group
+                            best_capture = move
+            return best_capture
+    
+    # Look for moves that connect/expand our groups
+    my_groups = []
+    visited = set()
+    for stone in me:
+        if stone in visited:
+            continue
+        stack = [stone]
+        group = set()
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in group:
+                continue
+            group.add((r, c))
+            visited.add((r, c))
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in me_set and (nr, nc) not in group:
+                    stack.append((nr, nc))
+        my_groups.append(group)
+    
+    # Find good extension moves for our groups
+    extension_moves = []
+    for group in my_groups:
+        liberties = get_liberties(group, all_stones)
+        for move in liberties:
+            # Count how many friendly stones this would connect to
+            count = 0
+            for nr, nc in get_neighbors(move[0], move[1]):
+                if (nr, nc) in me_set:
+                    count += 1
+            if count >= 2:  # Strong connection
+                extension_moves.append((move, 2))
+            else:
+                extension_moves.append((move, 1))
+    
+    if extension_moves:
+        # Pick the strongest extension
+        extension_moves.sort(key=lambda x: -x[1])
+        legal_extensions = [m for m, w in extension_moves if m not in all_stones]
+        if legal_extensions:
+            return legal_extensions[0]
+    
+    # Look for atari responses (save our groups with 1 liberty)
+    defense_moves = []
+    for group in my_groups:
+        liberties = get_liberties(group, all_stones)
+        if len(liberties) == 1:
+            defense_moves.extend(liberties)
+    
+    if defense_moves:
+        legal_defense = [m for m in defense_moves if m not in all_stones]
+        if legal_defense:
+            # Choose defense that saves largest group
+            largest_group = None
+            best_defense = None
+            for move in legal_defense:
+                for group in my_groups:
+                    libs = get_liberties(group, all_stones)
+                    if len(libs) == 1 and move in libs:
+                        if largest_group is None or len(group) > len(largest_group):
+                            largest_group = group
+                            best_defense = move
+            return best_defense
+    
+    # Standard opening moves (4-4 points first)
+    if len(me) + len(opponent) < 10:
+        corners = [(4,4), (4,16), (16,4), (16,16)]
+        # Try 4-4 points first
+        for move in corners:
+            if move not in all_stones:
+                return move
+        # Then 3-4 points
+        corners = [(3,4), (3,16), (16,4), (16,16),
+                   (4,3), (4,17), (17,4), (17,16)]
+        for move in corners:
+            if move not in all_stones:
+                return move
+    
+    # Weighted random move (favor center, existing stone proximity)
+    all_moves = []
+    weights = []
+    center = (SIZE//2 + 1, SIZE//2 + 1)
+    
+    for r in range(1, SIZE+1):
+        for c in range(1, SIZE+1):
+            if (r, c) not in all_stones:
+                # Base weight - prefer center
+                dist_to_center = ((r-center[0])**2 + (c-center[1])**2)**0.5
+                center_weight = 10 / (1 + dist_to_center)
+                
+                # Stone proximity - prefer near existing stones
+                stone_prox = 0
+                for sr, sc in me + opponent:
+                    dist = ((r-sr)**2 + (c-sc)**2)**0.5
+                    stone_prox += 1 / (1 + dist)
+                
+                all_moves.append((r, c))
+                weights.append(center_weight + stone_prox)
+    
+    if all_moves:
+        # Normalize weights and choose
+        total = sum(weights)
+        if total > 0:
+            weights = [w/total for w in weights]
+            idx = np.random.choice(len(all_moves), p=weights)
+            return all_moves[idx]
+    
+    # Fallback - pass if nothing found
+    return (0, 0)
+</code>

@@ -1,0 +1,209 @@
+
+import time
+
+# ----------------------------------------------------------------------
+# Constants
+# ----------------------------------------------------------------------
+BOARD_SIZE = 8
+WIN_SCORE = 10 ** 6          # Large value for a win
+PIECE_VALUE = 100            # Material weight
+ADV_WEIGHT = 10              # Advancement weight
+CENTER_BONUS = 5             # Central‑column bonus
+EDGE_PENALTY = -2            # Edge‑column penalty
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def generate_moves(me, opp, color):
+    """Return a list of all legal moves for the player to move."""
+    moves = []
+    forward = 1 if color == 'w' else -1
+    my_set = set(me)
+    opp_set = set(opp)
+    for r, c in me:
+        # Straight forward
+        nr, nc = r + forward, c
+        if 0 <= nr < BOARD_SIZE and (nr, nc) not in my_set and (nr, nc) not in opp_set:
+            moves.append(((r, c), (nr, nc)))
+        # Diagonal left
+        nr, nc = r + forward, c - 1
+        if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and (nr, nc) not in my_set:
+            moves.append(((r, c), (nr, nc)))
+        # Diagonal right
+        nr, nc = r + forward, c + 1
+        if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and (nr, nc) not in my_set:
+            moves.append(((r, c), (nr, nc)))
+    return moves
+
+
+def apply_move(me, opp, color, move):
+    """Apply a move and return the resulting (me, opp) board lists."""
+    (r, c), (nr, nc) = move
+    # Capture: remove the opponent piece from the target square
+    new_opp = [p for p in opp if p != (nr, nc)]
+    # Move the piece
+    new_me = [p for p in me if p != (r, c)]
+    new_me.append((nr, nc))
+    return new_me, new_opp
+
+
+def heuristic(me, opp, color):
+    """Static evaluation from the perspective of the player `color`."""
+    # Material
+    material = len(me) - len(opp)
+
+    # Advancement – sum of distances to the opponent's home row
+    if color == 'w':
+        my_adv = sum(7 - r for r, c in me)      # White wants to reach row 7
+        opp_adv = sum(r for r, c in opp)          # Black wants to reach row 0
+    else:
+        my_adv = sum(r for r, c in me)            # Black wants to reach row 0
+        opp_adv = sum(7 - r for r, c in opp)      # White wants to reach row 7
+
+    # Central‑column influence
+    my_center = sum(1 for r, c in me if c in (3, 4))
+    opp_center = sum(1 for r, c in opp if c in (3, 4))
+
+    # Edge‑column penalty
+    my_edge = sum(1 for r, c in me if c in (0, 7))
+    opp_edge = sum(1 for r, c in opp if c in (0, 7))
+
+    # Combine components
+    score = (material * PIECE_VALUE +
+             (opp_adv - my_adv) * ADV_WEIGHT +
+             (my_center - opp_center) * CENTER_BONUS +
+             (my_edge - opp_edge) * EDGE_PENALTY)
+    return score
+
+
+def negamax(me, opp, color, depth, alpha, beta):
+    """Negamax search with alpha‑beta pruning. Returns the best score for the player to move."""
+    # Terminal: opponent has no pieces -> win
+    if not opp:
+        return WIN_SCORE
+    # Terminal: current player has no pieces -> loss
+    if not me:
+        return -WIN_SCORE
+
+    # Opponent's home row
+    opp_home = 7 if color == 'w' else 0
+
+    # If a piece already sits on the opponent's home row the game is won.
+    for r, c in me:
+        if r == opp_home:
+            return WIN_SCORE
+
+    # Depth limit reached – evaluate statically.
+    if depth == 0:
+        return heuristic(me, opp, color)
+
+    # Generate legal moves.
+    moves = generate_moves(me, opp, color)
+    if not moves:
+        return -WIN_SCORE   # No legal move = loss.
+
+    # Move ordering: captures > forward > diagonal; closer to goal preferred.
+    opp_set = set(opp)
+    def move_key(mv):
+        (r, c), (nr, nc) = mv
+        if (nr, nc) in opp_set:
+            priority = 2
+        elif nc == c:
+            priority = 1
+        else:
+            priority = 0
+        dist = 7 - nr if color == 'w' else nr
+        return (priority, -dist)
+
+    moves.sort(key=move_key, reverse=True)
+
+    best = -float('inf')
+    for move in moves:
+        new_me, new_opp = apply_move(me, opp, color, move)
+        _, (tr, tc) = move
+
+        # Immediate win by reaching the opponent's home row?
+        if tr == opp_home:
+            return WIN_SCORE
+        # Immediate win by capturing the last opponent piece?
+        if not new_opp:
+            return WIN_SCORE
+
+        opp_color = 'b' if color == 'w' else 'w'
+        score = -negamax(new_opp, new_me, opp_color, depth - 1, -beta, -alpha)
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+    return alpha
+
+
+# ----------------------------------------------------------------------
+# Public API
+# ----------------------------------------------------------------------
+def policy(me, opp, color):
+    """
+    Return a legal move ((from_row, from_col), (to_row, to_col)) for the player `color`.
+    `me` – list of player's piece coordinates.
+    `opp` – list of opponent's piece coordinates.
+    """
+    # ---- 1. Generate all legal moves -------------------------------------------------
+    moves = generate_moves(me, opp, color)
+    if not moves:
+        # Desperate fallback – should never occur in a legal game.
+        # Try any forward move of the first piece.
+        r, c = me[0]
+        nr = r + (1 if color == 'w' else -1)
+        return ((r, c), (nr, c))
+
+    # ---- 2. Immediate winning move? -------------------------------------------------
+    opp_home = 7 if color == 'w' else 0
+    opp_set = set(opp)
+    for move in moves:
+        (r, c), (nr, nc) = move
+        # Reaching the far row wins instantly.
+        if nr == opp_home:
+            return move
+        # Capturing the only opponent piece also wins instantly.
+        if (nr, nc) in opp_set and len(opp) == 1:
+            return move
+
+    # ---- 3. Iterative deepening search ----------------------------------------------
+    # Sort moves to improve early alpha‑beta cuts at the root.
+    def move_priority(mv):
+        (r, c), (nr, nc) = mv
+        if (nr, nc) in opp_set:
+            p = 2
+        elif nc == c:
+            p = 1
+        else:
+            p = 0
+        d = 7 - nr if color == 'w' else nr
+        return (p, -d)
+
+    moves.sort(key=move_priority, reverse=True)
+
+    start_time = time.time()
+    best_move = moves[0]
+    best_score = -float('inf')
+
+    # Try depths 2 through 6 (or until time runs out).
+    for depth in range(2, 7):
+        current_best_move = best_move
+        current_best_score = -float('inf')
+        for move in moves:
+            new_me, new_opp = apply_move(me, opp, color, move)
+            opp_color = 'b' if color == 'w' else 'w'
+            score = -negamax(new_opp, new_me, opp_color, depth - 1,
+                             -float('inf'), float('inf'))
+            if score > current_best_score:
+                current_best_score = score
+                current_best_move = move
+        # Commit the best move found at this depth.
+        best_move = current_best_move
+        best_score = current_best_score
+        # Respect the 1‑second budget (leave a small safety margin).
+        if time.time() - start_time > 0.95:
+            break
+
+    return best_move

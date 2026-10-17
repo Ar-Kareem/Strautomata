@@ -1,0 +1,296 @@
+
+import random
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def rotate_quadrant(board, quad, direction):
+    """Rotate a 3x3 quadrant in-place.
+    quad: 0=top‑left, 1=top‑right, 2=bottom‑left, 3=bottom‑right
+    direction: 'L' = 90° anticlockwise, 'R' = 90° clockwise
+    """
+    offsets = {
+        0: (0, 0),
+        1: (0, 3),
+        2: (3, 0),
+        3: (3, 3)
+    }
+    ro, co = offsets[quad]
+
+    # extract 3x3 sub‑board
+    sub = [[board[ro + i][co + j] for j in range(3)] for i in range(3)]
+
+    if direction == 'L':
+        # anticlockwise
+        rotated = [[0] * 3 for _ in range(3)]
+        for i in range(3):
+            for j in range(3):
+                rotated[i][j] = sub[j][2 - i]
+    else:  # 'R' – clockwise
+        rotated = [[0] * 3 for _ in range(3)]
+        for i in range(3):
+            for j in range(3):
+                rotated[i][j] = sub[2 - j][i]
+
+    # write back
+    for i in range(3):
+        for j in range(3):
+            board[ro + i][co + j] = rotated[i][j]
+
+
+def apply_move(board, player, move):
+    """Return a new board after placing player's marble and rotating a quadrant."""
+    r, c, q, d = move
+    new_board = [row[:] for row in board]
+    new_board[r][c] = player
+    rotate_quadrant(new_board, q, d)
+    return new_board
+
+
+def check_winner(board):
+    """Return 1 if player 1 (us) has ≥5 in a line, -1 if opponent does,
+       0 if both have a line (draw), None if nobody has a line."""
+    p1_win = False
+    p2_win = False
+
+    for r in range(6):
+        for c in range(6):
+            val = board[r][c]
+            if val == 0:
+                continue
+            # horizontal
+            if c + 4 < 6:
+                if all(board[r][c + i] == val for i in range(5)):
+                    if val == 1:
+                        p1_win = True
+                    else:
+                        p2_win = True
+            # vertical
+            if r + 4 < 6:
+                if all(board[r + i][c] == val for i in range(5)):
+                    if val == 1:
+                        p1_win = True
+                    else:
+                        p2_win = True
+            # diagonal down‑right
+            if r + 4 < 6 and c + 4 < 6:
+                if all(board[r + i][c + i] == val for i in range(5)):
+                    if val == 1:
+                        p1_win = True
+                    else:
+                        p2_win = True
+            # diagonal down‑left
+            if r + 4 < 6 and c - 4 >= 0:
+                if all(board[r + i][c - i] == val for i in range(5)):
+                    if val == 1:
+                        p1_win = True
+                    else:
+                        p2_win = True
+
+    if p1_win and p2_win:
+        return 0
+    if p1_win:
+        return 1
+    if p2_win:
+        return -1
+    return None
+
+
+def generate_moves(board, player):
+    """All legal moves for the given player (1 = us, -1 = opponent)."""
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] != 0:
+                continue
+            for q in range(4):
+                for d in ('L', 'R'):
+                    moves.append((r, c, q, d))
+    return moves
+
+
+def evaluate(board):
+    """Static evaluation: positive favours us, negative favours opponent."""
+    score = 0
+
+    # ----- horizontal runs -----
+    for r in range(6):
+        c = 0
+        while c < 6:
+            if board[r][c] == 0:
+                c += 1
+                continue
+            player = board[r][c]
+            run = 0
+            while c < 6 and board[r][c] == player:
+                run += 1
+                c += 1
+            if run >= 2:
+                if player == 1:
+                    score += run * 10
+                else:
+                    score -= run * 10
+
+    # ----- vertical runs -----
+    for c in range(6):
+        r = 0
+        while r < 6:
+            if board[r][c] == 0:
+                r += 1
+                continue
+            player = board[r][c]
+            run = 0
+            while r < 6 and board[r][c] == player:
+                run += 1
+                r += 1
+            if run >= 2:
+                if player == 1:
+                    score += run * 10
+                else:
+                    score -= run * 10
+
+    # ----- diagonal down‑right -----
+    for start in range(6):
+        r, c = start, 0
+        while r < 6 and c < 6:
+            if board[r][c] == 0:
+                r += 1
+                c += 1
+                continue
+            player = board[r][c]
+            run = 0
+            while r < 6 and c < 6 and board[r][c] == player:
+                run += 1
+                r += 1
+                c += 1
+            if run >= 2:
+                if player == 1:
+                    score += run * 10
+                else:
+                    score -= run * 10
+
+    # ----- diagonal down‑left -----
+    for start in range(6):
+        r, c = 0, start
+        while r < 6 and c >= 0:
+            if board[r][c] == 0:
+                r += 1
+                c -= 1
+                continue
+            player = board[r][c]
+            run = 0
+            while r < 6 and c >= 0 and board[r][c] == player:
+                run += 1
+                r += 1
+                c -= 1
+            if run >= 2:
+                if player == 1:
+                    score += run * 10
+                else:
+                    score -= run * 10
+
+    # ----- material count -----
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] == 1:
+                score += 1
+            elif board[r][c] == -1:
+                score -= 1
+
+    return score
+
+
+# ----------------------------------------------------------------------
+# Main policy
+# ----------------------------------------------------------------------
+def policy(you, opponent):
+    """Return a legal Pentago move as a string 'row,col,quad,dir'."""
+    # Convert input to integer board: 1 = us, -1 = opponent, 0 = empty
+    board = [[0] * 6 for _ in range(6)]
+    for i in range(6):
+        for j in range(6):
+            if you[i][j] == 1:
+                board[i][j] = 1
+            elif opponent[i][j] == 1:
+                board[i][j] = -1
+            else:
+                board[i][j] = 0
+
+    # Generate all legal moves for us
+    my_moves = generate_moves(board, 1)
+
+    # 1) Immediate winning move?
+    for move in my_moves:
+        nb = apply_move(board, 1, move)
+        if check_winner(nb) == 1:
+            r, c, q, d = move
+            return f"{r + 1},{c + 1},{q},{d}"
+
+    # 2) Depth‑2 minimax with static evaluation
+    INF = 10 ** 9
+
+    # Pre‑compute a static score for each of our moves to order them
+    move_scores = []
+    for move in my_moves:
+        nb = apply_move(board, 1, move)
+        w = check_winner(nb)
+        if w == -1:
+            # opponent would win immediately – very bad
+            score = -INF
+        else:
+            score = evaluate(nb)
+        move_scores.append((score, move))
+
+    # Sort descending – better looking positions first
+    move_scores.sort(key=lambda x: -x[0])
+
+    best_value = -INF
+    best_move = None
+
+    for my_score, move in move_scores:
+        nb = apply_move(board, 1, move)
+        w = check_winner(nb)
+
+        # Terminal result after our move
+        if w == 1:                     # we win
+            r, c, q, d = move
+            return f"{r + 1},{c + 1},{q},{d}"
+        if w == -1:                    # opponent wins – treat as very bad
+            value = -INF
+        elif w == 0:                   # draw
+            value = 0
+        else:
+            # Opponent's best reply (depth‑1)
+            opp_moves = generate_moves(nb, -1)
+
+            # Compute a static score for each opponent move for ordering
+            opp_move_scores = []
+            for opp_move in opp_moves:
+                ob = apply_move(nb, -1, opp_move)
+                ow = check_winner(ob)
+                if ow == -1:               # opponent wins
+                    opp_score = -INF
+                elif ow == 1:              # we win (bad for opponent)
+                    opp_score = INF
+                elif ow == 0:              # draw
+                    opp_score = 0
+                else:
+                    opp_score = evaluate(ob)
+                opp_move_scores.append((opp_score, opp_move))
+
+            # Opponent wants to minimise our score
+            opp_move_scores.sort(key=lambda x: x[0])
+            value = opp_move_scores[0][0] if opp_move_scores else 0
+
+        if value > best_value:
+            best_value = value
+            best_move = move
+        # optional alpha‑beta cut‑off
+        # if best_value >= INF: break
+
+    # If no best move found (should not happen), pick the first legal one
+    if best_move is None:
+        best_move = my_moves[0]
+
+    r, c, q, d = best_move
+    return f"{r + 1},{c + 1},{q},{d}"

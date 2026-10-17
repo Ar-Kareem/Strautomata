@@ -1,0 +1,157 @@
+The strategy for this policy is to first look for immediate winning moves, then block any immediate opponent wins. If neither exists, it uses a depth-limited alpha–beta negamax search with a heuristic that counts potential winning lines. The heuristic rewards lines with our marks and no opponent marks, and penalizes lines with opponent marks and no ours. This balances tactical play with strategic positioning and remains within the time limit.
+
+<code>
+import math
+from typing import List, Tuple
+
+# Precompute all winning lines in 3x3x3
+LINES = []
+
+# Straight lines along axes
+for y in range(3):
+    for z in range(3):
+        LINES.append([(x, y, z) for x in range(3)])
+for x in range(3):
+    for z in range(3):
+        LINES.append([(x, y, z) for y in range(3)])
+for x in range(3):
+    for y in range(3):
+        LINES.append([(x, y, z) for z in range(3)])
+
+# Diagonals in planes
+for x in range(3):
+    LINES.append([(x, i, i) for i in range(3)])
+    LINES.append([(x, i, 2 - i) for i in range(3)])
+for y in range(3):
+    LINES.append([(i, y, i) for i in range(3)])
+    LINES.append([(i, y, 2 - i) for i in range(3)])
+for z in range(3):
+    LINES.append([(i, i, z) for i in range(3)])
+    LINES.append([(i, 2 - i, z) for i in range(3)])
+
+# Space diagonals
+LINES.append([(i, i, i) for i in range(3)])
+LINES.append([(i, i, 2 - i) for i in range(3)])
+LINES.append([(i, 2 - i, i) for i in range(3)])
+LINES.append([(i, 2 - i, 2 - i) for i in range(3)])
+
+WIN_SCORE = 100000
+
+def check_winner(board: List[List[List[int]]]) -> int:
+    for line in LINES:
+        s = 0
+        for (x, y, z) in line:
+            s += board[x][y][z]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+def evaluate(board: List[List[List[int]]]) -> int:
+    score = 0
+    for line in LINES:
+        vals = [board[x][y][z] for (x, y, z) in line]
+        if 1 in vals and -1 in vals:
+            continue
+        c1 = vals.count(1)
+        c2 = vals.count(-1)
+        if c2 == 0:
+            if c1 == 1:
+                score += 1
+            elif c1 == 2:
+                score += 10
+            elif c1 == 3:
+                score += 100
+        if c1 == 0:
+            if c2 == 1:
+                score -= 1
+            elif c2 == 2:
+                score -= 10
+            elif c2 == 3:
+                score -= 100
+    return score
+
+def get_empty(board):
+    empties = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == 0:
+                    empties.append((x, y, z))
+    return empties
+
+def negamax(board, depth, alpha, beta, player):
+    winner = check_winner(board)
+    if winner != 0:
+        return winner * player * WIN_SCORE
+    empties = get_empty(board)
+    if depth == 0 or not empties:
+        return evaluate(board) * player
+
+    best = -math.inf
+    # Move ordering: heuristic sort
+    def move_key(m):
+        x, y, z = m
+        board[x][y][z] = player
+        val = evaluate(board)
+        board[x][y][z] = 0
+        return val
+
+    moves = sorted(empties, key=move_key, reverse=True)
+    for (x, y, z) in moves:
+        board[x][y][z] = player
+        val = -negamax(board, depth - 1, -beta, -alpha, -player)
+        board[x][y][z] = 0
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    empties = get_empty(board)
+    if not empties:
+        return (0, 0, 0)
+
+    # 1. Immediate win
+    for (x, y, z) in empties:
+        board[x][y][z] = 1
+        if check_winner(board) == 1:
+            board[x][y][z] = 0
+            return (x, y, z)
+        board[x][y][z] = 0
+
+    # 2. Immediate block
+    for (x, y, z) in empties:
+        board[x][y][z] = -1
+        if check_winner(board) == -1:
+            board[x][y][z] = 0
+            return (x, y, z)
+        board[x][y][z] = 0
+
+    # 3. Search
+    empty_count = len(empties)
+    depth = 4
+    if empty_count <= 6:
+        depth = empty_count  # search to end
+
+    best_move = empties[0]
+    best_val = -math.inf
+    alpha = -math.inf
+    beta = math.inf
+
+    for (x, y, z) in empties:
+        board[x][y][z] = 1
+        val = -negamax(board, depth - 1, -beta, -alpha, -1)
+        board[x][y][z] = 0
+        if val > best_val:
+            best_val = val
+            best_move = (x, y, z)
+        if best_val > alpha:
+            alpha = best_val
+
+    return best_move
+</code>

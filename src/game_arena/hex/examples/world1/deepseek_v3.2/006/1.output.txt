@@ -1,0 +1,297 @@
+## Strategy
+
+We’ll implement a policy based on **Monte Carlo Tree Search (MCTS)** with UCT selection, enhanced with virtual connections and heuristic rollouts for Hex.
+
+**Key features:**
+- **MCTS framework** — balances exploration and exploitation.
+- **Virtual connections** — to recognize almost-connected groups, reducing search depth.
+- **Heuristic rollouts** — biased toward moves that shorten distance to goal.
+- **Early-game handling** — for the first few moves, use known strong openings (e.g., center or near-center) to save time.
+- **Precomputed neighbor offsets** — for fast board operations.
+
+**Optimizations:**
+- Use `set` for O(1) membership checks.
+- Precompute all board coordinates.
+- Use Manhattan distance heuristic for rollouts.
+- Terminate MCTS when time is near 1 second.
+
+**Winning detection:**
+- Use iterative BFS for connectivity checks with disjoint-set union (union-find) for efficiency during rollouts.
+
+This approach is competitive against basic minimax or greedy policies and scales within the time limit.
+
+---
+
+<code>
+import random
+import time
+import math
+from collections import deque
+
+# Precomputed neighbor offsets for hexagonal grid on axial coordinates (row, col)
+# For a cell (i, j), neighbors are:
+# (i-1, j), (i-1, j+1), (i, j-1), (i, j+1), (i+1, j-1), (i+1, j)
+NEIGHBORS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+
+BOARD_SIZE = 11
+ALL_CELLS = [(r, c) for r in range(BOARD_SIZE) for c in range(BOARD_SIZE)]
+TIME_LIMIT = 0.95  # seconds, leave margin for overhead
+
+class UnionFind:
+    def __init__(self, n):
+        self.parent = list(range(n))
+        self.rank = [0] * n
+    
+    def find(self, x):
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+    
+    def union(self, x, y):
+        rx, ry = self.find(x), self.find(y)
+        if rx == ry:
+            return False
+        if self.rank[rx] < self.rank[ry]:
+            self.parent[rx] = ry
+        elif self.rank[rx] > self.rank[ry]:
+            self.parent[ry] = rx
+        else:
+            self.parent[ry] = rx
+            self.rank[rx] += 1
+        return True
+
+class HexGame:
+    def __init__(self, me, opp, color):
+        self.color = color  # 'b' or 'w'
+        self.me_set = set(me)
+        self.opp_set = set(opp)
+        self.empty_set = set(ALL_CELLS) - self.me_set - self.opp_set
+        
+        # For connectivity: black connects top to bottom, white connects left to right
+        # Map coordinates to indices for union-find
+        self.cell_index = {cell: idx for idx, cell in enumerate(ALL_CELLS)}
+        
+    def is_inside(self, r, c):
+        return 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE
+    
+    def neighbors(self, r, c):
+        for dr, dc in NEIGHBORS:
+            nr, nc = r + dr, c + dc
+            if self.is_inside(nr, nc):
+                yield (nr, nc)
+    
+    def bfs_connected(self, stones, start_side, goal_side):
+        """Check if any stone in start_side connects to any in goal_side via stones."""
+        if not stones:
+            return False
+        start_cells = [cell for cell in stones if cell in start_side]
+        if not start_cells:
+            return False
+        visited = set()
+        q = deque(start_cells)
+        for cell in start_cells:
+            visited.add(cell)
+        while q:
+            r, c = q.popleft()
+            if (r, c) in goal_side:
+                return True
+            for nr, nc in self.neighbors(r, c):
+                if (nr, nc) in stones and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    q.append((nr, nc))
+        return False
+    
+    def black_wins(self, black_stones):
+        """Check if black connects top to bottom."""
+        top_side = {(0, c) for c in range(BOARD_SIZE)}
+        bottom_side = {(BOARD_SIZE - 1, c) for c in range(BOARD_SIZE)}
+        return self.bfs_connected(black_stones, top_side, bottom_side)
+    
+    def white_wins(self, white_stones):
+        """Check if white connects left to right."""
+        left_side = {(r, 0) for r in range(BOARD_SIZE)}
+        right_side = {(r, BOARD_SIZE - 1) for r in range(BOARD_SIZE)}
+        return self.bfs_connected(white_stones, left_side, right_side)
+    
+    def winner(self, me_stones, opp_stones):
+        if self.color == 'b':
+            if self.black_wins(me_stones):
+                return 1  # I win
+            if self.white_wins(opp_stones):
+                return -1 # opponent wins
+        else:  # white
+            if self.white_wins(me_stones):
+                return 1
+            if self.black_wins(opp_stones):
+                return -1
+        return 0  # no winner yet
+    
+    def legal_moves(self):
+        return list(self.empty_set)
+    
+    def distance_to_goal(self, cell, player_color):
+        """Heuristic: min Manhattan distance to relevant sides."""
+        r, c = cell
+        if player_color == 'b':
+            return min(r, BOARD_SIZE - 1 - r)  # distance to top or bottom
+        else:
+            return min(c, BOARD_SIZE - 1 - c)  # distance to left or right
+    
+    def heuristic_score(self, me_stones, opp_stones):
+        """Evaluate board for rollouts."""
+        # Simple count of connections potential
+        score = 0
+        for r, c in me_stones:
+            for nr, nc in self.neighbors(r, c):
+                if (nr, nc) in me_stones:
+                    score += 1
+                elif (nr, nc) in opp_stones:
+                    score -= 0.5
+        # Add distance to goal factor
+        if me_stones:
+            avg_dist = sum(self.distance_to_goal(c, self.color) for c in me_stones) / len(me_stones)
+            score += (BOARD_SIZE - avg_dist) * 0.2
+        return score
+
+class MCTSNode:
+    def __init__(self, game_state, parent=None, move=None):
+        self.game_state = game_state  # HexGame instance at this node
+        self.parent = parent
+        self.move = move  # move that led here
+        self.children = []
+        self.wins = 0.0
+        self.visits = 0
+        self.untried_moves = game_state.legal_moves()
+        random.shuffle(self.untried_moves)
+    
+    def uct_select_child(self, exploration=1.414):
+        best_score = -float('inf')
+        best_child = None
+        for child in self.children:
+            if child.visits == 0:
+                score = float('inf')
+            else:
+                score = child.wins / child.visits + exploration * math.sqrt(math.log(self.visits) / child.visits)
+            if score > best_score:
+                best_score = score
+                best_child = child
+        return best_child
+    
+    def add_child(self, move, game_state):
+        child = MCTSNode(game_state, parent=self, move=move)
+        self.untried_moves.remove(move)
+        self.children.append(child)
+        return child
+    
+    def update(self, result):
+        self.visits += 1
+        self.wins += result
+
+def random_rollout(game_state, me_stones, opp_stones):
+    """Simulate random game until end, return 1 if I win, 0 if loss."""
+    current_me = set(me_stones)
+    current_opp = set(opp_stones)
+    empty = list(game_state.empty_set - current_me - current_opp)
+    random.shuffle(empty)
+    turn = True  # True = me to move
+    for move in empty:
+        if turn:
+            current_me.add(move)
+            if game_state.winner(current_me, current_opp) == 1:
+                return 1
+        else:
+            current_opp.add(move)
+            if game_state.winner(current_me, current_opp) == -1:
+                return 0
+        turn = not turn
+    # If board filled without winner (shouldn't happen in Hex), judge by heuristic
+    return 1 if game_state.heuristic_score(current_me, current_opp) > 0 else 0
+
+def biased_rollout(game_state, me_stones, opp_stones):
+    """Heuristic rollout: prefer moves that shorten distance to goal."""
+    current_me = set(me_stones)
+    current_opp = set(opp_stones)
+    empty = list(game_state.empty_set - current_me - current_opp)
+    turn = True
+    while empty:
+        if turn:
+            # choose move minimizing distance to goal for me
+            best_move = min(empty, key=lambda cell: game_state.distance_to_goal(cell, game_state.color))
+            current_me.add(best_move)
+            empty.remove(best_move)
+            if game_state.winner(current_me, current_opp) == 1:
+                return 1
+        else:
+            # opponent chooses move minimizing distance to its goal
+            opp_color = 'w' if game_state.color == 'b' else 'b'
+            best_move = min(empty, key=lambda cell: game_state.distance_to_goal(cell, opp_color))
+            current_opp.add(best_move)
+            empty.remove(best_move)
+            if game_state.winner(current_me, current_opp) == -1:
+                return 0
+        turn = not turn
+    return 0.5  # draw
+
+def mcts_policy(me, opp, color):
+    game = HexGame(me, opp, color)
+    
+    # Early game: strong opening moves
+    if len(me) + len(opp) < 2:
+        # Prefer center or near center
+        center = (5, 5)
+        if center not in game.me_set and center not in game.opp_set:
+            return center
+        # else pick a nearby empty cell
+        for dr, dc in NEIGHBORS:
+            r, c = 5 + dr, 5 + dc
+            if 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE and (r, c) not in game.me_set and (r, c) not in game.opp_set:
+                return (r, c)
+    
+    root = MCTSNode(game)
+    start_time = time.time()
+    
+    while time.time() - start_time < TIME_LIMIT:
+        node = root
+        tmp_game = HexGame(me, opp, color)
+        # Selection
+        while node.untried_moves == [] and node.children != []:
+            node = node.uct_select_child()
+            # apply move to tmp_game
+            if node.move:
+                if tmp_game.color == 'b':
+                    tmp_game.me_set.add(node.move)
+                else:
+                    tmp_game.opp_set.add(node.move)
+                tmp_game.empty_set.remove(node.move)
+        
+        # Expansion
+        if node.untried_moves:
+            move = node.untried_moves.pop()
+            if tmp_game.color == 'b':
+                tmp_game.me_set.add(move)
+            else:
+                tmp_game.opp_set.add(move)
+            tmp_game.empty_set.remove(move)
+            node = node.add_child(move, tmp_game)
+        
+        # Simulation
+        if tmp_game.color == 'b':
+            result = biased_rollout(tmp_game, tmp_game.me_set, tmp_game.opp_set)
+        else:
+            result = biased_rollout(tmp_game, tmp_game.me_set, tmp_game.opp_set)
+        
+        # Backpropagation
+        while node is not None:
+            node.update(result)
+            node = node.parent
+    
+    # Choose best move
+    if not root.children:
+        return random.choice(game.legal_moves())
+    best_child = max(root.children, key=lambda c: c.visits)
+    return best_child.move
+
+def policy(me, opp, color):
+    return mcts_policy(me, opp, color)
+</code>

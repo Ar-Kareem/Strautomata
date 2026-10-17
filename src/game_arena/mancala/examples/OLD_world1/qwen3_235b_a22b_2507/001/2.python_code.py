@@ -1,0 +1,223 @@
+
+import numpy as np
+
+def simulate_move(you, opponent, move):
+    """Simulate a move and return the new state, and whether extra move is granted."""
+    if you[move] == 0:
+        return you.copy(), opponent.copy(), False
+    
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    
+    seeds = new_you[move]
+    new_you[move] = 0
+    pos = move + 1
+    current_player = 'you'
+    
+    while seeds > 0:
+        if current_player == 'you':
+            if pos <= 6:  # your side including store
+                if pos == 6:  # landing in your store
+                    new_you[pos] += 1
+                    seeds -= 1
+                    if seeds == 0:  # last seed in your store
+                        extra_move = True
+                        break
+                    pos = 0
+                    current_player = 'opponent'
+                else:  # house on your side
+                    new_you[pos] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        # Check capture
+                        if pos < 6 and new_you[pos] == 1:  # landed in empty house
+                            opp_pos = 5 - pos
+                            if new_opponent[opp_pos] > 0:
+                                # Capture
+                                captured = new_opponent[opp_pos] + 1
+                                new_you[6] += captured
+                                new_you[pos] = 0
+                                new_opponent[opp_pos] = 0
+                        extra_move = False
+                        break
+                    else:
+                        pos += 1
+            else:
+                pos = 0
+                current_player = 'opponent'
+        else:  # opponent's side
+            if pos < 6:
+                new_opponent[pos] += 1
+                seeds -= 1
+                if seeds == 0:
+                    extra_move = False
+                    break
+                else:
+                    pos += 1
+            else:
+                pos = 0
+                current_player = 'you'
+    
+    return new_you, new_opponent, extra_move
+
+def evaluate(you, opponent):
+    """Evaluate the board state."""
+    # Primary: store difference
+    score = you[6] - opponent[6]
+    
+    # Bonus for having seeds in houses that can score soon
+    for i in range(6):
+        if you[i] > 0:
+            # Bonus if seed count allows landing in store
+            if (you[i] + i) % 13 == 6:
+                score += 0.5
+            # Bonus for potential captures
+            if you[i] == 1 and opponent[5-i] > 0:
+                score += 0.3 * opponent[5-i]  # potential capture value
+    
+    return score
+
+def minimax(you, opponent, depth, maximizing, alpha, beta):
+    """Minimax with alpha-beta pruning."""
+    if depth == 0:
+        return evaluate(you, opponent), -1
+    
+    # Check if current player has moves
+    moves = [i for i in range(6) if you[i] > 0]
+    if not moves:
+        return evaluate(you, opponent), -1
+    
+    if maximizing:
+        max_eval = float('-inf')
+        best_move = moves[0]
+        for move in moves:
+            new_you, new_opponent, extra = simulate_move(you, opponent, move)
+            if extra:
+                eval_score, _ = minimax(new_you, new_opponent, depth, True, alpha, beta)
+            else:
+                eval_score, _ = minimax(new_opponent, new_you, depth-1, False, alpha, beta)
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        best_move = moves[0]
+        for move in moves:
+            new_you, new_opponent, extra = simulate_move(you, opponent, move)
+            if extra:
+                eval_score, _ = minimax(new_you, new_opponent, depth-1, False, alpha, beta)
+            else:
+                eval_score, _ = minimax(new_opponent, new_you, depth-1, True, alpha, beta)
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        
+        return min_eval, best_move
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Select the best move using minimax with alpha-beta pruning.
+    Prioritize moves that give extra turns and captures.
+    """
+    # Check for immediate winning or highly beneficial moves first
+    moves = [i for i in range(6) if you[i] > 0]
+    
+    # First, check for free turn moves
+    free_turn_moves = []
+    for move in moves:
+        seeds = you[move]
+        if (move + seeds) % 13 == 6:  # lands in store
+            free_turn_moves.append(move)
+    
+    if free_turn_moves:
+        # Among free turn moves, pick one that maximizes potential
+        if len(free_turn_moves) > 1:
+            # Evaluate which free turn move is best
+            best_move = free_turn_moves[0]
+            best_score = 0
+            for move in free_turn_moves:
+                score = you[move]  # Prefer moves with more seeds
+                opp_hole = 5 - move
+                # Bonus if this move sets up future captures
+                if you[move] == 1 and opponent[opp_hole] > 0:
+                    score += opponent[opp_hole]
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+            return best_move
+        else:
+            return free_turn_moves[0]
+    
+    # Check for capture moves
+    capture_moves = []
+    for move in moves:
+        end_pos = (move + you[move]) % 13
+        if end_pos < 6 and you[end_pos] == 0 and you[move] > 0:  # will land in empty house
+            # Check if this was an empty house before sowing
+            if you[move] == 1 or (move + 1 <= 6 and all(you[j] == 0 for j in range(move + 1, min(6, move + you[move])))):
+                # Simplistic check: if moving 1 seed from position i, and opposite has seeds, it's a capture
+                if you[move] == 1 and opponent[5-move] > 0:
+                    capture_moves.append(move)
+                elif you[move] > 1:
+                    # More complex: check if the last seed lands in an empty house
+                    pos = move
+                    seeds = you[move]
+                    temp_you = you.copy()
+                    temp_you[move] = 0
+                    current_pos = move + 1
+                    for _ in range(seeds - 1):
+                        if current_pos <= 6:
+                            temp_you[current_pos] += 1
+                            current_pos += 1
+                            if current_pos > 6:
+                                current_pos = 0
+                        else:
+                            current_pos += 1
+                            if current_pos > 5:
+                                current_pos = 0
+                    final_pos = current_pos - 1 if current_pos > 0 else 5
+                    if final_pos < 6 and temp_you[final_pos] == 0 and opponent[5-final_pos] > 0:
+                        capture_moves.append(move)
+    
+    if capture_moves:
+        # Prefer captures with highest total gain
+        best_move = capture_moves[0]
+        best_gain = 0
+        for move in capture_moves:
+            end_pos = (move + you[move]) % 13
+            if end_pos < 6:
+                gain = 1 + opponent[5-end_pos]
+                if gain > best_gain:
+                    best_gain = gain
+                    best_move = move
+        return best_move
+    
+    # Otherwise, use minimax with depth depending on game state
+    total_seeds = sum(you[:6])
+    if total_seeds > 18:
+        search_depth = 2
+    elif total_seeds > 12:
+        search_depth = 3
+    else:
+        search_depth = 4
+    
+    _, best_move = minimax(you, opponent, search_depth, True, float('-inf'), float('inf'))
+    
+    # Ensure we return a valid move
+    if best_move in moves:
+        return best_move
+    else:
+        # Fallback: return any valid move
+        return moves[0]

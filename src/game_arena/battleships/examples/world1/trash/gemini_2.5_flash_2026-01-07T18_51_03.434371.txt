@@ -1,0 +1,727 @@
+<thinking>
+The user wants a Python function `policy(board)` that suggests a target `(row, col)` for a Battleship-like game.
+The board is 10x10.
+Ships are lengths 5, 4, 3, 3, 2.
+Board states: `0` (unknown), `-1` (miss), `1` (hit).
+The goal is to sink all ships.
+
+My strategy will involve several phases:
+1.  **Hunting Phase**: When no ships are currently being targeted (i.e., no recent hits that haven't been sunk). In this phase, I want to efficiently find new ships. A checkerboard pattern or "diagonal pattern" is often good for this, as it guarantees hitting a ship of at least length 2 within two shots. For smaller grids, a stride of 2 (check every other cell) is often used. Given a 10x10 grid and ships like 5, 4, 3, 3, 2, a checkerboard pattern covers 50% of the cells. If a ship is hit, the next shot should be adjacent. So a pattern that prioritizes cells that are not adjacent to previously hit cells when hunting is good. A simple approach is to iterate through the cells in a predictable pattern, e.g., row by row, column by column, or diagonally, but only fire at `(row + col) % 2 == 0` cells (a checkerboard).
+
+2.  **Targeting (Sinking) Phase**: When a `1` (hit) is detected. Once a ship is hit, the priority shifts to sinking that ship.
+    *   If there's a single hit: I should try the four adjacent cells (up, down, left, right) to determine the ship's orientation.
+    *   If there are multiple hits in a line: I should extend that line in both directions until I hit water or the edge of the board.
+
+Let's break down the state I need to maintain:
+*   `hits_to_sink`: A list of `(row, col)` coordinates that are `1` (hits) but haven't been confirmed as part of a sunk ship. This is the core of the targeting phase.
+
+Since the `policy` function is stateless (it only receives the current `board`), I need a way to store and retrieve information between calls. I can use global variables for this, or if the environment allows, class objects (but the prompt specifies a function). Global variables are fine in this context.
+
+**Global State:**
+*   `last_hits`: A list of coordinates `(r, c)` where we hit a ship but haven't sunk it yet.
+*   `unconfirmed_segments`: A more advanced state might involve tracking segments of hits, not just individual hits. For simplicity, let's start with `last_hits`.
+*   `potential_directions`: For a new hit, we need to try directions.
+
+Let's refine the `last_hits` idea.
+If `last_hits` is empty, we are in the hunting phase.
+If `last_hits` contains one coordinate, we try its neighbors.
+If `last_hits` contains two or more coordinates, it means we've identified at least part of a ship and its orientation.
+
+The coordinates in `last_hits` should be ordered or sorted in some way to easily extend the line.
+
+**Algorithm Outline:**
+
+1.  **Initialize Global State (first call):**
+    *   `_last_hits = []` (stores (r, c) of hits that are part of an unsunk ship)
+    *   `_potential_sinks = []` (stores (r, c) of hits that we are trying to extend)
+    *   `_sunk_ships = []` (optional, for tracking sunk ships to avoid re-targeting, but board update makes it redundant)
+
+2.  **Analyze Current Board for `1`s (Hits):**
+    *   Iterate through the board.
+    *   Identify all `(r, c)` where `board[r][c] == 1`.
+    *   Compare these `1`s with `_potential_sinks`. If some `1`s in `_potential_sinks` are no longer `1`s (e.g., they became `-1` or `0` - which shouldn't happen unless a ship is sunk by the opponent, unlikely in this model), remove them. This is mostly for robustness, usually `1`s stay `1`s until sunk.
+    *   Any *new* `1`s found that are not already in `_potential_sinks` should be added.
+
+3.  **Prioritize Sinking (Targeting Phase):**
+    *   If `_potential_sinks` is not empty:
+        *   Try to extend the ship.
+        *   If there's only one hit in `_potential_sinks`, try neighbors. The order of checking neighbors matters. A systematic order (e.g., up, down, left, right) will prevent endless loops.
+            *   Let's keep track of `_last_shot_was_hit = False` and `_hit_coords = []`. When a ship is hit, add the coordinate to `_hit_coords`.
+            *   If `_hit_coords` has only one element (first hit on this ship), try all 4 cardinal directions around it, remembering which ones were tried.
+            *   If `_hit_coords` has two elements, the orientation is known (horizontal or vertical). Extend in both directions.
+            *   If `_hit_coords` has more than two elements, the orientation is known. Extend the longest "line" of hits.
+
+Let's refine the state representation for active targeting:
+`active_target = { 'hits': [(r, c), ...], 'tried_directions': {...} , 'orientation': None }`
+
+This is getting complex for a stateless function.
+A simpler approach for tracking active hits, without explicitly representing 'ships':
+
+*   `_hits_pending_sinking`: A list of `(r, c)` tuples that are currently `1` on the board.
+
+**New Algorithm using `_hits_pending_sinking`:**
+
+1.  **Global state:**
+    *   `_hits_pending_sinking = []`
+    *   `_next_shot_candidates = []` (for when we hit a ship and need to explore)
+    *   `_debug_counter = 0` (for debugging)
+
+2.  **`policy(board)` function:**
+    *   `global _hits_pending_sinking, _next_shot_candidates, _debug_counter`
+    *   `_debug_counter += 1`
+
+    *   **Update `_hits_pending_sinking`:**
+        *   Create `current_hits = []` by iterating `(r, c)` for `board[r][c] == 1`.
+        *   If `_hits_pending_sinking` contains elements not in `current_hits`: this implies a ship was sunk. Clear `_hits_pending_sinking` and `_next_shot_candidates`.
+        *   Update `_hits_pending_sinking = current_hits`. Sort it for consistency: `_hits_pending_sinking.sort()`.
+
+    *   **Targeting Phase (if `_hits_pending_sinking` is not empty):**
+        *   If `_next_shot_candidates` is not empty, pop a target from it.
+            *   `r, c = _next_shot_candidates.pop(0)`
+            *   If `board[r][c] == 0`, return `(r, c)`.
+            *   Else (already fired, or already a hit/miss), continue trying from `_next_shot_candidates`.
+        *   If `_next_shot_candidates` is empty (new hit or exhausted previous candidates):
+            *   The first hit in `_hits_pending_sinking` is `(hr, hc)`.
+            *   Initial approach: Try all 4 neighbors `(hr, hc)`: `(hr-1, hc), (hr+1, hc), (hr, hc-1), (hr, hc+1)`. Add valid, unfired neighbors to `_next_shot_candidates`.
+            *   If there are *multiple* hits in `_hits_pending_sinking`:
+                *   Determine orientation.
+                *   If horizontal: `_hits_pending_sinking = [(r_val, c1), (r_val, c2), ...]`. Extend left `(r_val, min(c) - 1)` and right `(r_val, max(c) + 1)`.
+                *   If vertical: `_hits_pending_sinking = [(r1, c_val), (r2, c_val), ...]`. Extend up `(min(r) - 1, c_val)` and down `(max(r) + 1, c_val)`.
+                *   Prioritize extending from the end of the line.
+                *   Add these new extension points to `_next_shot_candidates` (check if valid and unfired).
+
+    *   **Hunting Phase (if `_hits_pending_sinking` and `_next_shot_candidates` are both empty):**
+        *   Implement a checkerboard pattern.
+        *   Iterate `(r, c)` from `0` to `99`.
+        *   If `(r + c) % 2 == 0` (e.g., only try black squares on a checkerboard) and `board[r][c] == 0`.
+        *   Return `(r, c)`.
+
+Let's refine the targeting phase more carefully.
+The `_hits_pending_sinking` and `_next_shot_candidates` need to work together.
+A hit `1` on the board means we should prioritize sinking *that* ship.
+
+**Revised Targeting Strategy:**
+
+1.  **Initial Scan for Hits:**
+    *   At the start of `policy`, find all `active_hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]`.
+    *   If `_hits_pending_sinking` had hits that are *no longer* in `active_hits`, it means a ship was just sunk. Reset `_next_shot_candidates`.
+    *   Update `_hits_pending_sinking = active_hits`.
+    *   Sort `_hits_pending_sinking` for consistent processing.
+
+2.  **If `_hits_pending_sinking` is not empty:**
+    *   This is the critical part. We need to decide where to shoot *next* to sink this ship.
+    *   **Case 1: Only one known hit (`len(_hits_pending_sinking) == 1`)**:
+        *   This is the first hit on a ship. We need to find its orientation.
+        *   The single hit is `(r0, c0)`.
+        *   We need to try its neighbors: `(r0-1, c0), (r0+1, c0), (r0, c0-1), (r0, c0+1)`.
+        *   Add these candidates (if valid and `board[n_r][n_c] == 0`) to `_next_shot_candidates`. It's a queue, so `append`.
+        *   Then, pop and return a candidate.
+    *   **Case 2: Multiple known hits (`len(_hits_pending_sinking) > 1`)**:
+        *   Determine orientation:
+            *   If all `r` coordinates are the same, it's horizontal.
+            *   If all `c` coordinates are the same, it's vertical.
+            *   (There shouldn't be a mix; hits will always be contiguous on one ship).
+        *   Find the min/max coordinates along the determined axis.
+        *   If horizontal (all `r` are `r_common`): find `min_c = min(c for _, c in _hits_pending_sinking)`, `max_c = max(c for _, c in _hits_pending_sinking)`.
+            *   Candidates are `(r_common, min_c - 1)` and `(r_common, max_c + 1)`.
+        *   If vertical (all `c` are `c_common`): find `min_r = min(r for r, _ in _hits_pending_sinking)`, `max_r = max(r for r, _ in _hits_pending_sinking)`.
+            *   Candidates are `(min_r - 1, c_common)` and `(max_r + 1, c_common)`.
+        *   Add these valid, unfired candidates to `_next_shot_candidates`.
+        *   Pop and return from `_next_shot_candidates`.
+
+    *   **Prioritization for `_next_shot_candidates`:**
+        *   When `_next_shot_candidates` is not empty, always try to use it first.
+        *   Need to re-evaluate `_next_shot_candidates` *before* popping. If `_next_shot_candidates` has a coordinate `(r,c)` that is now `-1` (miss) or `1` (hit by chance or part of another ship), it's invalid. Filter these out.
+
+**Refined `_next_shot_candidates` management:**
+
+`_next_shot_candidates` should ideally be a list of *potential shots* around the current `_hits_pending_sinking`.
+
+Let's use `_current_target_candidates = []` to store potential next shots for a currently hit ship.
+
+**`policy(board)` - Pseudocode:**
+
+```python
+# Global storage (persists between calls)
+_global_hits_pending_sinking = [] # List of (r,c) of known hits that are part of an unsunk ship.
+_global_target_candidates = []    # List of (r,c) coordinates to try next for the current target.
+_global_shots_fired = set()       # Store all (r,c) we've ever shot at.
+
+def policy(board):
+    global _global_hits_pending_sinking, _global_target_candidates, _global_shots_fired
+
+    # 1. Update _global_shots_fired (important for avoiding re-firing)
+    # This isn't strictly necessary since board[r][c] != 0 implies fired,
+    # but it can be useful for debugging or more complex state management.
+    # For now, let's just rely on board[r][c] == 0.
+
+    # 2. Update _global_hits_pending_sinking based on current board state
+    current_board_hits = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                current_board_hits.append((r, c))
+
+    # Check if a ship was just sunk (i.e., some _global_hits_pending_sinking are gone)
+    if _global_hits_pending_sinking and not all(h in current_board_hits for h in _global_hits_pending_sinking):
+        # A ship we were tracking got sunk. Clear current target.
+        _global_target_candidates = []
+    
+    # Update the hits we are currently tracking
+    _global_hits_pending_sinking = sorted(current_board_hits)
+
+    # 3. Targeting Phase: If we have active hits, try to sink the ship
+    if _global_hits_pending_sinking:
+        # Filter _global_target_candidates: remove any that are now known (hit or miss)
+        _global_target_candidates = [
+            (r, c) for r, c in _global_target_candidates
+            if board[r][c] == 0
+        ]
+
+        # If _global_target_candidates is empty, generate new ones based on _global_hits_pending_sinking
+        if not _global_target_candidates:
+            if len(_global_hits_pending_sinking) == 1:
+                # First hit on a ship, try all 4 neighbors
+                hr, hc = _global_hits_pending_sinking[0]
+                neighbors = [(hr-1, hc), (hr+1, hc), (hr, hc-1), (hr, hc+1)]
+                for nr, nc in neighbors:
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        _global_target_candidates.append((nr, nc))
+            else:
+                # Multiple hits, determine orientation and extend
+                # Assuming hits are contiguous and on one ship
+                is_horizontal = all(h[0] == _global_hits_pending_sinking[0][0] for h in _global_hits_pending_sinking)
+                
+                if is_horizontal:
+                    r_common = _global_hits_pending_sinking[0][0]
+                    min_c = min(c for _, c in _global_hits_pending_sinking)
+                    max_c = max(c for _, c in _global_hits_pending_sinking)
+                    
+                    # Try extending left
+                    if 0 <= min_c - 1 < 10 and board[r_common][min_c - 1] == 0:
+                        _global_target_candidates.append((r_common, min_c - 1))
+                    # Try extending right
+                    if 0 <= max_c + 1 < 10 and board[r_common][max_c + 1] == 0:
+                        _global_target_candidates.append((r_common, max_c + 1))
+                else: # Must be vertical
+                    c_common = _global_hits_pending_sinking[0][1]
+                    min_r = min(r for r, _ in _global_hits_pending_sinking)
+                    max_r = max(r for r, _ in _global_hits_pending_sinking)
+
+                    # Try extending up
+                    if 0 <= min_r - 1 < 10 and board[min_r - 1][c_common] == 0:
+                        _global_target_candidates.append((min_r - 1, c_common))
+                    # Try extending down
+                    if 0 <= max_r + 1 < 10 and board[max_r + 1][c_common] == 0:
+                        _global_target_candidates.append((max_r + 1, c_common))
+
+        # If we have candidates, pick one. Prioritize more recent / "closer" to the current segment?
+        # A simple pop from the list is fine for now.
+        if _global_target_candidates:
+            target = _global_target_candidates.pop(0)
+            return target
+
+    # 4. Hunting Phase: If no active hits or no target candidates generated, hunt for new ships
+    # Use a checkerboard pattern for efficiency. Prefer cells (r,c) where r + c is even.
+    # This also helps avoid hitting cells adjacent to previously missed cells, which is less efficient.
+    
+    # Iterate through all cells, prioritizing (r+c)%2 == 0
+    # Then iterate through the remaining cells (r+c)%2 != 0
+    # This ensures we always return a valid, unfired cell.
+    
+    # Try even-sum cells first
+    for r in range(10):
+        for c in range(10):
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                _global_shots_fired.add((r, c)) # Mark as fired internally if we returned it
+                return (r, c)
+    
+    # If all even-sum cells are fired, try odd-sum cells (this means we are really desperate/late in game)
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0: # This will be (r+c)%2 != 0 if the above loop completed
+                _global_shots_fired.add((r, c))
+                return (r, c)
+    
+    # Fallback: if somehow all cells are fired (should never happen as game ends before this)
+    # This implies a bug or unexpected game state.
+    # For robustnes, return any random unfired cell (not needed if the above loops are exhaustive).
+    # This point should theoretically never be reached. Will raise an error if it does, which is fine.
+    raise Exception("No unfired cells left, game should have ended!")
+
+```
+
+Consider the `_global_shots_fired` set. The `board` already tells me if a cell was fired (`!= 0`). So `_global_shots_fired` is redundant. I can just check `board[r][c] == 0`.
+
+Let's simplify the `_global_target_candidates` generation for multiple hits.
+When `_global_target_candidates` is empty and `len(_global_hits_pending_sinking) > 1`, we first determine the orientation. Let `hits = _global_hits_pending_sinking`.
+
+If `hits[0][0] == hits[1][0]`: (horizontal)
+  `r_common = hits[0][0]`
+  `min_c = min(h[1] for h in hits)`
+  `max_c = max(h[1] for h in hits)`
+  Candidates: `(r_common, min_c - 1)`, `(r_common, max_c + 1)`
+
+Else: (vertical)
+  `c_common = hits[0][1]`
+  `min_r = min(h[0] for h in hits)`
+  `max_r = max(h[0] for h in hits)`
+  Candidates: `(min_r - 1, c_common)`, `(max_r + 1, c_common)`
+
+It's important that when multiple hits exist, `_global_target_candidates` is focused *only* on extending those hits. We shouldn't mix in random neighbor checks from the previous logic.
+
+Also, when `_global_target_candidates` is populated, it should only contain cells that are valid and not yet fired at. The filter `[ (r, c) for r, c in _global_target_candidates if board[r][c] == 0 ]` handles the "not yet fired" part. The "valid" part (within 0-9 bounds) should be checked when adding.
+
+One edge case: if a previous target candidate became a miss (`-1`), it should be removed from `_global_target_candidates`. My filtering logic handles this: `board[r][c] == 0`.
+
+The "ship sunk" detection logic:
+`if _global_hits_pending_sinking and not all(h in current_board_hits for h in _global_hits_pending_sinking):`
+This condition means: if I *was* tracking some hits, AND NOT all of those previously tracked hits are still present on the board as `1`s. This is a good proxy for a ship having been sunk. When this happens, we must clear `_global_target_candidates` because the old target is gone; we should either start hunting again or start processing a *new* set of `_global_hits_pending_sinking` if there are multiple ships hit.
+
+Let's consider what happens if I hit two ships at once (unlikely but possible, e.g., an L-shape hit). `_global_hits_pending_sinking` would then contain hits from two ships.
+My current logic:
+1. It looks at all `1`s on the board.
+2. If `_global_hits_pending_sinking` is empty, it relies on the first hit to define `_global_hits_pending_sinking`.
+3. If `len(_global_hits_pending_sinking) == 1`, it tries neighbors.
+4. If `len(_global_hits_pending_sinking) > 1`, it assumes they are all part of *one* contiguous ship. This is a potential weakness. If I hit two distinct ships, `_global_hits_pending_sinking` would grow with hits from both. My "is_horizontal" check might fail, or it might incorrectly try to extend a non-contiguous segment.
+
+Simplified approach:
+Maybe I always just react to the *newest* hit? No, that's bad. I need to clear an entire ship.
+
+A more robust state for hits would be a list of *segments* or *individual hits* that need investigation.
+Instead of `_global_hits_pending_sinking`, let's try `_active_targets`.
+`_active_targets` would be a list of `HitSegment` objects, where a `HitSegment` tracks:
+*   Its hits list `[(r, c), ...]`.
+*   Its determined `orientation` (Horizontal, Vertical, Unknown).
+*   Its `candidates` for next shot `[(r, c), ...]`.
+
+This would require a custom class or very careful dict management, and might be overkill for the constraint of this problem.
+
+Let's stick with the current `_global_hits_pending_sinking` and `_global_target_candidates`. The assumption that all `1`s belong to one *current* ship segment is implicit. This works surprisingly well in many simple Battleship AIs because ships are usually sunk quickly after the first hit. If multiple ships are hit, the one that got hit first (or happened to be added to `_global_hits_pending_sinking` first by the sort) would be processed.
+
+Let's re-evaluate the "ship sunk" logic.
+When hits disappear from the board, `_global_hits_pending_sinking` will automatically shrink.
+`current_board_hits = []`
+...
+`_global_hits_pending_sinking = sorted(current_board_hits)`
+This means `_global_hits_pending_sinking` *always* reflects the current `1`s.
+So, the `if _global_hits_pending_sinking and not all(h in current_board_hits for h in _global_hits_pending_sinking):` check is wrong. It should be:
+`if not current_board_hits: # No hits on the board right now`
+    `_global_target_candidates = [] # No current ship to target.`
+`elif not _global_hits_pending_sinking: # First time we see hits`
+    `# Ship found, will generate candidates later.`
+`else: # There are hits, and we were tracking some. Check if they are the same. `
+    `# If current_board_hits and _global_hits_pending_sinking have different elements, then a ship might have just sunk.`
+    `# Comparison of two sorted lists works for this. `
+    `if _global_hits_pending_sinking != current_board_hits:`
+        `# Something changed, reset candidates.`
+        `# This is more robust as it covers shrinkage and growth.`
+        `_global_target_candidates = []`
+
+This is still not perfectly robust for multiple concurrent hits on different ships.
+Example: Ship A (3 cells) at (0,0),(0,1),(0,2) and Ship B (2 cells) at (5,5),(5,6).
+1. Shoot (0,0) -> HIT! `_global_hits_pending_sinking = [(0,0)]`, `_global_target_candidates` generated: `(0,1), (-1,0), (1,0)`.
+2. Shoot (0,1) -> HIT! `_global_hits_pending_sinking = [(0,0), (0,1)]`. `_global_target_candidates` regenerated: `(0,-1), (0,2)` (from extending).
+3. Shoot (0,2) -> HIT! `_global_hits_pending_sinking = [(0,0), (0,1), (0,2)]`. `_global_target_candidates` regenerated: `(0,-1), (0,3)`.
+4. Shot (0,3) -> MISS! `_global_hits_pending_sinking = [(0,0), (0,1), (0,2)]`. My candidate list now has `(0,-1)`.
+5. Shot (0,-1) -> MISS! `_global_hits_pending_sinking` same. Candidate list exhausted.
+In this case, the ship is sunk, but `_global_hits_pending_sinking` still contains the hits.
+The game environment only tells us `1` (hit), not `SUNK`.
+This is a common issue with Battleship AIs. A ship is marked sunk when all its cells are hit AND surrounded by water/edge.
+To truly detect a sunk ship, I'd need to know the initial ship lengths.
+Lengths: 5, 4, 3, 3, 2. Total cells = 17.
+If `len(_global_hits_pending_sinking)` reaches a known length (e.g., 5), and surrounding cells are `-1` or out of bounds, then it's sunk.
+
+Without knowing *when* a ship is sunk, the best I can do is: when all `_global_target_candidates` (attempts to extend the current set of hits) result in `-1` (miss) or `1` (already hit), then assume the current segment is "closed off". At this point, the current ship segment *might* be sunk.
+
+Revised `_global_target_candidates` cleanup:
+If `_global_target_candidates` becomes empty *after* filtering, and `_global_hits_pending_sinking` is not empty, it means we have hits but no valid places to shoot *around those hits*. This implies the ship segment currently tracked is either sunk or fully explored (surrounded by water).
+In this scenario, I should implicitly consider the ship fully explored and reset `_global_target_candidates` and `_global_hits_pending_sinking` (if I want to treat multiple hit segments separately).
+This would make the system think "ok, this ship is explored, let's go hunt again for new ships or other partial hits".
+
+Let's try this:
+```python
+import collections
+
+_global_hits_pending_sinking = [] # List of (r,c) of known hits that are part of an unsunk ship.
+_global_target_candidates = collections.deque() # Use deque for efficient pop(0)
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    global _global_hits_pending_sinking, _global_target_candidates
+
+    current_board_hits = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                current_board_hits.append((r, c))
+    current_board_hits.sort() # Ensure consistent order
+
+    # Determine if the set of active hits has changed significantly (ship sunk or new segment found)
+    # If the current hits in board are different from what we thought was pending sinking,
+    # or if we have no pending hits but found new ones, or if we had pending hits but now none.
+    if _global_hits_pending_sinking != current_board_hits:
+        _global_target_candidates.clear() # Reset any pending targets for the old ship/segment
+    
+    _global_hits_pending_sinking = current_board_hits
+
+
+    # Targeting Phase: If we have active hits, try to sink the ship
+    if _global_hits_pending_sinking:
+        # Filter _global_target_candidates: remove any that are now known (hit or miss)
+        # Convert to list, filter, then convert back to deque.
+        _global_target_candidates = collections.deque([
+            (r, c) for r, c in _global_target_candidates
+            if board[r][c] == 0
+        ])
+
+        # If _global_target_candidates is empty after filtering, generate new ones
+        if not _global_target_candidates:
+            if len(_global_hits_pending_sinking) == 1:
+                # First hit on a ship, try all 4 neighbors
+                hr, hc = _global_hits_pending_sinking[0]
+                neighbors = [(hr-1, hc), (hr+1, hc), (hr, hc-1), (hr, hc+1)]
+                for nr, nc in neighbors:
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        _global_target_candidates.append((nr, nc))
+            else:
+                # Multiple hits, determine orientation and extend
+                # Assuming hits are contiguous and on one ship
+                is_horizontal = all(h[0] == _global_hits_pending_sinking[0][0] for h in _global_hits_pending_sinking)
+                
+                if is_horizontal:
+                    r_common = _global_hits_pending_sinking[0][0]
+                    min_c = min(c for _, c in _global_hits_pending_sinking)
+                    max_c = max(c for _, c in _global_hits_pending_sinking)
+                    
+                    # Try extending left
+                    if 0 <= min_c - 1 < 10 and board[r_common][min_c - 1] == 0:
+                        _global_target_candidates.append((r_common, min_c - 1))
+                    # Try extending right
+                    if 0 <= max_c + 1 < 10 and board[r_common][max_c + 1] == 0:
+                        _global_target_candidates.append((r_common, max_c + 1))
+                else: # Must be vertical
+                    c_common = _global_hits_pending_sinking[0][1]
+                    min_r = min(r for r, _ in _global_hits_pending_sinking)
+                    max_r = max(r for r, _ in _global_hits_pending_sinking)
+
+                    # Try extending up
+                    if 0 <= min_r - 1 < 10 and board[min_r - 1][c_common] == 0:
+                        _global_target_candidates.append((min_r - 1, c_common))
+                    # Try extending down
+                    if 0 <= max_r + 1 < 10 and board[max_r + 1][c_common] == 0:
+                        _global_target_candidates.append((max_r + 1, c_common))
+
+        # If we have candidates, pop one and return it
+        if _global_target_candidates:
+            return _global_target_candidates.popleft() # Use popleft for deque
+
+        # If we are here, it means _global_hits_pending_sinking is not empty,
+        # but no valid target candidates could be generated or found.
+        # This implies the current segment is "closed" (sunk or surrounded).
+        # We should clear _global_hits_pending_sinking for the next turn
+        # to effectively "give up" on this segment and look for new ships.
+        # This will move us to the hunting phase.
+        _global_hits_pending_sinking = [] # This is an important step to prevent getting stuck
+
+    # Hunting Phase: If no active hits or no target candidates, hunt for new ships
+    # Use a checkerboard pattern.
+    
+    # Try cells where (r+c) is even first (pattern 1)
+    for r in range(10):
+        for c in range(10):
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                return (r, c)
+    
+    # If all cells in pattern 1 are fired, try cells where (r+c) is odd (pattern 2)
+    # This ensures we always find an unfired cell if any exist.
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0: # This implicitly means (r+c)%2 != 0 if the previous loop completed
+                return (r, c)
+    
+    # This point should theoretically never be reached in a normal game.
+    raise Exception("No unfired cells left on the board!")
+
+```
+
+The `_global_hits_pending_sinking = []` at the end of the targeting phase inside the `if _global_hits_pending_sinking:` block is crucial.
+Let's trace it:
+1. Hit (0,0). `_global_hits_pending_sinking = [(0,0)]`. Candidates `(0,1),(1,0),(-1,0), (0,-1)`. Returns `(0,1)`.
+2. Shot `(0,1)`:
+   *   If `HIT`, `_global_hits_pending_sinking = [(0,0),(0,1)]`. Candidates re-generated for extension: `(0,-1),(0,2)`. Returns `(0,-1)`.
+   *   If `MISS`, `_global_hits_pending_sinking = [(0,0)]`. Candidates filtered: `(1,0),(-1,0),(0,-1)`. Returns `(1,0)`.
+3. Shot `(0,-1)`:
+   *   If `MISS`, `_global_hits_pending_sinking = [(0,0),(0,1)]`. Candidates filtered: `(0,2)`. Returns `(0,2)`.
+4. Shot `(0,2)`:
+   *   If `HIT`, `_global_hits_pending_sinking = [(0,0),(0,1),(0,2)]`. Candidates re-generated: `(0,3)`. Returns `(0,3)`.
+5. Shot `(0,3)`:
+   *   If `MISS`, `_global_hits_pending_sinking = [(0,0),(0,1),(0,2)]`. Candidates filtered -> `_global_target_candidates` becomes empty.
+   *   Since `_global_target_candidates` is now empty, and `_global_hits_pending_sinking` is *not* empty, the code block `_global_hits_pending_sinking = []` is executed.
+   *   On the *next* turn, `_global_hits_pending_sinking` will be recreated from `current_board_hits = [(0,0),(0,1),(0,2)]`. But since no candidates can be generated anymore, it will again hit `_global_hits_pending_sinking = []` and fall back to hunting.
+
+This means if a ship is hit and fully surrounded by misses or edges, the AI will eventually give up trying to extend its current hits. This is the desired behavior when the game doesn't explicitly tell us a ship is sunk. It essentially "sinks" the ship from the AI's perspective and moves on. This is a common and effective heuristic.
+
+Consider importing `collections` at the top of the file as instructed.
+The maximum number of shots is 100. Global variables are managed correctly. Time complexity per call is O(N^2) for board scan, which is O(1) for N=10 (constant time). The rest are list operations on small lists. This should be very fast.
+Python standard library usage is fine.
+Looks solid.
+```python
+import collections
+
+# Global variables to maintain state between policy calls.
+# These will persist throughout the game simulation.
+_global_hits_pending_sinking: list[tuple[int, int]] = []
+# A deque is used for _global_target_candidates for efficient popping from the left (FIFO).
+_global_target_candidates: collections.deque[tuple[int, int]] = collections.deque()
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Implements a targeting policy for a Battleship-like game.
+
+    The policy prioritizes sinking active ships, then uses a checkerboard pattern
+    to hunt for new ships.
+
+    Args:
+        board: A 10x10 list of lists representing the current knowledge of the opponent's grid.
+               0: Unknown cell (not fired)
+              -1: Miss (fired and hit water)
+               1: Hit (fired and hit a ship cell)
+
+    Returns:
+        A tuple (row, col) representing the next target cell to fire at.
+    """
+    global _global_hits_pending_sinking, _global_target_candidates
+
+    # 1. Update the list of currently known hits (cells with '1' on the board).
+    current_board_hits = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                current_board_hits.append((r, c))
+    current_board_hits.sort() # Sort for consistent comparison and processing
+
+    # 2. Check if the set of active hits has changed significantly.
+    # This indicates either a ship was sunk, or a new ship segment was hit,
+    # or the current segment grew/shrank.
+    if _global_hits_pending_sinking != current_board_hits:
+        # If the hits we were tracking are now different, clear previous target candidates.
+        # This prevents trying to sink a ship that's already gone or changed.
+        _global_target_candidates.clear()
+    
+    _global_hits_pending_sinking = current_board_hits # Update global state with current hits
+
+
+    # 3. Targeting Phase: If we have active hits, prioritize sinking the ship(s).
+    if _global_hits_pending_sinking:
+        # Filter out _global_target_candidates that are no longer '0' (already fired).
+        # This keeps the candidate list clean and prevents re-firing at known spots.
+        _global_target_candidates = collections.deque([
+            (r, c) for r, c in _global_target_candidates
+            if board[r][c] == 0
+        ])
+
+        # If no valid candidates remain after filtering, generate new ones based on current hits.
+        if not _global_target_candidates:
+            if len(_global_hits_pending_sinking) == 1:
+                # Case: Only one hit. Try all four cardinal neighbors to determine orientation.
+                hr, hc = _global_hits_pending_sinking[0]
+                neighbors = [(hr-1, hc), (hr+1, hc), (hr, hc-1), (hr, hc+1)]
+                for nr, nc in neighbors:
+                    # Add valid and unfired neighbors to the candidates
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        _global_target_candidates.append((nr, nc))
+            else:
+                # Case: Multiple hits. Determine orientation and extend the line of hits.
+                # Assuming all hits in _global_hits_pending_sinking belong to one contiguous ship.
+                
+                # Check if it's horizontal (all row coordinates are the same)
+                is_horizontal = all(h[0] == _global_hits_pending_sinking[0][0] for h in _global_hits_pending_sinking)
+                
+                if is_horizontal:
+                    r_common = _global_hits_pending_sinking[0][0]
+                    # Find min and max column indices to extend from ends
+                    min_c = min(c for _, c in _global_hits_pending_sinking)
+                    max_c = max(c for _, c in _global_hits_pending_sinking)
+                    
+                    # Try extending to the left
+                    if 0 <= min_c - 1 < 10 and board[r_common][min_c - 1] == 0:
+                        _global_target_candidates.append((r_common, min_c - 1))
+                    # Try extending to the right
+                    if 0 <= max_c + 1 < 10 and board[r_common][max_c + 1] == 0:
+                        _global_target_candidates.append((r_common, max_c + 1))
+                else: # Must be vertical (all column coordinates are the same)
+                    c_common = _global_hits_pending_sinking[0][1]
+                    # Find min and max row indices to extend from ends
+                    min_r = min(r for r, _ in _global_hits_pending_sinking)
+                    max_r = max(r for r, _ in _global_hits_pending_sinking)
+
+                    # Try extending upwards
+                    if 0 <= min_r - 1 < 10 and board[min_r - 1][c_common] == 0:
+                        _global_target_candidates.append((min_r - 1, c_common))
+                    # Try extending downwards
+                    if 0 <= max_r + 1 < 10 and board[max_r + 1][c_common] == 0:
+                        _global_target_candidates.append((max_r + 1, c_common))
+
+        # If we have generated valid candidates, pop the first one and return it.
+        if _global_target_candidates:
+            return _global_target_candidates.popleft()
+
+        # If we reach this point, it means _global_hits_pending_sinking is not empty,
+        # but no valid next shot candidates could be generated (e.g., ship is surrounded by misses/edges).
+        # In this scenario, we assume the current ship segment is fully explored/sunk from our perspective.
+        # We clear _global_hits_pending_sinking to switch back to hunting mode for other ships.
+        _global_hits_pending_sinking = [] 
+
+    # 4. Hunting Phase: If no active ships are being targeted, hunt for new ones.
+    # A checkerboard pattern is used to efficiently cover the board and increase hit probability.
+    # We prioritize cells where (row + col) is even, as this covers 50% of the board with maximal
+    # distance between shots for initial finding, and minimizes adjacency to previous misses.
+    
+    # First, try cells where (r + c) is even.
+    for r in range(10):
+        for c in range(10):
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                return (r, c)
+    
+    # If all cells fired in the first pattern, try remaining cells where (r + c) is odd.
+    # This ensures we always find an unfired cell as long as they exist.
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0: # This implicitly means (r+c)%2 != 0 if the previous loop completed
+                return (r, c)
+    
+    # This point should only be reached if all cells on the board have been fired at (game over).
+    # If the game is still running and this is hit, it indicates an issue or unexpected state.
+    raise Exception("No unfired cells left on the board! Game should have ended.")
+
+```</thinking>
+```python
+import collections
+
+# Global variables to maintain state between policy calls.
+# These will persist throughout the game simulation.
+_global_hits_pending_sinking: list[tuple[int, int]] = []
+# A deque is used for _global_target_candidates for efficient popping from the left (FIFO).
+_global_target_candidates: collections.deque[tuple[int, int]] = collections.deque()
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Implements a targeting policy for a Battleship-like game.
+
+    The policy prioritizes sinking active ships, then uses a checkerboard pattern
+    to hunt for new ships.
+
+    Args:
+        board: A 10x10 list of lists representing the current knowledge of the opponent's grid.
+               0: Unknown cell (not fired)
+              -1: Miss (fired and hit water)
+               1: Hit (fired and hit a ship cell)
+
+    Returns:
+        A tuple (row, col) representing the next target cell to fire at.
+    """
+    global _global_hits_pending_sinking, _global_target_candidates
+
+    # 1. Update the list of currently known hits (cells with '1' on the board).
+    current_board_hits = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                current_board_hits.append((r, c))
+    current_board_hits.sort() # Sort for consistent comparison and processing
+
+    # 2. Check if the set of active hits has changed significantly.
+    # This indicates either a ship was sunk, or a new ship segment was hit,
+    # or the current segment grew/shrank.
+    if _global_hits_pending_sinking != current_board_hits:
+        # If the hits we were tracking are now different, clear previous target candidates.
+        # This prevents trying to sink a ship that's already gone or changed.
+        _global_target_candidates.clear()
+    
+    _global_hits_pending_sinking = current_board_hits # Update global state with current hits
+
+
+    # 3. Targeting Phase: If we have active hits, prioritize sinking the ship(s).
+    if _global_hits_pending_sinking:
+        # Filter out _global_target_candidates that are no longer '0' (already fired).
+        # This keeps the candidate list clean and prevents re-firing at known spots.
+        _global_target_candidates = collections.deque([
+            (r, c) for r, c in _global_target_candidates
+            if board[r][c] == 0
+        ])
+
+        # If no valid candidates remain after filtering, generate new ones based on current hits.
+        if not _global_target_candidates:
+            if len(_global_hits_pending_sinking) == 1:
+                # Case: Only one hit. Try all four cardinal neighbors to determine orientation.
+                hr, hc = _global_hits_pending_sinking[0]
+                neighbors = [(hr-1, hc), (hr+1, hc), (hr, hc-1), (hr, hc+1)]
+                for nr, nc in neighbors:
+                    # Add valid and unfired neighbors to the candidates
+                    if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                        _global_target_candidates.append((nr, nc))
+            else:
+                # Case: Multiple hits. Determine orientation and extend the line of hits.
+                # Assuming all hits in _global_hits_pending_sinking belong to one contiguous ship.
+                
+                # Check if it's horizontal (all row coordinates are the same)
+                is_horizontal = all(h[0] == _global_hits_pending_sinking[0][0] for h in _global_hits_pending_sinking)
+                
+                if is_horizontal:
+                    r_common = _global_hits_pending_sinking[0][0]
+                    # Find min and max column indices to extend from ends
+                    min_c = min(c for _, c in _global_hits_pending_sinking)
+                    max_c = max(c for _, c in _global_hits_pending_sinking)
+                    
+                    # Try extending to the left
+                    if 0 <= min_c - 1 < 10 and board[r_common][min_c - 1] == 0:
+                        _global_target_candidates.append((r_common, min_c - 1))
+                    # Try extending to the right
+                    if 0 <= max_c + 1 < 10 and board[r_common][max_c + 1] == 0:
+                        _global_target_candidates.append((r_common, max_c + 1))
+                else: # Must be vertical (all column coordinates are the same)
+                    c_common = _global_hits_pending_sinking[0][1]
+                    # Find min and max row indices to extend from ends
+                    min_r = min(r for r, _ in _global_hits_pending_sinking)
+                    max_r = max(r for r, _ in _global_hits_pending_sinking)
+
+                    # Try extending upwards
+                    if 0 <= min_r - 1 < 10 and board[min_r - 1][c_common] == 0:
+                        _global_target_candidates.append((min_r - 1, c_common))
+                    # Try extending downwards
+                    if 0 <= max_r + 1 < 10 and board[max_r + 1][c_common] == 0:
+                        _global_target_candidates.append((max_r + 1, c_common))
+
+        # If we have generated valid candidates, pop the first one and return it.
+        if _global_target_candidates:
+            return _global_target_candidates.popleft()
+
+        # If we reach this point, it means _global_hits_pending_sinking is not empty,
+        # but no valid next shot candidates could be generated (e.g., ship is surrounded by misses/edges).
+        # In this scenario, we assume the current ship segment is fully explored/sunk from our perspective.
+        # We clear _global_hits_pending_sinking to switch back to hunting mode for other ships.
+        _global_hits_pending_sinking = [] 
+
+    # 4. Hunting Phase: If no active ships are being targeted, hunt for new ones.
+    # A checkerboard pattern is used to efficiently cover the board and increase hit probability.
+    # We prioritize cells where (row + col) is even, as this covers 50% of the board with maximal
+    # distance between shots for initial finding, and minimizes adjacency to previous misses.
+    
+    # First, try cells where (r + c) is even.
+    for r in range(10):
+        for c in range(10):
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                return (r, c)
+    
+    # If all cells fired in the first pattern, try remaining cells where (r + c) is odd.
+    # This ensures we always find an unfired cell as long as they exist.
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0: # This implicitly means (r+c)%2 != 0 if the previous loop completed
+                return (r, c)
+    
+    # This point should only be reached if all cells on the board have been fired at (game over).
+    # If the game is still running and this is hit, it indicates an issue or unexpected state.
+    raise Exception("No unfired cells left on the board! Game should have ended.")
+
+```

@@ -1,0 +1,43 @@
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    best_move = -1
+    best_score = -1
+
+    # Function to calculate the number of captured seeds
+    def simulate_move(move: int) -> int:
+        seeds = you[move]
+        positions = you[:]
+        positions[move] = 0  # Remove seeds from the chosen house
+        position = move + 1     # Start sowing from the next house
+        while seeds > 0:
+            if position == 6:  # If we reach our store, skip it
+                position = 0
+            
+            positions[position] += 1
+            seeds -= 1
+            position += 1
+            
+            # Wrap around logic
+            if position > 6:
+                position = 0
+
+        # Check for captures
+        last_position = (move + (you[move] - seeds + 1)) % 14
+        if last_position < 6 and you[last_position] == 1:
+            opponent_index = 5 - last_position
+            capture_count = opponent[opponent_index] + 1
+            positions[6] += capture_count
+            positions[last_position] = 0
+
+        score = positions[6]  # Score based on what we have in the store
+        return score
+    
+    # Try every legal move
+    for i in range(6):
+        if you[i] > 0:
+            score = simulate_move(i)
+            if score > best_score:
+                best_score = score
+                best_move = i
+
+    return best_move

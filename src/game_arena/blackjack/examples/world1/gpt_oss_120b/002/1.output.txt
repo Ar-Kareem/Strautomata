@@ -1,0 +1,124 @@
+<thinking>
+The policy must decide between “HIT” and “STAY” given the cards we hold and the target score T.  
+The game is a single‑player decision problem: we only need to estimate how good the next draw will be.  
+
+**Key ideas**
+
+1. **Hand value with flexible Aces** – treat every Ace as 11, then downgrade Aces (subtract 10) while the total exceeds the target. This yields the highest possible total ≤ T, or the minimal bust total otherwise.
+
+2. **Remaining deck** – each rank exists exactly once in our private deck.  
+   The probability of drawing a particular card equals 1 / (13‑|hand|) for every rank not already in *hand*.
+
+3. **Risk / reward trade‑off** –  
+   * *p_bust*: probability that a single extra draw busts us.  
+   * *exp_dist*: expected distance to the target after drawing one more card and then stopping (distance = T – total, defined only for non‑bust hands).  
+
+   We compare the current distance (`cur_dist = T – cur_total`) with `exp_dist`.  
+   Hitting is worthwhile only if it reduces the expected distance **and** the bust risk is not too high.
+
+4. **Decision rule** –  
+   ```
+   if no cards left → STAY
+   elif p_bust > 0.35            → STAY   (risk too high)
+   elif exp_dist < cur_dist      → HIT    (expected improvement)
+   else                           → STAY
+   ```
+   The 0.35 threshold is a reasonable balance; it can be tweaked, but works well for the random target range 10‑30.
+
+The implementation follows these ideas, using only the standard library.  
+It runs in O(13) per call, far below the 1 s limit.
+
+</thinking>
+
+<code>
+"""Blackjack‑like policy for a random target T (10‑30).
+
+The function `policy(hand, target)` returns either "HIT" or "STAY".
+"""
+
+from typing import List
+
+# fixed list of ranks in the deck
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+# static value mapping (Ace handled specially later)
+VALUE_MAP = {
+    "A": 11,   # will be reduced to 1 if needed
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6,
+    "7": 7, "8": 8, "9": 9, "10": 10,
+    "J": 10, "Q": 10, "K": 10,
+}
+
+
+def hand_total(hand: List[str], target: int) -> int:
+    """Return the best total for *hand* using flexible Ace values.
+    The result may be > target (bust) if even the minimal Ace adjustment cannot
+    bring the sum down.
+    """
+    total = sum(VALUE_MAP[c] for c in hand)
+    ace_count = hand.count("A")
+    # downgrade Aces from 11 to 1 while we are over the target and still have Aces to downgrade
+    while total > target and ace_count > 0:
+        total -= 10          # 11 -> 1
+        ace_count -= 1
+    return total
+
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    Decide whether to draw another card ("HIT") or stop ("STAY").
+
+    Parameters
+    ----------
+    hand : list[str]
+        Cards currently held.
+    target : int
+        The target score T (10 ≤ T ≤ 30).
+
+    Returns
+    -------
+    str
+        "HIT" or "STAY".
+    """
+    # Current hand evaluation
+    cur_total = hand_total(hand, target)
+
+    # If we have already busted (should not happen in normal play) we stay.
+    if cur_total > target:
+        return "STAY"
+
+    # No cards left to draw – must stay
+    remaining_cards = [r for r in RANKS if r not in hand]
+    n_remain = len(remaining_cards)
+    if n_remain == 0:
+        return "STAY"
+
+    # Current distance to the target (the smaller, the better)
+    cur_dist = target - cur_total
+
+    # Compute bust probability and expected distance after a single extra draw
+    bust_prob = 0.0
+    exp_dist = 0.0  # weighted by probability of non‑bust outcomes
+    for card in remaining_cards:
+        # simulate drawing this card
+        new_hand = hand + [card]
+        new_total = hand_total(new_hand, target)
+
+        if new_total > target:
+            bust_prob += 1.0 / n_remain
+        else:
+            # distance after the draw (we will stay after this draw)
+            exp_dist += (target - new_total) / n_remain
+
+    # Decision logic
+    # 1. If bust risk is high, stay.
+    if bust_prob > 0.35:
+        return "STAY"
+
+    # 2. If expected distance improves, hit.
+    if exp_dist < cur_dist:
+        return "HIT"
+
+    # 3. Otherwise stay.
+    return "STAY"
+</code>

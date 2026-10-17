@@ -1,0 +1,224 @@
+The strategy for this policy is to implement a Monte Carlo Tree Search (MCTS) algorithm with Upper Confidence Bound for Trees (UCT) to select the best move. The algorithm builds a search tree by simulating random games and uses the results to guide the search toward promising moves. It balances exploration and exploitation through the UCT formula. The implementation includes:
+
+1. A `GoBoard` class to manage the game state, including capturing logic
+2. A `MCTSNode` class to represent nodes in the search tree with UCT scoring
+3. A policy function that runs MCTS simulations and returns the best move found
+
+The policy handles passing when no moves are available and ensures all moves are legal by checking for captures, ko rule violations, and suicide moves.
+
+<code>
+import random
+import math
+from typing import List, Tuple
+
+class GoBoard:
+    def __init__(self, size: int = 19):
+        self.size = size
+        self.board = [[0 for _ in range(size)] for _ in range(size)]  # 0: empty, 1: player, 2: opponent
+        self.last_captured = []  # For ko rule checking
+
+    def copy(self):
+        new_board = GoBoard(self.size)
+        new_board.board = [row[:] for row in self.board]
+        new_board.last_captured = self.last_captured[:]
+        return new_board
+
+    def place_stone(self, row: int, col: int, player: int) -> bool:
+        """Place a stone and handle captures. Return True if legal."""
+        if not (1 <= row <= self.size and 1 <= col <= self.size):
+            return False
+        r, c = row - 1, col - 1  # Convert to 0-indexed
+        if self.board[r][c] != 0:
+            return False  # Already occupied
+
+        # Temporarily place the stone
+        self.board[r][c] = player
+        
+        # Check captures
+        captured = []
+        opponent = 3 - player
+        for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < self.size and 0 <= nc < self.size and self.board[nr][nc] == opponent:
+                group, has_liberties = self._get_group_and_liberties(nr, nc)
+                if not has_liberties:
+                    captured.extend(group)
+
+        # Remove captured stones
+        for stone_r, stone_c in captured:
+            self.board[stone_r][stone_c] = 0
+            
+        # Check for suicide
+        group, has_liberties = self._get_group_and_liberties(r, c)
+        if not has_liberties and not captured:
+            # Undo placement and return False
+            self.board[r][c] = 0
+            for stone_r, stone_c in captured:
+                self.board[stone_r][stone_c] = opponent
+            return False
+
+        # Check ko rule
+        if len(captured) == 1 and captured == self.last_captured:
+            # Undo placement and captured stone
+            self.board[r][c] = 0
+            self.board[captured[0][0]][captured[0][1]] = opponent
+            return False
+            
+        self.last_captured = captured[:]
+        return True
+
+    def _get_group_and_liberties(self, start_r: int, start_c: int) -> Tuple[List[Tuple[int, int]], bool]:
+        """Find connected group and check if it has liberties."""
+        color = self.board[start_r][start_c]
+        visited = set()
+        group = []
+        has_liberties = False
+        stack = [(start_r, start_c)]
+
+        while stack:
+            r, c = stack.pop()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            group.append((r, c))
+
+            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < self.size and 0 <= nc < self.size:
+                    if self.board[nr][nc] == 0:
+                        has_liberties = True
+                    elif self.board[nr][nc] == color and (nr, nc) not in visited:
+                        stack.append((nr, nc))
+
+        return group, has_liberties
+
+    def get_legal_moves(self, player: int) -> List[Tuple[int, int]]:
+        """Get all legal moves for a player."""
+        legal_moves = []
+        for r in range(1, self.size + 1):
+            for c in range(1, self.size + 1):
+                if self.board[r-1][c-1] == 0:  # Empty position
+                    test_board = self.copy()
+                    if test_board.place_stone(r, c, player):
+                        legal_moves.append((r, c))
+        return legal_moves
+
+class MCTSNode:
+    def __init__(self, board: GoBoard, player: int, move: Tuple[int, int] = None, parent=None):
+        self.board = board
+        self.player = player  # The player who made the move leading to this node
+        self.move = move
+        self.parent = parent
+        self.children = []
+        self.visits = 0
+        self.wins = 0
+        self.untried_moves = board.get_legal_moves(3 - player)  # Next player's moves
+        self.is_terminal = len(self.untried_moves) == 0
+
+    def uct_select_child(self):
+        """Select child based on UCB1 formula."""
+        log_parent_visits = math.log(self.visits)
+        best_child = max(self.children, key=lambda c: c.wins/c.visits + math.sqrt(2 * log_parent_visits / c.visits))
+        return best_child
+
+    def expand(self):
+        """Add a new child node."""
+        if not self.untried_moves:
+            return None
+            
+        move = self.untried_moves.pop()
+        new_board = self.board.copy()
+        next_player = 3 - self.player
+        
+        # Try to place the stone
+        if not new_board.place_stone(move[0], move[1], next_player):
+            # If illegal, try again with remaining moves
+            return self.expand() if self.untried_moves else None
+            
+        child = MCTSNode(new_board, next_player, move, self)
+        self.children.append(child)
+        return child
+
+    def simulate(self):
+        """Simulate a random game from this node."""
+        current_board = self.board.copy()
+        current_player = 3 - self.player  # Next player after this node
+        
+        # Very simple simulation: random legal moves until pass
+        for _ in range(100):  # Limit simulation length
+            moves = current_board.get_legal_moves(current_player)
+            if not moves:
+                break
+            move = random.choice(moves)
+            if not current_board.place_stone(move[0], move[1], current_player):
+                break
+            current_player = 3 - current_player
+            
+        # Very simple evaluation: count stones
+        player_stones = sum(1 for row in current_board.board for cell in row if cell == self.player)
+        opponent_stones = sum(1 for row in current_board.board for cell in row if cell == 3 - self.player)
+        
+        return 1 if player_stones > opponent_stones else 0 if player_stones == opponent_stones else -1
+
+    def backpropagate(self, result: int):
+        """Backpropagate the result of a simulation."""
+        self.visits += 1
+        if result == 1:
+            self.wins += 1
+        elif result == 0:
+            self.wins += 0.5
+            
+        if self.parent:
+            self.parent.backpropagate(-result)  # Invert result for opponent
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    # Initialize board
+    board = GoBoard()
+    
+    # Place opponent stones (player 2)
+    for r, c in opponent:
+        board.board[r-1][c-1] = 2
+        
+    # Place my stones (player 1)
+    for r, c in me:
+        board.board[r-1][c-1] = 1
+        
+    # Check if passing is needed
+    legal_moves = board.get_legal_moves(1)
+    if not legal_moves:
+        return (0, 0)  # Pass
+        
+    # Run MCTS
+    root = MCTSNode(board, 1)  # I am player 1
+    simulations = 0
+    
+    # Run simulations for a fixed time budget (e.g., 500ms)
+    import time
+    start_time = time.time()
+    
+    while time.time() - start_time < 0.5 and simulations < 1000:
+        node = root
+        
+        # Selection
+        while not node.is_terminal and not node.untried_moves:
+            node = node.uct_select_child()
+            
+        # Expansion
+        if node.untried_moves and not node.is_terminal:
+            node = node.expand()
+            
+        # Simulation
+        if node:
+            result = node.simulate()
+            # Backpropagation
+            node.backpropagate(result)
+            
+        simulations += 1
+
+    # Return the move with highest visit count
+    if not root.children:
+        return random.choice(legal_moves)
+        
+    best_child = max(root.children, key=lambda c: c.visits)
+    return best_child.move if best_child.move else (0, 0)
+</code>

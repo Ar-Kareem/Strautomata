@@ -1,0 +1,182 @@
+
+import random
+import math
+import time
+from collections import defaultdict
+
+class Node:
+    def __init__(self, state, parent=None, move=None):
+        self.state = state
+        self.parent = parent
+        self.move = move
+        self.children = []
+        self.wins = 0
+        self.visits = 0
+        self.untried_moves = self.get_legal_moves(state)
+
+    def get_legal_moves(self, state):
+        me, opp, color = state
+        legal_moves = []
+        for i in range(11):
+            for j in range(11):
+                if (i, j) not in me and (i, j) not in opp:
+                    legal_moves.append((i, j))
+        return legal_moves
+
+    def uct_select_child(self):
+        log_parent_visits = math.log(self.visits)
+        def uct_score(child):
+            exploit = child.wins / child.visits
+            explore = math.sqrt(2 * log_parent_visits / child.visits)
+            return exploit + explore
+        return max(self.children, key=uct_score)
+
+    def add_child(self, move, state):
+        child = Node(state, parent=self, move=move)
+        self.untried_moves.remove(move)
+        self.children.append(child)
+        return child
+
+    def update(self, result):
+        self.visits += 1
+        self.wins += result
+
+def simulate_game(state):
+    me, opp, color = state
+    current_me = me.copy()
+    current_opp = opp.copy()
+    current_color = color
+    for _ in range(121 - len(me) - len(opp)):
+        legal_moves = []
+        for i in range(11):
+            for j in range(11):
+                if (i, j) not in current_me and (i, j) not in current_opp:
+                    legal_moves.append((i, j))
+        if not legal_moves:
+            break
+        move = random.choice(legal_moves)
+        if current_color == 'b':
+            current_me.append(move)
+        else:
+            current_opp.append(move)
+        if check_win(current_me, 'b'):
+            return 1 if color == 'b' else 0
+        if check_win(current_opp, 'w'):
+            return 1 if color == 'w' else 0
+        current_color = 'w' if current_color == 'b' else 'b'
+    return 0.5
+
+def check_win(stones, color):
+    if color == 'b':
+        for stone in stones:
+            if stone[0] == 0:
+                if dfs(stone, stones, set(), 'b'):
+                    return True
+    else:
+        for stone in stones:
+            if stone[1] == 0:
+                if dfs(stone, stones, set(), 'w'):
+                    return True
+    return False
+
+def dfs(cell, stones, visited, color):
+    if cell in visited:
+        return False
+    visited.add(cell)
+    if color == 'b' and cell[0] == 10:
+        return True
+    if color == 'w' and cell[1] == 10:
+        return True
+    neighbors = get_neighbors(cell)
+    for neighbor in neighbors:
+        if neighbor in stones and neighbor not in visited:
+            if dfs(neighbor, stones, visited, color):
+                return True
+    return False
+
+def get_neighbors(cell):
+    i, j = cell
+    neighbors = [
+        (i, j-1), (i, j+1),
+        (i-1, j), (i-1, j+1),
+        (i+1, j-1), (i+1, j)
+    ]
+    return [(x, y) for x, y in neighbors if 0 <= x < 11 and 0 <= y < 11]
+
+def mcts(root_state, time_limit=0.5):
+    root = Node(root_state)
+    start_time = time.time()
+    while time.time() - start_time < time_limit:
+        node = root
+        state = root_state
+        while node.untried_moves == [] and node.children != []:
+            node = node.uct_select_child()
+            me, opp, color = state
+            if color == 'b':
+                me.append(node.move)
+            else:
+                opp.append(node.move)
+            state = (me, opp, 'w' if color == 'b' else 'b')
+        if node.untried_moves != []:
+            move = random.choice(node.untried_moves)
+            me, opp, color = state
+            if color == 'b':
+                new_me = me + [move]
+                new_opp = opp
+            else:
+                new_me = me
+                new_opp = opp + [move]
+            new_state = (new_me, new_opp, 'w' if color == 'b' else 'b')
+            node = node.add_child(move, new_state)
+        result = simulate_game(new_state)
+        while node is not None:
+            node.update(result)
+            node = node.parent
+    best_child = max(root.children, key=lambda c: c.visits)
+    return best_child.move
+
+def heuristic_policy(me, opp, color):
+    legal_moves = []
+    for i in range(11):
+        for j in range(11):
+            if (i, j) not in me and (i, j) not in opp:
+                legal_moves.append((i, j))
+    if not legal_moves:
+        return (0, 0)
+    best_move = None
+    best_score = -float('inf')
+    for move in legal_moves:
+        score = evaluate_move(move, me, opp, color)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    return best_move
+
+def evaluate_move(move, me, opp, color):
+    score = 0
+    if color == 'b':
+        score += 10 - move[0]
+        if move[0] == 0:
+            score += 100
+        if move[0] == 10:
+            score += 100
+    else:
+        score += 10 - move[1]
+        if move[1] == 0:
+            score += 100
+        if move[1] == 10:
+            score += 100
+    neighbors = get_neighbors(move)
+    for neighbor in neighbors:
+        if neighbor in me:
+            score += 5
+        if neighbor in opp:
+            score -= 3
+    return score
+
+def policy(me, opp, color):
+    try:
+        move = mcts((me, opp, color), time_limit=0.5)
+        return move
+    except:
+        return heuristic_policy(me, opp, color)

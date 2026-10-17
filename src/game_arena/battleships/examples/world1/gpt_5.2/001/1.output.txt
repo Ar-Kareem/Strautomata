@@ -1,0 +1,203 @@
+The strategy for this policy is a two-mode “probability + target” Battleship solver:
+
+- **Target mode (when any hits exist):** build a *ship-placement heatmap* considering every possible placement of ships of lengths **[5,4,3,3,2]** that does not cross known misses. Placements that include **multiple known hits** are weighted much more heavily, which naturally prioritizes extending lines of hits and filling gaps between aligned hits. Shoot the unknown cell with highest score (tie-break toward cells adjacent to hits).
+- **Hunt mode (no current hits):** use the same heatmap without the “must include a hit” restriction; this approximates the probability that each unknown cell contains a ship segment. A mild **checkerboard parity bias** is applied (since the smallest ship is length 2), but the heatmap still dominates.
+- **Always legal:** if scoring ever fails (rare edge cases), fall back to any remaining unknown cell.
+
+<code>
+"""
+Battleship-like policy for a 10x10 grid.
+
+State encoding (opponent grid knowledge):
+  0  = unknown (not fired)
+ -1  = miss
+  1  = hit
+
+Return:
+  (row, col) where board[row][col] == 0
+
+Strategy:
+  - If there are hits: "target mode" using a weighted placement heatmap that strongly
+    prefers placements containing hits (especially multiple hits). Fire at the
+    highest-scoring unknown cell.
+  - If no hits: "hunt mode" using placement heatmap over all valid placements, with
+    a mild parity preference.
+"""
+
+from __future__ import annotations
+
+from typing import List, Tuple
+
+
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+N = 10
+
+
+def _in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < N and 0 <= c < N
+
+
+def _neighbors4(r: int, c: int):
+    if r > 0:
+        yield (r - 1, c)
+    if r < N - 1:
+        yield (r + 1, c)
+    if c > 0:
+        yield (r, c - 1)
+    if c < N - 1:
+        yield (r, c + 1)
+
+
+def _board_seed(board: List[List[int]]) -> int:
+    # Deterministic seed independent of Python's hash randomization.
+    # Simple rolling hash.
+    x = 1469598103934665603  # FNV offset basis
+    for r in range(N):
+        row = board[r]
+        for c in range(N):
+            v = row[c] + 2  # map {-1,0,1} -> {1,2,3}
+            x ^= (v + 31 * r + 131 * c) & 0xFF
+            x *= 1099511628211
+            x &= (1 << 64) - 1
+    return x & 0xFFFFFFFF
+
+
+def _lcg_choice(items, seed: int):
+    # Deterministic pseudo-random choice from a list (no import random).
+    # LCG parameters (Numerical Recipes).
+    if not items:
+        return None
+    seed = (1664525 * seed + 1013904223) & 0xFFFFFFFF
+    return items[seed % len(items)]
+
+
+def _generate_placements(length: int):
+    # Yield list of (r,c) cells for every horizontal/vertical placement of given length.
+    # Horizontal
+    for r in range(N):
+        for c0 in range(N - length + 1):
+            yield [(r, c0 + k) for k in range(length)]
+    # Vertical
+    for c in range(N):
+        for r0 in range(N - length + 1):
+            yield [(r0 + k, c) for k in range(length)]
+
+
+def _heatmap(board: List[List[int]], require_hit: bool, parity_bias: bool) -> List[List[float]]:
+    hits = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 1]
+    has_hit = bool(hits)
+
+    heat = [[0.0 for _ in range(N)] for _ in range(N)]
+
+    for L in SHIP_LENGTHS:
+        for cells in _generate_placements(L):
+            # Must not cross misses
+            bad = False
+            hit_count = 0
+            for (r, c) in cells:
+                v = board[r][c]
+                if v == -1:
+                    bad = True
+                    break
+                if v == 1:
+                    hit_count += 1
+            if bad:
+                continue
+
+            if require_hit and hit_count == 0:
+                continue
+
+            # Weight: strongly prefer placements that explain multiple hits.
+            # 4^hit_count gives: 0->1, 1->4, 2->16, 3->64, ...
+            weight = float(4 ** hit_count)
+
+            # Accumulate only into unknown cells (next-shot candidates)
+            for (r, c) in cells:
+                if board[r][c] != 0:
+                    continue
+                w = weight
+                if parity_bias:
+                    # Mild checkerboard preference (smallest ship length is 2).
+                    if ((r + c) & 1) == 0:
+                        w *= 1.12
+                heat[r][c] += w
+
+    # If in target mode and somehow no placements contributed, heat may be all zeros.
+    return heat
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Collect unknowns and hits
+    unknowns = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+    if not unknowns:
+        # Shouldn't happen in a valid game; return a legal coordinate anyway.
+        return (0, 0)
+
+    hits = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 1]
+    has_hit = bool(hits)
+
+    # Adjacency-to-hit list for tie-breaking / fallback
+    adj_to_hit = set()
+    if has_hit:
+        for (hr, hc) in hits:
+            for (nr, nc) in _neighbors4(hr, hc):
+                if board[nr][nc] == 0:
+                    adj_to_hit.add((nr, nc))
+
+    # Build heatmap
+    if has_hit:
+        heat = _heatmap(board, require_hit=True, parity_bias=False)
+    else:
+        heat = _heatmap(board, require_hit=False, parity_bias=True)
+
+    # Choose best by score with sensible tie-breaks
+    best_score = -1.0
+    scored = []
+    for (r, c) in unknowns:
+        s = heat[r][c]
+        if s > best_score:
+            best_score = s
+        scored.append((s, r, c))
+
+    # If all scores are zero, fallback:
+    if best_score <= 0.0:
+        if adj_to_hit:
+            # Pick an adjacent cell (deterministically)
+            seed = _board_seed(board)
+            choice = _lcg_choice(sorted(adj_to_hit), seed)
+            if choice is not None:
+                return choice
+        # Otherwise just pick any unknown deterministically
+        seed = _board_seed(board)
+        return _lcg_choice(unknowns, seed) or unknowns[0]
+
+    # Filter top-scoring cells (within epsilon)
+    eps = 1e-12
+    top = [(r, c) for (s, r, c) in scored if s >= best_score - eps]
+
+    # Tie-break 1: in target mode, prefer adjacency to existing hits
+    if has_hit and adj_to_hit:
+        top_adj = [p for p in top if p in adj_to_hit]
+        if top_adj:
+            top = top_adj
+
+    # Tie-break 2: prefer more central squares (usually better information / more placements)
+    def central_key(rc):
+        r, c = rc
+        dr = r - 4.5
+        dc = c - 4.5
+        return dr * dr + dc * dc
+
+    min_cent = min(central_key(p) for p in top)
+    top_cent = [p for p in top if abs(central_key(p) - min_cent) <= 1e-12]
+    if top_cent:
+        top = top_cent
+
+    # Tie-break 3: deterministic pseudo-random among remaining ties
+    seed = _board_seed(board)
+    choice = _lcg_choice(top, seed)
+    if choice is None:
+        # Final safety
+        return unknowns[0]
+    return choice
+</code>

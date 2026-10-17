@@ -1,0 +1,356 @@
+The strategy for this policy is:
+
+- Represent the board with fast 36-bit bitboards.
+- Precompute all 5-in-a-row line masks, quadrant rotations, and legal move templates.
+- First look for immediate winning moves.
+- Otherwise use iterative-deepening negamax with alpha-beta pruning:
+  - depth 2 on normal positions,
+  - deeper in low-branching endgames.
+- Evaluate positions by:
+  - terminal wins/losses/draws,
+  - unblocked 5-cell line potential,
+  - strong weight on 4-in-a-row threats,
+  - positional value from how many winning lines each cell participates in.
+- The policy is designed to always return a legal move, even if search must stop early.
+
+<code>
+import time
+
+WIN_SCORE = 1_000_000
+INF = 10**18
+FULL_MASK = (1 << 36) - 1
+
+# 5-cell segment weights for heuristic evaluation.
+LINE_WEIGHTS = (0, 4, 25, 180, 2500, 0)
+
+# Precompute all 5-cell winning masks.
+def _build_win_masks():
+    masks = set()
+    dirs = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for r in range(6):
+        for c in range(6):
+            for dr, dc in dirs:
+                cells = []
+                rr, cc = r, c
+                ok = True
+                for _ in range(5):
+                    if 0 <= rr < 6 and 0 <= cc < 6:
+                        cells.append(rr * 6 + cc)
+                        rr += dr
+                        cc += dc
+                    else:
+                        ok = False
+                        break
+                if ok:
+                    m = 0
+                    for idx in cells:
+                        m |= 1 << idx
+                    masks.add(m)
+    return tuple(masks)
+
+WIN_MASKS = _build_win_masks()
+
+# Positional weight: how many winning 5-segments include this cell.
+POS_WEIGHTS = [0] * 36
+for mask in WIN_MASKS:
+    mm = mask
+    while mm:
+        b = mm & -mm
+        POS_WEIGHTS[b.bit_length() - 1] += 1
+        mm ^= b
+
+# Quadrant definitions.
+QUAD_CELLS = (
+    tuple(r * 6 + c for r in range(0, 3) for c in range(0, 3)),
+    tuple(r * 6 + c for r in range(0, 3) for c in range(3, 6)),
+    tuple(r * 6 + c for r in range(3, 6) for c in range(0, 3)),
+    tuple(r * 6 + c for r in range(3, 6) for c in range(3, 6)),
+)
+QUAD_BITS = tuple(tuple(1 << x for x in cells) for cells in QUAD_CELLS)
+QUAD_MASKS = tuple(sum(bits) for bits in QUAD_BITS)
+
+# Source index -> destination index in 3x3 row-major order.
+ROT_MAP_L = (6, 3, 0, 7, 4, 1, 8, 5, 2)
+ROT_MAP_R = (2, 5, 8, 1, 4, 7, 0, 3, 6)
+ROT_TABLE = [[None, None] for _ in range(4)]  # [quad][dir: 0=L, 1=R][pattern] via nested lists below
+
+for q in range(4):
+    bits = QUAD_BITS[q]
+    qtables = []
+    for rotmap in (ROT_MAP_L, ROT_MAP_R):
+        table = [0] * 512
+        for pat in range(512):
+            out = 0
+            p = pat
+            i = 0
+            while p:
+                if p & 1:
+                    out |= bits[rotmap[i]]
+                p >>= 1
+                i += 1
+            table[pat] = out
+        qtables.append(tuple(table))
+    ROT_TABLE[q] = tuple(qtables)
+ROT_TABLE = tuple(ROT_TABLE)
+
+# Precompute all action templates per cell.
+CELL_ACTIONS = [[] for _ in range(36)]
+for cell in range(36):
+    r = cell // 6 + 1
+    c = cell % 6 + 1
+    for q in range(4):
+        CELL_ACTIONS[cell].append((cell, q, 0, f"{r},{c},{q},L"))
+        CELL_ACTIONS[cell].append((cell, q, 1, f"{r},{c},{q},R"))
+CELL_ACTIONS = tuple(tuple(x) for x in CELL_ACTIONS)
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _to_bitboard(arr):
+    bb = 0
+    for r in range(6):
+        row = arr[r]
+        base = r * 6
+        for c in range(6):
+            if row[c]:
+                bb |= 1 << (base + c)
+    return bb
+
+
+def _has_win(bb):
+    for mask in WIN_MASKS:
+        if (bb & mask) == mask:
+            return True
+    return False
+
+
+def _terminal_score(me, opp):
+    me_win = _has_win(me)
+    opp_win = _has_win(opp)
+    if me_win and opp_win:
+        return 0
+    if me_win:
+        return WIN_SCORE
+    if opp_win:
+        return -WIN_SCORE
+    if (me | opp) == FULL_MASK:
+        return 0
+    return None
+
+
+def _rotate_bb(bb, q, d):
+    sub = bb & QUAD_MASKS[q]
+    if not sub:
+        return bb
+    bits = QUAD_BITS[q]
+    pat = 0
+    if sub & bits[0]:
+        pat |= 1
+    if sub & bits[1]:
+        pat |= 2
+    if sub & bits[2]:
+        pat |= 4
+    if sub & bits[3]:
+        pat |= 8
+    if sub & bits[4]:
+        pat |= 16
+    if sub & bits[5]:
+        pat |= 32
+    if sub & bits[6]:
+        pat |= 64
+    if sub & bits[7]:
+        pat |= 128
+    if sub & bits[8]:
+        pat |= 256
+    return (bb & ~QUAD_MASKS[q]) | ROT_TABLE[q][d][pat]
+
+
+def _apply_action(me, opp, action):
+    cell, q, d, _ = action
+    me2 = me | (1 << cell)
+    me2 = _rotate_bb(me2, q, d)
+    opp2 = _rotate_bb(opp, q, d)
+    return me2, opp2
+
+
+def _evaluate(me, opp):
+    score = 0
+
+    for mask in WIN_MASKS:
+        a = (me & mask).bit_count()
+        b = (opp & mask).bit_count()
+        if a and b:
+            continue
+        if a:
+            score += LINE_WEIGHTS[a]
+        elif b:
+            score -= LINE_WEIGHTS[b]
+
+    mm = me
+    while mm:
+        b = mm & -mm
+        score += POS_WEIGHTS[b.bit_length() - 1]
+        mm ^= b
+
+    mm = opp
+    while mm:
+        b = mm & -mm
+        score -= POS_WEIGHTS[b.bit_length() - 1]
+        mm ^= b
+
+    return score
+
+
+def _negamax(me, opp, depth, alpha, beta, deadline, tt):
+    if time.perf_counter() >= deadline:
+        raise _Timeout
+
+    term = _terminal_score(me, opp)
+    if term is not None:
+        return term
+    if depth == 0:
+        return _evaluate(me, opp)
+
+    key = (me, opp, depth)
+    if key in tt:
+        return tt[key]
+
+    occ = me | opp
+    empties = FULL_MASK ^ occ
+
+    if depth == 1:
+        best = -INF
+        e = empties
+        while e:
+            bit = e & -e
+            cell = bit.bit_length() - 1
+            e ^= bit
+            for action in CELL_ACTIONS[cell]:
+                me2, opp2 = _apply_action(me, opp, action)
+                term2 = _terminal_score(me2, opp2)
+                val = term2 if term2 is not None else _evaluate(me2, opp2)
+                if val > best:
+                    best = val
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta:
+                    return best
+        tt[key] = best
+        return best
+
+    entries = []
+    e = empties
+    while e:
+        bit = e & -e
+        cell = bit.bit_length() - 1
+        e ^= bit
+        for action in CELL_ACTIONS[cell]:
+            me2, opp2 = _apply_action(me, opp, action)
+            term2 = _terminal_score(me2, opp2)
+            pri = term2 if term2 is not None else _evaluate(me2, opp2)
+            entries.append((pri, me2, opp2, term2))
+
+    entries.sort(key=lambda x: x[0], reverse=True)
+
+    best = -INF
+    fully_searched = True
+    for _, me2, opp2, term2 in entries:
+        if time.perf_counter() >= deadline:
+            raise _Timeout
+        if term2 is not None:
+            val = term2
+        else:
+            val = -_negamax(opp2, me2, depth - 1, -beta, -alpha, deadline, tt)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            fully_searched = False
+            break
+
+    if fully_searched:
+        tt[key] = best
+    return best
+
+
+def policy(you, opponent) -> str:
+    start = time.perf_counter()
+    deadline = start + 0.92
+
+    me = _to_bitboard(you)
+    opp = _to_bitboard(opponent)
+    occ = me | opp
+    empties = FULL_MASK ^ occ
+
+    # Guaranteed legal fallback.
+    first_cell = (empties & -empties).bit_length() - 1
+    fallback = CELL_ACTIONS[first_cell][0][3]
+
+    root_entries = []
+    e = empties
+
+    while e:
+        bit = e & -e
+        cell = bit.bit_length() - 1
+        e ^= bit
+        for action in CELL_ACTIONS[cell]:
+            me2, opp2 = _apply_action(me, opp, action)
+            term = _terminal_score(me2, opp2)
+            if term == WIN_SCORE:
+                return action[3]
+            pri = term if term is not None else _evaluate(me2, opp2)
+            root_entries.append((pri, action, me2, opp2, term))
+
+    if not root_entries:
+        return fallback
+
+    root_entries.sort(key=lambda x: x[0], reverse=True)
+    best_move = root_entries[0][1][3]
+
+    empty_count = empties.bit_count()
+    depths = [1, 2]
+    if empty_count <= 8:
+        depths.append(3)
+    if empty_count <= 4:
+        depths.append(4)
+
+    tt = {}
+
+    for depth in depths:
+        try:
+            alpha = -INF
+            beta = INF
+            best_score = -INF
+            current_best = best_move
+
+            for _, action, me2, opp2, term in root_entries:
+                if time.perf_counter() >= deadline:
+                    raise _Timeout
+
+                if term is not None:
+                    val = term
+                elif depth == 1:
+                    val = _evaluate(me2, opp2)
+                else:
+                    val = -_negamax(opp2, me2, depth - 1, -beta, -alpha, deadline, tt)
+
+                if val > best_score:
+                    best_score = val
+                    current_best = action[3]
+
+                if best_score > alpha:
+                    alpha = best_score
+
+            best_move = current_best
+
+            if best_score == WIN_SCORE:
+                return best_move
+
+        except _Timeout:
+            break
+
+    return best_move
+</code>

@@ -1,0 +1,94 @@
+
+import random
+
+def policy(you, opponent) -> str:
+    # Combine player positions into a single board representation
+    board = [[0]*6 for _ in range(6)]
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 1 and opponent[r][c] == 0:
+                board[r][c] = 1
+            elif opponent[r][c] == 1 and you[r][c] == 0:
+                board[r][c] = -1
+            else:
+                board[r][c] = 0
+    
+    # Helper function to check for 5-in-a-row
+    def check_win(r, c, player):
+        directions = [(0,1), (1,0), (1,1), (1,-1)]
+        for dx, dy in directions:
+            count = 1
+            # Check positive direction
+            x, y = r + dx, c + dy
+            while 0 <= x < 6 and 0 <= y < 6 and board[x][y] == player:
+                count += 1
+                x += dx
+                y += dy
+            # Check negative direction
+            x, y = r - dx, c - dy
+            while 0 <= x < 6 and 0 <= y < 6 and board[x][y] == player:
+                count += 1
+                x -= dx
+                y -= dy
+            if count >= 5:
+                return True
+        return False
+
+    # Check for immediate winning moves
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] != 0:
+                continue
+            # Simulate placing your marble
+            board[r][c] = 1
+            if check_win(r, c, 1):
+                return f"{r+1},{c+1},0,R"  # Default rotation (any valid rotation works)
+            board[r][c] = 0
+    
+    # Check for opponent threats
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] != 0:
+                continue
+            # Simulate opponent's move
+            board[r][c] = -1
+            if check_win(r, c, -1):
+                return f"{r+1},{c+1},0,R"  # Block the threat
+            board[r][c] = 0
+    
+    # Check for 2-in-a-row with empty adjacent cell
+    for r in range(6):
+        for c in range(6):
+            if board[r][c] != 0:
+                continue
+            # Check all 8 directions
+            for dx, dy in [(0,1), (1,0), (1,1), (1,-1), (0,-1), (-1,0), (-1,-1), (-1,1)]:
+                count = 1
+                # Check positive direction
+                x, y = r + dx, c + dy
+                while 0 <= x < 6 and 0 <= y < 6 and board[x][y] == 1:
+                    count += 1
+                    x += dx
+                    y += dy
+                # Check negative direction
+                x, y = r - dx, c - dy
+                while 0 <= x < 6 and 0 <= y < 6 and board[x][y] == 1:
+                    count += 1
+                    x -= dx
+                    y -= dy
+                # Check adjacent cells in both directions
+                if (0 <= r+dx < 6 and 0 <= c+dy < 6 and board[r+dx][c+dy] == 0) or \
+                   (0 <= r-dx < 6 and 0 <= c-dy < 6 and board[r-dx][c-dy] == 0):
+                    return f"{r+1},{c+1},0,R"
+    
+    # Default move: place in center or corner
+    center = (2, 2)
+    corners = [(0,0), (0,5), (5,0), (5,5)]
+    for r, c in [center] + corners:
+        if board[r][c] == 0:
+            return f"{r+1},{c+1},0,R"
+    
+    # Fallback: random valid move
+    empty_cells = [(r, c) for r in range(6) for c in range(6) if board[r][c] == 0]
+    r, c = random.choice(empty_cells)
+    return f"{r+1},{c+1},0,R"

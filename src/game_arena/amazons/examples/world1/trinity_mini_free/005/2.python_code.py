@@ -1,0 +1,49 @@
+
+import numpy as np
+
+def generate_moves(board, player):
+    moves = []
+    directions = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if not (dx == 0 and dy == 0)]
+    for i in range(6):
+        for j in range(6):
+            if board[i][j] != player:
+                continue
+            for dx, dy in directions:
+                x, y = i + dx, j + dy
+                while 0 <= x < 6 and 0 <= y < 6:
+                    if board[x][y] != 0:
+                        break
+                    for adx, ady in directions:
+                        ax, ay = x + adx, y + ady
+                        while 0 <= ax < 6 and 0 <= ay < 6:
+                            if board[ax][ay] != 0:
+                                break
+                            moves.append((i, j, x, y, ax, ay))
+                            break
+                    x += dx
+                    y += dy
+    return moves
+
+def count_moves(board, player):
+    return len(generate_moves(board, player))
+
+def policy(board):
+    moves = generate_moves(board, 1)
+    if not moves:
+        return "0,0:0,0:0,0"
+    
+    best_move = None
+    best_count = -1
+    for move in moves:
+        i, j, x, y, ax, ay = move
+        new_board = np.copy(board)
+        new_board[i][j] = 0
+        new_board[x][y] = 1
+        new_board[ax][ay] = -1
+        count = count_moves(new_board, 1)
+        if count > best_count:
+            best_count = count
+            best_move = move
+    
+    i, j, x, y, ax, ay = best_move
+    return f"{i},{j}:{x},{y}:{ax},{ay}"

@@ -1,0 +1,219 @@
+
+from typing import List, Tuple
+import math
+
+N = 4
+
+# All winning lines on a 4x4 board: 4 rows, 4 cols, 2 diagonals
+LINES = []
+for r in range(N):
+    LINES.append([(r, c) for c in range(N)])
+for c in range(N):
+    LINES.append([(r, c) for r in range(N)])
+LINES.append([(i, i) for i in range(N)])
+LINES.append([(i, N - 1 - i) for i in range(N)])
+
+CENTER_CELLS = {(1, 1), (1, 2), (2, 1), (2, 2)}
+CORNER_CELLS = {(0, 0), (0, 3), (3, 0), (3, 3)}
+
+LINE_WEIGHTS = {
+    0: 0,
+    1: 1,
+    2: 8,
+    3: 60,
+    4: 100000,
+}
+
+def check_winner(board: List[List[int]]) -> int:
+    for line in LINES:
+        vals = [board[r][c] for r, c in line]
+        s = sum(vals)
+        if s == N:
+            return 1
+        if s == -N:
+            return -1
+    return 0
+
+def legal_moves(board: List[List[int]]) -> List[Tuple[int, int]]:
+    return [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+
+def is_full(board: List[List[int]]) -> bool:
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                return False
+    return True
+
+def evaluate(board: List[List[int]]) -> int:
+    winner = check_winner(board)
+    if winner == 1:
+        return 1000000
+    if winner == -1:
+        return -1000000
+
+    score = 0
+
+    # Line-based evaluation
+    for line in LINES:
+        vals = [board[r][c] for r, c in line]
+        my_count = vals.count(1)
+        opp_count = vals.count(-1)
+        empty = vals.count(0)
+
+        if opp_count == 0:
+            score += LINE_WEIGHTS[my_count]
+        elif my_count == 0:
+            score -= LINE_WEIGHTS[opp_count]
+
+        # Slight bonus/penalty for nearly completed lines with one empty
+        if my_count == 3 and empty == 1:
+            score += 120
+        if opp_count == 3 and empty == 1:
+            score -= 140
+
+    # Positional preference
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1:
+                if (r, c) in CENTER_CELLS:
+                    score += 4
+                elif (r, c) in CORNER_CELLS:
+                    score += 2
+                else:
+                    score += 1
+            elif board[r][c] == -1:
+                if (r, c) in CENTER_CELLS:
+                    score -= 4
+                elif (r, c) in CORNER_CELLS:
+                    score -= 2
+                else:
+                    score -= 1
+
+    return score
+
+def move_priority(board: List[List[int]], move: Tuple[int, int], player: int) -> int:
+    r, c = move
+    p = 0
+
+    # Positional ordering
+    if (r, c) in CENTER_CELLS:
+        p += 30
+    elif (r, c) in CORNER_CELLS:
+        p += 20
+    else:
+        p += 10
+
+    # Count involvement in promising lines
+    for line in LINES:
+        if (r, c) in line:
+            vals = [board[rr][cc] for rr, cc in line]
+            my_count = vals.count(player)
+            opp_count = vals.count(-player)
+            if opp_count == 0:
+                p += my_count * 8
+            if my_count == 0:
+                p += opp_count * 5
+
+    return p
+
+def ordered_moves(board: List[List[int]], player: int) -> List[Tuple[int, int]]:
+    moves = legal_moves(board)
+    moves.sort(key=lambda m: move_priority(board, m, player), reverse=True)
+    return moves
+
+def winning_moves(board: List[List[int]], player: int) -> List[Tuple[int, int]]:
+    wins = []
+    for r, c in legal_moves(board):
+        board[r][c] = player
+        if check_winner(board) == player:
+            wins.append((r, c))
+        board[r][c] = 0
+    return wins
+
+def minimax(board: List[List[int]], depth: int, alpha: int, beta: int, player: int) -> int:
+    winner = check_winner(board)
+    if winner == 1:
+        return 1000000 + depth
+    if winner == -1:
+        return -1000000 - depth
+    if depth == 0 or is_full(board):
+        return evaluate(board)
+
+    moves = ordered_moves(board, player)
+
+    if player == 1:
+        best = -math.inf
+        for r, c in moves:
+            board[r][c] = 1
+            val = minimax(board, depth - 1, alpha, beta, -1)
+            board[r][c] = 0
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return int(best)
+    else:
+        best = math.inf
+        for r, c in moves:
+            board[r][c] = -1
+            val = minimax(board, depth - 1, alpha, beta, 1)
+            board[r][c] = 0
+            if val < best:
+                best = val
+            if best < beta:
+                beta = best
+            if alpha >= beta:
+                break
+        return int(best)
+
+def choose_depth(board: List[List[int]]) -> int:
+    empties = sum(1 for r in range(N) for c in range(N) if board[r][c] == 0)
+    if empties >= 13:
+        return 4
+    if empties >= 10:
+        return 5
+    if empties >= 7:
+        return 6
+    if empties >= 5:
+        return 7
+    return empties  # solve near endgame
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    moves = legal_moves(board)
+    if not moves:
+        return (0, 0)  # unreachable in legal play, but guarantees a tuple
+
+    # 1. Immediate win
+    my_wins = winning_moves(board, 1)
+    if my_wins:
+        return my_wins[0]
+
+    # 2. Immediate block
+    opp_wins = winning_moves(board, -1)
+    if opp_wins:
+        # If multiple blocks exist, prefer the best ordered one among them
+        opp_wins.sort(key=lambda m: move_priority(board, m, 1), reverse=True)
+        return opp_wins[0]
+
+    # 3. Search
+    depth = choose_depth(board)
+    best_move = moves[0]
+    best_score = -math.inf
+
+    for r, c in ordered_moves(board, 1):
+        board[r][c] = 1
+        score = minimax(board, depth - 1, -math.inf, math.inf, -1)
+        board[r][c] = 0
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    # 4. Safety: ensure legal move
+    r, c = best_move
+    if 0 <= r < N and 0 <= c < N and board[r][c] == 0:
+        return best_move
+
+    return moves[0]

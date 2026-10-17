@@ -1,0 +1,171 @@
+
+import random
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """
+    Strategic Go policy for 19x19 board.
+    Returns a legal move as (row, col), or (0, 0) to pass.
+    """
+    
+    # Convert to sets for faster lookup
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    all_stones = my_stones | opp_stones
+    
+    # Find all empty points
+    empty_points = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) not in all_stones:
+                empty_points.append((r, c))
+    
+    if not empty_points:
+        return (0, 0)
+    
+    # Helper function: count liberties of a stone/group
+    def count_liberties(stone_pos: Tuple[int, int], stones: set) -> int:
+        """Count liberties for a single stone"""
+        group = get_group(stone_pos, stones)
+        liberties = set()
+        for stone in group:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = stone[0] + dr, stone[1] + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    if (nr, nc) not in stones:
+                        liberties.add((nr, nc))
+        return len(liberties)
+    
+    def get_group(stone_pos: Tuple[int, int], stones: set) -> set:
+        """Get all connected stones in the same group"""
+        group = set()
+        stack = [stone_pos]
+        while stack:
+            current = stack.pop()
+            if current in group:
+                continue
+            group.add(current)
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = current[0] + dr, current[1] + dc
+                if (nr, nc) in stones and (nr, nc) not in group:
+                    stack.append((nr, nc))
+        return group
+    
+    def count_group_liberties(group: set, stones: set) -> int:
+        """Count liberties for a group of stones"""
+        liberties = set()
+        for stone in group:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = stone[0] + dr, stone[1] + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    if (nr, nc) not in stones:
+                        liberties.add((nr, nc))
+        return len(liberties)
+    
+    def would_suicide(move: Tuple[int, int], stones: set) -> bool:
+        """Check if playing at move would be suicide (no liberties after move)"""
+        # Check if move would have liberties without considering captures
+        test_liberties = set()
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = move[0] + dr, move[1] + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if (nr, nc) not in stones:
+                    test_liberties.add((nr, nc))
+        
+        if test_liberties:
+            return False  # Has liberties, not suicide
+        
+        # Check if move captures opponent stones (which would give liberties)
+        opp = opponent if stones == my_stones else my_stones
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = move[0] + dr, move[1] + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and (nr, nc) in opp:
+                group = get_group((nr, nc), opp)
+                if count_group_liberties(group, opp) == 1:
+                    return False  # Captures opponent, not suicide
+        
+        return True  # No liberties and no capture = suicide
+    
+    # Step 1: Check for self-atari (need to defend)
+    for move in empty_points:
+        if would_suicide(move, my_stones):
+            continue
+            
+        # Simulate playing the move
+        test_stones = my_stones | {move}
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = move[0] + dr, move[1] + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and (nr, nc) in my_stones:
+                group = get_group((nr, nc), test_stones)
+                liberties = count_group_liberties(group, test_stones)
+                if liberties == 1:
+                    # This move saves a group from atari
+                    return move
+    
+    # Step 2: Check for captures (opponent in atari)
+    for opp_pos in opp_stones:
+        group = get_group(opp_pos, opp_stones)
+        liberties = count_group_liberties(group, opp_stones)
+        
+        if liberties == 1:
+            # Find the liberty point
+            for stone in group:
+                for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                    nr, nc = stone[0] + dr, stone[1] + dc
+                    if 1 <= nr <= 19 and 1 <= nc <= 19 and (nr, nc) not in opp_stones:
+                        if (nr, nc) in empty_points:
+                            if not would_suicide((nr, nc), my_stones):
+                                return (nr, nc)
+    
+    # Step 3: Strategic move evaluation
+    def evaluate_move(move: Tuple[int, int]) -> float:
+        r, c = move
+        
+        # Positional importance: corners > edges > center
+        corner_bonus = 0
+        if (r <= 3 or r >= 17) and (c <= 3 or c >= 17):
+            corner_bonus = 100
+        elif r <= 3 or r >= 17 or c <= 3 or c >= 17:
+            edge_bonus = 50
+        else:
+            edge_bonus = 0
+        
+        # Territory evaluation: count adjacent stones
+        my_adjacent = 0
+        opp_adjacent = 0
+        empty_adjacent = 0
+        
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if (nr, nc) in my_stones:
+                    my_adjacent += 1
+                elif (nr, nc) in opp_stones:
+                    opp_adjacent += 1
+                else:
+                    empty_adjacent += 1
+        
+        # Prefer extending our stones, avoid opponent proximity
+        score = edge_bonus + corner_bonus
+        score += my_adjacent * 10
+        score += empty_adjacent * 2
+        score -= opp_adjacent * 5
+        
+        # Add some randomness for variety
+        score += random.random() * 5
+        
+        return score
+    
+    # Evaluate all remaining moves
+    valid_moves = []
+    for move in empty_points:
+        if not would_suicide(move, my_stones):
+            score = evaluate_move(move)
+            valid_moves.append((score, move))
+    
+    if not valid_moves:
+        return (0, 0)
+    
+    # Return the move with highest score
+    valid_moves.sort(reverse=True)
+    return valid_moves[0][1]

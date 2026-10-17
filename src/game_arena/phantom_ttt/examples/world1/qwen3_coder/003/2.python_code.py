@@ -1,0 +1,120 @@
+
+import random
+import numpy as np
+
+def policy(board: list[list[int]], legal_moves: list[int]) -> int:
+    # Convert board to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Define position weights (center > corners > edges)
+    position_weights = np.array([
+        [0.3, 0.2, 0.3],
+        [0.2, 0.5, 0.2],
+        [0.3, 0.2, 0.3]
+    ])
+    
+    # Convert legal moves to (row, col) format
+    legal_positions = [(move // 3, move % 3) for move in legal_moves]
+    
+    # Filter out already confirmed positions (where we have a mark)
+    available_positions = [(r, c) for r, c in legal_positions if board_array[r, c] != 1]
+    
+    # If all legal moves are already confirmed (shouldn't happen), pick randomly
+    if not available_positions:
+        move = random.choice(legal_moves)
+        return move
+    
+    # Try to find a winning move (if we have enough information)
+    win_move = find_winning_move(board_array, available_positions)
+    if win_move is not None:
+        return win_move[0] * 3 + win_move[1]
+    
+    # Try to find a blocking move (based on board patterns)
+    block_move = find_blocking_move(board_array, available_positions)
+    if block_move is not None:
+        return block_move[0] * 3 + block_move[1]
+    
+    # Weighted selection based on position importance
+    weights = []
+    for r, c in available_positions:
+        # Base weight from position importance
+        weight = position_weights[r, c]
+        
+        # Slightly increase weight for empty-looking squares (value 0)
+        if board_array[r, c] == 0:
+            weight += 0.1
+            
+        weights.append(weight)
+    
+    # Normalize weights
+    weight_sum = sum(weights)
+    if weight_sum > 0:
+        probabilities = [w / weight_sum for w in weights]
+    else:
+        # If all weights are zero, make uniform selection
+        probabilities = [1.0 / len(available_positions)] * len(available_positions)
+    
+    # Choose based on weights
+    chosen_pos = random.choices(available_positions, probabilities)[0]
+    return chosen_pos[0] * 3 + chosen_pos[1]
+
+def find_winning_move(board_array, available_positions):
+    """Check if we can win with a move"""
+    # Check if we have two in a row and can complete it
+    for r in range(3):
+        # Count our confirmed positions in row
+        row_values = [board_array[r, c] for c in range(3)]
+        if row_values.count(1) == 2 and row_values.count(0) == 1:
+            c = row_values.index(0)
+            if (r, c) in available_positions:
+                return (r, c)
+    
+    for c in range(3):
+        # Count our confirmed positions in column
+        col_values = [board_array[r, c] for r in range(3)]
+        if col_values.count(1) == 2 and col_values.count(0) == 1:
+            r = col_values.index(0)
+            if (r, c) in available_positions:
+                return (r, c)
+    
+    # Check diagonals
+    diag1_values = [board_array[i, i] for i in range(3)]
+    if diag1_values.count(1) == 2 and diag1_values.count(0) == 1:
+        i = diag1_values.index(0)
+        if (i, i) in available_positions:
+            return (i, i)
+    
+    diag2_values = [board_array[i, 2-i] for i in range(3)]
+    if diag2_values.count(1) == 2 and diag2_values.count(0) == 1:
+        i = diag2_values.index(0)
+        if (i, 2-i) in available_positions:
+            return (i, 2-i)
+    
+    return None
+
+def find_blocking_move(board_array, available_positions):
+    """Try to identify and block opponent's winning threats"""
+    # In Phantom Tic Tac Toe, we can infer opponent moves when we fail to place
+    # For now, we'll use a heuristic - if a position seems to be blocking our placements,
+    # it might be occupied by opponent
+    
+    # Prefer positions that could complete three in a row of unknowns/empty
+    # This is a simplified blocking approach
+    
+    # Check rows, cols, diags for potential threats (two empty/unknown in line with one unknown)
+    for r in range(3):
+        row_values = [board_array[r, c] for c in range(3)]
+        # If we see two zeros (unknown) in a row, maybe opponent is there
+        if row_values.count(0) >= 2:
+            for c in range(3):
+                if (r, c) in available_positions:
+                    return (r, c)
+    
+    for c in range(3):
+        col_values = [board_array[r, c] for r in range(3)]
+        if col_values.count(0) >= 2:
+            for r in range(3):
+                if (r, c) in available_positions:
+                    return (r, c)
+    
+    return None

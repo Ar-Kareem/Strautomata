@@ -1,0 +1,263 @@
+Strategy:
+- Use a short alpha-beta search with move ordering (captures and promotions first) and a heuristic that values immediate wins, piece count, advancement toward promotion, and safety (penalize pieces that are immediately capturable). The policy performs iterative deepening up to a small depth and respects a short time cutoff so it always returns a legal move quickly. This yields an aggressive yet cautious player that prefers captures and fast promotion while avoiding leaving pieces en prise.
+
+<code>
+import time
+import random
+from typing import List, Tuple
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+# Policy entry point
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Move:
+    """
+    Return a move ((from_row, from_col), (to_row, to_col)).
+    me, opp are lists of (row, col) tuples.
+    color is 'b' (black moves down, row-1) or 'w' (white moves up, row+1).
+    """
+    start_time = time.time()
+    TIME_LIMIT = 0.92  # seconds
+    max_depth = 4  # maximum search depth (plies)
+    random.seed((tuple(me), tuple(opp), color, int(start_time*1000) & 0xffffffff))
+
+    me_pieces = list(me)
+    opp_pieces = list(opp)
+
+    # Precompute directions
+    if color == 'w':
+        my_dir = 1
+        opp_dir = -1
+        my_goal_row = 7
+    else:
+        my_dir = -1
+        opp_dir = 1
+        my_goal_row = 0
+
+    # Generate legal moves
+    def generate_moves(my: List[Tuple[int, int]], other: List[Tuple[int, int]], c_color: str) -> List[Tuple[Tuple[int,int], Tuple[int,int], bool, bool]]:
+        # Returns list of (from, to, is_capture, is_promotion)
+        moves = []
+        occ = {p for p in my} | {p for p in other}
+        dir_ = 1 if c_color == 'w' else -1
+        goal_row = 7 if c_color == 'w' else 0
+        for (r,c) in my:
+            fr = (r,c)
+            # forward
+            nr = r + dir_
+            if 0 <= nr <= 7:
+                # straight
+                if (nr, c) not in occ:
+                    is_prom = (nr == goal_row)
+                    moves.append((fr, (nr,c), False, is_prom))
+                # captures: diag left and right
+                for nc in (c-1, c+1):
+                    if 0 <= nc <= 7:
+                        if (nr, nc) in other:
+                            is_prom = (nr == goal_row)
+                            moves.append((fr, (nr,nc), True, is_prom))
+                        else:
+                            # diagonal non-capturing move allowed iff empty
+                            # According to rules diagonal forward onto empty square is allowed (non-capture).
+                            # The problem statement says diagonal forward if the target square is empty. So include that.
+                            if (nr, nc) not in occ:
+                                moves.append((fr, (nr,nc), False, False))
+        # Order: captures and promotions first
+        moves.sort(key=lambda x: (not x[2], not x[3]))  # captures first, then promotions
+        return moves
+
+    # Apply move
+    def apply_move(my: List[Tuple[int,int]], other: List[Tuple[int,int]], move) -> Tuple[List[Tuple[int,int]], List[Tuple[int,int]]]:
+        (fr, to, is_cap, is_prom) = move
+        new_my = my.copy()
+        new_other = other.copy()
+        # remove from my
+        try:
+            new_my.remove(fr)
+        except ValueError:
+            pass
+        # if capture, remove opponent piece at 'to'
+        if to in new_other:
+            try:
+                new_other.remove(to)
+            except ValueError:
+                pass
+        # add moved piece, but note promotion is just reaching goal row (no new piece type)
+        new_my.append(to)
+        return new_my, new_other
+
+    # Quick terminal checks
+    def is_win(my: List[Tuple[int,int]], other: List[Tuple[int,int]], c_color: str) -> bool:
+        # Win if any of my reaches opponent home row or opponent has no pieces
+        goal_row = 7 if c_color == 'w' else 0
+        for (r,c) in my:
+            if r == goal_row:
+                return True
+        if len(other) == 0:
+            return True
+        return False
+
+    # Check if square is threatened by opponent (i.e., opponent can capture it next move)
+    def is_square_threatened(square: Tuple[int,int], other: List[Tuple[int,int]], other_color: str) -> bool:
+        (r,c) = square
+        dir_ = 1 if other_color == 'w' else -1
+        # opponent capture squares come from one step behind (opponent's row = r - dir_)
+        src_row = r - dir_
+        for src_col in (c-1, c+1):
+            if 0 <= src_row <= 7 and 0 <= src_col <= 7:
+                if (src_row, src_col) in other:
+                    return True
+        return False
+
+    # Evaluate position from perspective of 'color' player
+    def evaluate(my: List[Tuple[int,int]], other: List[Tuple[int,int]], c_color: str) -> float:
+        # Terminal checks
+        if is_win(my, other, c_color):
+            return 1e6
+        if is_win(other, my, 'w' if c_color=='b' else 'b'):
+            return -1e6
+        # Piece counts
+        val = 0.0
+        val += 100.0 * (len(my) - len(other))
+        # Advancement: sum rows toward promotion
+        if c_color == 'w':
+            # white wants higher rows
+            val += 5.0 * sum(r for (r,_) in my)
+            val -= 5.0 * sum(r for (r,_) in other)
+            # threat penalties
+            for p in my:
+                if is_square_threatened(p, other, 'b'):
+                    val -= 10.0
+            for p in other:
+                if is_square_threatened(p, my, 'w'):
+                    val += 6.0
+        else:
+            # black wants lower rows (closer to 0). Use (7 - r) as distance advantage for white, for black use (7 - r) negative?
+            val += 5.0 * sum((7 - r) for (r,_) in my)
+            val -= 5.0 * sum((7 - r) for (r,_) in other)
+            for p in my:
+                if is_square_threatened(p, other, 'w'):
+                    val -= 10.0
+            for p in other:
+                if is_square_threatened(p, my, 'b'):
+                    val += 6.0
+        # Mobility: number of moves
+        my_moves = len(generate_moves(my, other, c_color))
+        opp_moves = len(generate_moves(other, my, 'w' if c_color=='b' else 'b'))
+        val += 2.0 * (my_moves - opp_moves)
+        # Small random factor to diversify equal choices
+        val += random.uniform(-0.1, 0.1)
+        return val
+
+    # Alpha-beta search with time cutoff
+    def alphabeta(my, other, c_color, depth, alpha, beta, maximizing_player):
+        # Time cutoff
+        if time.time() - start_time > TIME_LIMIT:
+            raise TimeoutError()
+        # Terminal or depth 0
+        if depth == 0 or is_win(my, other, c_color) or is_win(other, my, 'w' if c_color=='b' else 'b'):
+            return evaluate(my, other, c_color), None
+        moves = generate_moves(my if maximizing_player else other,
+                               other if maximizing_player else my,
+                               c_color if maximizing_player else ('w' if c_color=='b' else 'b'))
+        if not moves:
+            # No legal moves: losing?
+            if maximizing_player:
+                return -1e5, None
+            else:
+                return 1e5, None
+
+        best_move = None
+        if maximizing_player:
+            value = -1e9
+            # move ordering: captures and promotions were already sorted
+            for mv in moves:
+                new_my, new_other = apply_move(my, other, mv)
+                # After move, switch perspective: opponent becomes maximizing at next depth
+                try:
+                    score, _ = alphabeta(new_other, new_my, ('w' if c_color=='b' else 'b'), depth-1, alpha, beta, False)
+                except TimeoutError:
+                    raise
+                # Note: score is from opponent perspective because we swapped roles; invert it
+                score = -score
+                if score > value:
+                    value = score
+                    best_move = mv
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value, best_move
+        else:
+            # minimizing player (opponent)
+            value = 1e9
+            for mv in moves:
+                new_other, new_my = apply_move(other, my, mv)
+                try:
+                    score, _ = alphabeta(new_my, new_other, c_color, depth-1, alpha, beta, True)
+                except TimeoutError:
+                    raise
+                if score < value:
+                    value = score
+                    best_move = mv
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break
+            return value, best_move
+
+    # Iterative deepening
+    best_move_found = None
+    try:
+        for depth in range(1, max_depth+1):
+            # For root, generate my moves
+            moves = generate_moves(me_pieces, opp_pieces, color)
+            if not moves:
+                # No legal moves: return a safe dummy (shouldn't happen normally)
+                # Pick a dummy move that does nothing? Must be legal; but if none exist, we just return first illegal? To be safe, return any tuple if no moves not expected.
+                # We'll just return a random move within bounds (should not be used).
+                return ((0,0),(0,0))
+            # Order by captures/promotions already
+            best_val = -1e9
+            best_mv = None
+            for mv in moves:
+                if time.time() - start_time > TIME_LIMIT:
+                    raise TimeoutError()
+                new_my, new_other = apply_move(me_pieces, opp_pieces, mv)
+                try:
+                    score, _ = alphabeta(new_other, new_my, ('w' if color=='b' else 'b'), depth-1, -1e9, 1e9, False)
+                except TimeoutError:
+                    raise
+                score = -score
+                if score > best_val or (best_mv is None and score == best_val and random.random() < 0.5):
+                    best_val = score
+                    best_mv = mv
+            if best_mv is not None:
+                best_move_found = best_mv
+            # If winning move found, break early
+            if best_val >= 9e5:
+                break
+            # Time check
+            if time.time() - start_time > TIME_LIMIT:
+                break
+    except TimeoutError:
+        # time ran out during search, fall back to last found move
+        pass
+
+    if best_move_found is None:
+        # fallback: choose any legal move (prefer captures/promotions)
+        moves = generate_moves(me_pieces, opp_pieces, color)
+        if not moves:
+            return ((0,0),(0,0))
+        best_move_found = random.choice([m for m in moves if m[2]] or moves)
+
+    # Return just the from/to tuple
+    fr, to, _, _ = best_move_found
+    return (fr, to)
+
+
+# If this module is run directly, run a tiny self-test (not used by arena)
+if __name__ == "__main__":
+    # Simple starting position test for white: 2 rows of pieces
+    me = [(0,i) for i in range(8)]
+    opp = [(7,i) for i in range(8)]
+    mv = policy(me, opp, 'w')
+    print("Move:", mv)
+</code>

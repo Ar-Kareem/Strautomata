@@ -1,0 +1,684 @@
+The strategy for this policy is a lightweight tactical chess engine built from scratch without external chess libraries. It:
+
+1. Reconstructs legal moves from the board state, including castling, en passant inference, and promotions.
+2. Always returns a legal move.
+3. Prioritizes immediate checkmate.
+4. Avoids moves that allow the opponent to checkmate immediately.
+5. Uses alpha-beta minimax with iterative deepening under a tight time budget.
+6. Evaluates positions using material, piece-square activity, promotion pressure, mobility, king safety, and tactical bonuses for checks/captures.
+
+<code>
+import time
+from typing import List, Dict, Tuple, Optional
+
+FILES = "abcdefgh"
+RANKS = "12345678"
+INF = 10**9
+
+PIECE_VALUES = {
+    'K': 0,
+    'Q': 900,
+    'R': 500,
+    'B': 330,
+    'N': 320,
+    'P': 100,
+}
+
+CENTER_SQUARES = {"d4", "e4", "d5", "e5"}
+EXT_CENTER = {"c3","d3","e3","f3","c4","d4","e4","f4","c5","d5","e5","f5","c6","d6","e6","f6"}
+
+KNIGHT_PST = [
+    [-50,-40,-30,-30,-30,-30,-40,-50],
+    [-40,-20,  0,  0,  0,  0,-20,-40],
+    [-30,  0, 10, 15, 15, 10,  0,-30],
+    [-30,  5, 15, 20, 20, 15,  5,-30],
+    [-30,  0, 15, 20, 20, 15,  0,-30],
+    [-30,  5, 10, 15, 15, 10,  5,-30],
+    [-40,-20,  0,  5,  5,  0,-20,-40],
+    [-50,-40,-30,-30,-30,-30,-40,-50],
+]
+
+BISHOP_PST = [
+    [-20,-10,-10,-10,-10,-10,-10,-20],
+    [-10,  5,  0,  0,  0,  0,  5,-10],
+    [-10, 10, 10, 10, 10, 10, 10,-10],
+    [-10,  0, 10, 10, 10, 10,  0,-10],
+    [-10,  5,  5, 10, 10,  5,  5,-10],
+    [-10,  0,  5, 10, 10,  5,  0,-10],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-20,-10,-10,-10,-10,-10,-10,-20],
+]
+
+ROOK_PST = [
+    [  0,  0,  5, 10, 10,  5,  0,  0],
+    [ -5,  0,  0,  0,  0,  0,  0, -5],
+    [ -5,  0,  0,  0,  0,  0,  0, -5],
+    [ -5,  0,  0,  0,  0,  0,  0, -5],
+    [ -5,  0,  0,  0,  0,  0,  0, -5],
+    [ -5,  0,  0,  0,  0,  0,  0, -5],
+    [  5, 10, 10, 10, 10, 10, 10,  5],
+    [  0,  0,  5, 10, 10,  5,  0,  0],
+]
+
+QUEEN_PST = [
+    [-20,-10,-10, -5, -5,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5,  5,  5,  5,  0,-10],
+    [ -5,  0,  5,  5,  5,  5,  0, -5],
+    [  0,  0,  5,  5,  5,  5,  0, -5],
+    [-10,  5,  5,  5,  5,  5,  0,-10],
+    [-10,  0,  5,  0,  0,  0,  0,-10],
+    [-20,-10,-10, -5, -5,-10,-10,-20],
+]
+
+KING_MID_PST = [
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-20,-30,-30,-40,-40,-30,-30,-20],
+    [-10,-20,-20,-20,-20,-20,-20,-10],
+    [ 20, 20,  0,  0,  0,  0, 20, 20],
+    [ 20, 30, 10,  0,  0, 10, 30, 20],
+]
+
+KING_END_PST = [
+    [-50,-40,-30,-20,-20,-30,-40,-50],
+    [-30,-20,-10,  0,  0,-10,-20,-30],
+    [-30,-10, 20, 30, 30, 20,-10,-30],
+    [-30,-10, 30, 40, 40, 30,-10,-30],
+    [-30,-10, 30, 40, 40, 30,-10,-30],
+    [-30,-10, 20, 30, 30, 20,-10,-30],
+    [-30,-30,  0,  0,  0,  0,-30,-30],
+    [-50,-30,-30,-30,-30,-30,-30,-50],
+]
+
+def sq_to_xy(s: str) -> Tuple[int, int]:
+    return FILES.index(s[0]), RANKS.index(s[1])
+
+def xy_to_sq(x: int, y: int) -> str:
+    return FILES[x] + RANKS[y]
+
+def inside(x: int, y: int) -> bool:
+    return 0 <= x < 8 and 0 <= y < 8
+
+def color_of(piece: str) -> str:
+    return piece[0]
+
+def ptype(piece: str) -> str:
+    return piece[1]
+
+def opp(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+def side_char(to_play: str) -> str:
+    return 'w' if to_play == 'white' else 'b'
+
+def mirrored_y(color: str, y: int) -> int:
+    return y if color == 'w' else 7 - y
+
+def infer_castling_rights(board: Dict[str, str]) -> Dict[str, bool]:
+    rights = {'wK': False, 'wQ': False, 'bK': False, 'bQ': False}
+    if board.get('e1') == 'wK':
+        if board.get('h1') == 'wR':
+            rights['wK'] = True
+        if board.get('a1') == 'wR':
+            rights['wQ'] = True
+    if board.get('e8') == 'bK':
+        if board.get('h8') == 'bR':
+            rights['bK'] = True
+        if board.get('a8') == 'bR':
+            rights['bQ'] = True
+    return rights
+
+def infer_en_passant(board: Dict[str, str], stm: str) -> Optional[str]:
+    # Conservative inference only when a plausible ep target clearly exists.
+    # White to move => black just moved; target must be on rank 6
+    # Black to move => white just moved; target must be on rank 3
+    if stm == 'w':
+        for f in range(8):
+            sq6 = xy_to_sq(f, 5)
+            sq5 = xy_to_sq(f, 4)
+            sq7 = xy_to_sq(f, 6)
+            if sq6 not in board and sq5 in board and board[sq5] == 'bP' and sq7 not in board:
+                for df in (-1, 1):
+                    xf = f + df
+                    if 0 <= xf < 8:
+                        if board.get(xy_to_sq(xf, 4)) == 'wP':
+                            return sq6
+    else:
+        for f in range(8):
+            sq3 = xy_to_sq(f, 2)
+            sq4 = xy_to_sq(f, 3)
+            sq2 = xy_to_sq(f, 1)
+            if sq3 not in board and sq4 in board and board[sq4] == 'wP' and sq2 not in board:
+                for df in (-1, 1):
+                    xf = f + df
+                    if 0 <= xf < 8:
+                        if board.get(xy_to_sq(xf, 3)) == 'bP':
+                            return sq3
+    return None
+
+def find_king(board: Dict[str, str], color: str) -> Optional[str]:
+    target = color + 'K'
+    for sq, pc in board.items():
+        if pc == target:
+            return sq
+    return None
+
+def is_square_attacked(board: Dict[str, str], sq: str, by_color: str) -> bool:
+    x, y = sq_to_xy(sq)
+
+    pawn_dir = 1 if by_color == 'w' else -1
+    py = y - pawn_dir
+    for dx in (-1, 1):
+        px = x + dx
+        if inside(px, py):
+            p = board.get(xy_to_sq(px, py))
+            if p == by_color + 'P':
+                return True
+
+    for dx, dy in [(1,2),(2,1),(2,-1),(1,-2),(-1,-2),(-2,-1),(-2,1),(-1,2)]:
+        xx, yy = x + dx, y + dy
+        if inside(xx, yy):
+            p = board.get(xy_to_sq(xx, yy))
+            if p == by_color + 'N':
+                return True
+
+    for dx, dy in [(1,1),(1,-1),(-1,1),(-1,-1)]:
+        xx, yy = x + dx, y + dy
+        while inside(xx, yy):
+            p = board.get(xy_to_sq(xx, yy))
+            if p:
+                if color_of(p) == by_color and ptype(p) in ('B', 'Q'):
+                    return True
+                break
+            xx += dx
+            yy += dy
+
+    for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
+        xx, yy = x + dx, y + dy
+        while inside(xx, yy):
+            p = board.get(xy_to_sq(xx, yy))
+            if p:
+                if color_of(p) == by_color and ptype(p) in ('R', 'Q'):
+                    return True
+                break
+            xx += dx
+            yy += dy
+
+    for dx in (-1,0,1):
+        for dy in (-1,0,1):
+            if dx == 0 and dy == 0:
+                continue
+            xx, yy = x + dx, y + dy
+            if inside(xx, yy):
+                p = board.get(xy_to_sq(xx, yy))
+                if p == by_color + 'K':
+                    return True
+    return False
+
+def in_check(board: Dict[str, str], color: str) -> bool:
+    ks = find_king(board, color)
+    if ks is None:
+        return True
+    return is_square_attacked(board, ks, opp(color))
+
+def make_move(board: Dict[str, str], move: str, ep_square: Optional[str], castling_rights: Dict[str, bool]) -> Tuple[Dict[str, str], Optional[str], Dict[str, bool]]:
+    nb = dict(board)
+    frm, to = move[:2], move[2:4]
+    promo = move[4] if len(move) == 5 else None
+    piece = nb.pop(frm)
+    color = piece[0]
+    kind = piece[1]
+
+    new_rights = dict(castling_rights)
+    new_ep = None
+
+    captured = nb.get(to)
+
+    if kind == 'P' and ep_square and to == ep_square and captured is None and frm[0] != to[0]:
+        tx, ty = sq_to_xy(to)
+        cap_sq = xy_to_sq(tx, ty - 1) if color == 'w' else xy_to_sq(tx, ty + 1)
+        if nb.get(cap_sq) == opp(color) + 'P':
+            nb.pop(cap_sq, None)
+
+    if kind == 'K':
+        if color == 'w':
+            new_rights['wK'] = False
+            new_rights['wQ'] = False
+        else:
+            new_rights['bK'] = False
+            new_rights['bQ'] = False
+
+        if frm == 'e1' and to == 'g1' and piece == 'wK':
+            if nb.get('h1') == 'wR':
+                nb.pop('h1')
+                nb['f1'] = 'wR'
+        elif frm == 'e1' and to == 'c1' and piece == 'wK':
+            if nb.get('a1') == 'wR':
+                nb.pop('a1')
+                nb['d1'] = 'wR'
+        elif frm == 'e8' and to == 'g8' and piece == 'bK':
+            if nb.get('h8') == 'bR':
+                nb.pop('h8')
+                nb['f8'] = 'bR'
+        elif frm == 'e8' and to == 'c8' and piece == 'bK':
+            if nb.get('a8') == 'bR':
+                nb.pop('a8')
+                nb['d8'] = 'bR'
+
+    if kind == 'R':
+        if frm == 'h1':
+            new_rights['wK'] = False
+        elif frm == 'a1':
+            new_rights['wQ'] = False
+        elif frm == 'h8':
+            new_rights['bK'] = False
+        elif frm == 'a8':
+            new_rights['bQ'] = False
+
+    if captured == 'wR':
+        if to == 'h1':
+            new_rights['wK'] = False
+        elif to == 'a1':
+            new_rights['wQ'] = False
+    elif captured == 'bR':
+        if to == 'h8':
+            new_rights['bK'] = False
+        elif to == 'a8':
+            new_rights['bQ'] = False
+
+    if kind == 'P':
+        fx, fy = sq_to_xy(frm)
+        tx, ty = sq_to_xy(to)
+        if abs(ty - fy) == 2:
+            mid = xy_to_sq(fx, (fy + ty) // 2)
+            new_ep = mid
+
+    if promo:
+        nb[to] = color + promo.upper()
+    else:
+        nb[to] = piece
+
+    return nb, new_ep, new_rights
+
+def pseudo_moves(board: Dict[str, str], color: str, ep_square: Optional[str], castling_rights: Dict[str, bool]) -> List[str]:
+    moves = []
+    for sq, piece in board.items():
+        if color_of(piece) != color:
+            continue
+        x, y = sq_to_xy(sq)
+        k = ptype(piece)
+
+        if k == 'P':
+            diry = 1 if color == 'w' else -1
+            start_rank = 1 if color == 'w' else 6
+            promo_rank = 7 if color == 'w' else 0
+
+            ny = y + diry
+            if inside(x, ny):
+                to = xy_to_sq(x, ny)
+                if to not in board:
+                    if ny == promo_rank:
+                        for pr in "qrbn":
+                            moves.append(sq + to + pr)
+                    else:
+                        moves.append(sq + to)
+                    if y == start_rank:
+                        ny2 = y + 2 * diry
+                        to2 = xy_to_sq(x, ny2)
+                        if to2 not in board:
+                            moves.append(sq + to2)
+
+            for dx in (-1, 1):
+                nx = x + dx
+                ny = y + diry
+                if inside(nx, ny):
+                    to = xy_to_sq(nx, ny)
+                    if to in board and color_of(board[to]) == opp(color):
+                        if ny == promo_rank:
+                            for pr in "qrbn":
+                                moves.append(sq + to + pr)
+                        else:
+                            moves.append(sq + to)
+                    elif ep_square == to:
+                        moves.append(sq + to)
+
+        elif k == 'N':
+            for dx, dy in [(1,2),(2,1),(2,-1),(1,-2),(-1,-2),(-2,-1),(-2,1),(-1,2)]:
+                nx, ny = x + dx, y + dy
+                if inside(nx, ny):
+                    to = xy_to_sq(nx, ny)
+                    if to not in board or color_of(board[to]) != color:
+                        moves.append(sq + to)
+
+        elif k in ('B', 'R', 'Q'):
+            dirs = []
+            if k in ('B', 'Q'):
+                dirs += [(1,1),(1,-1),(-1,1),(-1,-1)]
+            if k in ('R', 'Q'):
+                dirs += [(1,0),(-1,0),(0,1),(0,-1)]
+            for dx, dy in dirs:
+                nx, ny = x + dx, y + dy
+                while inside(nx, ny):
+                    to = xy_to_sq(nx, ny)
+                    if to in board:
+                        if color_of(board[to]) != color:
+                            moves.append(sq + to)
+                        break
+                    moves.append(sq + to)
+                    nx += dx
+                    ny += dy
+
+        elif k == 'K':
+            for dx in (-1,0,1):
+                for dy in (-1,0,1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = x + dx, y + dy
+                    if inside(nx, ny):
+                        to = xy_to_sq(nx, ny)
+                        if to not in board or color_of(board[to]) != color:
+                            moves.append(sq + to)
+
+            if color == 'w' and sq == 'e1' and piece == 'wK':
+                if castling_rights.get('wK') and 'f1' not in board and 'g1' not in board:
+                    if not is_square_attacked(board, 'e1', 'b') and not is_square_attacked(board, 'f1', 'b') and not is_square_attacked(board, 'g1', 'b'):
+                        moves.append('e1g1')
+                if castling_rights.get('wQ') and 'd1' not in board and 'c1' not in board and 'b1' not in board:
+                    if not is_square_attacked(board, 'e1', 'b') and not is_square_attacked(board, 'd1', 'b') and not is_square_attacked(board, 'c1', 'b'):
+                        moves.append('e1c1')
+            elif color == 'b' and sq == 'e8' and piece == 'bK':
+                if castling_rights.get('bK') and 'f8' not in board and 'g8' not in board:
+                    if not is_square_attacked(board, 'e8', 'w') and not is_square_attacked(board, 'f8', 'w') and not is_square_attacked(board, 'g8', 'w'):
+                        moves.append('e8g8')
+                if castling_rights.get('bQ') and 'd8' not in board and 'c8' not in board and 'b8' not in board:
+                    if not is_square_attacked(board, 'e8', 'w') and not is_square_attacked(board, 'd8', 'w') and not is_square_attacked(board, 'c8', 'w'):
+                        moves.append('e8c8')
+    return moves
+
+def legal_moves(board: Dict[str, str], color: str, ep_square: Optional[str], castling_rights: Dict[str, bool]) -> List[str]:
+    res = []
+    for mv in pseudo_moves(board, color, ep_square, castling_rights):
+        nb, nep, ncr = make_move(board, mv, ep_square, castling_rights)
+        if not in_check(nb, color):
+            res.append(mv)
+    return res
+
+def game_over_eval(board: Dict[str, str], color: str, ep_square: Optional[str], castling_rights: Dict[str, bool]) -> Optional[int]:
+    lms = legal_moves(board, color, ep_square, castling_rights)
+    if lms:
+        return None
+    if in_check(board, color):
+        return -INF + 1
+    return 0
+
+def pst_score(piece: str, sq: str, endgame: bool) -> int:
+    x, y = sq_to_xy(sq)
+    ry = mirrored_y(piece[0], y)
+    k = piece[1]
+    if k == 'N':
+        return KNIGHT_PST[ry][x]
+    if k == 'B':
+        return BISHOP_PST[ry][x]
+    if k == 'R':
+        return ROOK_PST[ry][x]
+    if k == 'Q':
+        return QUEEN_PST[ry][x]
+    if k == 'K':
+        return (KING_END_PST if endgame else KING_MID_PST)[ry][x]
+    return 0
+
+def evaluate(board: Dict[str, str], root_color: str, ep_square: Optional[str], castling_rights: Dict[str, bool]) -> int:
+    total = 0
+    non_pawn_material = 0
+    for sq, p in board.items():
+        if p[1] != 'P' and p[1] != 'K':
+            non_pawn_material += PIECE_VALUES[p[1]]
+    endgame = non_pawn_material <= 2600
+
+    white_bishops = 0
+    black_bishops = 0
+    white_pawns_files = [0]*8
+    black_pawns_files = [0]*8
+
+    for sq, p in board.items():
+        c = p[0]
+        sign = 1 if c == root_color else -1
+        val = PIECE_VALUES[p[1]]
+        total += sign * val
+        total += sign * pst_score(p, sq, endgame)
+
+        x, y = sq_to_xy(sq)
+        if p[1] == 'P':
+            if c == 'w':
+                white_pawns_files[x] += 1
+                total += sign * (y * 7)
+                if x > 0 and x < 7 and board.get(xy_to_sq(x-1,y+1), '') == 'wP' or board.get(xy_to_sq(x+1,y+1), '') == 'wP':
+                    total += sign * 3
+            else:
+                black_pawns_files[x] += 1
+                total += sign * ((7-y) * 7)
+                if x > 0 and x < 7 and board.get(xy_to_sq(x-1,y-1), '') == 'bP' or board.get(xy_to_sq(x+1,y-1), '') == 'bP':
+                    total += sign * 3
+
+            if sq in CENTER_SQUARES:
+                total += sign * 15
+            elif sq in EXT_CENTER:
+                total += sign * 5
+
+            # passed pawn
+            passed = True
+            if c == 'w':
+                for fx in range(max(0, x-1), min(7, x+1)+1):
+                    for yy in range(y+1, 8):
+                        if board.get(xy_to_sq(fx, yy)) == 'bP':
+                            passed = False
+                            break
+                    if not passed:
+                        break
+                if passed:
+                    total += sign * (20 + y * 10)
+            else:
+                for fx in range(max(0, x-1), min(7, x+1)+1):
+                    for yy in range(0, y):
+                        if board.get(xy_to_sq(fx, yy)) == 'wP':
+                            passed = False
+                            break
+                    if not passed:
+                        break
+                if passed:
+                    total += sign * (20 + (7-y) * 10)
+
+        elif p[1] == 'B':
+            if c == 'w':
+                white_bishops += 1
+            else:
+                black_bishops += 1
+            if sq in CENTER_SQUARES:
+                total += sign * 10
+
+        elif p[1] == 'N':
+            if sq in CENTER_SQUARES:
+                total += sign * 20
+            elif sq in EXT_CENTER:
+                total += sign * 10
+
+        elif p[1] == 'R':
+            file_count = white_pawns_files[x] + black_pawns_files[x]
+            if file_count == 0:
+                total += sign * 18
+
+        elif p[1] == 'K':
+            if not endgame:
+                if c == 'w' and sq in ('g1','c1'):
+                    total += sign * 35
+                if c == 'b' and sq in ('g8','c8'):
+                    total += sign * 35
+
+    if white_bishops >= 2:
+        total += 25 if root_color == 'w' else -25
+    if black_bishops >= 2:
+        total += 25 if root_color == 'b' else -25
+
+    for f in range(8):
+        if white_pawns_files[f] > 1:
+            total -= (white_pawns_files[f]-1) * (12 if root_color == 'w' else -12)
+        if black_pawns_files[f] > 1:
+            total += (black_pawns_files[f]-1) * (12 if root_color == 'w' else -12)
+
+    my_moves = len(legal_moves(board, root_color, ep_square, castling_rights))
+    op_moves = len(legal_moves(board, opp(root_color), ep_square, castling_rights))
+    total += 2 * (my_moves - op_moves)
+
+    return total
+
+def move_order(board: Dict[str, str], moves: List[str], color: str, ep_square: Optional[str]) -> List[str]:
+    scored = []
+    for mv in moves:
+        frm, to = mv[:2], mv[2:4]
+        piece = board[frm]
+        score = 0
+        if to in board:
+            score += 10 * PIECE_VALUES[board[to][1]] - PIECE_VALUES[piece[1]]
+        elif piece[1] == 'P' and ep_square and to == ep_square and frm[0] != to[0]:
+            score += 90
+        if len(mv) == 5:
+            promo_piece = mv[4].upper()
+            score += PIECE_VALUES[promo_piece] + 400
+        nb, nep, ncr = make_move(board, mv, ep_square, infer_castling_rights(board))
+        if in_check(nb, opp(color)):
+            score += 70
+        if piece[1] == 'K' and abs(FILES.index(frm[0]) - FILES.index(to[0])) == 2:
+            score += 60
+        scored.append((score, mv))
+    scored.sort(reverse=True)
+    return [mv for _, mv in scored]
+
+class Timeout(Exception):
+    pass
+
+def alphabeta(board: Dict[str, str], side: str, root: str, depth: int, alpha: int, beta: int,
+              ep_square: Optional[str], castling_rights: Dict[str, bool], end_time: float) -> int:
+    if time.time() > end_time:
+        raise Timeout
+
+    terminal = game_over_eval(board, side, ep_square, castling_rights)
+    if terminal is not None:
+        if terminal == 0:
+            return 0
+        return terminal if side == root else -terminal
+
+    if depth == 0:
+        return evaluate(board, root, ep_square, castling_rights)
+
+    moves = legal_moves(board, side, ep_square, castling_rights)
+    moves = move_order(board, moves, side, ep_square)
+
+    if side == root:
+        value = -INF
+        for mv in moves:
+            nb, nep, ncr = make_move(board, mv, ep_square, castling_rights)
+            value = max(value, alphabeta(nb, opp(side), root, depth-1, alpha, beta, nep, ncr, end_time))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = INF
+        for mv in moves:
+            nb, nep, ncr = make_move(board, mv, ep_square, castling_rights)
+            value = min(value, alphabeta(nb, opp(side), root, depth-1, alpha, beta, nep, ncr, end_time))
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+def choose_move(board: Dict[str, str], side: str) -> str:
+    cr = infer_castling_rights(board)
+    ep = infer_en_passant(board, side)
+    moves = legal_moves(board, side, ep, cr)
+    if not moves:
+        # Should not happen in valid usage, but return syntactically safe fallback
+        return "a1a1"
+
+    ordered = move_order(board, moves, side, ep)
+
+    # Immediate mate
+    for mv in ordered:
+        nb, nep, ncr = make_move(board, mv, ep, cr)
+        opp_moves = legal_moves(nb, opp(side), nep, ncr)
+        if not opp_moves and in_check(nb, opp(side)):
+            return mv
+
+    # Avoid allowing immediate mate if possible
+    safe_moves = []
+    for mv in ordered:
+        nb, nep, ncr = make_move(board, mv, ep, cr)
+        opp_moves = legal_moves(nb, opp(side), nep, ncr)
+        losing = False
+        for om in move_order(nb, opp_moves, opp(side), nep)[:20]:
+            nnb, nnep, nncr = make_move(nb, om, nep, ncr)
+            my_reply = legal_moves(nnb, side, nnep, nncr)
+            if not my_reply and in_check(nnb, side):
+                losing = True
+                break
+        if not losing:
+            safe_moves.append(mv)
+
+    candidate_moves = safe_moves if safe_moves else ordered
+
+    best_move = candidate_moves[0]
+    best_score = -INF
+    end_time = time.time() + 0.92
+
+    # Shallow tactical baseline
+    for mv in candidate_moves[:]:
+        nb, nep, ncr = make_move(board, mv, ep, cr)
+        score = evaluate(nb, side, nep, ncr)
+        if in_check(nb, opp(side)):
+            score += 40
+        frm, to = mv[:2], mv[2:4]
+        if to in board:
+            score += 20 + PIECE_VALUES[board[to][1]] - PIECE_VALUES[board[frm][1]] // 10
+        if len(mv) == 5:
+            score += 500
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    depth = 1
+    try:
+        while depth <= 4:
+            current_best = best_move
+            current_best_score = -INF
+            for mv in candidate_moves:
+                if time.time() > end_time:
+                    raise Timeout
+                nb, nep, ncr = make_move(board, mv, ep, cr)
+                score = alphabeta(nb, opp(side), side, depth, -INF, INF, nep, ncr, end_time)
+                if score > current_best_score:
+                    current_best_score = score
+                    current_best = mv
+            best_move = current_best
+            best_score = current_best_score
+            depth += 1
+    except Timeout:
+        pass
+
+    if best_move not in moves:
+        return moves[0]
+    return best_move
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    side = side_char(to_play)
+    board = dict(pieces)
+    mv = choose_move(board, side)
+    cr = infer_castling_rights(board)
+    ep = infer_en_passant(board, side)
+    lms = legal_moves(board, side, ep, cr)
+    if mv in lms:
+        return mv
+    return lms[0] if lms else "a1a1"
+</code>

@@ -1,0 +1,303 @@
+<thinking>
+Alright, I need to design a targeting policy for a Battleship-like game. The goal is to efficiently sink the opponent's ships before they sink mine. The policy function takes a 10x10 grid representing my current knowledge of the opponent's board, where:
+- `0` means I haven't fired at that cell yet.
+- `-1` means I missed (water).
+- `1` means I hit a ship.
+
+### Key Observations:
+1. **Ship Sizes**: The opponent has ships of lengths 5, 4, 3, 3, and 2. This is crucial because it tells me what to expect when I hit a ship. For example, if I hit a ship and it's part of a length-5 ship, I should try to find the rest of that ship.
+2. **Targeting Strategy**: I need a strategy that balances exploration (finding new ships) and exploitation (sinking known ships). Common strategies in such games include:
+   - **Random Search**: Fire at random cells until a hit is found. This is inefficient but simple.
+   - **Spiral Search**: Fire in a spiral pattern to cover the board systematically.
+   - **Targeting Around Hits**: When a hit is found, focus on adjacent cells to find the rest of the ship.
+   - **Probabilistic Models**: Use probabilities to guess where ships are likely to be based on previous hits/misses.
+
+### Approach:
+Given the time constraints (1 second per call), I need an efficient strategy. Here's what I think:
+1. **Prioritize Known Ships**: If there are any hits (`1`s) on the board, I should prioritize targeting adjacent cells to find the rest of the ship. This is because ships are straight and contiguous, so hitting one cell gives me clues about nearby cells.
+2. **Ship Length Tracking**: For each hit, I should try to deduce the length of the ship it belongs to. For example, if I hit a cell and the adjacent cells are all misses or unknown, the ship might be of length 1 (but since the smallest ship is 2, this is unlikely). More likely, the ship extends in one of the four directions (up, down, left, right).
+3. **Exploration**: If there are no hits or no adjacent cells to explore around hits, I should explore new areas. A good way to do this is to use a spiral pattern or a systematic search to cover the board efficiently.
+
+### Implementation Details:
+1. **Track Hits and Adjacent Cells**: For each hit, I need to explore its neighbors to find the rest of the ship. I can use a queue to keep track of cells to target next.
+2. **Ship Length Deduction**: When I hit a cell, I can try to extend in all four directions until I find the end of the ship or a miss. The length of the ship can help me determine if I've found the entire ship or if there are more cells to target.
+3. **Fallback to Systematic Search**: If there are no hits or no adjacent cells to explore, I can use a systematic search like a spiral or a row-by-row search to cover the board.
+
+### Algorithm Steps:
+1. **Check for Hits**: If there are any hits (`1`s) on the board, prioritize targeting adjacent cells to these hits.
+   - For each hit, explore its neighbors in all four directions until the ship is sunk or the direction is blocked by a miss or the edge of the board.
+   - Use a queue to manage the order of exploration (e.g., breadth-first search around hits).
+2. **No Hits**: If there are no hits, use a systematic search pattern (e.g., spiral or row-by-row) to cover the board.
+3. **Avoid Re-firing**: Ensure that the chosen cell is `0` (not previously fired at).
+
+### Edge Cases:
+- What if all adjacent cells to a hit are already fired at? Then move to the next hit or start a new search.
+- What if a ship is partially sunk (some hits, some misses)? Continue exploring adjacent cells to find the rest.
+
+### Example:
+Suppose the board has a hit at (2, 3). I should explore (1, 3), (3, 3), (2, 2), and (2, 4) to see if they are part of the same ship. If (2, 4) is a hit, then (2, 5) might be next, and so on.
+
+### Implementation:
+I'll use a queue to manage the cells to target next. For each hit, I'll add its neighbors to the queue if they haven't been fired at yet. If the queue is empty, I'll start a systematic search.
+
+Here's a rough outline of the code:
+1. Initialize a queue with all adjacent cells to hits.
+2. If the queue is empty, use a spiral or row-by-row search to find the next cell to fire at.
+3. Return the next cell from the queue or the systematic search.
+
+### Optimizations:
+- Use a visited set to keep track of cells that have been fired at (but since the board already tracks this, we can just look for `0`s).
+- For the systematic search, a spiral pattern is efficient because it covers the board in a way that minimizes the distance between consecutive cells.
+
+### Final Code:
+I'll implement this logic in Python. The key is to efficiently manage the queue of cells to target and fall back to a systematic search when needed.
+
+Here's the plan for the code:
+1. Collect all hits (`1`s) on the board.
+2. For each hit, add its adjacent cells (up, down, left, right) to a queue if they are `0` (not fired at).
+3. If the queue is not empty, return the next cell from the queue.
+4. If the queue is empty, perform a systematic search (e.g., spiral) to find the next cell to fire at.
+
+### Systematic Search:
+For the systematic search, I can use a spiral pattern starting from the center or a corner. Alternatively, I can iterate row by row, left to right, skipping already fired cells.
+
+### Example Systematic Search:
+- Iterate over rows from 0 to 9.
+- For each row, iterate over columns from 0 to 9.
+- Return the first cell that is `0`.
+
+This is simple and ensures the entire board is covered.
+
+### Handling Ship Lengths:
+When I hit a cell, I can try to deduce the ship's length by exploring in all four directions until I find a miss or the edge. However, since ships can be of varying lengths, it's better to explore all directions around a hit to find the entire ship.
+
+### Queue Management:
+For each hit, I can add its neighbors to the queue. Then, when I fire at a cell and it's a hit, I add its neighbors to the queue. This way, I'm always prioritizing cells near known hits.
+
+### Final Implementation:
+Here's how I'll structure the code:
+1. Find all hits on the board.
+2. For each hit, add its adjacent cells to a queue if they are `0`.
+3. If the queue is not empty, return the first cell in the queue.
+4. If the queue is empty, perform a row-by-row search to find the next `0`.
+
+### Edge Handling:
+- If all cells are fired at, return any cell (though this shouldn't happen in a valid game).
+- Ensure that the returned cell is within bounds (0-9).
+
+### Code:
+```python
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Directions: up, down, left, right
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    # Step 1: Collect all hits and their adjacent cells to target next
+    queue = deque()
+    visited = set()
+
+    # First pass: add all adjacent cells to hits to the queue
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 1:
+                for di, dj in directions:
+                    ni, nj = i + di, j + dj
+                    if 0 <= ni < 10 and 0 <= nj < 10 and board[ni][nj] == 0:
+                        queue.append((ni, nj))
+                        visited.add((ni, nj))
+
+    # Step 2: If queue is not empty, return the next cell
+    if queue:
+        return queue.popleft()
+
+    # Step 3: If queue is empty, perform a systematic search (row by row)
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                return (i, j)
+
+    # Shouldn't reach here if the board is not fully fired at
+    return (0, 0)
+```
+
+### Testing the Code:
+Let's think about how this would work:
+1. If there are hits, the code will add their adjacent cells to the queue and return one of them next.
+2. If there are no hits or no adjacent cells to hits, it will scan row by row to find the next `0`.
+
+This seems reasonable. However, there's a potential issue: if a ship is partially sunk (some hits, some misses), the code might not explore all directions optimally. For example, if a ship is horizontal and I hit the middle, the code will add the left and right neighbors to the queue, but if the ship is longer, it might not explore all cells in the same direction efficiently.
+
+### Improvement:
+To better handle ships, I can modify the approach to explore in a line when a hit is found. For example, if I hit a cell, I can try to extend in all four directions until I find a miss or the edge, and then continue exploring in that direction.
+
+Here's an improved version:
+1. For each hit, explore in all four directions to find the entire ship.
+2. Use a queue to manage the cells to target next, prioritizing cells adjacent to hits.
+3. If no hits, use a systematic search.
+
+But implementing this might be more complex. For simplicity, I'll stick with the initial approach and see how it performs.
+
+### Final Answer:
+Here's the Python code implementing the described policy:
+
+```python
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Directions: up, down, left, right
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    # Step 1: Collect all adjacent cells to hits to target next
+    queue = deque()
+
+    # First pass: add all adjacent cells to hits to the queue
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 1:
+                for di, dj in directions:
+                    ni, nj = i + di, j + dj
+                    if 0 <= ni < 10 and 0 <= nj < 10 and board[ni][nj] == 0:
+                        queue.append((ni, nj))
+
+    # Step 2: If queue is not empty, return the next cell
+    if queue:
+        return queue.popleft()
+
+    # Step 3: If queue is empty, perform a systematic search (row by row)
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                return (i, j)
+
+    # Fallback (shouldn't happen in a valid game)
+    return (0, 0)
+```
+
+### Further Optimization:
+The current approach might not be optimal for longer ships. For example, if a ship is horizontal and I hit the middle, the code will add the left and right neighbors to the queue, but it might not explore all cells in the same direction efficiently. To improve, I can modify the queue to prioritize cells in the same direction as the ship's orientation.
+
+However, since the ship's orientation is unknown, this is tricky. An alternative is to use a more sophisticated approach like the "targeting around hits" strategy, where after hitting a cell, I explore in all four directions until I find the end of the ship.
+
+Here's an improved version that tries to find the entire ship when a hit is found:
+
+```python
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Directions: up, down, left, right
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    # Step 1: Check if there are any hits
+    hits = []
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 1:
+                hits.append((i, j))
+
+    if not hits:
+        # No hits, perform a systematic search (row by row)
+        for i in range(10):
+            for j in range(10):
+                if board[i][j] == 0:
+                    return (i, j)
+        return (0, 0)  # fallback
+
+    # Step 2: For each hit, explore adjacent cells to find the ship
+    queue = deque()
+
+    # For each hit, add its adjacent cells to the queue
+    for i, j in hits:
+        for di, dj in directions:
+            ni, nj = i + di, j + dj
+            if 0 <= ni < 10 and 0 <= nj < 10 and board[ni][nj] == 0:
+                queue.append((ni, nj))
+
+    # Also, for each hit, try to extend in all directions to find the ship
+    # This is more complex, but let's try to implement it
+    # We'll use a separate queue for each ship, but for simplicity, we'll just add all adjacent cells
+
+    # If queue is not empty, return the next cell
+    if queue:
+        return queue.popleft()
+
+    # If no adjacent cells to hits, perform a systematic search
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                return (i, j)
+
+    return (0, 0)  # fallback
+```
+
+### Final Decision:
+The initial approach is simpler and should work reasonably well. The improved version is more complex but might not be necessary for the given constraints. I'll stick with the initial approach for now.
+
+### Final Code:
+```python
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Directions: up, down, left, right
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    # Step 1: Collect all adjacent cells to hits to target next
+    queue = deque()
+
+    # First pass: add all adjacent cells to hits to the queue
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 1:
+                for di, dj in directions:
+                    ni, nj = i + di, j + dj
+                    if 0 <= ni < 10 and 0 <= nj < 10 and board[ni][nj] == 0:
+                        queue.append((ni, nj))
+
+    # Step 2: If queue is not empty, return the next cell
+    if queue:
+        return queue.popleft()
+
+    # Step 3: If queue is empty, perform a systematic search (row by row)
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                return (i, j)
+
+    # Fallback (shouldn't happen in a valid game)
+    return (0, 0)
+```
+
+This code should work well for the given problem. It prioritizes targeting cells adjacent to hits, which is efficient for sinking ships, and falls back to a systematic search when no hits are present or no adjacent cells are left to explore.
+
+<code>
+from collections import deque
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Directions: up, down, left, right
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    # Step 1: Collect all adjacent cells to hits to target next
+    queue = deque()
+
+    # First pass: add all adjacent cells to hits to the queue
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 1:
+                for di, dj in directions:
+                    ni, nj = i + di, j + dj
+                    if 0 <= ni < 10 and 0 <= nj < 10 and board[ni][nj] == 0:
+                        queue.append((ni, nj))
+
+    # Step 2: If queue is not empty, return the next cell
+    if queue:
+        return queue.popleft()
+
+    # Step 3: If queue is empty, perform a systematic search (row by row)
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                return (i, j)
+
+    # Fallback (shouldn't happen in a valid game)
+    return (0, 0)
+</code>

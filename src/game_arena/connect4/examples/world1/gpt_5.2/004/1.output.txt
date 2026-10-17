@@ -1,0 +1,332 @@
+The strategy for this policy is:
+- Always play a legal move (fallback to the first available column if anything goes wrong).
+- First, check for an immediate winning move.
+- Second, block any immediate opponent winning move.
+- Otherwise, use a fast alpha-beta negamax search with iterative deepening (up to the time limit) on a bitboard representation, plus a transposition table and strong move ordering (center-first).
+- Evaluate non-terminal leaves using a heuristic based on “open” 4-in-a-row lines (favoring 2/3-in-a-row threats) and center-column control.
+
+<code>
+import time
+from typing import List, Tuple, Dict, Optional
+
+# -------------------------
+# Bitboard-based Connect-4 AI
+# Board: 7 columns x 6 rows (plus 1 sentinel bit per column in representation)
+# Bit index = col*7 + row, where row=0 is bottom playable cell, row=5 is top playable cell, row=6 is sentinel
+# -------------------------
+
+ROWS = 6
+COLS = 7
+
+# Precompute masks
+BOTTOM_MASK = [1 << (c * 7) for c in range(COLS)]
+TOP_MASK = [1 << (c * 7 + (ROWS - 1)) for c in range(COLS)]  # top playable cell (row 5)
+COLUMN_MASK = [((1 << ROWS) - 1) << (c * 7) for c in range(COLS)]  # 6 playable bits per col
+
+FULL_MASK = 0
+for c in range(COLS):
+    FULL_MASK |= COLUMN_MASK[c]
+
+CENTER_COL = 3
+
+# Move order: center-first
+BASE_MOVE_ORDER = [3, 2, 4, 1, 5, 0, 6]
+
+# Heuristic weights by how many of our discs are in an open 4-line
+LINE_WEIGHTS = {0: 0, 1: 1, 2: 6, 3: 60, 4: 100000}  # 4-in-line is effectively winning, but terminals are handled earlier
+
+
+def _is_win(bits: int) -> bool:
+    """Check if the given bitboard has a connect-4."""
+    # Vertical (step 1)
+    m = bits & (bits >> 1)
+    if m & (m >> 2):
+        return True
+    # Horizontal (step 7)
+    m = bits & (bits >> 7)
+    if m & (m >> 14):
+        return True
+    # Diagonal \ (step 6)
+    m = bits & (bits >> 6)
+    if m & (m >> 12):
+        return True
+    # Diagonal / (step 8)
+    m = bits & (bits >> 8)
+    if m & (m >> 16):
+        return True
+    return False
+
+
+def _can_play(mask: int, col: int) -> bool:
+    return (mask & TOP_MASK[col]) == 0
+
+
+def _next_move_bit(mask: int, col: int) -> int:
+    """Return the bit for the lowest available cell in the column (assumes column not full)."""
+    return (mask + BOTTOM_MASK[col]) & COLUMN_MASK[col]
+
+
+def _play(current: int, mask: int, col: int) -> Tuple[int, int]:
+    """
+    Apply move for the player to move.
+    Representation invariant:
+      - 'current' is bitboard of player to move
+      - 'mask' is occupied cells
+    After playing, it's opponent's turn, so we flip perspective:
+      new_current = current ^ mask   (using old mask)
+      new_mask = mask | move
+    """
+    move = _next_move_bit(mask, col)
+    new_current = current ^ mask
+    new_mask = mask | move
+    return new_current, new_mask
+
+
+def _player_just_moved_bits(current: int, mask: int) -> int:
+    """Given state (current=player to move), return bitboard of the player who moved last."""
+    return mask ^ current
+
+
+def _build_lines() -> List[int]:
+    """Precompute all 4-in-a-row line bitmasks on the 7x6 playable grid."""
+    lines = []
+
+    def bit(c: int, r: int) -> int:
+        return 1 << (c * 7 + r)
+
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            m = bit(c, r) | bit(c + 1, r) | bit(c + 2, r) | bit(c + 3, r)
+            lines.append(m)
+
+    # Vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            m = bit(c, r) | bit(c, r + 1) | bit(c, r + 2) | bit(c, r + 3)
+            lines.append(m)
+
+    # Diagonal \
+    for c in range(COLS - 3):
+        for r in range(ROWS - 3):
+            m = bit(c, r) | bit(c + 1, r + 1) | bit(c + 2, r + 2) | bit(c + 3, r + 3)
+            lines.append(m)
+
+    # Diagonal /
+    for c in range(COLS - 3):
+        for r in range(3, ROWS):
+            m = bit(c, r) | bit(c + 1, r - 1) | bit(c + 2, r - 2) | bit(c + 3, r - 3)
+            lines.append(m)
+
+    return lines
+
+
+LINES_4 = _build_lines()
+
+
+def _evaluate(current: int, mask: int) -> int:
+    """Heuristic evaluation from the perspective of the player to move."""
+    us = current
+    opp = mask ^ current
+
+    # Center column preference
+    center_mask = COLUMN_MASK[CENTER_COL]
+    score = 3 * ((us & center_mask).bit_count() - (opp & center_mask).bit_count())
+
+    # Open-line scoring
+    for ln in LINES_4:
+        u = ln & us
+        o = ln & opp
+        if o == 0:
+            score += LINE_WEIGHTS[u.bit_count()]
+        elif u == 0:
+            score -= LINE_WEIGHTS[o.bit_count()]
+
+    return score
+
+
+def _winning_move_exists(current: int, mask: int, col: int) -> bool:
+    """Check if playing 'col' for the player to move results in a win."""
+    if not _can_play(mask, col):
+        return False
+    new_current, new_mask = _play(current, mask, col)
+    # Player who just moved is (new_mask ^ new_current)
+    return _is_win(_player_just_moved_bits(new_current, new_mask))
+
+
+class _Timeout(Exception):
+    pass
+
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Required API: given a 6x7 board with 1 as us (to move) and -1 as opponent, return a legal column 0..6.
+    """
+    # Convert board to bitboards
+    us = 0
+    opp = 0
+    for r in range(ROWS):
+        for c in range(COLS):
+            v = board[r][c]
+            if v == 0:
+                continue
+            rr = (ROWS - 1 - r)  # input r=0 is top; bitboard row=0 is bottom
+            b = 1 << (c * 7 + rr)
+            if v == 1:
+                us |= b
+            else:
+                opp |= b
+
+    current = us  # player to move
+    mask = us | opp
+
+    # Collect legal moves
+    legal_cols = [c for c in range(COLS) if _can_play(mask, c)]
+    if not legal_cols:
+        # Shouldn't happen in normal play; return something valid-looking.
+        return 0
+
+    # 1) Immediate win
+    for c in BASE_MOVE_ORDER:
+        if c in legal_cols and _winning_move_exists(current, mask, c):
+            return c
+
+    # 2) Immediate block: if opponent can win next move, block it.
+    # To test opponent winning next, we simulate our move? Easier:
+    # Check each column: if opponent would win by playing there now, we must play there (if possible).
+    # Opponent-to-move position would be (current ^ mask, mask) without changing mask.
+    opp_current = current ^ mask
+    for c in BASE_MOVE_ORDER:
+        if c in legal_cols and _winning_move_exists(opp_current, mask, c):
+            return c
+
+    # Alpha-beta negamax with iterative deepening and TT
+    start = time.perf_counter()
+    TIME_LIMIT = 0.95  # seconds
+    WIN_SCORE = 1_000_000
+    INF = 10**9
+
+    # Transposition table: (current,mask) -> (depth, value, flag, best_move)
+    # flag: 0 exact, 1 lowerbound, 2 upperbound
+    TT: Dict[Tuple[int, int], Tuple[int, int, int, Optional[int]]] = {}
+
+    node_counter = 0
+
+    def time_check():
+        if (node_counter & 2047) == 0:  # check every ~2k nodes
+            if time.perf_counter() - start > TIME_LIMIT:
+                raise _Timeout
+
+    def ordered_moves(cur: int, msk: int, tt_move: Optional[int]) -> List[int]:
+        # Base order, prefer TT move first, then immediate wins, then rest.
+        moves = [c for c in BASE_MOVE_ORDER if _can_play(msk, c)]
+        if tt_move is not None and tt_move in moves:
+            moves.remove(tt_move)
+            moves.insert(0, tt_move)
+
+        # If any move wins immediately, search it first
+        # (this also helps pruning)
+        wins = []
+        others = []
+        for c in moves:
+            if _winning_move_exists(cur, msk, c):
+                wins.append(c)
+            else:
+                others.append(c)
+        return wins + others
+
+    def negamax(cur: int, msk: int, depth: int, alpha: int, beta: int, ply: int) -> Tuple[int, Optional[int]]:
+        nonlocal node_counter
+        node_counter += 1
+        time_check()
+
+        # Terminal: opponent (previous mover) already won
+        if _is_win(_player_just_moved_bits(cur, msk)):
+            return (-WIN_SCORE + ply), None
+
+        if msk == FULL_MASK:
+            return 0, None
+
+        if depth <= 0:
+            return _evaluate(cur, msk), None
+
+        key = (cur, msk)
+        tt = TT.get(key)
+        if tt is not None:
+            tt_depth, tt_val, tt_flag, tt_best = tt
+            if tt_depth >= depth:
+                if tt_flag == 0:  # exact
+                    return tt_val, tt_best
+                elif tt_flag == 1:  # lower bound
+                    alpha = max(alpha, tt_val)
+                else:  # upper bound
+                    beta = min(beta, tt_val)
+                if alpha >= beta:
+                    return tt_val, tt_best
+            tt_move = tt_best
+        else:
+            tt_move = None
+
+        best_val = -INF
+        best_move = None
+        orig_alpha = alpha
+
+        for c in ordered_moves(cur, msk, tt_move):
+            # play
+            new_cur, new_msk = _play(cur, msk, c)
+
+            # If we just won, shortcut
+            if _is_win(_player_just_moved_bits(new_cur, new_msk)):
+                val = WIN_SCORE - ply
+            else:
+                child_val, _ = negamax(new_cur, new_msk, depth - 1, -beta, -alpha, ply + 1)
+                val = -child_val
+
+            if val > best_val:
+                best_val = val
+                best_move = c
+
+            if best_val > alpha:
+                alpha = best_val
+            if alpha >= beta:
+                break
+
+        # Store in TT
+        if best_move is None:
+            best_move = legal_cols[0]
+        if best_val <= orig_alpha:
+            flag = 2  # upper
+        elif best_val >= beta:
+            flag = 1  # lower
+        else:
+            flag = 0  # exact
+        TT[key] = (depth, best_val, flag, best_move)
+
+        return best_val, best_move
+
+    # Iterative deepening
+    best_move = None
+    try:
+        # A reasonable max depth for 1s in Python with bitboards + TT
+        for depth in range(1, 12):
+            val, mv = negamax(current, mask, depth, -INF, INF, 0)
+            if mv is not None and _can_play(mask, mv):
+                best_move = mv
+            # If we found a forced win at this depth, no need to go deeper
+            if val > WIN_SCORE // 2:
+                break
+    except _Timeout:
+        pass
+    except Exception:
+        # Hard safety: never fail to return a legal move
+        best_move = None
+
+    if best_move is None or not _can_play(mask, best_move):
+        # Fallback: choose the most central legal move
+        for c in BASE_MOVE_ORDER:
+            if _can_play(mask, c):
+                return c
+        return legal_cols[0]
+
+    return best_move
+</code>

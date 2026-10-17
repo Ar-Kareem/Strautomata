@@ -1,0 +1,429 @@
+The strategy for this policy is a bitboard-based alpha–beta (negamax) search with a transposition table and strong move ordering. The evaluation is phase-aware: it heavily prioritizes corners (and discourages risky X/C squares when corners are empty), values mobility and low frontier exposure in the early/midgame, and gradually shifts toward disc advantage in the late game. In the endgame (few empty squares), it increases search depth (sometimes to completion) to convert advantages accurately. It always returns a legal move, and returns `"pass"` only when no legal moves exist.
+
+<code>
+import numpy as np
+
+# ----------------------------
+# Bitboard utilities / constants
+# ----------------------------
+
+FULL = (1 << 64) - 1
+
+NOT_A = 0xFEFEFEFEFEFEFEFE  # not file 'a'
+NOT_H = 0x7F7F7F7F7F7F7F7F  # not file 'h'
+
+CORNERS = (1 << 0) | (1 << 7) | (1 << 56) | (1 << 63)
+
+# X-squares (diagonal adjacent to corners): b2,g2,b7,g7
+X_SQUARES = [9, 14, 49, 54]
+
+# C-squares (edge-adjacent to corners): (b1,a2), (g1,h2), (a7,b8), (h7,g8)
+C_SQUARES = [1, 8, 6, 15, 48, 57, 55, 62]
+
+# Map each corner to its associated risky squares when corner is empty.
+CORNER_RISK = {
+    0:  [1, 8, 9],       # a1 -> b1, a2, b2
+    7:  [6, 15, 14],     # h1 -> g1, h2, g2
+    56: [48, 57, 49],    # a8 -> a7, b8, b7
+    63: [55, 62, 54],    # h8 -> h7, g8, g7
+}
+
+# A classic positional weight table (flattened row-major, a1 is index 0).
+POS_WEIGHTS_2D = [
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120],
+]
+POS_W = [POS_WEIGHTS_2D[r][c] for r in range(8) for c in range(8)]
+
+
+def _shiftE(x: int) -> int:
+    return ((x & NOT_H) << 1) & FULL
+
+
+def _shiftW(x: int) -> int:
+    return ((x & NOT_A) >> 1) & FULL
+
+
+def _shiftN(x: int) -> int:
+    return (x << 8) & FULL
+
+
+def _shiftS(x: int) -> int:
+    return (x >> 8) & FULL
+
+
+def _shiftNE(x: int) -> int:
+    return ((x & NOT_H) << 9) & FULL
+
+
+def _shiftNW(x: int) -> int:
+    return ((x & NOT_A) << 7) & FULL
+
+
+def _shiftSE(x: int) -> int:
+    return ((x & NOT_H) >> 7) & FULL
+
+
+def _shiftSW(x: int) -> int:
+    return ((x & NOT_A) >> 9) & FULL
+
+
+SHIFTS = (_shiftE, _shiftW, _shiftN, _shiftS, _shiftNE, _shiftNW, _shiftSE, _shiftSW)
+
+
+def _adjacent(bb: int) -> int:
+    return (_shiftN(bb) | _shiftS(bb) | _shiftE(bb) | _shiftW(bb) |
+            _shiftNE(bb) | _shiftNW(bb) | _shiftSE(bb) | _shiftSW(bb))
+
+
+def _bit_iter(bb: int):
+    while bb:
+        lsb = bb & -bb
+        yield lsb
+        bb ^= lsb
+
+
+def _bit_index(b: int) -> int:
+    return b.bit_length() - 1
+
+
+def _idx_to_move(idx: int) -> str:
+    # idx = r*8 + c, where r maps to '1..8' as r+1, c maps to 'a..h'
+    c = idx & 7
+    r = idx >> 3
+    return chr(ord('a') + c) + str(r + 1)
+
+
+def _arrays_to_bitboards(you: np.ndarray, opp: np.ndarray) -> tuple[int, int]:
+    # Flatten order matches idx = r*8+c as required (a1 is (0,0) -> idx 0).
+    P = 0
+    O = 0
+    for i in np.flatnonzero(you):
+        P |= 1 << int(i)
+    for i in np.flatnonzero(opp):
+        O |= 1 << int(i)
+    return P, O
+
+
+# ----------------------------
+# Move generation and applying moves
+# ----------------------------
+
+def _gen_moves(P: int, O: int) -> int:
+    empty = FULL ^ (P | O)
+    moves = 0
+
+    # Directional expansion: t grows through contiguous opponent discs.
+    def dir_moves(shift):
+        t = shift(P) & O
+        # Max contiguous length is 6; 5 expansions is sufficient after first step.
+        for _ in range(5):
+            t |= shift(t) & O
+        return shift(t) & empty
+
+    for sh in SHIFTS:
+        moves |= dir_moves(sh)
+
+    return moves
+
+
+def _flips_for_move(P: int, O: int, move: int) -> int:
+    flips = 0
+    for sh in SHIFTS:
+        x = sh(move)
+        captured = 0
+        while x and (x & O):
+            captured |= x
+            x = sh(x)
+        if x & P:
+            flips |= captured
+    return flips
+
+
+def _apply_move(P: int, O: int, move: int) -> tuple[int, int]:
+    f = _flips_for_move(P, O, move)
+    P2 = P | move | f
+    O2 = O & ~f
+    return P2, O2
+
+
+# ----------------------------
+# Evaluation
+# ----------------------------
+
+def _sum_pos_weights(bb: int) -> int:
+    s = 0
+    for b in _bit_iter(bb):
+        s += POS_W[_bit_index(b)]
+    return s
+
+
+def _corner_and_risk_score(P: int, O: int) -> int:
+    # Corner occupancy is huge; risky X/C squares are penalized if corner is empty.
+    score = 0
+
+    # Corner occupancy (count diff)
+    for ci in (0, 7, 56, 63):
+        cb = 1 << ci
+        if P & cb:
+            score += 1
+        elif O & cb:
+            score -= 1
+
+    # Risk around empty corners
+    occupied = P | O
+    for ci in (0, 7, 56, 63):
+        cb = 1 << ci
+        if occupied & cb:
+            continue
+        for sq in CORNER_RISK[ci]:
+            b = 1 << sq
+            if P & b:
+                score -= 1
+            elif O & b:
+                score += 1
+
+    return score
+
+
+def _terminal_score(P: int, O: int) -> int:
+    # Large scaling so terminal beats any heuristic.
+    diff = P.bit_count() - O.bit_count()
+    if diff > 0:
+        return 1_000_000 + diff
+    if diff < 0:
+        return -1_000_000 + diff
+    return 0
+
+
+def _evaluate(P: int, O: int) -> int:
+    occ = P | O
+    empties = 64 - occ.bit_count()
+
+    # Phase factor: 0 early -> 1 late
+    t = (64 - empties) / 64.0
+
+    # Weights (tuned for robust play under shallow-mid search)
+    corner_w = 1200
+    pos_w = 2
+    mob_w = int(90 - 60 * t)          # 90 -> 30
+    frontier_w = int(-45 + 35 * t)    # -45 -> -10
+    disc_w = int(2 + 130 * t)         # 2 -> 132
+
+    # Corner + risk (X/C)
+    cr = _corner_and_risk_score(P, O)
+
+    # Positional weights
+    pw = _sum_pos_weights(P) - _sum_pos_weights(O)
+
+    # Mobility
+    my_moves = _gen_moves(P, O).bit_count()
+    opp_moves = _gen_moves(O, P).bit_count()
+    mob = my_moves - opp_moves
+
+    # Frontier: pieces adjacent to empties are typically vulnerable
+    empty_bb = FULL ^ occ
+    adj_empty = _adjacent(empty_bb)
+    my_front = (P & adj_empty).bit_count()
+    opp_front = (O & adj_empty).bit_count()
+    frontier = my_front - opp_front  # want smaller than opponent => negative good, hence frontier_w negative
+
+    # Disc difference (late-game importance)
+    disc = P.bit_count() - O.bit_count()
+
+    # Small parity nudge late (prefer making opponent take last move in tight endgames)
+    parity = 0
+    if empties <= 20:
+        parity = 6 if (empties % 2 == 1) else -6
+
+    return (corner_w * cr +
+            pos_w * pw +
+            mob_w * mob +
+            frontier_w * frontier +
+            disc_w * disc +
+            parity)
+
+
+# ----------------------------
+# Search (Negamax + AlphaBeta + TT)
+# ----------------------------
+
+EXACT, LOWER, UPPER = 0, 1, 2
+
+class _AbortSearch(Exception):
+    pass
+
+
+class _Search:
+    __slots__ = ("tt", "nodes", "budget")
+
+    def __init__(self, budget: int):
+        self.tt = {}
+        self.nodes = 0
+        self.budget = budget
+
+    def negamax(self, P: int, O: int, depth: int, alpha: int, beta: int, passed: bool):
+        self.nodes += 1
+        if self.nodes > self.budget:
+            raise _AbortSearch
+
+        key = (P, O)
+        alpha0 = alpha
+
+        entry = self.tt.get(key)
+        if entry is not None:
+            edepth, evalv, flag, bestm = entry
+            if edepth >= depth:
+                if flag == EXACT:
+                    return evalv, bestm
+                if flag == LOWER:
+                    alpha = max(alpha, evalv)
+                elif flag == UPPER:
+                    beta = min(beta, evalv)
+                if alpha >= beta:
+                    return evalv, bestm
+
+        moves = _gen_moves(P, O)
+
+        # Terminal detection (both cannot move, or board full implicitly)
+        if moves == 0:
+            opp_moves = _gen_moves(O, P)
+            if opp_moves == 0:
+                v = _terminal_score(P, O)
+                self.tt[key] = (depth, v, EXACT, 0)
+                return v, 0
+            # Pass: count as a ply to avoid deep loops.
+            if depth == 0:
+                v = _evaluate(P, O)
+                self.tt[key] = (depth, v, EXACT, 0)
+                return v, 0
+            v, _ = self.negamax(O, P, depth - 1, -beta, -alpha, True)
+            v = -v
+            self.tt[key] = (depth, v, EXACT, 0)
+            return v, 0
+
+        if depth == 0:
+            v = _evaluate(P, O)
+            self.tt[key] = (depth, v, EXACT, 0)
+            return v, 0
+
+        # Move ordering:
+        # 1) TT best move first
+        # 2) Corners
+        # 3) Higher positional weight
+        # 4) Avoid X/C squares somewhat (encoded in positional anyway, but we add a tiny nudge)
+        ordered = []
+        tt_best = entry[3] if entry is not None else 0
+
+        for m in _bit_iter(moves):
+            idx = _bit_index(m)
+            s = POS_W[idx]
+            if (m & CORNERS) != 0:
+                s += 10000
+            # mild X/C de-prioritization
+            if idx in X_SQUARES:
+                s -= 60
+            elif idx in C_SQUARES:
+                s -= 25
+            # exact TT hint
+            if m == tt_best:
+                s += 20000
+            ordered.append((s, m))
+
+        ordered.sort(reverse=True)
+
+        best_move = 0
+        best_val = -10**9
+
+        a = alpha
+        for _, m in ordered:
+            P2, O2 = _apply_move(P, O, m)
+            v, _ = self.negamax(O2, P2, depth - 1, -beta, -a, False)
+            v = -v
+            if v > best_val:
+                best_val = v
+                best_move = m
+            if v > a:
+                a = v
+            if a >= beta:
+                break
+
+        # Store TT
+        flag = EXACT
+        if best_val <= alpha0:
+            flag = UPPER
+        elif best_val >= beta:
+            flag = LOWER
+        self.tt[key] = (depth, best_val, flag, best_move)
+
+        return best_val, best_move
+
+
+def _choose_depth_and_budget(empties: int) -> tuple[int, int]:
+    # Depth schedule tuned for 1s Python budget with bitboards + TT.
+    if empties <= 10:
+        return empties, 1_800_000
+    if empties <= 12:
+        return 12, 1_600_000
+    if empties <= 16:
+        return 10, 900_000
+    if empties <= 26:
+        return 8, 450_000
+    if empties <= 44:
+        return 6, 220_000
+    return 5, 170_000
+
+
+# ----------------------------
+# Required API
+# ----------------------------
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    P, O = _arrays_to_bitboards(you, opponent)
+
+    moves = _gen_moves(P, O)
+    if moves == 0:
+        return "pass"
+
+    # If any corner is available, take it immediately (very strong in Othello).
+    corner_moves = moves & CORNERS
+    if corner_moves:
+        m = corner_moves & -corner_moves
+        return _idx_to_move(_bit_index(m))
+
+    empties = 64 - (P | O).bit_count()
+    max_depth, budget = _choose_depth_and_budget(empties)
+
+    search = _Search(budget=budget)
+
+    # Iterative deepening to get a usable move even if we hit the node budget.
+    best_move = 0
+    best_val = -10**9
+
+    # Ensure we always have a legal fallback:
+    fallback = moves & -moves
+
+    try:
+        for d in range(2, max_depth + 1):
+            v, m = search.negamax(P, O, d, -10**9, 10**9, False)
+            if m != 0:
+                best_move = m
+                best_val = v
+    except _AbortSearch:
+        pass
+
+    if best_move == 0:
+        best_move = fallback
+
+    # Safety: ensure returned move is legal (and not pass)
+    if (best_move & moves) == 0:
+        best_move = fallback
+
+    return _idx_to_move(_bit_index(best_move))
+</code>

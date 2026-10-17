@@ -1,0 +1,105 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    """
+    A Hex policy that combines bridge completion, bridge defense, edge connection,
+    and heuristic-based move selection.
+    """
+    board_size = 11
+    empty_cells = [(r, c) for r in range(board_size) for c in range(board_size)
+                   if (r, c) not in me and (r, c) not in opp]
+
+    if not empty_cells:
+        return (0, 0)  # Should not happen in a normal game
+
+    def get_neighbors(cell):
+        r, c = cell
+        neighbors = []
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if abs(dr) + abs(dc) != 2:  # Avoid diagonal neighbors which are invalid
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < board_size and 0 <= nc < board_size:
+                        neighbors.append((nr, nc))
+        return neighbors
+
+
+    def complete_bridge(player_stones):
+        """Finds if there are any bridges that can be completed with one move."""
+        for r, c in empty_cells:
+            for sr1, sc1 in player_stones:
+                for sr2, sc2 in player_stones:
+                    if (sr1, sc1) == (sr2, sc2):
+                        continue
+                    dist = abs(sr1 - sr2) + abs(sc1 - sc2)
+                    if dist <= 2:  # Only check fairly close existing stones
+
+                        neighbors1 = get_neighbors((sr1, sc1))
+                        neighbors2 = get_neighbors((sr2, sc2))
+
+                        if (r, c) in neighbors1 and (r, c) in neighbors2:
+                            return (r, c)
+        return None
+
+
+    def block_opponent_bridge(opponent_stones):
+        """Find moves that block the opponent from completing a bridge."""
+        for r, c in empty_cells:
+            for sr1, sc1 in opponent_stones:
+                for sr2, sc2 in opponent_stones:
+                    if (sr1, sc1) == (sr2, sc2):
+                        continue
+                    dist = abs(sr1 - sr2) + abs(sc1 - sc2)
+                    if dist <= 2:
+                        neighbors1 = get_neighbors((sr1, sc1))
+                        neighbors2 = get_neighbors((sr2, sc2))
+
+                        if (r, c) in neighbors1 and (r, c) in neighbors2:
+                            return (r, c)
+        return None
+
+    # 1. Complete Bridge
+    move = complete_bridge(me)
+    if move:
+        return move
+
+    # 2. Block Opponent Bridge
+    move = block_opponent_bridge(opp)
+    if move:
+        return move
+
+    # 3. Edge Connection (Black)
+    if color == 'b':
+        for r, c in empty_cells:
+            if r == 0 or r == board_size - 1:
+                return (r, c)
+
+    # 4. Heuristic-Based Move Selection
+    best_move = None
+    best_score = -1
+
+    for r, c in empty_cells:
+        score = 0
+        # Proximity to our stones
+        for sr, sc in me:
+            dist = abs(r - sr) + abs(c - sc)
+            score += 1.0 / (dist + 1)
+
+        # Proximity to edges (for Black)
+        if color == 'b':
+            score += 0.5 / (r + 1)  # Top edge
+            score += 0.5 / (board_size - r) # Bottom edge
+
+        # Randomness (to avoid being deterministic)
+        score += random.uniform(0, 0.1)
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    if best_move:
+        return best_move
+
+    # 5. Basic Legal Move (Fallback)
+    return random.choice(empty_cells)

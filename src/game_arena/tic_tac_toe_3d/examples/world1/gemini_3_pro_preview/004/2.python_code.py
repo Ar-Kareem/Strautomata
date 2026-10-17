@@ -1,0 +1,227 @@
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next move for a 3x3x3 Tic Tac Toe game.
+    Player is 1, Opponent is -1.
+    """
+    
+    # ---------------------------------------------------------
+    # 1. Precompute Winning Lines (Indices 0-26)
+    # ---------------------------------------------------------
+    LINES_INDICES = []
+    
+    # Axis-aligned lines
+    # x-plane lines (vary y, z), y-plane lines (vary x, z), z-plane lines (vary x, y)
+    # But easier to iterate dimensions:
+    # 1. Lines along x-axis (vary x, fixed y, z)
+    for z in range(3):
+        for y in range(3):
+            LINES_INDICES.append([x * 9 + y * 3 + z for x in range(3)])
+    # 2. Lines along y-axis (vary y, fixed x, z)
+    for z in range(3):
+        for x in range(3):
+            LINES_INDICES.append([x * 9 + y * 3 + z for y in range(3)])
+    # 3. Lines along z-axis (vary z, fixed x, y)
+    for y in range(3):
+        for x in range(3):
+            LINES_INDICES.append([x * 9 + y * 3 + z for z in range(3)])
+
+    # Face Diagonals (6 faces * 2 diagonals)
+    # xy-planes (fixed z)
+    for z in range(3):
+        LINES_INDICES.append([0 * 9 + 0 * 3 + z, 1 * 9 + 1 * 3 + z, 2 * 9 + 2 * 3 + z])
+        LINES_INDICES.append([0 * 9 + 2 * 3 + z, 1 * 9 + 1 * 3 + z, 2 * 9 + 0 * 3 + z])
+    # xz-planes (fixed y)
+    for y in range(3):
+        LINES_INDICES.append([0 * 9 + y * 3 + 0, 1 * 9 + y * 3 + 1, 2 * 9 + y * 3 + 2])
+        LINES_INDICES.append([2 * 9 + y * 3 + 0, 1 * 9 + y * 3 + 1, 0 * 9 + y * 3 + 2])
+    # yz-planes (fixed x)
+    for x in range(3):
+        LINES_INDICES.append([x * 9 + 0 * 3 + 0, x * 9 + 1 * 3 + 1, x * 9 + 2 * 3 + 2])
+        LINES_INDICES.append([x * 9 + 0 * 3 + 2, x * 9 + 1 * 3 + 1, x * 9 + 2 * 3 + 0])
+
+    # Main Space Diagonals (4)
+    LINES_INDICES.append([0, 13, 26]) # (0,0,0)-(2,2,2)
+    LINES_INDICES.append([2, 13, 24]) # (0,0,2)-(2,2,0)
+    LINES_INDICES.append([6, 13, 20]) # (0,2,0)-(2,0,2)
+    LINES_INDICES.append([8, 13, 18]) # (0,2,2)-(2,0,0)
+
+    # ---------------------------------------------------------
+    # 2. Board Parsing
+    # ---------------------------------------------------------
+    flat_board = [0] * 27
+    empty_cells = []
+    idx = 0
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                val = board[x][y][z]
+                flat_board[idx] = val
+                if val == 0:
+                    empty_cells.append(idx)
+                idx += 1
+    
+    # If board is empty, take center (1, 1, 1) -> Index 13
+    if len(empty_cells) == 27:
+        return (1, 1, 1)
+
+    # ---------------------------------------------------------
+    # 3. Analysis Helper
+    # ---------------------------------------------------------
+    def analyze(b):
+        """
+        Returns stats about the board:
+        - my_wins (3 '1's)
+        - opp_wins (3 '-1's)
+        - my_threats (2 '1's + 1 '0')
+        - opp_threats (2 '-1's + 1 '0')
+        """
+        mw = ow = mt = ot = 0
+        for line in LINES_INDICES:
+            s = b[line[0]] + b[line[1]] + b[line[2]]
+            if s == 3: 
+                mw += 1
+            elif s == -3: 
+                ow += 1
+            elif s == 2: 
+                # Could be (1,1,0) or (1,1,-1) sums to 1.
+                # Only (1,1,0) sums to 2. No other combo.
+                mt += 1
+            elif s == -2:
+                ot += 1
+        return mw, ow, mt, ot
+
+    # ---------------------------------------------------------
+    # 4. Immediate Tactics (Win or Block)
+    # ---------------------------------------------------------
+    
+    # Check for immediate win
+    for m in empty_cells:
+        flat_board[m] = 1
+        mw, _, _, _ = analyze(flat_board)
+        flat_board[m] = 0
+        if mw > 0:
+            return (m // 9, (m % 9) // 3, m % 3)
+
+    # Check for forced block (Opponent wins next)
+    forced_moves = []
+    for m in empty_cells:
+        flat_board[m] = -1 # Assume opponent plays here
+        _, ow, _, _ = analyze(flat_board)
+        flat_board[m] = 0
+        if ow > 0:
+            forced_moves.append(m)
+            
+    if forced_moves:
+        # Must block. If multiple forced moves, we lose, but play the first one.
+        m = forced_moves[0]
+        return (m // 9, (m % 9) // 3, m % 3)
+
+    # ---------------------------------------------------------
+    # 5. Minimax Search (Depth 2: Max -> Min -> Eval)
+    # ---------------------------------------------------------
+    
+    def evaluate_leaf(b):
+        """
+        Static evaluation of board position from My (1) perspective.
+        Called at a state where it is My turn to move.
+        """
+        mw, ow, mt, ot = analyze(b)
+        
+        # If I have a winning threat ready, I win immediately
+        if mt >= 1:
+            return 10000 + mt
+        
+        # If Opponent has a fork (>=2 threats), I lose next turn
+        if ot >= 2:
+            return -10000
+        
+        score = 0
+        
+        # If Opponent has 1 threat, I am forced to block.
+        # This is a disadvantage but not necessarily a loss yet.
+        if ot == 1:
+            score -= 500
+            
+        # Positional Heuristics
+        
+        # Center bonus
+        if b[13] == 1: score += 50
+        elif b[13] == -1: score -= 50
+        
+        # Corner bonus
+        corners = [0, 2, 6, 8, 18, 20, 24, 26]
+        for c in corners:
+            if b[c] == 1: score += 10
+            elif b[c] == -1: score -= 10
+            
+        # Line potential (lines with markers of only one player)
+        for line in LINES_INDICES:
+            v = [b[line[0]], b[line[1]], b[line[2]]]
+            if -1 not in v and 1 in v: # My potential line
+                score += 5
+            if 1 not in v and -1 in v: # Opponent potential line
+                score -= 5
+                
+        return score
+
+    # Order moves to optimize Alpha-Beta: Center > Corners > Edges
+    def move_ordering(m):
+        if m == 13: return 2
+        if m in [0, 2, 6, 8, 18, 20, 24, 26]: return 1
+        return 0
+
+    sorted_moves = sorted(empty_cells, key=move_ordering, reverse=True)
+    
+    best_score = -float('inf')
+    best_move = sorted_moves[0]
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    for m in sorted_moves:
+        flat_board[m] = 1 # My virtual move
+        
+        # Opponent's turn (Min node)
+        min_score = float('inf')
+        
+        opp_candidates = [x for x in empty_cells if x != m]
+        if not opp_candidates:
+            # Draw
+            min_score = 0
+        else:
+            # Quick check: Can Opponent win immediately?
+            opp_wins_now = False
+            for om in opp_candidates:
+                flat_board[om] = -1
+                _, ow, _, _ = analyze(flat_board)
+                flat_board[om] = 0
+                if ow:
+                    opp_wins_now = True
+                    break
+            
+            if opp_wins_now:
+                min_score = -20000 # I lose in response
+            else:
+                # Search opponent moves
+                # We sort them too to check threats first?
+                # For simplicity, just check all.
+                for om in opp_candidates:
+                    flat_board[om] = -1
+                    score = evaluate_leaf(flat_board)
+                    flat_board[om] = 0
+                    
+                    if score < min_score:
+                        min_score = score
+                    if min_score < alpha:
+                        break # Pruning
+        
+        flat_board[m] = 0 # Undo
+        
+        if min_score > best_score:
+            best_score = min_score
+            best_move = m
+            
+        alpha = max(alpha, best_score)
+        
+    # Return 3D indices
+    return (best_move // 9, (best_move % 9) // 3, best_move % 3)

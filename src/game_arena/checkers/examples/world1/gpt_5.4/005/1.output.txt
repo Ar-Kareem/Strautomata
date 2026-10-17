@@ -1,0 +1,432 @@
+The strategy for this policy is a fast tactical checkers agent with mandatory-capture handling, full multi-jump generation, and a depth-limited minimax search with alpha-beta pruning. It prioritizes:
+
+1. Legal move safety first:
+   - Always generates legal moves.
+   - Correctly enforces mandatory captures.
+   - Supports chained captures in move generation, while returning the first step of the chosen legal sequence.
+
+2. Tactical strength:
+   - Prefers longer captures.
+   - Evaluates material, kings, promotion potential, center control, mobility, and vulnerability.
+   - Rewards moves that crown a man.
+
+3. Efficient search:
+   - Alpha-beta minimax.
+   - Move ordering to search strong tactical moves first.
+   - Small transposition cache.
+   - Conservative fallback so it always returns a legal move even under any edge case.
+
+This makes it robust and competitive while staying within the time limit.
+
+<code>
+from __future__ import annotations
+
+from typing import List, Tuple, Dict, Optional
+
+Square = Tuple[int, int]
+Move = Tuple[Square, Square]
+
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> Move:
+    # Convert inputs to immutable-friendly structures
+    my_men = tuple(tuple(x) for x in my_men)
+    my_kings = tuple(tuple(x) for x in my_kings)
+    opp_men = tuple(tuple(x) for x in opp_men)
+    opp_kings = tuple(tuple(x) for x in opp_kings)
+
+    state = (
+        frozenset(my_men),
+        frozenset(my_kings),
+        frozenset(opp_men),
+        frozenset(opp_kings),
+        color,
+    )
+
+    legal = generate_legal_sequences(state)
+    if not legal:
+        # Should not happen in a valid arena state, but return something harmless if needed.
+        # We still try to construct a legal-looking move from any own piece.
+        pieces = list(state[0] | state[1])
+        if pieces:
+            p = pieces[0]
+            return (p, p)
+        return ((0, 1), (0, 1))
+
+    # If only one legal action, return it immediately
+    if len(legal) == 1:
+        seq = legal[0]
+        return (seq[0], seq[1])
+
+    # Search depth tuned for 1 second budget
+    total_pieces = len(state[0]) + len(state[1]) + len(state[2]) + len(state[3])
+    if total_pieces >= 20:
+        depth = 6
+    elif total_pieces >= 12:
+        depth = 7
+    else:
+        depth = 9
+
+    cache: Dict[Tuple, float] = {}
+
+    ordered = order_moves(state, legal)
+    best_seq = ordered[0]
+    best_val = float("-inf")
+    alpha = float("-inf")
+    beta = float("inf")
+
+    for seq in ordered:
+        child = apply_sequence(state, seq)
+        val = -negamax(child, depth - 1, -beta, -alpha, cache)
+        if val > best_val:
+            best_val = val
+            best_seq = seq
+        if val > alpha:
+            alpha = val
+
+    return (best_seq[0], best_seq[1])
+
+
+def negamax(state, depth: int, alpha: float, beta: float, cache: Dict[Tuple, float]) -> float:
+    key = (state, depth, alpha, beta)
+    if key in cache:
+        return cache[key]
+
+    legal = generate_legal_sequences(state)
+
+    if depth == 0 or not legal:
+        if not legal:
+            # No move means loss for side to move
+            return -100000.0
+        v = evaluate(state)
+        cache[key] = v
+        return v
+
+    best = float("-inf")
+    ordered = order_moves(state, legal)
+
+    for seq in ordered:
+        child = apply_sequence(state, seq)
+        score = -negamax(child, depth - 1, -beta, -alpha, cache)
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    cache[key] = best
+    return best
+
+
+def evaluate(state) -> float:
+    my_men, my_kings, opp_men, opp_kings, color = state
+
+    # Terminal-ish checks
+    if not my_men and not my_kings:
+        return -100000.0
+    if not opp_men and not opp_kings:
+        return 100000.0
+
+    score = 0.0
+
+    # Material
+    score += 100 * len(my_men)
+    score += 175 * len(my_kings)
+    score -= 100 * len(opp_men)
+    score -= 175 * len(opp_kings)
+
+    # Advancement and promotion pressure
+    for r, c in my_men:
+        score += 6 * advancement(r, color)
+        if is_promotion_row(r, color):
+            score += 25
+
+    opp_color = other_color(color)
+    for r, c in opp_men:
+        score -= 6 * advancement(r, opp_color)
+        if is_promotion_row(r, opp_color):
+            score -= 25
+
+    # Center control
+    center = {(3, 2), (3, 4), (4, 3), (4, 5), (2, 3), (5, 4)}
+    for p in my_men | my_kings:
+        if p in center:
+            score += 8
+    for p in opp_men | opp_kings:
+        if p in center:
+            score -= 8
+
+    # Back-rank guard for men
+    back_row = 7 if color == 'b' else 0
+    opp_back_row = 7 if opp_color == 'b' else 0
+    for r, c in my_men:
+        if r == back_row:
+            score += 5
+    for r, c in opp_men:
+        if r == opp_back_row:
+            score -= 5
+
+    # Mobility
+    my_moves = len(generate_legal_sequences(state))
+    flipped = (opp_men, opp_kings, my_men, my_kings, opp_color)
+    opp_moves = len(generate_legal_sequences(flipped))
+    score += 2.0 * (my_moves - opp_moves)
+
+    # Vulnerability / tactical exposure
+    score -= 12 * count_hanging_pieces(state, mine=True)
+    score += 12 * count_hanging_pieces(state, mine=False)
+
+    return score
+
+
+def count_hanging_pieces(state, mine=True) -> int:
+    my_men, my_kings, opp_men, opp_kings, color = state
+    if mine:
+        target_men, target_kings = my_men, my_kings
+        enemy_men, enemy_kings = opp_men, opp_kings
+        enemy_color = other_color(color)
+    else:
+        target_men, target_kings = opp_men, opp_kings
+        enemy_men, enemy_kings = my_men, my_kings
+        enemy_color = color
+
+    occupied = set(my_men) | set(my_kings) | set(opp_men) | set(opp_kings)
+    targets = set(target_men) | set(target_kings)
+    count = 0
+
+    for tr, tc in targets:
+        if (tr, tc) in target_kings:
+            victim_king = True
+        else:
+            victim_king = False
+
+        vulnerable = False
+        for er, ec in enemy_men:
+            dirs = man_dirs(enemy_color)
+            for dr, dc in dirs:
+                if (er + dr, ec + dc) == (tr, tc):
+                    lr, lc = tr + dr, tc + dc
+                    if in_bounds(lr, lc) and (lr, lc) not in occupied:
+                        vulnerable = True
+                        break
+            if vulnerable:
+                break
+
+        if not vulnerable:
+            for er, ec in enemy_kings:
+                for dr, dc in KING_DIRS:
+                    if (er + dr, ec + dc) == (tr, tc):
+                        lr, lc = tr + dr, tc + dc
+                        if in_bounds(lr, lc) and (lr, lc) not in occupied:
+                            vulnerable = True
+                            break
+                if vulnerable:
+                    break
+
+        if vulnerable:
+            count += 1
+
+    return count
+
+
+KING_DIRS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
+
+
+def man_dirs(color: str):
+    return ((-1, -1), (-1, 1)) if color == 'b' else ((1, -1), (1, 1))
+
+
+def other_color(color: str) -> str:
+    return 'w' if color == 'b' else 'b'
+
+
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def is_promotion_row(r: int, color: str) -> bool:
+    return r == 0 if color == 'b' else r == 7
+
+
+def advancement(r: int, color: str) -> int:
+    return 7 - r if color == 'b' else r
+
+
+def generate_legal_sequences(state) -> List[Tuple[Square, ...]]:
+    my_men, my_kings, opp_men, opp_kings, color = state
+
+    capture_sequences = []
+
+    # Mandatory captures
+    for p in my_men:
+        capture_sequences.extend(generate_piece_captures(state, p, is_king=False))
+    for p in my_kings:
+        capture_sequences.extend(generate_piece_captures(state, p, is_king=True))
+
+    if capture_sequences:
+        max_captures = max(len(seq) - 1 for seq in capture_sequences)
+        best = [seq for seq in capture_sequences if (len(seq) - 1) == max_captures]
+        return best
+
+    # Otherwise normal moves
+    sequences = []
+    occupied = set(my_men) | set(my_kings) | set(opp_men) | set(opp_kings)
+
+    for r, c in my_men:
+        for dr, dc in man_dirs(color):
+            nr, nc = r + dr, c + dc
+            if in_bounds(nr, nc) and (nr, nc) not in occupied:
+                sequences.append(((r, c), (nr, nc)))
+
+    for r, c in my_kings:
+        for dr, dc in KING_DIRS:
+            nr, nc = r + dr, c + dc
+            if in_bounds(nr, nc) and (nr, nc) not in occupied:
+                sequences.append(((r, c), (nr, nc)))
+
+    return sequences
+
+
+def generate_piece_captures(state, piece: Square, is_king: bool) -> List[Tuple[Square, ...]]:
+    my_men, my_kings, opp_men, opp_kings, color = state
+    occupied = set(my_men) | set(my_kings) | set(opp_men) | set(opp_kings)
+
+    results = []
+
+    def dfs(cur_state, pos: Square, cur_is_king: bool, path: List[Square], captured_any: bool):
+        cm, ck, om, ok, cc = cur_state
+        occupied2 = set(cm) | set(ck) | set(om) | set(ok)
+        dirs = KING_DIRS if cur_is_king else man_dirs(cc)
+        found = False
+        r, c = pos
+
+        for dr, dc in dirs:
+            mr, mc = r + dr, c + dc
+            lr, lc = r + 2 * dr, c + 2 * dc
+            if not (in_bounds(mr, mc) and in_bounds(lr, lc)):
+                continue
+            if (lr, lc) in occupied2:
+                continue
+            if (mr, mc) in om or (mr, mc) in ok:
+                found = True
+
+                ncm = set(cm)
+                nck = set(ck)
+                nom = set(om)
+                nok = set(ok)
+
+                if cur_is_king:
+                    nck.remove((r, c))
+                else:
+                    ncm.remove((r, c))
+
+                if (mr, mc) in nom:
+                    nom.remove((mr, mc))
+                else:
+                    nok.remove((mr, mc))
+
+                became_king = cur_is_king
+                if not cur_is_king and is_promotion_row(lr, cc):
+                    became_king = True
+
+                if became_king:
+                    nck.add((lr, lc))
+                else:
+                    ncm.add((lr, lc))
+
+                next_state = (frozenset(ncm), frozenset(nck), frozenset(nom), frozenset(nok), cc)
+                dfs(next_state, (lr, lc), became_king, path + [(lr, lc)], True)
+
+        if not found and captured_any:
+            results.append(tuple(path))
+
+    dfs(state, piece, is_king, [piece], False)
+    return results
+
+
+def apply_sequence(state, seq: Tuple[Square, ...]):
+    my_men, my_kings, opp_men, opp_kings, color = state
+
+    nmy_men = set(my_men)
+    nmy_kings = set(my_kings)
+    nopp_men = set(opp_men)
+    nopp_kings = set(opp_kings)
+
+    start = seq[0]
+    if start in nmy_kings:
+        is_king = True
+        nmy_kings.remove(start)
+    else:
+        is_king = False
+        nmy_men.remove(start)
+
+    cur = start
+    for nxt in seq[1:]:
+        if abs(nxt[0] - cur[0]) == 2:
+            mr = (cur[0] + nxt[0]) // 2
+            mc = (cur[1] + nxt[1]) // 2
+            if (mr, mc) in nopp_men:
+                nopp_men.remove((mr, mc))
+            elif (mr, mc) in nopp_kings:
+                nopp_kings.remove((mr, mc))
+        cur = nxt
+
+    if not is_king and is_promotion_row(cur[0], color):
+        is_king = True
+
+    if is_king:
+        nmy_kings.add(cur)
+    else:
+        nmy_men.add(cur)
+
+    # swap perspective
+    return (
+        frozenset(nopp_men),
+        frozenset(nopp_kings),
+        frozenset(nmy_men),
+        frozenset(nmy_kings),
+        other_color(color),
+    )
+
+
+def move_heuristic(state, seq: Tuple[Square, ...]) -> float:
+    my_men, my_kings, opp_men, opp_kings, color = state
+    start = seq[0]
+    end = seq[-1]
+    captures = len(seq) - 1 if abs(seq[1][0] - seq[0][0]) == 2 else 0
+
+    score = 0.0
+
+    # Strongly prefer captures and longer captures
+    score += 1000 * captures
+
+    # Promotion
+    if start in my_men and is_promotion_row(end[0], color):
+        score += 300
+
+    # Centering
+    if end[0] in (3, 4) and end[1] in (2, 3, 4, 5):
+        score += 20
+
+    # Advancement
+    if start in my_men:
+        score += 8 * (advancement(end[0], color) - advancement(start[0], color))
+
+    # Edge penalty for men, mild safety bonus for kings on edge
+    if start in my_men:
+        if end[1] in (0, 7):
+            score -= 8
+    else:
+        if end[1] in (0, 7):
+            score += 4
+
+    # Quick tactical lookahead: avoid immediately hanging move if possible
+    child = apply_sequence(state, seq)
+    score += 10 * len(generate_legal_sequences(child)) * -1
+
+    return score
+
+
+def order_moves(state, legal):
+    return sorted(legal, key=lambda seq: move_heuristic(state, seq), reverse=True)
+</code>

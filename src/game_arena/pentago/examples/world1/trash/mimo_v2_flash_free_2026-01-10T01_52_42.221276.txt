@@ -1,0 +1,212 @@
+My strategy is to use a single-ply lookahead (minimax-like) heuristic search to evaluate potential moves. Since the search space for a turn is manageable (216 empty cells × 4 quadrants × 2 directions = 1728 moves), I can evaluate the immediate outcome of each move to find the best one.
+
+The evaluation works as follows:
+1.  **Immediate Win**: Check if any move results in a 5-in-a-row for "you". If found, prioritize it.
+2.  **Prevent Immediate Loss**: Check if the "opponent" has any 4-in-a-row threats. For each threat, generate all possible moves and check if any move results in a win for the opponent. If a threat exists and my current move does not block it (or win myself), that move is penalized heavily (effectively pruned).
+3.  **Heuristics**: If neither winning nor immediate losing threats exist, I score the board state after the hypothetical move. I calculate the score based on the length of lines formed by "you" minus the length of lines formed by "opponent". I also add a "centrality" bonus (prioritizing the central 4x4 area) to encourage positional play.
+
+I perform these checks by simulating the board state (placing the marble, rotating the quadrant) and then checking for 5-in-a-row.
+
+```python
+import itertools
+
+def policy(you, opponent):
+    # Helper to extract coordinates from board arrays
+    def get_cells(board):
+        cells = []
+        for r in range(6):
+            for c in range(6):
+                if board[r][c] == 1:
+                    cells.append((r, c))
+        return cells
+
+    # Helper to copy the board
+    def copy_board(b1, b2):
+        return [row[:] for row in b1], [row[:] for row in b2]
+
+    # Helper to rotate a quadrant
+    def rotate(b1, b2, quad, direction):
+        # Determine top-left corner of the quadrant
+        if quad == 0: r0, c0 = 0, 0
+        elif quad == 1: r0, c0 = 0, 3
+        elif quad == 2: r0, c0 = 3, 0
+        else: r0, c0 = 3, 3
+
+        # Extract 3x3 subgrids
+        sub1 = [[b1[r0+i][c0+j] for j in range(3)] for i in range(3)]
+        sub2 = [[b2[r0+i][c0+j] for j in range(3)] for i in range(3)]
+
+        # Rotate
+        if direction == 'R': # Clockwise
+            new1 = list(zip(*sub1[::-1]))
+            new2 = list(zip(*sub2[::-1]))
+        else: # Left/Anticlockwise
+            new1 = list(zip(*sub1))[::-1]
+            new2 = list(zip(*sub2))[::-1]
+
+        # Write back
+        for i in range(3):
+            for j in range(3):
+                b1[r0+i][c0+j] = int(new1[i][j])
+                b2[r0+i][c0+j] = int(new2[i][j])
+        return b1, b2
+
+    # Check for 5-in-a-row
+    def check_win(board):
+        # Rows
+        for r in range(6):
+            for c in range(2):
+                if all(board[r][c+i] == 1 for i in range(5)):
+                    return True
+        # Cols
+        for r in range(2):
+            for c in range(6):
+                if all(board[r+i][c] == 1 for i in range(5)):
+                    return True
+        # Diag / (top-left to bottom-right)
+        for r in range(2):
+            for c in range(2):
+                if all(board[r+i][c+i] == 1 for i in range(5)):
+                    return True
+        # Diag \ (top-right to bottom-left)
+        for r in range(2):
+            for c in range(4, 6):
+                if all(board[r+i][c-i] == 1 for i in range(5)):
+                    return True
+        return False
+
+    # Scoring Heuristic: sum of lines lengths
+    def get_score(board):
+        score = 0
+        # Rows
+        for r in range(6):
+            for c in range(6):
+                if board[r][c] == 1:
+                    # Check right
+                    if c <= 1: # Max len 5 starts at c=0,1
+                        l = 0
+                        for k in range(5):
+                            if c+k < 6 and board[r][c+k] == 1: l+=1
+                            else: break
+                        score += l * l
+                    # Check down
+                    if r <= 1:
+                        l = 0
+                        for k in range(5):
+                            if r+k < 6 and board[r+k][c] == 1: l+=1
+                            else: break
+                        score += l * l
+                    # Check diag down-right
+                    if r <= 1 and c <= 1:
+                        l = 0
+                        for k in range(5):
+                            if r+k < 6 and c+k < 6 and board[r+k][c+k] == 1: l+=1
+                            else: break
+                        score += l * l
+                    # Check diag down-left
+                    if r <= 1 and c >= 4:
+                        l = 0
+                        for k in range(5):
+                            if r+k < 6 and c-k >= 0 and board[r+k][c-k] == 1: l+=1
+                            else: break
+                        score += l * l
+        return score
+
+    # Centrality Bonus: prefer center 4x4 (rows 1-4, cols 1-4 in 0-index)
+    def centrality_bonus(r, c):
+        # Distance from center (2.5, 2.5)
+        dist = abs(r - 2.5) + abs(c - 2.5)
+        # Max dist is ~5, normalized bonus: 5 -> 0, 0 -> 5
+        return (5.0 - dist) * 2.0
+
+    # --- Main Logic ---
+
+    # 1. Identify Opponent Threats (4-in-a-row)
+    # We need to check on the current board if opponent has any 4-in-a-row that can be extended to 5.
+    # Actually, checking for threats is tricky because rotation happens.
+    # If opponent has a 4-in-a-row, we must either block the 5th spot or rotate it away.
+    # However, we will rely on the lookahead: if a move allows opponent to win next turn (if they have a 4-in-a-row that creates 5), we avoid.
+    # But since opponent moves *after* us, we need to prevent them from having a winning setup *after* our move.
+    # Wait, the win condition is checked after *our* move. We win if we make 5.
+    # If we don't make 5, the game continues. We want to avoid giving them an easy win.
+    # For simplicity in this single-ply search: we prioritize moves that make us win, then moves that block opponent's obvious 5-in-row creation (if such a 4 exists).
+    
+    # Let's find all empty cells
+    empty_cells = []
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                empty_cells.append((r, c))
+
+    best_move = None
+    best_score = -float('inf')
+
+    # Pre-calculate if opponent has any 4-in-a-row that is "active" (can be extended to 5)
+    # This is a simple check to see if we need to defend aggressively.
+    # Note: This is heuristic. A full game tree is too large.
+    
+    # We will iterate through all valid moves
+    for r, c in empty_cells:
+        for quad in range(4):
+            for dr in ['L', 'R']:
+                # Simulate Move
+                y_sim, o_sim = copy_board(you, opponent)
+                y_sim[r][c] = 1 # Place marble
+                
+                # Rotate
+                y_sim, o_sim = rotate(y_sim, o_sim, quad, dr)
+                
+                # Check Win (Priority 1)
+                if check_win(y_sim):
+                    return f"{r+1},{c+1},{quad},{dr}"
+                
+                # Check if we are leaving opponent with a forced win next turn (Priority 2)
+                # This happens if after our move, opponent has a 4-in-a-row that cannot be blocked by rotation?
+                # Actually, opponent will rotate. If they have a 4-in-a-row, they can likely rotate to extend it or win directly if it's already 5.
+                # But we check: does opponent have 5-in-a-row *now*? (We lost).
+                # Does opponent have 4-in-a-row such that 5th spot is empty?
+                # If yes, and we don't rotate it away, it's a threat.
+                # To keep it simple: we score the move. If opponent has a "critical" threat that we didn't block, we punish.
+                
+                # Heuristic Scoring
+                # 1. My potential lines
+                my_score = get_score(y_sim)
+                # 2. Opponent potential lines
+                opp_score = get_score(o_sim)
+                # 3. Centrality
+                center_score = centrality_bonus(r, c)
+                
+                # Penalty for leaving opponent with a "4" line that has open ends
+                # (Simple version: subtract heavily if opp_score is high)
+                # Note: get_score sums lengths^2. A 5-line is huge.
+                # If opp_score > threshold (meaning they have a 4 or 5), penalize.
+                # But if we can't win, we must block.
+                
+                # Let's refine:
+                # If after my move, opponent has 5-in-row, I lost (score = -inf). 
+                if check_win(o_sim):
+                    continue # Skip this move
+                
+                # If opponent has a "threat" (e.g. 4-in-row with open ends), we should try to block it.
+                # Since we are iterating, we can't easily "block" specific threats without checking all rotations of the opponent.
+                # Instead, we rely on the score difference.
+                
+                total_score = my_score - (opp_score * 1.5) + center_score
+                
+                # Boost score if the move creates a "4" line (threat of win) for me
+                # We can check this by seeing if get_score is significantly high.
+                # Or just use the calculated score.
+                
+                if total_score > best_score:
+                    best_score = total_score
+                    best_move = (r, c, quad, dr)
+
+    # If for some reason best_move is None (should not happen given valid board), fallback
+    if best_move is None:
+        # Pick any valid move
+        r, c = empty_cells[0]
+        return f"{r+1},{c+1},0,L"
+        
+    r, c, q, d = best_move
+    return f"{r+1},{c+1},{q},{d}"
+```

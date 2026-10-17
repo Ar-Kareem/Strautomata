@@ -1,0 +1,108 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Optimal Tic Tac Toe policy using minimax with alpha-beta pruning.
+    Returns the best move (row, col) for player 1.
+    """
+    
+    def get_winner(b):
+        """Check if there's a winner. Returns 1, -1, or 0."""
+        # Check rows
+        for i in range(3):
+            if b[i][0] == b[i][1] == b[i][2] != 0:
+                return b[i][0]
+        # Check columns
+        for i in range(3):
+            if b[0][i] == b[1][i] == b[2][i] != 0:
+                return b[0][i]
+        # Check diagonals
+        if b[0][0] == b[1][1] == b[2][2] != 0:
+            return b[0][0]
+        if b[0][2] == b[1][1] == b[2][0] != 0:
+            return b[0][2]
+        return 0
+    
+    def is_full(b):
+        """Check if board is full."""
+        for row in b:
+            for cell in row:
+                if cell == 0:
+                    return False
+        return True
+    
+    # 1. Immediate win
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = 1
+                if get_winner(board) == 1:
+                    board[i][j] = 0
+                    return (i, j)
+                board[i][j] = 0
+    
+    # 2. Block opponent win
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = -1
+                if get_winner(board) == -1:
+                    board[i][j] = 0
+                    return (i, j)
+                board[i][j] = 0
+    
+    # 3. Minimax with Alpha-Beta
+    def minimax(b, depth, alpha, beta, maximizing):
+        winner = get_winner(b)
+        if winner == 1:
+            return 10 - depth
+        if winner == -1:
+            return depth - 10
+        if is_full(b):
+            return 0
+        
+        if maximizing:
+            max_eval = float('-inf')
+            for i in range(3):
+                for j in range(3):
+                    if b[i][j] == 0:
+                        b[i][j] = 1
+                        eval = minimax(b, depth + 1, alpha, beta, False)
+                        b[i][j] = 0
+                        max_eval = max(max_eval, eval)
+                        alpha = max(alpha, eval)
+                        if beta <= alpha:
+                            break
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for i in range(3):
+                for j in range(3):
+                    if b[i][j] == 0:
+                        b[i][j] = -1
+                        eval = minimax(b, depth + 1, alpha, beta, True)
+                        b[i][j] = 0
+                        min_eval = min(min_eval, eval)
+                        beta = min(beta, eval)
+                        if beta <= alpha:
+                            break
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # 4. Select best move
+    best_score = float('-inf')
+    best_move = (0, 0)
+    
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = 1
+                score = minimax(board, 0, float('-inf'), float('inf'), False)
+                board[i][j] = 0
+                if score > best_score:
+                    best_score = score
+                    best_move = (i, j)
+                    
+    return best_move

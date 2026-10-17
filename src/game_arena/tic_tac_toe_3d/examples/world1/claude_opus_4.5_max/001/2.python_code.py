@@ -1,0 +1,90 @@
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    LINES = []
+    for i in range(3):
+        for j in range(3):
+            LINES.append([(i, j, k) for k in range(3)])
+    for i in range(3):
+        for k in range(3):
+            LINES.append([(i, j, k) for j in range(3)])
+    for j in range(3):
+        for k in range(3):
+            LINES.append([(i, j, k) for i in range(3)])
+    for c in range(3):
+        LINES.append([(c, d, d) for d in range(3)])
+        LINES.append([(c, d, 2-d) for d in range(3)])
+        LINES.append([(d, c, d) for d in range(3)])
+        LINES.append([(d, c, 2-d) for d in range(3)])
+        LINES.append([(d, d, c) for d in range(3)])
+        LINES.append([(d, 2-d, c) for d in range(3)])
+    LINES.append([(d, d, d) for d in range(3)])
+    LINES.append([(d, d, 2-d) for d in range(3)])
+    LINES.append([(d, 2-d, d) for d in range(3)])
+    LINES.append([(2-d, d, d) for d in range(3)])
+
+    def get(p): return board[p[0]][p[1]][p[2]]
+    def put(p, v): board[p[0]][p[1]][p[2]] = v
+    def empty_cells(): return [(i,j,k) for i in range(3) for j in range(3) for k in range(3) if board[i][j][k]==0]
+    def check_winner(player): return any(all(get(p)==player for p in line) for line in LINES)
+    def count_threats(player): return sum(1 for line in LINES if sum(get(p)==player for p in line)==2 and sum(get(p)==0 for p in line)==1)
+
+    def evaluate():
+        score = 0
+        for line in LINES:
+            vals = [get(p) for p in line]
+            my, opp = vals.count(1), vals.count(-1)
+            if opp==0 and my>0: score += [1,20,400][my-1]
+            elif my==0 and opp>0: score -= [1,20,400][opp-1]
+        return score
+
+    def priority(m):
+        if m==(1,1,1): return 100
+        c = sum(x in (0,2) for x in m)
+        return 70 if c==3 else 50 if c==1 else 30
+
+    def negamax(depth, alpha, beta, player):
+        if check_winner(1): return (100000+depth)*player, None
+        if check_winner(-1): return (-100000-depth)*player, None
+        moves = empty_cells()
+        if not moves: return 0, None
+        if depth==0: return evaluate()*player, None
+        moves.sort(key=priority, reverse=True)
+        best_score, best_move = float('-inf'), moves[0]
+        for m in moves:
+            put(m, player)
+            score, _ = negamax(depth-1, -beta, -alpha, -player)
+            score = -score
+            put(m, 0)
+            if score > best_score: best_score, best_move = score, m
+            alpha = max(alpha, score)
+            if alpha >= beta: break
+        return best_score, best_move
+
+    cells = empty_cells()
+    if not cells: return (0,0,0)
+    if board[1][1][1]==0: return (1,1,1)
+    
+    for m in cells:
+        put(m,1)
+        if check_winner(1): put(m,0); return m
+        put(m,0)
+    for m in cells:
+        put(m,-1)
+        if check_winner(-1): put(m,0); return m
+        put(m,0)
+    for m in cells:
+        put(m,1)
+        if count_threats(1)>=2: put(m,0); return m
+        put(m,0)
+    
+    forks = []
+    for m in cells:
+        put(m,-1)
+        if count_threats(-1)>=2: forks.append(m)
+        put(m,0)
+    if len(forks)==1: return forks[0]
+
+    n = len(cells)
+    depth = 4 if n>18 else 5 if n>14 else 6 if n>10 else 7 if n>6 else n
+    _, best = negamax(depth, float('-inf'), float('inf'), 1)
+    return best if best else cells[0]

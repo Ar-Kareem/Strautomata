@@ -1,0 +1,66 @@
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Implements a policy for a simplified Blackjack-like game.
+
+    Args:
+        hand: A list of strings representing the cards currently held.
+        target: The integer target score to approach.
+
+    Returns:
+        A string representing the chosen action: "HIT" or "STAY".
+    """
+
+    card_values = {
+        "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+        "J": 10, "Q": 10, "K": 10,
+        "A": 11
+    }
+
+    current_sum = 0
+    num_aces = 0
+
+    for card in hand:
+        if card == "A":
+            num_aces += 1
+        current_sum += card_values[card]
+
+    # Adjust for Aces (handle "A" as 1 if busting with 11)
+    while current_sum > target and num_aces > 0:
+        current_sum -= 10  # Change an Ace from 11 to 1
+        num_aces -= 1
+
+    # Basic strategy: hit if current sum is well below target, otherwise stay.
+    # We want to be cautious and avoid busting.
+    # A simple threshold can be effective.
+    # The threshold is chosen empirically to balance hitting and staying.
+    
+    # If the current sum is very low and we have few cards, we should probably hit.
+    # This helps accumulate a better score early on.
+    if current_sum < target - 4 and len(hand) < 5:
+        return "HIT"
+
+    # If we are very close to the target, it's safer to stay.
+    # This prevents busting when there's a high chance of drawing a high card.
+    if current_sum >= target - 2:
+        return "STAY"
+
+    # Consider the probability of busting if we hit.
+    # The ideal scenario would be to know the remaining deck, but we don't.
+    # Assuming a roughly even distribution of remaining cards (2-10 for non-Aces, 11 for Ace initially).
+    
+    # If current_sum is 11, and target is 20, hitting a 10 is good.
+    # If current_sum is 19, and target is 20, hitting a 2 is good, but 3 or more busts.
+
+    # A more sophisticated approach would involve calculating probabilities,
+    # but for simplicity and to avoid unnecessary computation, a static threshold
+    # often performs reasonably well.
+
+    # If the current sum allows for hitting
+    # The '10' here roughly represents the average value of a non-ace card.
+    # If the remaining gap is large enough to likely accommodate another card without busting.
+    if current_sum + 10 <= target:
+        return "HIT"
+    
+    # If we are close enough to the target, or if hitting is likely to bust, stay.
+    return "STAY"

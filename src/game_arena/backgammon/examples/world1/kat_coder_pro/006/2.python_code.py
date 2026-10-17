@@ -1,0 +1,145 @@
+
+import numpy as np
+import random
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    # If we have no dice, return pass
+    if not dice:
+        return "H:P,P"
+    
+    # Sort dice in descending order
+    dice = sorted(dice, reverse=True)
+    high_die = dice[0]
+    low_die = dice[1] if len(dice) > 1 else 0
+    
+    # Check if we have checkers on the bar
+    if my_bar > 0:
+        return move_from_bar(state, high_die, low_die)
+    
+    # Check if we can bear off
+    if can_bear_off(my_pts):
+        return bear_off(state, high_die, low_die)
+    
+    # Try to hit opponent checkers
+    move = try_to_hit(state, high_die, low_die)
+    if move:
+        return move
+    
+    # Otherwise, advance checkers
+    return advance_checkers(state, high_die, low_die)
+
+def move_from_bar(state, high_die, low_die):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    
+    # Try to move from bar with high die
+    target = high_die - 1
+    if target >= 0 and opp_pts[target] <= 1:
+        # Can move from bar with high die
+        if can_move(state, target, low_die):
+            return f"H:B,A{target}"
+        else:
+            return f"H:B,P"
+    
+    # Try to move from bar with low die
+    target = low_die - 1
+    if target >= 0 and opp_pts[target] <= 1:
+        # Can move from bar with low die
+        return f"L:B,A{target}"
+    
+    # Cannot move from bar
+    return "H:P,P"
+
+def can_bear_off(my_pts):
+    # Check if all checkers are in home board (points 0-5)
+    for i in range(6, 24):
+        if my_pts[i] > 0:
+            return False
+    return True
+
+def bear_off(state, high_die, low_die):
+    my_pts = state['my_pts']
+    my_off = state['my_off']
+    
+    # Try to bear off with high die
+    if high_die <= 6 and my_pts[high_die - 1] > 0:
+        if can_move(state, high_die - 1, low_die):
+            return f"H:A{high_die - 1},P"
+        else:
+            return f"H:P,P"
+    
+    # Try to bear off with low die
+    if low_die <= 6 and my_pts[low_die - 1] > 0:
+        return f"L:A{low_die - 1},P"
+    
+    # Try to move checkers within home board
+    return advance_checkers(state, high_die, low_die)
+
+def try_to_hit(state, high_die, low_die):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    
+    # Try to hit with high die
+    for i in range(24):
+        if my_pts[i] > 0:
+            target = i - high_die
+            if 0 <= target < 24 and opp_pts[target] == 1:
+                if can_move(state, i, low_die):
+                    return f"H:A{i},A{target}"
+    
+    # Try to hit with low die
+    for i in range(24):
+        if my_pts[i] > 0:
+            target = i - low_die
+            if 0 <= target < 24 and opp_pts[target] == 1:
+                return f"L:A{i},A{target}"
+    
+    return None
+
+def can_move(state, start, die):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    
+    if die == 0:
+        return True
+    
+    target = start - die
+    if target < 0:
+        # Bearing off
+        return True
+    
+    if target >= 0 and opp_pts[target] <= 1:
+        return True
+    
+    return False
+
+def advance_checkers(state, high_die, low_die):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    
+    # Prefer to move checkers from higher points
+    for i in range(23, -1, -1):
+        if my_pts[i] > 0:
+            target = i - high_die
+            if target >= 0 and opp_pts[target] <= 1:
+                if can_move(state, i, low_die):
+                    return f"H:A{i},A{target}"
+    
+    # If no good move with high die, try low die
+    for i in range(23, -1, -1):
+        if my_pts[i] > 0:
+            target = i - low_die
+            if target >= 0 and opp_pts[target] <= 1:
+                return f"L:A{i},A{target}"
+    
+    # If no moves possible, pass
+    return "H:P,P"

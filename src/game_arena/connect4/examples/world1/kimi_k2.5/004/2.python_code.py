@@ -1,0 +1,217 @@
+
+import time
+from typing import List, Tuple, Optional
+
+ROWS = 6
+COLS = 7
+MAX_DEPTH = 6
+TIME_LIMIT = 0.95
+
+def get_valid_moves(board: List[List[int]]) -> List[int]:
+    """Return list of columns that are not full."""
+    return [c for c in range(COLS) if board[0][c] == 0]
+
+def drop_piece(board: List[List[int]], col: int, piece: int) -> int:
+    """Place piece in column, return row index (0-5) or -1 if full."""
+    for row in range(ROWS-1, -1, -1):
+        if board[row][col] == 0:
+            board[row][col] = piece
+            return row
+    return -1
+
+def remove_piece(board: List[List[int]], col: int):
+    """Remove the top piece from a column."""
+    for row in range(ROWS):
+        if board[row][col] != 0:
+            board[row][col] = 0
+            break
+
+def check_win_at(board: List[List[int]], row: int, col: int, piece: int) -> bool:
+    """Check if piece at (row, col) creates a 4-in-a-row."""
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for dr, dc in directions:
+        count = 1
+        # Positive direction
+        r, c = row + dr, col + dc
+        while 0 <= r < ROWS and 0 <= c < COLS and board[r][c] == piece:
+            count += 1
+            r += dr
+            c += dc
+        # Negative direction
+        r, c = row - dr, col - dc
+        while 0 <= r < ROWS and 0 <= c < COLS and board[r][c] == piece:
+            count += 1
+            r -= dr
+            c -= dc
+        if count >= 4:
+            return True
+    return False
+
+def is_winning_move(board: List[List[int]], col: int, piece: int) -> bool:
+    """Check if dropping piece in col results in immediate win."""
+    row = drop_piece(board, col, piece)
+    if row == -1:
+        return False
+    win = check_win_at(board, row, col, piece)
+    remove_piece(board, col)
+    return win
+
+def score_window(window: List[int], piece: int) -> int:
+    """Score a 4-cell window heuristically."""
+    score = 0
+    opp = -piece
+    
+    if window.count(piece) == 4:
+        score += 100
+    elif window.count(piece) == 3 and window.count(0) == 1:
+        score += 5
+    elif window.count(piece) == 2 and window.count(0) == 2:
+        score += 2
+    
+    if window.count(opp) == 3 and window.count(0) == 1:
+        score -= 4  # Urgent block needed
+        
+    return score
+
+def evaluate(board: List[List[int]], piece: int) -> int:
+    """Heuristic evaluation of board state."""
+    score = 0
+    
+    # Center column preference (strategic control)
+    center_col = COLS // 2
+    for r in range(ROWS):
+        if board[r][center_col] == piece:
+            score += 3
+    
+    # Horizontal windows
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            window = [board[r][c+i] for i in range(4)]
+            score += score_window(window, piece)
+    
+    # Vertical windows
+    for r in range(ROWS - 3):
+        for c in range(COLS):
+            window = [board[r+i][c] for i in range(4)]
+            score += score_window(window, piece)
+    
+    # Diagonal down-right
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += score_window(window, piece)
+    
+    # Diagonal up-right
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r-i][c+i] for i in range(4)]
+            score += score_window(window, piece)
+    
+    return score
+
+def minimax(board: List[List[int]], depth: int, alpha: float, beta: float,
+            maximizing: bool, piece: int, start_time: float) -> Tuple[Optional[int], float]:
+    """Alpha-beta pruning minimax search."""
+    valid_moves = get_valid_moves(board)
+    
+    # Terminal or time limit check
+    if time.time() - start_time > TIME_LIMIT:
+        return None, 0
+    if depth == 0 or len(valid_moves) == 0:
+        return None, evaluate(board, piece)
+    
+    # Move ordering: center columns first for better pruning
+    valid_moves.sort(key=lambda x: abs(x - COLS//2))
+    
+    if maximizing:
+        max_eval = -float('inf')
+        best_col = valid_moves[0]
+        for col in valid_moves:
+            row = drop_piece(board, col, piece)
+            if row == -1:
+                continue
+            
+            # Immediate win check
+            if check_win_at(board, row, col, piece):
+                remove_piece(board, col)
+                return col, 1000000
+            
+            _, eval_score = minimax(board, depth-1, alpha, beta, False, piece, start_time)
+            remove_piece(board, col)
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_col = col
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return best_col, max_eval
+    else:
+        min_eval = float('inf')
+        best_col = valid_moves[0]
+        for col in valid_moves:
+            row = drop_piece(board, col, -piece)
+            if row == -1:
+                continue
+            
+            # Immediate loss check (opponent wins)
+            if check_win_at(board, row, col, -piece):
+                remove_piece(board, col)
+                return col, -1000000
+            
+            _, eval_score = minimax(board, depth-1, alpha, beta, True, piece, start_time)
+            remove_piece(board, col)
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_col = col
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return best_col, min_eval
+
+def policy(board: List[List[int]]) -> int:
+    """Select best column for current player (1)."""
+    start_time = time.time()
+    piece = 1
+    
+    valid_moves = get_valid_moves(board)
+    if not valid_moves:
+        return 0  # Should not occur in valid game
+    
+    # 1. Immediate win
+    for col in valid_moves:
+        if is_winning_move(board, col, piece):
+            return col
+    
+    # 2. Block opponent immediate win
+    for col in valid_moves:
+        if is_winning_move(board, col, -piece):
+            return col
+    
+    # 3. Filter moves that don't give opponent immediate win next turn
+    safe_moves = []
+    for col in valid_moves:
+        row = drop_piece(board, col, piece)
+        opponent_can_win = False
+        for opp_col in get_valid_moves(board):
+            if is_winning_move(board, opp_col, -piece):
+                opponent_can_win = True
+                break
+        remove_piece(board, col)
+        if not opponent_can_win:
+            safe_moves.append(col)
+    
+    moves_to_consider = safe_moves if safe_moves else valid_moves
+    
+    # 4. Iterative deepening minimax
+    best_move = moves_to_consider[0]
+    for depth in range(1, MAX_DEPTH + 1):
+        if time.time() - start_time > TIME_LIMIT:
+            break
+        col, score = minimax(board, depth, -float('inf'), float('inf'), 
+                           True, piece, start_time)
+        if col is not None and col in moves_to_consider:
+            best_move = col
+    
+    return best_move

@@ -1,0 +1,199 @@
+
+import numpy as np
+import time
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Othello bot using Iterative Deepening Alpha-Beta Search.
+    
+    1. Combines 'you' and 'opponent' into a -1/0/1 board.
+    2. Uses a static weight matrix favoring corners and mobility.
+    3. Searches with time cap to ensure <1s execution.
+    """
+    # Configuration
+    TIME_LIMIT = 0.90  # Safety buffer inside 1.0s limit
+    START_TIME = time.time()
+    
+    # 8-neighbor directions
+    DIRS = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]
+
+    # Static Weights for 8x8 Othello
+    # Corners: 100, C-squares: -20, X-squares: -50
+    WEIGHTS = np.array([
+        [100, -20,  10,   5,   5,  10, -20, 100],
+        [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+        [ 10,  -2,  -1,  -1,  -1,  -1,  -2,  10],
+        [  5,  -2,  -1,  -1,  -1,  -1,  -2,   5],
+        [  5,  -2,  -1,  -1,  -1,  -1,  -2,   5],
+        [ 10,  -2,  -1,  -1,  -1,  -1,  -2,  10],
+        [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+        [100, -20,  10,   5,   5,  10, -20, 100]
+    ], dtype=int)
+
+    # Internal Representation: 1 = You, -1 = Opponent, 0 = Empty
+    board = you.astype(int) - opponent.astype(int)
+
+    # --- Helper Functions ---
+
+    def get_legal_moves(b, player):
+        """
+        Generates list of (r, c) legal moves for 'player' on board 'b'.
+        """
+        moves = []
+        rows, cols = np.where(b == 0)
+        for r, c in zip(rows, cols):
+            for dr, dc in DIRS:
+                rr, cc = r + dr, c + dc
+                if 0 <= rr < 8 and 0 <= cc < 8 and b[rr, cc] == -player:
+                    # Adjacent is opponent, check for bracket
+                    rr += dr
+                    cc += dc
+                    while 0 <= rr < 8 and 0 <= cc < 8:
+                        if b[rr, cc] == player:
+                            moves.append((r, c))
+                            # Break inner loops to move to next candidate square
+                            break 
+                        if b[rr, cc] == 0:
+                            break
+                        rr += dr
+                        cc += dc
+                    else:
+                        continue
+                    break # Break direction loop if move is valid
+        return moves
+
+    def make_move(b, move, player):
+        """
+        Returns a new board copy with the move applied and pieces flipped.
+        """
+        new_b = b.copy()
+        r, c = move
+        new_b[r, c] = player
+        for dr, dc in DIRS:
+            rr, cc = r + dr, c + dc
+            path = []
+            while 0 <= rr < 8 and 0 <= cc < 8 and new_b[rr, cc] == -player:
+                path.append((rr, cc))
+                rr += dr
+                cc += dc
+            # If we ended on our own piece, flip the path
+            if 0 <= rr < 8 and 0 <= cc < 8 and new_b[rr, cc] == player:
+                for pr, pc in path:
+                    new_b[pr, pc] = player
+        return new_b
+
+    def evaluate(b):
+        """
+        Heuristic function. returns score from perspective of player 1.
+        """
+        # 1. Positional Weight Score
+        my_w = np.sum((b == 1) * WEIGHTS)
+        op_w = np.sum((b == -1) * WEIGHTS)
+        score = my_w - op_w
+        return score
+
+    # --- Minimax Search ---
+    
+    class TimeoutException(Exception):
+        pass
+
+    def minimax(node, depth, alpha, beta, maximizing):
+        if (time.time() - START_TIME) > TIME_LIMIT:
+            raise TimeoutException()
+
+        current_player = 1 if maximizing else -1
+        legal_moves = get_legal_moves(node, current_player)
+
+        # Leaf or Terminal
+        if depth == 0 or not legal_moves:
+            if not legal_moves:
+                # Check if opponent can move
+                opp_moves = get_legal_moves(node, -current_player)
+                if not opp_moves:
+                    # Game Over: Return actual disc difference usually huge
+                    return np.sum(node) * 1000
+                
+                # Pass occurred: Recurse with same board, swapped turn
+                # Decrement depth to ensure convergence
+                val = minimax(node, depth - 1, alpha, beta, not maximizing)
+                return val
+
+            # Depth reached: Heuristic + Mobility
+            # Mobility: (My Moves - Opp Moves)
+            opp_moves = get_legal_moves(node, -current_player)
+            mob_score = 10 * (len(legal_moves) - len(opp_moves))
+            if not maximizing: 
+                mob_score = -mob_score
+            
+            return evaluate(node) + mob_score
+
+        if maximizing:
+            max_eval = -float('inf')
+            for move in legal_moves:
+                child = make_move(node, move, 1)
+                eval_val = minimax(child, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_val)
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in legal_moves:
+                child = make_move(node, move, -1)
+                eval_val = minimax(child, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_val)
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # --- Main Logic ---
+
+    # 1. Get Root Moves
+    root_moves = get_legal_moves(board, 1)
+    if not root_moves:
+        return "pass"
+    
+    if len(root_moves) == 1:
+        # Forced move, return immediately
+        r, c = root_moves[0]
+        return f"{chr(ord('a') + c)}{r + 1}"
+
+    # 2. Heuristic Sort (Optimization)
+    # Sort moves based on static board value to try best spots (corners) first
+    root_moves.sort(key=lambda m: WEIGHTS[m[0], m[1]], reverse=True)
+
+    best_move = root_moves[0]
+    
+    # 3. Iterative Deepening
+    try:
+        # Depth 1 to 10 (rarely goes beyond 5-6 in python/1s)
+        for d in range(1, 15):
+            d_best = None
+            d_val = -float('inf')
+            alpha = -float('inf')
+            beta = float('inf')
+
+            for move in root_moves:
+                child = make_move(board, move, 1)
+                val = minimax(child, d - 1, alpha, beta, False)
+                
+                if val > d_val:
+                    d_val = val
+                    d_best = move
+                
+                alpha = max(alpha, val)
+                
+                if (time.time() - START_TIME) > TIME_LIMIT:
+                    raise TimeoutException()
+            
+            if d_best:
+                best_move = d_best # Update global best if depth completed
+
+    except TimeoutException:
+        pass # Return best move found so far
+
+    # Format return string
+    r, c = best_move
+    return f"{chr(ord('a') + c)}{r + 1}"

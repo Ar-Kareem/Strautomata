@@ -1,0 +1,200 @@
+ The strategy uses **iterative deepening alpha-beta minimax** with a **positional evaluation function**. Key components:
+
+1. **Positional Weights**: Corners (a1, h1, a8, h8) are highly valued (+120), while X-squares (diagonal to corners) are penalized (-40) to avoid giving up corners. Edge squares have moderate bonuses.
+2. **Mobility**: The evaluation includes the difference in available moves between players, weighted by 10.
+3. **Search Algorithm**: 
+   - Iterative deepening from depth 1 up to the number of remaining empty squares (solving endgames exactly when <12 empties).
+   - Alpha-beta pruning with move ordering (prioritizing corners, then edges) to maximize pruning efficiency.
+   - Time cutoff at 0.9 seconds to ensure a legal move is always returned.
+4. **Fallback**: If only one move exists, it is played immediately. If time runs out during search, the best move from the previous completed depth is used.
+
+<code>
+import numpy as np
+import time
+
+# 8 directions: N, NE, E, SE, S, SW, W, NW
+DIRS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+# Positional value table: corners are critical, avoid X-squares
+WEIGHTS = [
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120]
+]
+
+def get_moves(board, player):
+    """Return list of legal (r, c) moves for player (1 or 2)."""
+    opponent = 3 - player
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != 0:
+                continue
+            valid = False
+            for dr, dc in DIRS:
+                r2, c2 = r + dr, c + dc
+                # Must be opponent adjacent
+                if not (0 <= r2 < 8 and 0 <= c2 < 8) or board[r2][c2] != opponent:
+                    continue
+                # Traverse line
+                while 0 <= r2 < 8 and 0 <= c2 < 8 and board[r2][c2] == opponent:
+                    r2 += dr
+                    c2 += dc
+                # Must end with player
+                if 0 <= r2 < 8 and 0 <= c2 < 8 and board[r2][c2] == player:
+                    valid = True
+                    break
+            if valid:
+                moves.append((r, c))
+    return moves
+
+def apply_move(board, player, move):
+    """Apply move to board and return new board state."""
+    r, c = move
+    new_board = [row[:] for row in board]
+    opponent = 3 - player
+    new_board[r][c] = player
+    
+    for dr, dc in DIRS:
+        r2, c2 = r + dr, c + dc
+        to_flip = []
+        while 0 <= r2 < 8 and 0 <= c2 < 8 and new_board[r2][c2] == opponent:
+            to_flip.append((r2, c2))
+            r2 += dr
+            c2 += dc
+        if 0 <= r2 < 8 and 0 <= c2 < 8 and new_board[r2][c2] == player:
+            for fr, fc in to_flip:
+                new_board[fr][fc] = player
+    return new_board
+
+def evaluate(board):
+    """Evaluate board from player 1's perspective."""
+    score = 0
+    p1_count = 0
+    p2_count = 0
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == 1:
+                score += WEIGHTS[r][c]
+                p1_count += 1
+            elif board[r][c] == 2:
+                score -= WEIGHTS[r][c]
+                p2_count += 1
+    
+    # Check for game end
+    p1_moves = get_moves(board, 1)
+    p2_moves = get_moves(board, 2)
+    
+    if not p1_moves and not p2_moves:
+        if p1_count > p2_count:
+            return 10000
+        elif p1_count < p2_count:
+            return -10000
+        return 0
+    
+    # Mobility bonus
+    score += 10 * (len(p1_moves) - len(p2_moves))
+    return score
+
+def minimax(board, player, depth, alpha, beta, start_time):
+    """Alpha-beta search. Returns (best_move, score)."""
+    if time.time() - start_time > 0.9:
+        raise TimeoutError
+    
+    opponent = 3 - player
+    moves = get_moves(board, player)
+    
+    # Terminal node or depth limit
+    if depth == 0:
+        return None, evaluate(board)
+    
+    # Both pass = game over
+    if not moves:
+        opp_moves = get_moves(board, opponent)
+        if not opp_moves:
+            return None, evaluate(board)
+        # Pass turn
+        return minimax(board, opponent, depth - 1, alpha, beta, start_time)
+    
+    # Move ordering: corners first, then edges, then interior
+    def priority(m):
+        r, c = m
+        if (r, c) in [(0,0), (0,7), (7,0), (7,7)]:
+            return 3
+        if r in [0, 7] or c in [0, 7]:
+            return 2
+        return 1
+    moves.sort(key=priority, reverse=True)
+    
+    best_move = moves[0]
+    
+    if player == 1:  # Maximizing
+        max_eval = float('-inf')
+        for move in moves:
+            new_board = apply_move(board, player, move)
+            _, eval = minimax(new_board, opponent, depth - 1, alpha, beta, start_time)
+            if eval > max_eval:
+                max_eval = eval
+                best_move = move
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return best_move, max_eval
+    else:  # Minimizing
+        min_eval = float('inf')
+        for move in moves:
+            new_board = apply_move(board, player, move)
+            _, eval = minimax(new_board, opponent, depth - 1, alpha, beta, start_time)
+            if eval < min_eval:
+                min_eval = eval
+                best_move = move
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return best_move, min_eval
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Convert numpy arrays to internal board representation: 1=me, 2=opponent
+    board = [[0]*8 for _ in range(8)]
+    for r in range(8):
+        for c in range(8):
+            if you[r][c]:
+                board[r][c] = 1
+            elif opponent[r][c]:
+                board[r][c] = 2
+    
+    moves = get_moves(board, 1)
+    if not moves:
+        return "pass"
+    
+    if len(moves) == 1:
+        r, c = moves[0]
+        return chr(ord('a') + c) + str(r + 1)
+    
+    # Iterative deepening
+    start = time.time()
+    best_move = moves[0]
+    
+    # Determine appropriate depth based on game phase
+    empty = sum(1 for r in range(8) for c in range(8) if board[r][c] == 0)
+    max_depth = 6
+    if empty <= 12:
+        max_depth = empty  # Solve exactly in endgame
+    
+    try:
+        for depth in range(1, max_depth + 1):
+            move, _ = minimax(board, 1, depth, float('-inf'), float('inf'), start)
+            if move is not None:
+                best_move = move
+    except TimeoutError:
+        pass
+    
+    r, c = best_move
+    return chr(ord('a') + c) + str(r + 1)
+</code>

@@ -1,0 +1,186 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Chooses the best move for a 4x4 Tic Tac Toe game using minimax with alpha-beta pruning.
+    """
+    
+    def check_winner(board_state):
+        """Returns 1 if player 1 wins, -1 if player -1 wins, 0 if no winner"""
+        # Check rows
+        for row in board_state:
+            if sum(row) == 4:
+                return 1
+            elif sum(row) == -4:
+                return -1
+        
+        # Check columns
+        for col in range(4):
+            if sum(board_state[row][col] for row in range(4)) == 4:
+                return 1
+            elif sum(board_state[row][col] for row in range(4)) == -4:
+                return -1
+        
+        # Check diagonals
+        diag1 = sum(board_state[i][i] for i in range(4))
+        diag2 = sum(board_state[i][3-i] for i in range(4))
+        if diag1 == 4 or diag2 == 4:
+            return 1
+        if diag1 == -4 or diag2 == -4:
+            return -1
+        
+        # Check 2x2 sub-squares for win condition
+        for i in range(3):
+            for j in range(3):
+                # Check 2x2 square
+                sub_sum = (board_state[i][j] + board_state[i][j+1] + 
+                          board_state[i+1][j] + board_state[i+1][j+1])
+                if sub_sum == 4:
+                    return 1
+                elif sub_sum == -4:
+                    return -1
+        
+        return 0  # No winner
+    
+    def evaluate_board(board_state):
+        """Heuristic evaluation of board position"""
+        winner = check_winner(board_state)
+        if winner == 1:
+            return 1000000  # Victory for me
+        elif winner == -1:
+            return -1000000  # Defeat for me
+        else:
+            score = 0
+            # Count potential wins for each player
+            # Rows
+            for i in range(4):
+                row = board_state[i]
+                row_sum = sum(row)
+                if row_sum == 3:  # 3 in a row for me
+                    score += 1000
+                elif row_sum == -3:  # 3 in a row for opponent
+                    score -= 1000
+                elif row_sum == 2:  # 2 in a row for me
+                    score += 100
+                elif row_sum == -2:  # 2 in a row for opponent
+                    score -= 100
+            
+            # Columns
+            for j in range(4):
+                col_sum = sum(board_state[i][j] for i in range(4))
+                if col_sum == 3:
+                    score += 1000
+                elif col_sum == -3:
+                    score -= 1000
+                elif col_sum == 2:
+                    score += 100
+                elif col_sum == -2:
+                    score -= 100
+            
+            # Main diagonals
+            diag1 = sum(board_state[i][i] for i in range(4))
+            diag2 = sum(board_state[i][3-i] for i in range(4))
+            if diag1 == 3:
+                score += 1000
+            elif diag1 == -3:
+                score -= 1000
+            elif diag1 == 2:
+                score += 100
+            elif diag1 == -2:
+                score -= 100
+                
+            if diag2 == 3:
+                score += 1000
+            elif diag2 == -3:
+                score -= 1000
+            elif diag2 == 2:
+                score += 100
+            elif diag2 == -2:
+                score -= 100
+            
+            # 2x2 squares
+            for i in range(3):
+                for j in range(3):
+                    sub_sum = (board_state[i][j] + board_state[i][j+1] + 
+                              board_state[i+1][j] + board_state[i+1][j+1])
+                    if sub_sum == 3:
+                        score += 1000
+                    elif sub_sum == -3:
+                        score -= 1000
+                    elif sub_sum == 2:
+                        score += 100
+                    elif sub_sum == -2:
+                        score -= 100
+            
+            # Center positions are more valuable
+            center_positions = [(1,1), (1,2), (2,1), (2,2)]
+            for r, c in center_positions:
+                if board_state[r][c] == 1:
+                    score += 10
+                elif board_state[r][c] == -1:
+                    score -= 10
+            
+            return score
+    
+    def minimax(board_state, depth, alpha, beta, maximizing_player):
+        """Minimax with alpha-beta pruning"""
+        # If we've reached maximum depth or game is over
+        if depth == 0 or check_winner(board_state) != 0:
+            return evaluate_board(board_state)
+        
+        if maximizing_player:
+            max_eval = float('-inf')
+            for i in range(4):
+                for j in range(4):
+                    if board_state[i][j] == 0:  # Empty cell
+                        board_state[i][j] = 1  # Make move
+                        eval_score = minimax(board_state, depth-1, alpha, beta, False)
+                        board_state[i][j] = 0  # Undo move
+                        max_eval = max(max_eval, eval_score)
+                        alpha = max(alpha, eval_score)
+                        if beta <= alpha:
+                            break  # Alpha-beta pruning
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for i in range(4):
+                for j in range(4):
+                    if board_state[i][j] == 0:  # Empty cell
+                        board_state[i][j] = -1  # Make move
+                        eval_score = minimax(board_state, depth-1, alpha, beta, True)
+                        board_state[i][j] = 0  # Undo move
+                        min_eval = min(min_eval, eval_score)
+                        beta = min(beta, eval_score)
+                        if beta <= alpha:
+                            break  # Alpha-beta pruning
+            return min_eval
+    
+    # Find all empty cells
+    empty_cells = []
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:
+                empty_cells.append((i, j))
+    
+    if not empty_cells:
+        return (0, 0)  # This shouldn't happen in practice
+    
+    # Try different depths for search
+    best_score = float('-inf')
+    best_move = empty_cells[0]
+    
+    # Try moves with increasing depth for performance
+    max_depth = 4
+    for depth in range(1, max_depth + 1):
+        for i, j in empty_cells:
+            if board[i][j] == 0:
+                board[i][j] = 1
+                score = minimax(board, depth, float('-inf'), float('inf'), False)
+                board[i][j] = 0
+                if score > best_score:
+                    best_score = score
+                    best_move = (i, j)
+    
+    return best_move

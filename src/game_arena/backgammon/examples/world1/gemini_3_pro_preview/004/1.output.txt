@@ -1,0 +1,240 @@
+The strategy for this policy is to perform a 1-ply search (evaluating the board state after making the best possible legal move sequence with the current dice). It strictly generates legal moves by adhering to Backgammon rules: entering from the bar first, bearing off only when allowed, and prioritizing the usage of both dice, or the higher die if only one can be played. The evaluation function scores board states by maximizing the "race" lead (pip count difference), heavily rewarding hitting opponent checkers (putting them on the bar) and bearing off checkers, while penalizing exposed blots (risk of being hit) and rewarding strong blockades (primes).
+
+<code>
+import sys
+
+def policy(state: dict) -> str:
+    """
+    Backgammon policy that returns a legal move string by performing a 1-ply 
+    greedy search over legal actions, maximizing a heuristic board evaluation.
+    """
+    
+    # --- 1. State Extraction ---
+    my_pts = list(state['my_pts'])
+    opp_pts = list(state['opp_pts'])
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = sorted(state['dice'])  # Sort to handle High/Low logic: [Low, High]
+
+    # Quick exit if no dice
+    if not dice:
+        return "H:P,P"
+
+    # --- 2. Helper Functions ---
+    
+    def get_legal_starts(curr_my, curr_opp, curr_bar, die):
+        """
+        Identify legal start positions (0-23 or 'B') for a given die.
+        Enforces bar entry and bearing off rules.
+        """
+        starts = []
+        
+        # Rule: Must move larger checkers from Bar first
+        if curr_bar > 0:
+            target = 24 - die  # Direction 23->0, entry is "24" - die
+            # Valid if target is not blocked (opp has < 2 checkers)
+            # Target index is 0..23
+            if 0 <= target <= 23:
+                if curr_opp[target] < 2:
+                    starts.append('B')
+            # If blocked or somehow out of bounds (unlikely with d=1..6), no move
+            return starts
+
+        # Rule: Move from board
+        # Iterate from 23 down to 0
+        outside_home = sum(curr_my[i] for i in range(6, 24))
+        
+        for i in range(23, -1, -1):
+            if curr_my[i] > 0:
+                target = i - die
+                
+                if target >= 0:
+                    # Normal move
+                    if curr_opp[target] < 2:
+                        starts.append(i)
+                else:
+                    # Bearing off attempt
+                    if outside_home == 0:
+                        if target == -1:
+                            # Exact bear off
+                            starts.append(i)
+                        else:
+                            # Overshoot (target < -1) valid ONLY if no checkers on higher indices
+                            # Checker at i. Higher indices are i+1..5
+                            higher_checkers = 0
+                            for h in range(i + 1, 6):
+                                higher_checkers += curr_my[h]
+                            if higher_checkers == 0:
+                                starts.append(i)
+        return starts
+
+    def apply_move(curr_my, curr_opp, curr_bar, curr_opp_bar, curr_off, start, die):
+        """
+        Apply a single checker move to the state. Returns new state components.
+        """
+        new_my = list(curr_my)
+        new_opp = list(curr_opp)
+        new_bar = curr_bar
+        new_opp_bar = curr_opp_bar
+        new_off = curr_off
+        
+        target = -999
+        
+        if start == 'B':
+            new_bar -= 1
+            target = 24 - die
+        else:
+            new_my[start] -= 1
+            target = start - die
+            
+        if target < 0:
+            new_off += 1
+        else:
+            # Check for hit
+            if new_opp[target] == 1:
+                # HIT
+                new_opp[target] = 0
+                new_opp_bar += 1
+            new_my[target] += 1
+            
+        return new_my, new_opp, new_bar, new_opp_bar, new_off
+
+    def evaluate(curr_my, curr_opp, curr_bar, curr_opp_bar, curr_off, curr_opp_off):
+        """
+        Score the board from 'my' perspective.
+        """
+        # 1. Pips (Race) - lower my_pips is better
+        # Distance for me: i+1 (0 is 1 away from off). Bar is 25.
+        my_pips = sum((i + 1) * c for i, c in enumerate(curr_my)) + 25 * curr_bar
+        # Distance for opp: 24-i (moves 0->23). Bar at 0? No, Bar is virtual -1 -> 24 distance.
+        opp_pips = sum((24 - i) * c for i, c in enumerate(curr_opp)) + 25 * curr_opp_bar
+        
+        race_score = opp_pips - my_pips
+        
+        # 2. Hitting / Safety
+        hit_score = (curr_opp_bar * 400.0)
+        
+        # 3. Blots (Exposed single checkers are bad)
+        blot_penalty = 0
+        for i in range(24):
+            if curr_my[i] == 1:
+                # Rudimentary check: is this blot in danger?
+                # Assume unsafe if any opponent is behind it or on bar.
+                # Since opp moves 0 -> 23:
+                # Threat from bar (at 0) -> affects 0..5
+                # Threat from i-1 down to i-6
+                is_threatened = False
+                if curr_opp_bar > 0 and i < 6:
+                    is_threatened = True
+                else:
+                    # Check opp checkers "behind" (lower index) this blot within range 6+
+                    start_scan = max(0, i - 12)
+                    for j in range(start_scan, i):
+                        if curr_opp[j] > 0:
+                            is_threatened = True
+                            break
+                
+                if is_threatened:
+                    # Higher penalty in home board
+                    blot_penalty += 20 + (10 if i < 6 else 0)
+
+        # 4. Strength/Primes (Consecutive points with 2+)
+        prime_score = 0
+        consecutive = 0
+        for c in curr_my:
+            if c >= 2:
+                consecutive += 1
+            else:
+                if consecutive > 1:
+                    prime_score += consecutive * consecutive
+                consecutive = 0
+        prime_score += consecutive * consecutive
+        
+        # 5. Bearing Off
+        off_score = (curr_off * 1000.0)
+        
+        return race_score + hit_score - blot_penalty + (prime_score * 5.0) + off_score
+
+    # --- 3. Search for Moves ---
+    
+    candidates_full = []   # Sequences using both dice
+    candidates_high = []   # Sequences using only high die
+    candidates_low = []    # Sequences using only low die
+
+    if len(dice) == 1:
+        # Single die case (e.g. initial state or peculiar engine response)
+        die = dice[0]
+        starts = get_legal_starts(my_pts, opp_pts, my_bar, die)
+        for s in starts:
+            # Simulate
+            nm, no, nb, nob, noff = apply_move(my_pts, opp_pts, my_bar, opp_bar, my_off, s, die)
+            score = evaluate(nm, no, nb, nob, noff, opp_off)
+            s_str = f"A{s}" if isinstance(s, int) else "B"
+            # Represent as playing High (arbitrary choice for single die)
+            candidates_high.append((score, f"H:{s_str},P"))
+
+    else:
+        # Two dice available
+        d_low, d_high = dice[0], dice[1]
+        
+        # --- Try Order H (High, then Low) ---
+        starts1 = get_legal_starts(my_pts, opp_pts, my_bar, d_high)
+        for s1 in starts1:
+            m1_m, m1_o, m1_b, m1_ob, m1_off = apply_move(my_pts, opp_pts, my_bar, opp_bar, my_off, s1, d_high)
+            
+            starts2 = get_legal_starts(m1_m, m1_o, m1_b, d_low)
+            if starts2:
+                for s2 in starts2:
+                    m2_m, m2_o, m2_b, m2_ob, m2_off = apply_move(m1_m, m1_o, m1_b, m1_ob, m1_off, s2, d_low)
+                    score = evaluate(m2_m, m2_o, m2_b, m2_ob, m2_off, opp_off)
+                    s1_str = f"A{s1}" if isinstance(s1, int) else "B"
+                    s2_str = f"A{s2}" if isinstance(s2, int) else "B"
+                    candidates_full.append((score, f"H:{s1_str},{s2_str}"))
+            else:
+                # Could not play second die
+                score = evaluate(m1_m, m1_o, m1_b, m1_ob, m1_off, opp_off)
+                s1_str = f"A{s1}" if isinstance(s1, int) else "B"
+                candidates_high.append((score, f"H:{s1_str},P"))
+
+        # --- Try Order L (Low, then High) ---
+        # Note: If dice are equals, logic is same but produce duplicates (harmless)
+        # If Low != High, this explores playing Low first.
+        starts1 = get_legal_starts(my_pts, opp_pts, my_bar, d_low)
+        for s1 in starts1:
+            m1_m, m1_o, m1_b, m1_ob, m1_off = apply_move(my_pts, opp_pts, my_bar, opp_bar, my_off, s1, d_low)
+            
+            starts2 = get_legal_starts(m1_m, m1_o, m1_b, d_high)
+            if starts2:
+                for s2 in starts2:
+                    m2_m, m2_o, m2_b, m2_ob, m2_off = apply_move(m1_m, m1_o, m1_b, m1_ob, m1_off, s2, d_high)
+                    score = evaluate(m2_m, m2_o, m2_b, m2_ob, m2_off, opp_off)
+                    s1_str = f"A{s1}" if isinstance(s1, int) else "B"
+                    s2_str = f"A{s2}" if isinstance(s2, int) else "B"
+                    candidates_full.append((score, f"L:{s1_str},{s2_str}"))
+            else:
+                # Could not play second die
+                score = evaluate(m1_m, m1_o, m1_b, m1_ob, m1_off, opp_off)
+                s1_str = f"A{s1}" if isinstance(s1, int) else "B"
+                candidates_low.append((score, f"L:{s1_str},P"))
+
+    # --- 4. Selection based on Rules ---
+    # Rule: Must play both dice if possible
+    if candidates_full:
+        best = max(candidates_full, key=lambda x: x[0])
+        return best[1]
+    
+    # Rule: If cannot play both, must play higher die if possible
+    if candidates_high:
+        best = max(candidates_high, key=lambda x: x[0])
+        return best[1]
+        
+    # Rule: If higher not possible, can play lower
+    if candidates_low:
+        best = max(candidates_low, key=lambda x: x[0])
+        return best[1]
+        
+    # No legal moves
+    return "H:P,P"
+</code>

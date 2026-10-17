@@ -1,0 +1,408 @@
+The strategy for this policy is a fast tactical-connectivity search tailored for Lines of Action.
+
+Core ideas:
+1. Always generate only legal LOA moves.
+2. Prefer immediate wins.
+3. Avoid moves that allow the opponent to win immediately when possible.
+4. Evaluate positions mainly by connectivity:
+   - fewer connected components is better,
+   - smaller spread of pieces is better,
+   - centralization is better,
+   - larger biggest group is better,
+   - mobility and capture opportunities help.
+5. Use a shallow minimax with alpha-beta pruning under a tight time budget.
+6. Always keep a legal fallback move so the policy never fails.
+
+This is strong for LOA because the objective is connectivity, not material alone. The heuristic is designed to reward fast consolidation while still respecting tactical threats.
+
+<code>
+import time
+import math
+from collections import deque
+
+BOARD_N = 8
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)]
+
+INF = 10**18
+
+
+def in_bounds(r, c):
+    return 0 <= r < BOARD_N and 0 <= c < BOARD_N
+
+
+def clone_board(board):
+    return [row[:] for row in board]
+
+
+def format_move(mv):
+    fr, fc, tr, tc = mv
+    return f"{fr},{fc}:{tr},{tc}"
+
+
+def count_components(board, side):
+    visited = [[False] * BOARD_N for _ in range(BOARD_N)]
+    comps = 0
+    largest = 0
+    pieces = []
+
+    for r in range(BOARD_N):
+        for c in range(BOARD_N):
+            if board[r][c] == side:
+                pieces.append((r, c))
+
+    for r, c in pieces:
+        if not visited[r][c]:
+            comps += 1
+            q = deque([(r, c)])
+            visited[r][c] = True
+            sz = 0
+            while q:
+                x, y = q.popleft()
+                sz += 1
+                for dr, dc in DIRS:
+                    nx, ny = x + dr, y + dc
+                    if in_bounds(nx, ny) and not visited[nx][ny] and board[nx][ny] == side:
+                        visited[nx][ny] = True
+                        q.append((nx, ny))
+            if sz > largest:
+                largest = sz
+
+    if not pieces:
+        return 0, 0
+    return comps, largest
+
+
+def is_connected(board, side):
+    comps, _ = count_components(board, side)
+    return comps == 1
+
+
+def line_count(board, r, c, dr, dc):
+    cnt = 1
+    x, y = r + dr, c + dc
+    while in_bounds(x, y):
+        if board[x][y] != 0:
+            cnt += 1
+        x += dr
+        y += dc
+    x, y = r - dr, c - dc
+    while in_bounds(x, y):
+        if board[x][y] != 0:
+            cnt += 1
+        x -= dr
+        y -= dc
+    return cnt
+
+
+def is_legal_move(board, side, fr, fc, tr, tc):
+    if not (in_bounds(fr, fc) and in_bounds(tr, tc)):
+        return False
+    if board[fr][fc] != side:
+        return False
+    if fr == tr and fc == tc:
+        return False
+    if board[tr][tc] == side:
+        return False
+
+    dr = tr - fr
+    dc = tc - fc
+
+    sdr = 0 if dr == 0 else (1 if dr > 0 else -1)
+    sdc = 0 if dc == 0 else (1 if dc > 0 else -1)
+
+    # Must be horizontal/vertical/diagonal
+    if not (dr == 0 or dc == 0 or abs(dr) == abs(dc)):
+        return False
+
+    dist = max(abs(dr), abs(dc))
+    required = line_count(board, fr, fc, sdr, sdc)
+    if dist != required:
+        return False
+
+    # May jump own pieces, may not jump enemy pieces
+    x, y = fr + sdr, fc + sdc
+    while (x, y) != (tr, tc):
+        if board[x][y] == -side:
+            return False
+        x += sdr
+        y += sdc
+
+    return True
+
+
+def generate_moves(board, side):
+    moves = []
+    for r in range(BOARD_N):
+        for c in range(BOARD_N):
+            if board[r][c] != side:
+                continue
+            for dr, dc in DIRS:
+                dist = line_count(board, r, c, dr, dc)
+                tr = r + dr * dist
+                tc = c + dc * dist
+                if in_bounds(tr, tc) and is_legal_move(board, side, r, c, tr, tc):
+                    moves.append((r, c, tr, tc))
+    return moves
+
+
+def apply_move(board, side, mv):
+    fr, fc, tr, tc = mv
+    nb = clone_board(board)
+    nb[fr][fc] = 0
+    nb[tr][tc] = side
+    return nb
+
+
+def piece_positions(board, side):
+    out = []
+    for r in range(BOARD_N):
+        for c in range(BOARD_N):
+            if board[r][c] == side:
+                out.append((r, c))
+    return out
+
+
+def bounding_box_score(board, side):
+    pts = piece_positions(board, side)
+    if not pts:
+        return 0
+    rs = [p[0] for p in pts]
+    cs = [p[1] for p in pts]
+    area = (max(rs) - min(rs) + 1) * (max(cs) - min(cs) + 1)
+    return area
+
+
+def pairwise_distance_score(board, side):
+    pts = piece_positions(board, side)
+    n = len(pts)
+    if n <= 1:
+        return 0
+    total = 0
+    for i in range(n):
+        r1, c1 = pts[i]
+        for j in range(i + 1, n):
+            r2, c2 = pts[j]
+            total += max(abs(r1 - r2), abs(c1 - c2))
+    return total
+
+
+def centrality_score(board, side):
+    score = 0
+    for r in range(BOARD_N):
+        for c in range(BOARD_N):
+            if board[r][c] == side:
+                # closer to center is better
+                score += 7 - (abs(r - 3.5) + abs(c - 3.5))
+    return score
+
+
+def adjacency_score(board, side):
+    score = 0
+    for r in range(BOARD_N):
+        for c in range(BOARD_N):
+            if board[r][c] == side:
+                local = 0
+                for dr, dc in DIRS:
+                    nr, nc = r + dr, c + dc
+                    if in_bounds(nr, nc) and board[nr][nc] == side:
+                        local += 1
+                score += local
+    return score
+
+
+def winner(board):
+    my_conn = is_connected(board, 1)
+    opp_conn = is_connected(board, -1)
+    if my_conn and opp_conn:
+        # In LOA, player who just moved wins if both become connected.
+        # Since this evaluator is from side-to-move perspective after board state only,
+        # treat as neutral-ish terminal; search handles immediate wins by move generation.
+        return 0
+    if my_conn:
+        return 1
+    if opp_conn:
+        return -1
+    return None
+
+
+def evaluate(board):
+    w = winner(board)
+    if w == 1:
+        return 10_000_000
+    if w == -1:
+        return -10_000_000
+
+    my_comps, my_largest = count_components(board, 1)
+    op_comps, op_largest = count_components(board, -1)
+
+    my_moves = generate_moves(board, 1)
+    op_moves = generate_moves(board, -1)
+
+    my_material = len(piece_positions(board, 1))
+    op_material = len(piece_positions(board, -1))
+
+    score = 0
+    score += 2500 * (op_comps - my_comps)
+    score += 180 * (my_largest - op_largest)
+
+    score += 14 * (adjacency_score(board, 1) - adjacency_score(board, -1))
+    score += 10 * (centrality_score(board, 1) - centrality_score(board, -1))
+
+    score += 8 * (len(my_moves) - len(op_moves))
+    score += 25 * (my_material - op_material)
+
+    score += 18 * (bounding_box_score(board, -1) - bounding_box_score(board, 1))
+    score += 7 * (pairwise_distance_score(board, -1) - pairwise_distance_score(board, 1))
+
+    return score
+
+
+def move_heuristic(board, side, mv):
+    fr, fc, tr, tc = mv
+    target = board[tr][tc]
+    nb = apply_move(board, side, mv)
+
+    if is_connected(nb, side):
+        return 10**9
+    h = 0
+    if target == -side:
+        h += 5000
+
+    before_comps, before_largest = count_components(board, side)
+    after_comps, after_largest = count_components(nb, side)
+    opp_before, _ = count_components(board, -side)
+    opp_after, _ = count_components(nb, -side)
+
+    h += 3000 * (before_comps - after_comps)
+    h += 250 * (after_largest - before_largest)
+    h += 300 * (opp_after - opp_before)
+
+    # center preference
+    h -= 10 * (abs(tr - 3.5) + abs(tc - 3.5))
+    return h
+
+
+def ordered_moves(board, side):
+    moves = generate_moves(board, side)
+    moves.sort(key=lambda mv: move_heuristic(board, side, mv), reverse=True)
+    return moves
+
+
+def immediate_winning_move(board, side):
+    for mv in ordered_moves(board, side):
+        nb = apply_move(board, side, mv)
+        if is_connected(nb, side):
+            return mv
+    return None
+
+
+def opponent_has_immediate_win(board, side):
+    # side is player to move now; check if opponent has winning move next
+    opp = -side
+    for mv in ordered_moves(board, opp):
+        nb = apply_move(board, opp, mv)
+        if is_connected(nb, opp):
+            return True
+    return False
+
+
+def alphabeta(board, depth, alpha, beta, side, end_time):
+    if time.time() >= end_time:
+        return evaluate(board), None
+
+    w = winner(board)
+    if depth == 0 or w is not None:
+        return evaluate(board), None
+
+    moves = ordered_moves(board, side)
+    if not moves:
+        return evaluate(board), None
+
+    best_move = moves[0]
+
+    if side == 1:
+        value = -INF
+        for mv in moves:
+            if time.time() >= end_time:
+                break
+            nb = apply_move(board, side, mv)
+            child_val, _ = alphabeta(nb, depth - 1, alpha, beta, -side, end_time)
+            if child_val > value:
+                value = child_val
+                best_move = mv
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                break
+        return value, best_move
+    else:
+        value = INF
+        for mv in moves:
+            if time.time() >= end_time:
+                break
+            nb = apply_move(board, side, mv)
+            child_val, _ = alphabeta(nb, depth - 1, alpha, beta, -side, end_time)
+            if child_val < value:
+                value = child_val
+                best_move = mv
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value, best_move
+
+
+def choose_safe_move(board, moves):
+    # Prefer moves that do not allow immediate opponent win.
+    best = None
+    best_score = -INF
+    for mv in moves:
+        nb = apply_move(board, 1, mv)
+        if is_connected(nb, 1):
+            return mv
+        bad = opponent_has_immediate_win(nb, 1)
+        score = move_heuristic(board, 1, mv) - (2_000_000 if bad else 0)
+        if score > best_score:
+            best_score = score
+            best = mv
+    return best if best is not None else moves[0]
+
+
+def policy(board) -> str:
+    start = time.time()
+    end_time = start + 0.92
+
+    legal_moves = ordered_moves(board, 1)
+    if not legal_moves:
+        # Should not normally happen, but must return a legal string format.
+        # Fallback to a syntactically valid placeholder.
+        return "0,0:0,0"
+
+    # Immediate win
+    mv = immediate_winning_move(board, 1)
+    if mv is not None:
+        return format_move(mv)
+
+    # Strong tactical fallback
+    best_move = choose_safe_move(board, legal_moves)
+
+    # Iterative deepening
+    depth = 1
+    while time.time() < end_time:
+        try:
+            val, mv2 = alphabeta(board, depth, -INF, INF, 1, end_time)
+            if time.time() < end_time and mv2 is not None:
+                best_move = mv2
+            depth += 1
+        except Exception:
+            break
+
+    # Final legality guard
+    fr, fc, tr, tc = best_move
+    if not is_legal_move(board, 1, fr, fc, tr, tc):
+        for mv in legal_moves:
+            if is_legal_move(board, 1, *mv):
+                return format_move(mv)
+
+    return format_move(best_move)
+</code>

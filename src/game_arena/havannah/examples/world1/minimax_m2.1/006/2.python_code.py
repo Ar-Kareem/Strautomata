@@ -1,0 +1,178 @@
+
+from collections import deque
+from typing import List, Tuple
+
+# Hexagonal neighbour offsets (row, col)
+OFFSETS = [(-1, 0), (1, 0), (-1, -1), (0, -1), (0, 1), (1, 1)]
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    N = len(valid_mask)               # 15
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # ------------------------------------------------------------------
+    # Pre‑compute neighbour lists for every valid cell
+    # ------------------------------------------------------------------
+    neighbor_map = {}
+    valid_positions = set()
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c]:
+                valid_positions.add((r, c))
+                neigh = []
+                for dr, dc in OFFSETS:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]:
+                        neigh.append((nr, nc))
+                neighbor_map[(r, c)] = neigh
+
+    # ------------------------------------------------------------------
+    # Identify the six corner cells (degree == 2)
+    # ------------------------------------------------------------------
+    corners = [pos for pos in neighbor_map if len(neighbor_map[pos]) == 2]
+    corners_set = set(corners)
+
+    # ------------------------------------------------------------------
+    # Helper BFS that returns the whole component reachable from start
+    # ------------------------------------------------------------------
+    def bfs_reachable(start, stones):
+        visited = set()
+        q = deque([start])
+        visited.add(start)
+        while q:
+            cur = q.popleft()
+            for nb in neighbor_map[cur]:
+                if nb in stones and nb not in visited:
+                    visited.add(nb)
+                    q.append(nb)
+        return visited
+
+    # ------------------------------------------------------------------
+    # Check whether two stones are connected inside a stone set
+    # ------------------------------------------------------------------
+    def are_connected(a, b, stones):
+        if a == b:
+            return True
+        q = deque([a])
+        visited = {a}
+        while q:
+            cur = q.popleft()
+            for nb in neighbor_map[cur]:
+                if nb in stones and nb not in visited:
+                    if nb == b:
+                        return True
+                    visited.add(nb)
+                    q.append(nb)
+        return False
+
+    # ------------------------------------------------------------------
+    # Winning‑structure detectors (they all assume the new stone is already
+    # in the stone set)
+    # ------------------------------------------------------------------
+    def has_ring(stones, new_pos):
+        # find own‑stone neighbours of the new stone
+        neigh = [n for n in neighbor_map[new_pos] if n in stones]
+        if len(neigh) < 2:
+            return False
+        # a cycle appears if any two of those neighbours are already connected
+        stones_without_new = stones - {new_pos}
+        for i in range(len(neigh)):
+            for j in range(i + 1, len(neigh)):
+                if are_connected(neigh[i], neigh[j], stones_without_new):
+                    return True
+        return False
+
+    def has_bridge(stones):
+        # a bridge exists if any component contains at least two distinct corners
+        visited = set()
+        for c in (corner for corner in corners if corner in stones):
+            if c in visited:
+                continue
+            comp = bfs_reachable(c, stones)
+            corner_cnt = sum(1 for corner in corners if corner in comp)
+            if corner_cnt >= 2:
+                return True
+            visited.update(comp)
+        return False
+
+    def has_fork(stones):
+        visited = set()
+        for start in stones:
+            if start in visited:
+                continue
+            # explore one connected component
+            comp = set()
+            q = deque([start])
+            visited.add(start)
+            comp.add(start)
+            edge_dirs = set()
+            while q:
+                node = q.popleft()
+                if node not in corners_set:                # corners do not count as edges
+                    r, c = node
+                    for idx, (dr, dc) in enumerate(OFFSETS):
+                        nr, nc = r + dr, c + dc
+                        if not (0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]):
+                            edge_dirs.add(idx)
+                for nb in neighbor_map[node]:
+                    if nb in stones and nb not in visited:
+                        visited.add(nb)
+                        q.append(nb)
+                        comp.add(nb)
+            if len(edge_dirs) >= 3:
+                return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Full win‑check after a stone has been placed
+    # ------------------------------------------------------------------
+    def check_win(stones, new_pos):
+        return has_ring(stones, new_pos) or has_bridge(stones) or has_fork(stones)
+
+    # ------------------------------------------------------------------
+    # Enumerate empty cells
+    # ------------------------------------------------------------------
+    empties = [pos for pos in valid_positions if pos not in me_set and pos not in opp_set]
+
+    # ------------------------------------------------------------------
+    # 1) Try to win immediately
+    # ------------------------------------------------------------------
+    for move in empties:
+        new_me = me_set.copy()
+        new_me.add(move)
+        if check_win(new_me, move):
+            return move
+
+    # ------------------------------------------------------------------
+    # 2) Block an opponent immediate win
+    # ------------------------------------------------------------------
+    for move in empties:
+        new_opp = opp_set.copy()
+        new_opp.add(move)
+        if check_win(new_opp, move):
+            return move
+
+    # ------------------------------------------------------------------
+    # 3) Greedy heuristic fallback
+    # ------------------------------------------------------------------
+    best_score = -1
+    best_move = None
+    for r, c in empties:
+        # number of own stones adjacent
+        my_adj = sum(1 for nb in neighbor_map[(r, c)] if nb in me_set)
+        # number of opponent stones adjacent (slight penalty)
+        opp_adj = sum(1 for nb in neighbor_map[(r, c)] if nb in opp_set)
+        # edge touches: missing neighbours
+        edge_touches = sum(
+            1 for dr, dc in OFFSETS
+            if not (0 <= r + dr < N and 0 <= c + dc < N and valid_mask[r + dr][c + dc])
+        )
+        is_corner = 1 if (r, c) in corners_set else 0
+
+        score = my_adj * 10 + edge_touches * 5 + is_corner * 20 - opp_adj * 2
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    # Should always have a move
+    return best_move if best_move is not None else empties[0]

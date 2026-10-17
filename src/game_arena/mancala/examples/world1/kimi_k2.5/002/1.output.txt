@@ -1,0 +1,151 @@
+The strategy uses a minimax search with alpha-beta pruning to a depth of 6 plies. It evaluates board states based on store difference (weighted heavily), remaining seeds on each side, and potential for extra moves. Moves are ordered to prioritize extra turns (landing in the store) to improve pruning efficiency. The search handles terminal states correctly by calculating final scores when one side is cleared. This provides a strong balance of tactical awareness (captures, extra moves) and positional play while staying within the 1-second time limit.
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Convert to tuples for immutability in search
+    you_t = tuple(you)
+    opp_t = tuple(opponent)
+    
+    def apply_move(y, o, m):
+        """Apply move m for player with state y against opponent o.
+        Returns (new_y, new_o, extra_turn)"""
+        y = list(y)
+        o = list(o)
+        seeds = y[m]
+        y[m] = 0
+        pos = m + 1
+        
+        while seeds > 0:
+            if pos == 13:
+                pos = 0
+            
+            if pos < 6:
+                # My house
+                y[pos] += 1
+                seeds -= 1
+                if seeds == 0:
+                    # Check capture: landed in empty house on my side
+                    if y[pos] == 1:
+                        opp_idx = 5 - pos
+                        if o[opp_idx] > 0:
+                            y[6] += 1 + o[opp_idx]
+                            y[pos] = 0
+                            o[opp_idx] = 0
+                    return tuple(y), tuple(o), False
+                pos += 1
+            elif pos == 6:
+                # My store
+                y[6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    # Extra turn
+                    return tuple(y), tuple(o), True
+                pos += 1
+            else:
+                # Opponent house (7-12 maps to 0-5)
+                o[pos - 7] += 1
+                seeds -= 1
+                if seeds == 0:
+                    return tuple(y), tuple(o), False
+                pos += 1
+    
+    def evaluate(y, o):
+        """Heuristic evaluation from perspective of player y"""
+        # Store difference is primary
+        score = (y[6] - o[6]) * 100
+        
+        # Seeds on board (potential value)
+        score += (sum(y[:6]) - sum(o[:6])) * 2
+        
+        # Potential extra moves
+        for i in range(6):
+            if y[i] == 6 - i:  # Exact number to reach store
+                score += 15
+                
+        return score
+    
+    def is_terminal(y, o):
+        return sum(y[:6]) == 0 or sum(o[:6]) == 0
+    
+    def terminal_value(y, o):
+        if sum(y[:6]) == 0:
+            final_y = y[6]
+            final_o = o[6] + sum(o[:6])
+        else:
+            final_y = y[6] + sum(y[:6])
+            final_o = o[6]
+        
+        if final_y > final_o:
+            return 10000
+        elif final_y < final_o:
+            return -10000
+        return 0
+    
+    def alphabeta(y, o, depth, alpha, beta, maximizing):
+        """Alpha-beta search"""
+        if is_terminal(y, o):
+            return terminal_value(y, o)
+        if depth == 0:
+            return evaluate(y, o)
+        
+        if maximizing:
+            value = -float('inf')
+            moves = [i for i in range(6) if y[i] > 0]
+            # Prioritize moves that give extra turns
+            moves.sort(key=lambda m: 0 if y[m] == 6 - m else 1)
+            
+            for m in moves:
+                ny, no, extra = apply_move(y, o, m)
+                if extra:
+                    v = alphabeta(ny, no, depth - 1, alpha, beta, True)
+                else:
+                    v = alphabeta(ny, no, depth - 1, alpha, beta, False)
+                value = max(value, v)
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value
+        else:
+            value = float('inf')
+            moves = [i for i in range(6) if o[i] > 0]
+            moves.sort(key=lambda m: 0 if o[m] == 6 - m else 1)
+            
+            for m in moves:
+                # Swap perspective: opponent is now the "mover"
+                no, ny, extra = apply_move(o, y, m)
+                if extra:
+                    v = alphabeta(ny, no, depth - 1, alpha, beta, False)
+                else:
+                    v = alphabeta(ny, no, depth - 1, alpha, beta, True)
+                value = min(value, v)
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return value
+    
+    # Get legal moves
+    legal = [i for i in range(6) if you_t[i] > 0]
+    if not legal:
+        return 0
+    
+    # Find best move with depth 6 search
+    best_move = legal[0]
+    best_score = -float('inf')
+    alpha = -float('inf')
+    depth = 6
+    
+    # Try moves, prioritizing likely good ones first
+    for m in sorted(legal, key=lambda x: 0 if you_t[x] == 6 - x else 1):
+        ny, no, extra = apply_move(you_t, opp_t, m)
+        if extra:
+            score = alphabeta(ny, no, depth - 1, alpha, float('inf'), True)
+        else:
+            score = alphabeta(ny, no, depth - 1, alpha, float('inf'), False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = m
+        alpha = max(alpha, score)
+    
+    return best_move
+</code>

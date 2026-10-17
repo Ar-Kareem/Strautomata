@@ -1,0 +1,264 @@
+
+import copy
+
+def policy(state: dict) -> str:
+    # --- Helper Classes and Functions ---
+    
+    def get_dest_from_bar(die):
+        """Destination index when entering from bar (opponent's home 18-23)."""
+        return 24 - die
+
+    def get_valid_moves(my_pts, opp_pts, my_bar, die):
+        """Returns a list of valid (source, destination) tuples for a given die."""
+        moves = []
+        
+        # 1. Must move from bar if checkers exist
+        if my_bar > 0:
+            dest = get_dest_from_bar(die)
+            # Check if entry is blocked (2 or more opponents)
+            if 0 <= dest <= 23 and opp_pts[dest] < 2:
+                moves.append(('B', dest))
+            return moves # If on bar, must try to enter, can't move other checkers
+
+        # 2. Check board moves
+        for p in range(23, -1, -1):
+            if my_pts[p] > 0:
+                dest = p - die
+                
+                # Normal move
+                if dest >= 0:
+                    if opp_pts[dest] < 2:
+                        moves.append((f'A{p}', dest))
+                # Bearing off
+                elif dest < 0:
+                    # Check if bearing off is legal
+                    # All checkers must be in home board (indices 0-5)
+                    if sum(my_pts[6:]) == 0:
+                        # Check strict bearing off rules
+                        # If exact roll (p - die == -1), always legal.
+                        # If overshoot (p - die < -1), legal only if no checkers on higher points (p+1 .. 5)
+                        # (Because if there were higher checkers, we must move them instead)
+                        
+                        is_exact = (p - die == -1)
+                        higher_checkers = sum(my_pts[p+1:6])
+                        
+                        if is_exact or higher_checkers == 0:
+                            moves.append((f'A{p}', 'off'))
+                            
+        return moves
+
+    def apply_move(my_pts, opp_pts, my_bar, opp_bar, my_off, source, die):
+        """Returns a new state tuple after applying a move."""
+        n_my_pts = list(my_pts)
+        n_opp_pts = list(opp_pts)
+        n_my_bar = my_bar
+        n_opp_bar = opp_bar
+        n_my_off = my_off
+        
+        dest = None
+        
+        if source == 'B':
+            n_my_bar -= 1
+            dest = get_dest_from_bar(die)
+        else:
+            idx = int(source[1:])
+            n_my_pts[idx] -= 1
+            dest = idx - die
+            
+        if dest == 'off':
+            n_my_off += 1
+        elif dest is not None and dest >= 0:
+            # Check for hit
+            if n_opp_pts[dest] == 1:
+                n_opp_pts[dest] = 0
+                n_opp_bar += 1
+            n_my_pts[dest] += 1
+            
+        return n_my_pts, n_opp_pts, n_my_bar, n_opp_bar, n_my_off
+
+    def evaluate(my_pts, opp_pts, my_bar, opp_bar, my_off):
+        """Heuristic evaluation of the board state."""
+        score = 0.0
+        
+        # 1. Pip Count (approximate)
+        # We want our pip count low, opponent's high.
+        my_pip = 0
+        for i, c in enumerate(my_pts):
+            if c > 0:
+                my_pip += (i + 1) * c # Distance to bear off (approx)
+        my_pip += my_bar * 25
+        score -= my_pip * 0.1
+        
+        opp_pip = 0
+        for i, c in enumerate(opp_pts):
+            if c > 0:
+                opp_pip += (24 - i) * c
+        opp_pip += opp_bar * 25
+        score += opp_pip * 0.1
+        
+        # 2. Bear off bonus
+        score += my_off * 50
+        
+        # 3. Structure
+        # Penalize blots (single checkers)
+        # Bonus for points (2+ checkers)
+        for i in range(24):
+            if my_pts[i] == 1:
+                # Blot penalty (higher penalty if in opponent's home or close to home)
+                if i >= 18: # Opponent's home
+                    score -= 15
+                else:
+                    score -= 5
+            elif my_pts[i] >= 2:
+                score += 3 # Point bonus
+                if i < 6: # Point in home board is good
+                    score += 2
+                    
+        # 4. Prime detection (consecutive points)
+        # Simple check for chains
+        consecutive = 0
+        for i in range(24):
+            if my_pts[i] >= 2:
+                consecutive += 1
+                if consecutive >= 3:
+                    score += consecutive * 2
+            else:
+                consecutive = 0
+
+        # Penalize opponent's strong points
+        for i in range(24):
+            if opp_pts[i] >= 2:
+                if i < 6: # Their home board points are dangerous
+                    score -= 5
+
+        return score
+
+    # --- Main Policy Logic ---
+    
+    dice = state['dice']
+    if not dice:
+        return "H:P,P"
+
+    d1 = dice[0]
+    d2 = dice[1] if len(dice) > 1 else None
+    
+    if d2 is None:
+        d_high = d1
+        d_low = None
+    else:
+        d_high = max(d1, d2)
+        d_low = min(d1, d2)
+
+    c_my_pts = state['my_pts']
+    c_opp_pts = state['opp_pts']
+    c_my_bar = state['my_bar']
+    c_opp_bar = state['opp_bar']
+    c_my_off = state['my_off']
+
+    valid_pairs = [] # Stores (score, order, src1, src2)
+
+    # --- Try playing both dice ---
+    
+    # If d_low is None, we can't play pairs
+    if d_low is not None:
+        # Order 1: High then Low
+        moves_h = get_valid_moves(c_my_pts, c_opp_pts, c_my_bar, d_high)
+        for src1, dest1 in moves_h:
+            # Apply first move
+            s_pts, s_oppts, s_bar, s_obar, s_off = apply_move(
+                c_my_pts, c_opp_pts, c_my_bar, c_opp_bar, c_my_off, src1, d_high
+            )
+            # Get valid moves for second die
+            moves_l = get_valid_moves(s_pts, s_oppts, s_bar, d_low)
+            for src2, dest2 in moves_l:
+                # Apply second move
+                f_pts, f_oppts, f_bar, f_obar, f_off = apply_move(
+                    s_pts, s_oppts, s_bar, s_obar, s_off, src2, d_low
+                )
+                sc = evaluate(f_pts, f_oppts, f_bar, f_obar, f_off)
+                if dest1 == 'off': sc += 20
+                if dest2 == 'off': sc += 20
+                valid_pairs.append((sc, 'H', src1, src2))
+
+        # Order 2: Low then High
+        moves_l = get_valid_moves(c_my_pts, c_opp_pts, c_my_bar, d_low)
+        for src1, dest1 in moves_l:
+            # Apply first move
+            s_pts, s_oppts, s_bar, s_obar, s_off = apply_move(
+                c_my_pts, c_opp_pts, c_my_bar, c_opp_bar, c_my_off, src1, d_low
+            )
+            # Get valid moves for second die
+            moves_h = get_valid_moves(s_pts, s_oppts, s_bar, d_high)
+            for src2, dest2 in moves_h:
+                # Apply second move
+                f_pts, f_oppts, f_bar, f_obar, f_off = apply_move(
+                    s_pts, s_oppts, s_bar, s_obar, s_off, src2, d_high
+                )
+                sc = evaluate(f_pts, f_oppts, f_bar, f_obar, f_off)
+                if dest1 == 'off': sc += 20
+                if dest2 == 'off': sc += 20
+                valid_pairs.append((sc, 'L', src1, src2))
+
+    # If we found valid pairs, we MUST play both dice.
+    # Select the one with the best score.
+    if valid_pairs:
+        valid_pairs.sort(key=lambda x: x[0], reverse=True)
+        best = valid_pairs[0]
+        return f"{best[1]}:{best[2]},{best[3]}"
+
+    # --- Try playing single die ---
+    # If no pairs found, try to play one die.
+    # Constraint: Must play higher die if possible.
+    
+    best_single = None
+    score_h = -float('inf')
+    score_l = -float('inf')
+    move_h = None
+    move_l = None
+
+    # Try High
+    moves_h = get_valid_moves(c_my_pts, c_opp_pts, c_my_bar, d_high)
+    if moves_h:
+        # Pick best single move for High
+        current_best_h = -float('inf')
+        for src, dest in moves_h:
+            s_pts, s_oppts, s_bar, s_obar, s_off = apply_move(
+                c_my_pts, c_opp_pts, c_my_bar, c_opp_bar, c_my_off, src, d_high
+            )
+            sc = evaluate(s_pts, s_oppts, s_bar, s_obar, s_off)
+            if dest == 'off': sc += 20
+            if sc > current_best_h:
+                current_best_h = sc
+                move_h = src
+                score_h = current_best_h
+
+    # Try Low (if exists)
+    if d_low is not None:
+        moves_l = get_valid_moves(c_my_pts, c_opp_pts, c_my_bar, d_low)
+        if moves_l:
+            # Pick best single move for Low
+            current_best_l = -float('inf')
+            for src, dest in moves_l:
+                s_pts, s_oppts, s_bar, s_obar, s_off = apply_move(
+                    c_my_pts, c_opp_pts, c_my_bar, c_opp_bar, c_my_off, src, d_low
+                )
+                sc = evaluate(s_pts, s_oppts, s_bar, s_obar, s_off)
+                if dest == 'off': sc += 20
+                if sc > current_best_l:
+                    current_best_l = sc
+                    move_l = src
+                    score_l = current_best_l
+
+    # Decision logic for single die
+    # Rule: If only one die can be played, play the higher.
+    # This implies: if H is playable, we MUST play H (even if L move is 'better' heuristic-wise?).
+    # Usually yes, strict adherence.
+    # "If only one die can be played, you must play the higher die when possible."
+    
+    if move_h:
+        return f"H:{move_h},P"
+    elif move_l:
+        return f"L:{move_l},P"
+    
+    # No moves possible
+    return "H:P,P"

@@ -1,0 +1,1567 @@
+<thinking>
+Let me analyze this Kalah (Mancala) game and implement a good policy.
+
+First, let me understand the rules:
+1. Pick a house (0-5) with seeds
+2. Distribute seeds counter-clockwise, skipping opponent's store
+3. If last seed lands in your store, you get another turn
+4. If last seed lands in an empty house on your side and opposite house has seeds, capture both
+
+Key strategies:
+1. Prioritize moves that give extra turns (landing in your store)
+2. Look for capture opportunities
+3. Prevent opponent from capturing
+4. Consider minimax search with alpha-beta pruning
+
+Let me implement the game logic first, then a minimax search.
+
+The sowing pattern:
+- From house i, seeds go to: i+1, i+2, ..., 5, your store (6), opponent 0-5, back to your 0-5, etc.
+- Skip opponent's store (index 6 in opponent's list)
+
+Let me trace through the sowing:
+- Total positions in cycle: 6 (your houses) + 1 (your store) + 6 (opponent houses) = 13
+- Position mapping from house i with seed j:
+  - First seeds go to your houses i+1 to 5 (that's 5-i positions)
+  - Then your store (position 6-i from start)
+  - Then opponent houses 0-5 (positions 7-i to 12-i from start)
+  - Then back to your houses 0-5, etc.
+
+Let me implement the simulation:
+
+```python
+def simulate_move(you, opponent, move):
+    you = you.copy()
+    opponent = opponent.copy()
+    
+    seeds = you[move]
+    you[move] = 0
+    
+    pos = move  # current position in your houses (0-5) or 6 for store
+    # We'll track position in a 13-slot cycle: 0-5 your houses, 6 your store, 7-12 opponent houses
+    
+    cycle_pos = move
+    while seeds > 0:
+        cycle_pos = (cycle_pos + 1) % 13
+        if cycle_pos <= 5:
+            you[cycle_pos] += 1
+        elif cycle_pos == 6:
+            you[6] += 1
+        else:  # 7-12 -> opponent houses 0-5
+            opponent[cycle_pos - 7] += 1
+        seeds -= 1
+    
+    # Check where last seed landed
+    extra_turn = False
+    if cycle_pos == 6:
+        extra_turn = True
+    elif cycle_pos <= 5:
+        # Landed in your house
+        if you[cycle_pos] == 1:  # Was empty before (now has 1)
+            opposite = 5 - cycle_pos
+            if opponent[opposite] > 0:
+                # Capture
+                you[6] += you[cycle_pos] + opponent[opposite]
+                you[cycle_pos] = 0
+                opponent[opposite] = 0
+    
+    return you, opponent, extra_turn
+```
+
+Wait, I need to be more careful. The "was empty before" check - after we place the seed, if it's 1, it was empty. But we need to track this during the sowing, not after.
+
+Actually, let me reconsider. If the last seed lands in your house and makes it 1, that means it was 0 before the drop. But we also drop seeds into it during the sowing, so we need to be careful.
+
+Actually wait, if we're sowing from house i, and the last seed lands in house j (j != i), and you[j] is now 1, it was indeed empty before. But if j == i (we went around), it's not a capture situation because you[i] was not empty (it had the seeds we picked up).
+
+Let me re-read: "If the last seed lands in one of your houses you[i] (0..5) and it was empty before the drop"
+
+"before the drop" - I think this means before we started sowing. So if the house had 0 seeds initially before we started distributing from the picked house.
+
+Actually, a subtlety: during multi-lap sowing, we might drop seeds into a house multiple times. The "was empty before" should refer to the state at the very beginning before we started sowing.
+
+Let me implement more carefully:
+
+```python
+def simulate_move(you, opponent, move):
+    you = list(you)
+    opponent = list(opponent)
+    
+    # Remember which houses were empty at the start
+    empty_houses = [you[i] == 0 for i in range(6)]
+    
+    seeds = you[move]
+    you[move] = 0
+    
+    cycle_pos = move
+    while seeds > 0:
+        cycle_pos = (cycle_pos + 1) % 13
+        if cycle_pos <= 5:
+            you[cycle_pos] += 1
+        elif cycle_pos == 6:
+            you[6] += 1
+        else:  # 7-12 -> opponent houses 0-5
+            opponent[cycle_pos - 7] += 1
+        seeds -= 1
+    
+    # Check where last seed landed
+    extra_turn = False
+    if cycle_pos == 6:
+        extra_turn = True
+    elif cycle_pos <= 5:
+        # Landed in your house
+        if empty_houses[cycle_pos]:  # Was empty before sowing started
+            opposite = 5 - cycle_pos
+            if opponent[opposite] > 0:
+                # Capture
+                you[6] += you[cycle_pos] + opponent[opposite]
+                you[cycle_pos] = 0
+                opponent[opposite] = 0
+    
+    return you, opponent, extra_turn
+```
+
+Now for the minimax with alpha-beta:
+
+```python
+def minimax(you, opponent, depth, alpha, beta, maximizing):
+    # Check game over
+    if sum(you[:6]) == 0:
+        opponent[6] += sum(opponent[:6])
+        for i in range(6):
+            opponent[i] = 0
+        return you[6] - opponent[6], -1
+    if sum(opponent[:6]) == 0:
+        you[6] += sum(you[:6])
+        for i in range(6):
+            you[i] = 0
+        return you[6] - opponent[6], -1
+    
+    if depth == 0:
+        return you[6] - opponent[6], -1
+    
+    if maximizing:
+        max_eval = float('-inf')
+        best_move = -1
+        for i in range(6):
+            if you[i] > 0:
+                new_you, new_opp, extra = simulate_move(you, opponent, i)
+                if extra:
+                    eval_score, _ = minimax(new_you, new_opp, depth, alpha, beta, True)
+                else:
+                    eval_score, _ = minimax(new_opp, new_you, depth - 1, -beta, -alpha, True)
+                    eval_score = -eval_score
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = i
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+        return max_eval, best_move
+    # ... similar for minimizing
+```
+
+Actually, since we're using negamax style with swapping, let me simplify:
+
+```python
+def negamax(you, opponent, depth, alpha, beta):
+    # Check game over for you
+    if sum(you[:6]) == 0:
+        final_you = you[6]
+        final_opp = opponent[6] + sum(opponent[:6])
+        return final_you - final_opp, -1
+    # Check game over for opponent
+    if sum(opponent[:6]) == 0:
+        final_you = you[6] + sum(you[:6])
+        final_opp = opponent[6]
+        return final_you - final_opp, -1
+    
+    if depth == 0:
+        return you[6] - opponent[6], -1
+    
+    max_eval = float('-inf')
+    best_move = -1
+    for i in range(6):
+        if you[i] > 0:
+            new_you, new_opp, extra = simulate_move(you, opponent, i)
+            if extra:
+                # Same player moves again
+                eval_score, _ = negamax(new_you, new_opp, depth, alpha, beta)
+            else:
+                # Opponent moves
+                eval_score, _ = negamax(new_opp, new_you, depth - 1, -beta, -alpha)
+                eval_score = -eval_score
+            if eval_score > max_eval or best_move == -1:
+                max_eval = eval_score
+                best_move = i
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+    return max_eval, best_move
+```
+
+Let me also add move ordering to improve alpha-beta pruning. Prioritize:
+1. Moves that give extra turns
+2. Moves that capture
+3. Higher capture values
+
+Also, I should use iterative deepening to manage time.
+
+Let me refine the code:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.9  # seconds
+    
+    def simulate_move(you, opponent, move):
+        you = list(you)
+        opponent = list(opponent)
+        
+        empty_houses = [you[i] == 0 for i in range(6)]
+        
+        seeds = you[move]
+        you[move] = 0
+        
+        cycle_pos = move
+        while seeds > 0:
+            cycle_pos = (cycle_pos + 1) % 13
+            if cycle_pos <= 5:
+                you[cycle_pos] += 1
+            elif cycle_pos == 6:
+                you[6] += 1
+            else:
+                opponent[cycle_pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = False
+        if cycle_pos == 6:
+            extra_turn = True
+        elif cycle_pos <= 5:
+            if empty_houses[cycle_pos]:
+                opposite = 5 - cycle_pos
+                if opponent[opposite] > 0:
+                    you[6] += you[cycle_pos] + opponent[opposite]
+                    you[cycle_pos] = 0
+                    opponent[opposite] = 0
+        
+        return you, opponent, extra_turn
+    
+    def negamax(you, opponent, depth, alpha, beta):
+        if time.time() - start_time > time_limit:
+            return you[6] - opponent[6], -1
+        
+        if sum(you[:6]) == 0:
+            final_you = you[6]
+            final_opp = opponent[6] + sum(opponent[:6])
+            return final_you - final_opp, -1
+        if sum(opponent[:6]) == 0:
+            final_you = you[6] + sum(you[:6])
+            final_opp = opponent[6]
+            return final_you - final_opp, -1
+        
+        if depth == 0:
+            return you[6] - opponent[6], -1
+        
+        max_eval = float('-inf')
+        best_move = -1
+        
+        moves = [i for i in range(6) if you[i] > 0]
+        # Sort moves by heuristic value
+        def move_priority(i):
+            new_you, new_opp, extra = simulate_move(you, opponent, i)
+            score = 0
+            if extra:
+                score += 100
+            score += (new_you[6] - you[6])  # Capture bonus
+            return -score  # Negative for descending sort
+        moves.sort(key=move_priority)
+        
+        for i in moves:
+            new_you, new_opp, extra = simulate_move(you, opponent, i)
+            if extra:
+                eval_score, _ = negamax(new_you, new_opp, depth, alpha, beta)
+            else:
+                eval_score, _ = negamax(new_opp, new_you, depth - 1, -beta, -alpha)
+                eval_score = -eval_score
+            if eval_score > max_eval or best_move == -1:
+                max_eval = eval_score
+                best_move = i
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    
+    best_move = None
+    for depth in range(1, 20):
+        if time.time() - start_time > time_limit:
+            break
+        _, move = negamax(list(you), list(opponent), depth, float('-inf'), float('inf'))
+        if move != -1:
+            best_move = move
+    
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    return best_move
+```
+
+Wait, there's an issue with the move ordering - I'm calling simulate_move twice. Let me optimize:
+
+Actually, the sorting overhead might be costly. Let me simplify and just use a fixed depth without move ordering first, then see if we need it.
+
+Also, I notice I'm not using the `opponent` variable correctly in the game over check - when we check if opponent's houses are empty, we should check that it's their turn, but since we always check from "you" perspective in negamax after swapping, this should be fine.
+
+Let me trace through once more to make sure my logic is correct:
+
+Initial: you move
+- If extra turn, you move again (don't swap)
+- If no extra turn, opponent moves (swap you/opponent)
+
+In negamax, we're always from the perspective of the player to move (who is "you" in the current call). If we get an extra turn, we call negamax again with same perspective. If not, we swap and negate.
+
+Let me also consider an evaluation function that's better than just score difference:
+
+```python
+def evaluate(you, opponent):
+    score = you[6] - opponent[6]
+    # Add bonus for seeds closer to your store
+    for i in range(6):
+        score += you[i] * 0.1 * (i + 1) / 6
+        score -= opponent[i] * 0.1 * (5 - i + 1) / 6
+    return score
+```
+
+Actually, let me keep it simple for now and just use store difference.
+
+One more thing: I should handle the timeout more gracefully. If we timeout in the middle of a search, we should return the best move from the previous completed depth.
+
+Let me also check the capture logic again. The rule says:
+- Last seed lands in one of your houses (0..5)
+- That house was empty before the drop
+- The opposite house (opponent[5-i]) has seeds
+- Then capture
+
+Wait, I should also double-check my cycle logic. The sowing goes:
+1. Your houses i+1 to 5
+2. Your store (index 6)
+3. Opponent houses 0 to 5
+4. Your houses 0 to 5 (not store yet - we skip opponent's store)
+5. Your store again
+6. And so on...
+
+So the cycle is: your house 0-5 (6 slots), your store (1 slot), opponent houses 0-5 (6 slots) = 13 slots total, skipping opponent's store.
+
+If we're at position `move` (0-5), the next positions are:
+- move+1, move+2, ..., 5 (your houses)
+- 6 (your store)
+- 7, 8, ..., 12 (mapped to opponent houses 0-5)
+- 0, 1, ..., 5 (your houses again)
+- 6 (your store)
+- ...
+
+Wait, I'm using 7-12 for opponent houses, but when we wrap around, we go to 0 (your house 0). Let me trace:
+
+Starting from house 5:
+- cycle_pos = 5
+- (5+1) % 13 = 6 -> your store
+- (6+1) % 13 = 7 -> opponent house 0
+- ...
+- (12+1) % 13 = 0 -> your house 0
+
+Yes, this is correct.
+
+But wait, there's an issue. The problem says houses are indexed 0..5, and the sowing goes:
+1. you[i+1] through you[5]
+2. you[6] (your store)
+3. opponent[0] through opponent[5]
+4. you[0] through you[5]
+
+This means after opponent[5], we go to you[0], not skip back to you[i+1]. My cycle logic seems correct.
+
+Actually, let me re-read the problem:
+
+"Remove all seeds from that house and place them in order as:
+1. you[i+1] through you[5]
+2. you[6] (your store)
+3. opponent[0] through opponent[5]
+4. you[0] through you[5]
+...
+repeating as needed and skipping opponent[6] (the opponent's store)."
+
+So the order is: you[i+1], ..., you[5], you[6], opponent[0], ..., opponent[5], you[0], ..., you[5], you[6], opponent[0], ...
+
+Wait, but the way it's written, after you[0] through you[5], it should continue with you[6] again (your store), then opponent houses. My cycle of 13 should handle this correctly.
+
+Let me trace an example. Starting from house 3 with 10 seeds:
+- you[3] = 0 (picked up 10)
+- cycle_pos = 3
+- (3+1) % 13 = 4 -> you[4] += 1 (9 left)
+- (4+1) % 13 = 5 -> you[5] += 1 (8 left)
+- (5+1) % 13 = 6 -> you[6] += 1 (7 left)
+- (6+1) % 13 = 7 -> opponent[0] += 1 (6 left)
+- (7+1) % 13 = 8 -> opponent[1] += 1 (5 left)
+- (8+1) % 13 = 9 -> opponent[2] += 1 (4 left)
+- (9+1) % 13 = 10 -> opponent[3] += 1 (3 left)
+- (10+1) % 13 = 11 -> opponent[4] += 1 (2 left)
+- (11+1) % 13 = 12 -> opponent[5] += 1 (1 left)
+- (12+1) % 13 = 0 -> you[0] += 1 (0 left)
+
+Last seed in you[0] (cycle_pos = 0). 
+
+This looks correct.
+
+Now let me also consider: the problem says I should always return a legal move. So I need to ensure I never return -1 or a move where you[i] == 0.
+
+Let me finalize the code:
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.85
+    
+    def simulate_move(you, opponent, move):
+        you = list(you)
+        opponent = list(opponent)
+        
+        empty_houses = [you[i] == 0 for i in range(6)]
+        
+        seeds = you[move]
+        you[move] = 0
+        
+        cycle_pos = move
+        while seeds > 0:
+            cycle_pos = (cycle_pos + 1) % 13
+            if cycle_pos <= 5:
+                you[cycle_pos] += 1
+            elif cycle_pos == 6:
+                you[6] += 1
+            else:
+                opponent[cycle_pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = False
+        if cycle_pos == 6:
+            extra_turn = True
+        elif cycle_pos <= 5:
+            if empty_houses[cycle_pos]:
+                opposite = 5 - cycle_pos
+                if opponent[opposite] > 0:
+                    you[6] += you[cycle_pos] + opponent[opposite]
+                    you[cycle_pos] = 0
+                    opponent[opposite] = 0
+        
+        return you, opponent, extra_turn
+    
+    def negamax(you, opponent, depth, alpha, beta):
+        nonlocal timed_out
+        if time.time() - start_time > time_limit:
+            timed_out = True
+            return you[6] - opponent[6], -1
+        
+        you_sum = sum(you[:6])
+        opp_sum = sum(opponent[:6])
+        
+        if you_sum == 0:
+            return you[6] - (opponent[6] + opp_sum), -1
+        if opp_sum == 0:
+            return (you[6] + you_sum) - opponent[6], -1
+        
+        if depth == 0:
+            return you[6] - opponent[6], -1
+        
+        max_eval = float('-inf')
+        best_move = -1
+        
+        for i in range(6):
+            if you[i] > 0:
+                new_you, new_opp, extra = simulate_move(you, opponent, i)
+                if extra:
+                    eval_score, _ = negamax(new_you, new_opp, depth, alpha, beta)
+                else:
+                    eval_score, _ = negamax(new_opp, new_you, depth - 1, -beta, -alpha)
+                    eval_score = -eval_score
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = i
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+        
+        return max_eval, best_move
+    
+    best_move = None
+    timed_out = False
+    
+    for depth in range(1, 30):
+        if timed_out or time.time() - start_time > time_limit:
+            break
+        timed_out = False
+        _, move = negamax(list(you), list(opponent), depth, float('-inf'), float('inf'))
+        if not timed_out and move != -1:
+            best_move = move
+    
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+```
+
+Actually, I think there's still an issue. When we time out in the middle of a search at a higher depth, we might have partially explored and found a move that's not optimal. We should only update best_move if the search completed without timing out.
+
+But actually, even partial results might be useful, especially if we're deep in the tree. Let me just be safe and only use completed searches.
+
+Also, I should add move ordering to improve pruning. Let me score moves by:
+1. Extra turns (high priority)
+2. Captures (by capture value)
+3. Random tiebreaker or just left-to-right
+
+Let me also try to make the simulation faster by avoiding list copies where possible.
+
+Actually, for simplicity and correctness, let me keep the current approach but add move ordering:
+
+```python
+def get_moves_ordered(you, opponent):
+    moves = []
+    for i in range(6):
+        if you[i] > 0:
+            seeds = you[i]
+            landing = (i + seeds) % 13
+            extra = (landing == 6)
+            
+            # Check for capture
+            capture = 0
+            if not extra and landing <= 5:
+                # Check if house was empty and opposite has seeds
+                if you[landing] == 0:  # Would be empty before sowing
+                    # But wait, if we sow and the landing is in our house path...
+                    # This is getting complicated. Let me just simulate.
+                    pass
+            
+            # Priority: extra turns first, then captures, then left-to-right
+            score = 0
+            if extra:
+                score = 1000
+            moves.append((score, i))
+    
+    moves.sort(reverse=True)
+    return [m[1] for m in moves]
+```
+
+Actually, the landing calculation is tricky because we skip the opponent's store. Let me just compute it properly or just simulate to get the ordering.
+
+Let me simplify and just do a quick simulation for move ordering:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    start_time = time.time()
+    time_limit = 0.85
+    timed_out = False
+    
+    def simulate_move(you, opponent, move):
+        you = list(you)
+        opponent = list(opponent)
+        
+        empty_houses = [you[i] == 0 for i in range(6)]
+        
+        seeds = you[move]
+        you[move] = 0
+        
+        cycle_pos = move
+        while seeds > 0:
+            cycle_pos = (cycle_pos + 1) % 13
+            if cycle_pos <= 5:
+                you[cycle_pos] += 1
+            elif cycle_pos == 6:
+                you[6] += 1
+            else:
+                opponent[cycle_pos - 7] += 1
+            seeds -= 1
+        
+        extra_turn = False
+        captured = 0
+        if cycle_pos == 6:
+            extra_turn = True
+        elif cycle_pos <= 5:
+            if empty_houses[cycle_pos]:
+                opposite = 5 - cycle_pos
+                if opponent[opposite] > 0:
+                    captured = you[cycle_pos] + opponent[opposite]
+                    you[6] += captured
+                    you[cycle_pos] = 0
+                    opponent[opposite] = 0
+        
+        return you, opponent, extra_turn, captured
+    
+    def get_ordered_moves(you, opponent):
+        moves = []
+        for i in range(6):
+            if you[i] > 0:
+                _, _, extra, captured = simulate_move(you, opponent, i)
+                score = extra * 1000 + captured
+                moves.append((-score, i))  # Negative for ascending sort
+        moves.sort()
+        return [m[1] for m in moves]
+    
+    def negamax(you, opponent, depth, alpha, beta):
+        nonlocal timed_out
+        if time.time() - start_time > time_limit:
+            timed_out = True
+            return you[6] - opponent[6], -1
+        
+        you_sum = sum(you[:6])
+        opp_sum = sum(opponent[:6])
+        
+        if you_sum == 0:
+            return you[6] - (opponent[6] + opp_sum), -1
+        if opp_sum == 0:
+            return (you[6] + you_sum) - opponent[6], -1
+        
+        if depth == 0:
+            return you[6] - opponent[6], -1
+        
+        max_eval = float('-inf')
+        best_move = -1
+        
+        for i in get_ordered_moves(you, opponent):
+            new_you, new_opp, extra, _ = simulate_move(you, opponent, i)
+            if extra:
+                eval_score, _ = negamax(new_you, new_opp, depth, alpha, beta)
+            else:
+                eval_score, _ = negamax(new_opp, new_you, depth - 1, -beta, -alpha)
+                eval_score = -eval_score
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = i
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        
+        return max_eval, best_move
+    
+    best_move = None
+    
+    for depth in range(1, 30):
+        if time.time() - start_time > time_limit * 0.9:
+            break
+        timed_out = False
+        _, move = negamax(list(you), list(opponent), depth, float('-inf'), float('inf'))
+        if not timed_out and move != -1:
+            best_move = move
+    
+    if best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+```
+
+Hmm, get_ordered_moves is called at every node which adds overhead. Let me think about this...
+
+For alpha-beta, good move ordering is crucial. But calling simulate_move for every move at every node is expensive. 
+
+One optimization: only do move ordering at the top few levels.
+
+Another option: use a simpler heuristic for move ordering that doesn't require full simulation.
+
+The landing position for move i with seeds[i] seeds is:
+- We distribute seeds starting from position i+1
+- After seeds[i] steps (skipping opponent's store), we land at position...
+
+Actually, since we skip opponent's store and there are 13 positions in the cycle (6 yours + 1 your store + 6 opponent), we can compute:
+landing = (i + seeds[i]) % 13
+
+If landing == 6, extra turn.
+If landing <= 5, potential capture.
+
+But wait, this doesn't account for going around multiple times. Let me think...
+
+If seeds[i] is small (< 13), then landing = (i + seeds[i]) % 13.
+If seeds[i] >= 13, we might go around multiple times.
+
+For the simple case where seeds[i] + i < 13:
+- landing = i + seeds[i]
+- If landing == 6, extra turn
+- If landing <= 5 and you[landing] == 0 and we didn't pass through landing already...
+
+This is getting complicated. Let me just keep the full simulation for move ordering but only at the root level or top 2 levels.
+
+Actually, let me try a different approach: move ordering only at depth >= threshold:
+
+```python
+def negamax(you, opponent, depth, alpha, beta, do_ordering=True):
+    ...
+    if do_ordering and depth >= 3:
+        moves = get_ordered_moves(you, opponent)
+    else:
+        moves = [i for i in range(6) if you[i] > 0]
+    ...
+```
+
+Let me also add a transposition table to avoid re-computing the same positions.
+
+Actually, for simplicity and given the time constraint, let me just go with a clean implementation without too many optimizations:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    start_time = time.time()
+    time_limit = 0.9
+    
+    def simulate(you, opp, move):
+        you, opp = list(you), list(opp)
+        empty = [you[i] == 0 for i in range(6)]
+        seeds, you[move] = you[move], 0
+        pos = move
+        while seeds:
+            pos = (pos + 1) % 13
+            if pos < 6: you[pos] += 1
+            elif pos == 6: you[6] += 1
+            else: opp[pos - 7] += 1
+            seeds -= 1
+        
+        extra = pos == 6
+        if not extra and pos < 6 and empty[pos] and opp[5 - pos]:
+            you[6] += you[pos] + opp[5 - pos]
+            you[pos] = opp[5 - pos] = 0
+        return you, opp, extra
+    
+    def negamax(you, opp, d, a, b):
+        if time.time() - start_time > time_limit:
+            return you[6] - opp[6], -1
+        ys, os = sum(you[:6]), sum(opp[:6])
+        if ys == 0: return you[6] - opp[6] - os, -1
+        if os == 0: return you[6] + ys - opp[6], -1
+        if d == 0: return you[6] - opp[6], -1
+        
+        best = (-999, -1)
+        for i in range(6):
+            if you[i]:
+                ny, no, ex = simulate(you, opp, i)
+                if ex:
+                    v, _ = negamax(ny, no, d, a, b)
+                else:
+                    v, _ = negamax(no, ny, d-1, -b, -a)
+                    v = -v
+                if v > best[0]: best = (v, i)
+                a = max(a, v)
+                if a >= b: break
+        return best
+    
+    best = None
+    for d in range(1, 50):
+        if time.time() - start_time > time_limit * 0.8:
+            break
+        _, m = negamax(list(you), list(opponent), d, -999, 999)
+        if m >= 0: best = m
+    
+    return best if best is not None else next(i for i in range(6) if you[i])
+```
+
+Let me test this logic mentally:
+- simulate correctly updates boards and detects extra turns and captures
+- negamax correctly handles extra turns (don't decrease depth, don't negate)
+- negamax correctly handles game-over states
+- Iterative deepening with time management
+
+I think this should work. Let me clean it up and make it more robust:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    start = time.time()
+    limit = 0.9
+    
+    def sim(y, o, m):
+        y, o = list(y), list(o)
+        emp = [y[i] == 0 for i in range(6)]
+        s, y[m] = y[m], 0
+        p = m
+        while s:
+            p = (p + 1) % 13
+            if p < 6: y[p] += 1
+            elif p == 6: y[6] += 1
+            else: o[p - 7] += 1
+            s -= 1
+        ex = p == 6
+        if not ex and p < 6 and emp[p] and o[5 - p]:
+            y[6] += y[p] + o[5 - p]
+            y[p] = o[5 - p] = 0
+        return y, o, ex
+    
+    def nm(y, o, d, a, b):
+        if time.time() - start > limit:
+            return y[6] - o[6], -1
+        ys = sum(y[:6])
+        os = sum(o[:6])
+        if ys == 0:
+            return y[6] - o[6] - os, -1
+        if os == 0:
+            return y[6] + ys - o[6], -1
+        if d == 0:
+            return y[6] - o[6], -1
+        
+        best_v, best_m = -9999, -1
+        for i in range(6):
+            if y[i]:
+                ny, no, ex = sim(y, o, i)
+                if ex:
+                    v, _ = nm(ny, no, d, a, b)
+                else:
+                    v, _ = nm(no, ny, d - 1, -b, -a)
+                    v = -v
+                if v > best_v:
+                    best_v, best_m = v, i
+                a = max(a, v)
+                if a >= b:
+                    break
+        return best_v, best_m
+    
+    best = None
+    for d in range(1, 60):
+        if time.time() - start > limit * 0.7:
+            break
+        _, m = nm(list(you), list(opponent), d, -9999, 9999)
+        if m >= 0:
+            best = m
+    
+    if best is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    return best
+```
+
+I think this is good. Let me add one more thing: when there's an extra turn, we should not decrease depth because the opponent hasn't moved yet. But we might want to track "plies" or something to avoid infinite loops in evaluation.
+
+Actually, in Kalah, you can theoretically chain many extra turns, so we need to be careful. The current approach doesn't decrease depth for extra turns, which could lead to very deep searches in some cases. But since we have time limits, it should be okay.
+
+One edge case: if all legal moves give extra turns and we can chain forever (unlikely but possible in some game states), we might not explore deeply enough. But this is unlikely to be a problem in practice.
+
+Let me add a small optimization: if there's an immediate winning move, take it:
+
+Actually, let me also consider using a better evaluation function. The simple store difference doesn't account for:
+1. Seeds that will definitely go to your store
+2. Defensive considerations
+
+But for now, let me keep it simple and rely on deeper search.
+
+One issue I notice: when we time out, we return the current score and -1 for move. But in the caller, we check if m >= 0 before updating best. So if we time out, we don't update best, which is correct.
+
+Actually wait, there's a subtle issue. When we time out deep in the tree, the returned value propagates up and might affect the best move at the root. Let me add a flag to properly handle timeout:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    start = time.time()
+    limit = 0.85
+    timeout = False
+    
+    def sim(y, o, m):
+        y, o = list(y), list(o)
+        emp = [y[i] == 0 for i in range(6)]
+        s, y[m] = y[m], 0
+        p = m
+        while s:
+            p = (p + 1) % 13
+            if p < 6: y[p] += 1
+            elif p == 6: y[6] += 1
+            else: o[p - 7] += 1
+            s -= 1
+        ex = p == 6
+        if not ex and p < 6 and emp[p] and o[5 - p]:
+            y[6] += y[p] + o[5 - p]
+            y[p] = o[5 - p] = 0
+        return y, o, ex
+    
+    def nm(y, o, d, a, b):
+        nonlocal timeout
+        if time.time() - start > limit:
+            timeout = True
+            return 0, -1
+        
+        ys = sum(y[:6])
+        os = sum(o[:6])
+        if ys == 0:
+            return y[6] - o[6] - os, -1
+        if os == 0:
+            return y[6] + ys - o[6], -1
+        if d == 0:
+            return y[6] - o[6], -1
+        
+        best_v, best_m = -9999, -1
+        for i in range(6):
+            if y[i]:
+                ny, no, ex = sim(y, o, i)
+                if ex:
+                    v, _ = nm(ny, no, d, a, b)
+                else:
+                    v, _ = nm(no, ny, d - 1, -b, -a)
+                    v = -v
+                if timeout:
+                    return 0, -1
+                if v > best_v:
+                    best_v, best_m = v, i
+                a = max(a, v)
+                if a >= b:
+                    break
+        return best_v, best_m
+    
+    best = None
+    for d in range(1, 60):
+        if time.time() - start > limit * 0.7:
+            break
+        timeout = False
+        _, m = nm(list(you), list(opponent), d, -9999, 9999)
+        if not timeout and m >= 0:
+            best = m
+    
+    if best is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    return best
+```
+
+This looks good. Let me also think about whether I should add move ordering at least at the root to find good moves faster.
+
+Actually, a simple heuristic: try moves that land in the store first (extra turns), then try moves that have more seeds (more likely to score/capture).
+
+Let me add basic move ordering at the root:
+
+```python
+def get_ordered_moves(y, o):
+    moves = []
+    for i in range(6):
+        if y[i]:
+            # Quick heuristic: landing position
+            landing = (i + y[i]) % 13
+            score = 0
+            if landing == 6:  # Extra turn
+                score = 1000
+            elif landing < 6:  # Might capture
+                if y[landing] == 0 and o[5 - landing] > 0:
+                    score = 500 + o[5 - landing]
+            moves.append((-score, i))
+    moves.sort()
+    return [m[1] for m in moves]
+```
+
+Wait, the landing calculation is wrong for large seed counts. Let me think...
+
+If we have s seeds starting from house i:
+- We visit positions i+1, i+2, ..., with wrap around at 13 (skipping opponent's store)
+- After s steps, we're at position (i + s) % 13
+
+But this assumes we never skip the opponent's store in one go. Since there are 13 positions in our cycle (not including opponent's store), (i + s) % 13 is correct.
+
+Let me verify: if i = 0 and s = 13, we end up at (0 + 13) % 13 = 0, which is your house 0 again. Let's trace:
+- Start at 0, pick up 13 seeds
+- Place in: 1, 2, 3, 4, 5, 6 (store), 7 (opp 0), 8, 9, 10, 11, 12 (opp 5), 0 (your 0)
+- Yes, 13 steps from 0 lands on 0.
+
+What if s = 7 and i = 0?
+- (0 + 7) % 13 = 7, which is opponent's house 0.
+- Trace: 1, 2, 3, 4, 5, 6, 7. Yes, 7th seed goes to opponent house 0.
+
+
+
+Now let me clean up the code and finalize:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    start = time.time()
+    limit = 0.85
+    timeout = False
+    
+    def sim(y, o, m):
+        y, o = list(y), list(o)
+        emp = [y[i] == 0 for i in range(6)]
+        s, y[m] = y[m], 0
+        p = m
+        while s:
+            p = (p + 1) % 13
+            if p < 6: y[p] += 1
+            elif p == 6: y[6] += 1
+            else: o[p - 7] += 1
+            s -= 1
+        ex = p == 6
+        if not ex and p < 6 and emp[p] and o[5 - p]:
+            y[6] += y[p] + o[5 - p]
+            y[p] = o[5 - p] = 0
+        return y, o, ex
+    
+    def order_moves(y, o):
+        moves = []
+        for i in range(6):
+            if y[i]:
+                landing = (i + y[i]) % 13
+                score = 0
+                if landing == 6:
+                    score = 1000
+                elif landing < 6 and y[landing] == 0 and o[5 - landing]:
+                    score = 500 + o[5 - landing]
+                moves.append((-score, i))
+        moves.sort()
+        return [m[1] for m in moves]
+    
+    def nm(y, o, d, a, b, root=False):
+        nonlocal timeout
+        if time.time() - start > limit:
+            timeout = True
+            return 0, -1
+        
+        ys = sum(y[:6])
+        os = sum(o[:6])
+        if ys == 0:
+            return y[6] - o[6] - os, -1
+        if os == 0:
+            return y[6] + ys - o[6], -1
+        if d == 0:
+            return y[6] - o[6], -1
+        
+        best_v, best_m = -9999, -1
+        moves = order_moves(y, o) if root or d >= 4 else [i for i in range(6) if y[i]]
+        
+        for i in moves:
+            ny, no, ex = sim(y, o, i)
+            if ex:
+                v, _ = nm(ny, no, d, a, b)
+            else:
+                v, _ = nm(no, ny, d - 1, -b, -a)
+                v = -v
+            if timeout:
+                return 0, -1
+            if v > best_v:
+                best_v, best_m = v, i
+            a = max(a, v)
+            if a >= b:
+                break
+        return best_v, best_m
+    
+    best = None
+    for d in range(1, 50):
+        if time.time() - start > limit * 0.7:
+            break
+        timeout = False
+        _, m = nm(list(you), list(opponent), d, -9999, 9999, root=True)
+        if not timeout and m >= 0:
+            best = m
+    
+    if best is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    return best
+```
+
+Actually, I realize there might be an issue with the capture detection in move ordering. The heuristic checks if y[landing] == 0, but this is the state before we sow. After sowing, if we land in a house that was empty before sowing started (not counting the source house), we capture.
+
+Let me reconsider: the capture happens if the landing house was empty at the start of the move. So if y[landing] == 0 at the start, and landing != m (the source), then capture is possible.
+
+But wait, if landing == m, that means we went around the whole board and came back to the source. In this case, the source was emptied when we started, so it's actually 0 at the start of sowing. But the rule says "was empty before the drop", which I interpret as "before we started sowing". So if we start with y[m] = 0 (after picking up), and we land on m, it was "empty" and we'd capture.
+
+Hmm, this is subtle. Let me re-read the rules:
+
+"If the last seed lands in one of your houses you[i] (0..5) and it was empty before the drop"
+
+I think "before the drop" means before we dropped the last seed. So if the house was empty at the moment right before we placed the last seed, we capture.
+
+This is different from what I implemented. Let me trace:
+- We pick up from house m, setting y[m] = 0
+- We sow seeds one by one
+- If during sowing we pass through house m again, we add a seed
+- If the last seed lands on m, we check if it was empty before we dropped it
+
+So if we have y = [0, 0, 2, 0, 0, 0, 0] (2 seeds in house 2), and we sow from house 2:
+- y[2] = 0 after picking up
+- First seed: y[3] += 1
+- Second seed: y[4] += 1
+- Last seed landed on house 4, which was 0 before this drop (and before we started)
+- So we capture.
+
+Now if y = [0, 0, 8, 0, 0, 0, 0] and we sow from house 2:
+- y[2] = 0 after picking up
+- Seeds go to: 3, 4, 5, 6 (store), opp 0, 1, 2, 3
+- Wait, that's 8 seeds ending at opponent's house 3.
+- Actually: positions 3, 4, 5, 6, 7, 8, 9, 10 -> last position is 10, which is opponent's house 3.
+
+Let me try y = [0, 0, 14, 0, 0, 0, 0]:
+- After picking up: y = [0, 0, 0, 0, 0, 0, 0]
+- Sow 14 seeds from position 2:
+- Positions: 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0, 1, 2, 3
+- After first pass through your houses: y = [1, 1, 1, 1, 1, 1, 1] (6 + 1 seeds placed), 7 remaining for opponent + loop back
+- Wait, let me just count positions:
+  - seed 1: pos 3 (your house 3)
+  - seed 2: pos 4
+  - seed 3: pos 5
+  - seed 4: pos 6 (your store)
+  - seed 5: pos 7 (opp house 0)
+  - seed 6: pos 8
+  - seed 7: pos 9
+  - seed 8: pos 10
+  - seed 9: pos 11
+  - seed 10: pos 12 (opp house 5)
+  - seed 11: pos 0 (your house 0)
+  - seed 12: pos 1
+  - seed 13: pos 2
+  - seed 14: pos 3 (your house 3)
+- Last position: 3 (your house 3)
+- At the moment before dropping the 14th seed, y[3] had received the 1st seed, so y[3] = 1.
+- So it was NOT empty before the drop, no capture.
+
+This is consistent with my implementation using `empty_houses` which tracks whether the house was empty at the very start.
+
+Wait, but the rules say "was empty before the drop", not "was empty at the start of the turn". Let me think about this more carefully.
+
+If "before the drop" means "right before we dropped the last seed", then in the above example, y[3] = 1 before the last drop, so no capture. This is a different rule than "was empty at the start".
+
+If "before the drop" means "was empty at the start of the turn", then we need to check the original state.
+
+Looking at standard Kalah rules, the capture happens if the last seed lands in an own house that was empty at the start of the turn (before picking up seeds). So "before the drop" in the problem statement should mean "before any sowing happened", i.e., the original state.
+
+Let me verify my implementation: I save `emp = [y[i] == 0 for i in range(6)]` right after making a copy of y and before setting y[m] = 0. Oh wait, I do it after setting y[m] = 0:
+
+```python
+def sim(y, o, m):
+    y, o = list(y), list(o)
+    emp = [y[i] == 0 for i in range(6)]  # This is before y[m] = 0
+    s, y[m] = y[m], 0
+    ...
+```
+
+No wait, `emp` is computed after making the copy but before `s, y[m] = y[m], 0`. So `emp` reflects the state before any modification, which is correct.
+
+Actually, let me trace again:
+- y = [0, 0, 2, 0, 0, 0, 0]
+- After copy: y = [0, 0, 2, 0, 0, 0, 0]
+- emp = [True, True, False, True, True, True]  # y[2] = 2, not 0, so False
+- After y[m] = 0: y = [0, 0, 0, 0, 0, 0, 0]
+
+Hmm, so for the source house (m = 2 in this example), emp[m] is False (because it had seeds), but after we pick up, it becomes 0. If we land back on house 2, we check emp[2] which is False, so no capture. But actually, after picking up, house 2 is empty...
+
+I think there's ambiguity in the rules. Let me consider both interpretations:
+
+1. "Empty at the start of the turn" (before picking up): emp[i] checks the original state
+2. "Empty after picking up" (before any sowing): emp[i] should check state after y[m] = 0
+
+Standard Kalah rules use interpretation 2: the house is considered empty if it was empty after the player picked up the seeds from the source house.
+
+Let me adjust my implementation:
+
+```python
+def sim(y, o, m):
+    y, o = list(y), list(o)
+    s, y[m] = y[m], 0
+    emp = [y[i] == 0 for i in range(6)]  # After picking up from m
+    ...
+```
+
+Now emp[m] = True (since y[m] = 0 after picking up).
+
+But wait, if the source house m is empty after picking up, and we sow and land back on m, is it a capture? 
+
+In standard Kalah rules, yes! If you pick up from house m, go around, and land back in house m (which is now empty), you capture.
+
+But this is a bit unusual because it requires going around the entire board. Let me verify with an example:
+- You have 13 seeds in house 5.
+- You pick them up: y[5] = 0
+- Sow: positions 6 (store), 7-12 (opponent's 6 houses), 0-5 (your 6 houses)
+- That's 1 + 6 + 6 = 13 positions, ending on your house 5.
+- House 5 was empty (after picking up), and you land there, so capture!
+- You capture your 1 seed in house 5 and the seeds in opponent's house 0 (which is 5 - 5 = 0).
+
+Let me recalculate: starting from house 5 with 13 seeds:
+- Positions: 6, 7, 8, 9, 10, 11, 12, 0, 1, 2, 3, 4, 5
+- That's exactly 13 positions, ending on house 5.
+- emp[5] = True (after picking up)
+- Capture from opponent[0] if opponent[0] > 0.
+
+Ok, I think interpretation 2 is correct. Let me update my code:
+
+```python
+def sim(y, o, m):
+    y, o = list(y), list(o)
+    s, y[m] = y[m], 0
+    emp = [y[i] == 0 for i in range(6)]
+    p = m
+    while s:
+        p = (p + 1) % 13
+        if p < 6: y[p] += 1
+        elif p == 6: y[6] += 1
+        else: o[p - 7] += 1
+        s -= 1
+    ex = p == 6
+    if not ex and p < 6 and emp[p] and o[5 - p]:
+        y[6] += y[p] + o[5 - p]
+        y[p] = o[5 - p] = 0
+    return y, o, ex
+```
+
+Now this should be correct.
+
+But wait, there's another subtlety. The rule says "it was empty before the drop". In the multi-lap case, by the time we drop the last seed, the house might have received seeds from earlier in the sowing. So "before the drop" could mean:
+
+1. Before the last seed was placed (during the same sowing)
+2. Before any sowing in this turn (after picking up)
+
+Standard Kalah rules use interpretation 2: the house must have been empty at the start (after picking up), regardless of whether it received seeds during sowing.
+
+Actually, I realize there's a contradiction. If the house receives seeds during sowing, then by the time we place the last seed, it's not empty. But the check is whether it was empty at the start.
+
+Let me trace the 14-seed example again:
+- y = [0, 0, 14, 0, 0, 0, 0], m = 2
+- After pickup: y = [0, 0, 0, 0, 0, 0, 0]
+- emp = [True, True, True, True, True, True]
+- Sow 14 seeds, ending on position 3 (your house 3)
+- During sowing, house 3 receives seed 1, so y[3] = 1 after that.
+- Then seeds 14 lands on house 3, so y[3] = 2.
+- emp[3] = True, so we check for capture.
+- But y[3] = 2, not 1. The capture rule says we take the seed we just dropped (1) plus opponent's seeds.
+
+Hmm, re-reading the rule: "then capture the seed in you[i] and all seeds from opponent[5 - i]"
+
+It says "the seed" (singular) in you[i], not "seeds". So we capture only 1 seed from your house (the one we just dropped) plus all seeds from opponent's house.
+
+But that doesn't make sense either, because after multi-lap sowing, y[i] might have multiple seeds.
+
+Let me re-read the standard Kalah rules:
+
+In standard Kalah, the capture rule is: if the last seed lands in an empty house on your side, you capture that seed and the seeds in the opposite house.
+
+The key is "empty house". If the house received seeds during sowing (multi-lap), it's not empty when the last seed lands, so no capture.
+
+This suggests that the check should be: is the house empty immediately before the last seed is placed?
+
+Let me re-implement:
+
+```python
+def sim(y, o, m):
+    y, o = list(y), list(o)
+    s, y[m] = y[m], 0
+    p = m
+    last_drop_empty = False
+    while s:
+        p = (p + 1) % 13
+        if p < 6:
+            last_drop_empty = (y[p] == 0)
+            y[p] += 1
+        elif p == 6:
+            y[6] += 1
+        else:
+            o[p - 7] += 1
+        s -= 1
+    ex = p == 6
+    if not ex and p < 6 and last_drop_empty and o[5 - p]:
+        y[6] += y[p] + o[5 - p]
+        y[p] = o[5 - p] = 0
+    return y, o, ex
+```
+
+Now `last_drop_empty` tracks whether the house was empty right before we placed the last seed.
+
+Let me trace the 14-seed example:
+- y = [0, 0, 14, 0, 0, 0, 0], m = 2
+- After pickup: y = [0, 0, 0, 0, 0, 0, 0]
+- Seed 1: p = 3, y[3] == 0, last_drop_empty = True, y[3] = 1
+- Seed 2: p = 4, y[4] == 0, last_drop_empty = True, y[4] = 1
+- ...
+- Seed 13: p = 2, y[2] == 0, last_drop_empty = True, y[2] = 1
+- Seed 14: p = 3, y[3] == 1 (not 0), last_drop_empty = False, y[3] = 2
+- Last position: 3, not extra turn, last_drop_empty = False, no capture.
+
+This looks correct!
+
+Let me also trace the 13-seed example from house 5:
+- y = [0, 0, 0, 0, 0, 13, 0], opponent = [5, 0, 0, 0, 0, 0, 0]
+- After pickup: y = [0, 0, 0, 0, 0, 0, 0]
+- Sow: 
+  - Seed 1: p = 6 (store), y[6] = 1
+  - Seed 2: p = 7 (opp 0), o[0] = 6
+  - Seed 3: p = 8, o[1] = 1
+  - ...
+  - Seed 7: p = 12, o[5] = 1
+  - Seed 8: p = 0, y[0] == 0, last_drop_empty = True, y[0] = 1
+  - ...
+  - Seed 12: p = 4, y[4] == 0, last_drop_empty = True, y[4] = 1
+  - Seed 13: p = 5, y[5] == 0, last_drop_empty = True, y[5] = 1
+- Last position: 5, not extra turn, last_drop_empty = True, o[0] = 6 > 0, capture!
+- y[6] += y[5] + o[0] = 1 + 6 = 7
+- y[6] = 1 + 7 = 8
+- y[5] = 0, o[0] = 0
+
+
+
+Now let me update my move ordering heuristic to use this corrected logic:
+
+Actually, the move ordering heuristic is just a rough guide, so the simple version might be fine. But let me also consider that the heuristic might be misleading in some cases. Let me keep it simple:
+
+```python
+def order_moves(y, o):
+    moves = []
+    for i in range(6):
+        if y[i]:
+            landing = (i + y[i]) % 13
+            score = 0
+            if landing == 6:
+                score = 1000
+            moves.append((-score, i))
+    moves.sort()
+    return [m[1] for m in moves]
+```
+
+This just prioritizes extra turns. For captures, we'd need to compute more carefully, which adds overhead.
+
+Let me finalize the code:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    start = time.time()
+    limit = 0.85
+    timeout = False
+    
+    def sim(y, o, m):
+        y, o = list(y), list(o)
+        s, y[m] = y[m], 0
+        p = m
+        last_empty = False
+        while s:
+            p = (p + 1) % 13
+            if p < 6:
+                last_empty = (y[p] == 0)
+                y[p] += 1
+            elif p == 6:
+                y[6] += 1
+            else:
+                o[p - 7] += 1
+            s -= 1
+        ex = p == 6
+        if not ex and p < 6 and last_empty and o[5 - p]:
+            y[6] += y[p] + o[5 - p]
+            y[p] = o[5 - p] = 0
+        return y, o, ex
+    
+    def nm(y, o, d, a, b):
+        nonlocal timeout
+        if time.time() - start > limit:
+            timeout = True
+            return 0, -1
+        
+        ys = sum(y[:6])
+        os = sum(o[:6])
+        if ys == 0:
+            return y[6] - o[6] - os, -1
+        if os == 0:
+            return y[6] + ys - o[6], -1
+        if d == 0:
+            return y[6] - o[6], -1
+        
+        best_v, best_m = -9999, -1
+        
+        # Order moves: prioritize extra turns
+        moves = []
+        for i in range(6):
+            if y[i]:
+                landing = (i + y[i]) % 13
+                score = 1000 if landing == 6 else 0
+                moves.append((-score, i))
+        moves.sort()
+        moves = [m[1] for m in moves]
+        
+        for i in moves:
+            ny, no, ex = sim(y, o, i)
+            if ex:
+                v, _ = nm(ny, no, d, a, b)
+            else:
+                v, _ = nm(no, ny, d - 1, -b, -a)
+                v = -v
+            if timeout:
+                return 0, -1
+            if v > best_v:
+                best_v, best_m = v, i
+            a = max(a, v)
+            if a >= b:
+                break
+        return best_v, best_m
+    
+    best = None
+    for d in range(1, 50):
+        if time.time() - start > limit * 0.7:
+            break
+        timeout = False
+        _, m = nm(list(you), list(opponent), d, -9999, 9999)
+        if not timeout and m >= 0:
+            best = m
+    
+    if best is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    return best
+```
+
+I think this is good. Let me double-check a few things:
+
+1. The simulation correctly handles sowing, extra turns, and captures.
+2. The negamax correctly handles game-over states and returns the right score from the current player's perspective.
+3. The iterative deepening and time management work correctly.
+
+One thing I'm worried about is whether the search depth is appropriate. Let me think about the branching factor:
+- At most 6 moves per turn
+- With extra turns, the effective branching factor might be higher
+- Alpha-beta with good move ordering can reduce this significantly
+
+With a 1-second time limit, we should be able to search pretty deep.
+
+Let me also add a quick check at the start: if there's only one legal move, return it immediately.
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    
+    # Quick check for single legal move
+    legal = [i for i in range(6) if you[i] > 0]
+    if len(legal) == 1:
+        return legal[0]
+    
+    start = time.time()
+    limit = 0.85
+    timeout = False
+    
+    # ... rest of the code
+```
+
+This is a minor optimization but can save time.
+
+Actually, let me reconsider the evaluation function. Just using store difference might not be great for intermediate positions. Let me add a small bonus for seeds on your side:
+
+```python
+if d == 0:
+    # Evaluation: store difference + small bonus for seeds on your side
+    return y[6] - o[6] + 0.1 * (sum(y[:6]) - sum(o[:6])), -1
+```
+
+But this might not be necessary if we're searching deep enough. Let me keep it simple for now.
+
+Let me also consider whether there are any obvious bugs:
+1. When we get an extra turn, we don't decrease depth. This is intentional to give more search depth to the extra turn chain.
+2. When we capture, we correctly add to our store and clear both houses.
+3. When the game ends (one side empty), we correctly compute the final score.
+
+I think the code is correct. Let me write the final version:
+</thinking>
+
+Looking at this Kalah (Mancala) game, I need to implement a move selection policy using minimax with alpha-beta pruning.
+
+Key observations:
+1. The board cycles through 13 positions (6 your houses + 1 your store + 6 opponent houses, skipping opponent's store)
+2. Extra turns when landing in your store
+3. Captures when the last seed lands in an empty house on your side (empty right before that drop)
+
+My approach:
+- Implement accurate game simulation with correct capture logic
+- Use negamax with alpha-beta pruning
+- Handle extra turns by not decreasing depth (same player continues)
+- Move ordering to prioritize extra turns
+- Iterative deepening with time management
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    
+    legal = [i for i in range(6) if you[i] > 0]
+    if len(legal) == 1:
+        return legal[0]
+    
+    start = time.time()
+    limit = 0.85
+    timeout = False
+    
+    def sim(y, o, m):
+        y, o = list(y), list(o)
+        s, y[m] = y[m], 0
+        p = m
+        last_empty = False
+        while s:
+            p = (p + 1) % 13
+            if p < 6:
+                last_empty = (y[p] == 0)
+                y[p] += 1
+            elif p == 6:
+                y[6] += 1
+            else:
+                o[p - 7] += 1
+            s -= 1
+        ex = p == 6
+        if not ex and p < 6 and last_empty and o[5 - p]:
+            y[6] += y[p] + o[5 - p]
+            y[p] = o[5 - p] = 0
+        return y, o, ex
+    
+    def nm(y, o, d, a, b):
+        nonlocal timeout
+        if time.time() - start > limit:
+            timeout = True
+            return 0, -1
+        
+        ys = sum(y[:6])
+        os = sum(o[:6])
+        if ys == 0:
+            return y[6] - o[6] - os, -1
+        if os == 0:
+            return y[6] + ys - o[6], -1
+        if d == 0:
+            return y[6] - o[6], -1
+        
+        best_v, best_m = -9999, -1
+        
+        moves = []
+        for i in range(6):
+            if y[i]:
+                landing = (i + y[i]) % 13
+                score = 1000 if landing == 6 else 0
+                moves.append((-score, i))
+        moves.sort()
+        
+        for _, i in moves:
+            ny, no, ex = sim(y, o, i)
+            if ex:
+                v, _ = nm(ny, no, d, a, b)
+            else:
+                v, _ = nm(no, ny, d - 1, -b, -a)
+                v = -v
+            if timeout:
+                return 0, -1
+            if v > best_v:
+                best_v, best_m = v, i
+            a = max(a, v)
+            if a >= b:
+                break
+        return best_v, best_m
+    
+    best = None
+    for d in range(1, 50):
+        if time.time() - start > limit * 0.7:
+            break
+        timeout = False
+        _, m = nm(list(you), list(opponent), d, -9999, 9999)
+        if not timeout and m >= 0:
+            best = m
+    
+    if best is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    return best
+</code>

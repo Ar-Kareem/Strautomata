@@ -1,0 +1,193 @@
+The strategy for this policy is a depth-limited iterative search with alpha-beta pruning. It uses a heuristic evaluation function that scores the board based on the number of consecutive marbles in lines of length 5. The policy first checks for immediate winning moves. If none are found, it performs a depth-2 search (my move, opponent's response) to find the move that maximizes the player's advantage, assuming the opponent plays optimally to minimize it. To ensure performance within the time limit, the search uses move ordering (trying promising moves first) and prunes branches that are guaranteed to be worse than moves already found.
+
+<code>
+import numpy as np
+import time
+
+def policy(you, opponent):
+    """
+    Calculates the best move for the Pentago AI.
+    """
+    start_time = time.time()
+    
+    # Convert input lists to numpy arrays for efficient manipulation
+    # 0: empty, 1: me (current player), 2: opponent
+    board = np.array(you, dtype=int) + np.array(opponent, dtype=int) * 2
+    
+    # Precompute empty cells
+    empty_cells = np.argwhere(board == 0)
+    
+    # If board is empty, play center (index 2,2 -> row 3, col 3) with a default rotation
+    if len(empty_cells) == 36:
+        return "3,3,0,R"
+
+    # ---------------------------------------------------------
+    # Helper Functions
+    # ---------------------------------------------------------
+    
+    def apply_move(b, r, c, q, d, player):
+        """Returns a new board state after applying the move."""
+        new_b = b.copy()
+        new_b[r, c] = player
+        
+        # Define quadrant slices
+        if q == 0: sl = (slice(0,3), slice(0,3))
+        elif q == 1: sl = (slice(0,3), slice(3,6))
+        elif q == 2: sl = (slice(3,6), slice(0,3))
+        else: sl = (slice(3,6), slice(3,6))
+        
+        sub = new_b[sl]
+        # Rotate: L is 90 degrees counter-clockwise (k=1), R is clockwise (k=3 or -1)
+        k = 1 if d == 'L' else 3
+        new_b[sl] = np.rot90(sub, k)
+        return new_b
+
+    def evaluate_window(window):
+        """Scores a window of 5 cells."""
+        player_count = np.sum(window == 1)
+        opp_count = np.sum(window == 2)
+        
+        if player_count == 5: return 100000
+        if opp_count == 5: return -100000
+        
+        if player_count == 4 and opp_count == 0: return 5000
+        if opp_count == 4 and player_count == 0: return -5000
+        
+        if player_count == 3 and opp_count == 0: return 100
+        if opp_count == 3 and player_count == 0: return -100
+        
+        if player_count == 2 and opp_count == 0: return 10
+        if opp_count == 2 and player_count == 0: return -10
+        
+        return 0
+
+    def evaluate_board(b):
+        """Calculates the heuristic value of the board state."""
+        score = 0
+        
+        # Horizontal
+        for r in range(6):
+            for c in range(2):
+                score += evaluate_window(b[r, c:c+5])
+        
+        # Vertical
+        for c in range(6):
+            for r in range(2):
+                score += evaluate_window(b[r:r+5, c])
+                
+        # Diagonals (TL-BR)
+        for r in range(2):
+            for c in range(2):
+                window = b[r:r+5, c:c+5].diagonal()
+                score += evaluate_window(window)
+                
+        # Diagonals (TR-BL)
+        for r in range(2):
+            for c in range(4, 6):
+                # Construct anti-diagonal manually or via flip
+                window = [b[r+i, c-i] for i in range(5)]
+                score += evaluate_window(np.array(window))
+                
+        return score
+
+    # ---------------------------------------------------------
+    # Search Logic
+    # ---------------------------------------------------------
+
+    best_move = None
+    # Generate all legal moves: (r, c, q, d)
+    # r, c from empty_cells. q in 0..3, d in 'L', 'R'
+    
+    # Step 1: Check for immediate win (Depth 1)
+    # We score all moves to both find wins and sort moves for deeper search
+    scored_moves = []
+    for r, c in empty_cells:
+        for q in range(4):
+            for d in ['L', 'R']:
+                # Apply move for player 1
+                next_b = apply_move(board, r, c, q, d, 1)
+                sc = evaluate_board(next_b)
+                # Store move and score
+                # Format: (score, r, c, q, d)
+                scored_moves.append((sc, r, c, q, d))
+                if sc >= 100000:
+                    # Found a winning move, return immediately
+                    return f"{r+1},{c+1},{q},{d}"
+    
+    # Sort moves by score descending to improve alpha-beta pruning
+    scored_moves.sort(key=lambda x: x[0], reverse=True)
+    
+    # If time is short or only depth 1 needed, return best heuristic move
+    # Default to best scored move so far
+    best_move = (scored_moves[0][1], scored_moves[0][2], scored_moves[0][3], scored_moves[0][4])
+    
+    # Step 2: Depth 2 Search (Minimax)
+    # Time check
+    if time.time() - start_time > 0.7:
+        r, c, q, d = best_move
+        return f"{r+1},{c+1},{q},{d}"
+
+    best_score = -float('inf')
+    
+    # Iterate over sorted moves (My turn - Maximizing)
+    for _, r, c, q, d in scored_moves:
+        # Apply my move
+        b1 = apply_move(board, r, c, q, d, 1)
+        
+        # Check if this move leads to win (already checked, but evaluate_board handles it)
+        # Now check opponent's responses
+        opp_empty_cells = np.argwhere(b1 == 0)
+        
+        # If board full after my move, evaluate terminal state
+        if len(opp_empty_cells) == 0:
+            current_val = evaluate_board(b1)
+            if current_val > best_score:
+                best_score = current_val
+                best_move = (r, c, q, d)
+            continue
+            
+        # Generate and sort opponent moves
+        opp_moves = []
+        for ro, co in opp_empty_cells:
+            for qo in range(4):
+                for dor in ['L', 'R']:
+                    # Opponent is player 2
+                    b2 = apply_move(b1, ro, co, qo, dor, 2)
+                    sc = evaluate_board(b2)
+                    opp_moves.append((sc, ro, co, qo, dor))
+        
+        # Sort opponent moves ascending (Opponent minimizes, so worst for me first)
+        # This allows alpha-beta to prune faster
+        opp_moves.sort(key=lambda x: x[0])
+        
+        # Min step: Find the worst outcome for me among opponent's replies
+        min_score = float('inf')
+        
+        for _, ro, co, qo, dor in opp_moves:
+            # b2 state is already computed in sorting phase, but re-computing is cleaner for code
+            # To save time, we could cache, but re-computing is acceptable for 1s limit usually.
+            # However, inside the loop we already computed b2. Let's just recompute to be safe/simple.
+            b2 = apply_move(b1, ro, co, qo, dor, 2)
+            score = evaluate_board(b2)
+            
+            if score < min_score:
+                min_score = score
+            
+            # Alpha-beta pruning
+            # If this opponent move results in a score worse (lower) than my current best_score,
+            # I will never choose this path (r,c,q,d). We can break.
+            if min_score <= best_score:
+                break
+        
+        # Maximizing step: Is this path better than what I've found?
+        if min_score > best_score:
+            best_score = min_score
+            best_move = (r, c, q, d)
+            
+        # Time check
+        if time.time() - start_time > 0.9:
+            break
+
+    r, c, q, d = best_move
+    return f"{r+1},{c+1},{q},{d}"
+</code>

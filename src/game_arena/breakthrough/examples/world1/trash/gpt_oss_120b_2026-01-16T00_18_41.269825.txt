@@ -1,0 +1,141 @@
+**Strategy Overview**
+
+The policy evaluates every legal move for the current player and chooses the one with the highest heuristic value.
+
+1. **Generate all legal moves** – forward, diagonal‑forward (empty) and diagonal‑forward captures.
+2. **Immediate win detection** – if a move reaches the opponent’s home row (or captures the last opponent piece) it is returned instantly.
+3. **Heuristic scoring** – each move receives a score composed of:
+   * **Advancement** – moving toward the goal line is rewarded ( +10  per row progressed ).
+   * **Capture bonus** – capturing an opponent piece gives a large bonus (+50).
+   * **Safety penalty** – if after the move the landing square can be captured by an opponent piece on its next turn, a penalty (‑30) is applied.
+4. **Move selection** – the move with the highest total score is returned.  
+   Because the scoring always produces a finite value and there is at least one legal move in a non‑terminal position, the policy never fails to return a legal move.
+
+The heuristic is fast, fits easily inside the 1 second limit, and encourages aggressive advancement while avoiding obvious traps, making it competitive against naïve opponents.
+
+```python
+<code>
+from typing import List, Tuple
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Return the chosen move for Breakthrough.
+
+    Parameters
+    ----------
+    me : list[tuple[int, int]]
+        Coordinates of our pieces.
+    opp : list[tuple[int, int]]
+        Coordinates of opponent pieces.
+    color : str
+        'b' for the player moving up (rows increase),
+        'w' for the player moving down (rows decrease).
+
+    Returns
+    -------
+    ((from_row, from_col), (to_row, to_col))
+        A legal move.
+    """
+
+    # ------------------------------------------------------------------
+    # Helper constants
+    # ------------------------------------------------------------------
+    BOARD_SIZE = 8
+    my_set = set(me)
+    opp_set = set(opp)
+
+    # direction of forward movement: +1 for black, -1 for white
+    dr = 1 if color == 'b' else -1
+
+    # opponent forward direction (used for safety check)
+    opp_dr = -dr
+
+    # ------------------------------------------------------------------
+    # Generate all legal moves
+    # ------------------------------------------------------------------
+    moves = []  # each element: (from_sq, to_sq, captured_bool)
+    for r, c in me:
+        # forward
+        fwd = (r + dr, c)
+        if 0 <= fwd[0] < BOARD_SIZE and fwd not in my_set and fwd not in opp_set:
+            moves.append(((r, c), fwd, False))
+
+        # diagonal left
+        dl = (r + dr, c - 1)
+        if 0 <= dl[0] < BOARD_SIZE and 0 <= dl[1] < BOARD_SIZE:
+            if dl in opp_set:
+                moves.append(((r, c), dl, True))          # capture
+            elif dl not in my_set:
+                moves.append(((r, c), dl, False))         # simple move
+
+        # diagonal right
+        drg = (r + dr, c + 1)
+        if 0 <= drg[0] < BOARD_SIZE and 0 <= drg[1] < BOARD_SIZE:
+            if drg in opp_set:
+                moves.append(((r, c), drg, True))
+            elif drg not in my_set:
+                moves.append(((r, c), drg, False))
+
+    # Safety: if no moves (should only happen in a terminal position) choose nothing
+    if not moves:
+        raise RuntimeError("No legal moves available")
+
+    # ------------------------------------------------------------------
+    # Immediate win detection
+    # ------------------------------------------------------------------
+    opponent_home = 7 if == 'b' else 0
+    for frm, to, captured in moves:
+        if to[0] == opponent_home:
+            # reaching the home row wins instantly
+            return (frm, to)
+
+    # If a capture leaves opponent with zero pieces, that's also a win
+    for frm, to, captured in moves:
+        if captured and len(opp) == 1:  # only this piece remains
+            return (frm, to)
+
+    # ------------------------------------------------------------------
+    # Scoring function
+    # ------------------------------------------------------------------
+    def is_square_capturable(pos: Tuple[int, int]) -> bool:
+        """Return True if the opponent could capture `pos` on its next move."""
+        r, c = pos
+        # opponent can capture diagonally forward onto our piece
+        for dc in (-1, 1):
+            cand = (r + opp_dr, c + dc)
+            if cand in opp_set:
+                # opponent piece at cand could move to pos
+                # capture is allowed only if pos holds our piece (which it does)
+                return True
+        return False
+
+    best_score = -10**9
+    best_move = moves[0]
+
+    for frm, to, captured in moves:
+        score = 0
+
+        # advancement reward
+        row_progress = (to[0] - frm[0]) * dr  # positive for forward progress
+        score += 10 * row_progress
+
+        # capture bonus
+        if captured:
+            score += 50
+
+        # safety penalty
+        if is_square_capturable(to):
+            score -= 30
+
+        # prefer central columns slightly (helps avoid edge traps)
+        score += -abs(to[1] - 3.5)  # small bias toward middle
+
+        if score > best_score:
+            best_score = score
+            best_move = (frm, to)
+
+    return best_move
+</code>
+```

@@ -1,0 +1,258 @@
+
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Initialize board state
+    board = np.zeros((20, 20))  # 1-indexed, so 20x20 to include index 19
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opponent:
+        board[r, c] = 2
+    
+    # Helper to count liberties of a group
+    def count_liberties(r, c, player):
+        if board[r, c] != player:
+            return 0
+        visited = set()
+        to_visit = [(r, c)]
+        liberties = set()
+        
+        while to_visit:
+            x, y = to_visit.pop()
+            if (x, y) in visited:
+                continue
+            visited.add((x, y))
+            
+            for dx, dy in [(0,1), (1,0), (0,-1), (-1,0)]:
+                nx, ny = x + dx, y + dy
+                if 1 <= nx <= 19 and 1 <= ny <= 19:
+                    if board[nx, ny] == 0:
+                        liberties.add((nx, ny))
+                    elif board[nx, ny] == player and (nx, ny) not in visited:
+                        to_visit.append((nx, ny))
+        
+        return len(liberties)
+    
+    # Helper to get liberties of a group
+    def get_liberties(r, c, player):
+        if board[r, c] != player:
+            return set()
+        visited = set()
+        to_visit = [(r, c)]
+        liberties = set()
+        
+        while to_visit:
+            x, y = to_visit.pop()
+            if (x, y) in visited:
+                continue
+            visited.add((x, y))
+            
+            for dx, dy in [(0,1), (1,0), (0,-1), (-1,0)]:
+                nx, ny = x + dx, y + dy
+                if 1 <= nx <= 19 and 1 <= ny <= 19:
+                    if board[nx, ny] == 0:
+                        liberties.add((nx, ny))
+                    elif board[nx, ny] == player and (nx, ny) not in visited:
+                        to_visit.append((nx, ny))
+        
+        return liberties
+    
+    # Count number of moves played
+    total_stones = len(me) + len(opponent)
+    
+    # Define preferred opening moves
+    opening_moves = [
+        (4, 4), (4, 10), (4, 16),
+        (10, 4), (10, 10), (10, 16),
+        (16, 4), (16, 10), (16, 16),
+        (3, 3), (3, 9), (3, 15),
+        (9, 3), (9, 9), (9, 15),
+        (15, 3), (15, 9), (15, 15)
+    ]
+    
+    # Check if move is legal (not occupied and not suicidal)
+    def is_legal_move(r, c):
+        if board[r, c] != 0:
+            return False
+            
+        # Temporarily place the stone
+        board[r, c] = 1
+        
+        # Check if any of our groups have zero liberties
+        # Check adjacent opponent groups for capture
+        legal = True
+        suicide = True
+        has_capture = False
+        
+        # Check if move captures opponent stones
+        for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr, nc] == 2:
+                if count_liberties(nr, nc, 2) == 0:
+                    has_capture = True
+        
+        # Check if our group has liberties
+        if count_liberties(r, c, 1) > 0:
+            suicide = False
+        
+        # Legal if not suicide or captures opponent stones
+        if not suicide or has_capture:
+            legal = True
+        else:
+            legal = False
+        
+        # Remove temporary stone
+        board[r, c] = 0
+        
+        return legal
+    
+    # Find threatened groups
+    def find_threatened_groups(player):
+        threatened = []
+        checked_groups = set()
+        
+        for r in range(1, 20):
+            for c in range(1, 20):
+                if board[r, c] == player and (r, c) not in checked_groups:
+                    liberties = get_liberties(r, c, player)
+                    if len(liberties) <= 2:  # Threatened if 1 or 2 liberties
+                        # Mark all stones in this group as checked
+                        visited = set()
+                        to_visit = [(r, c)]
+                        group = []
+                        
+                        while to_visit:
+                            x, y = to_visit.pop()
+                            if (x, y) in visited:
+                                continue
+                            visited.add((x, y))
+                            group.append((x, y))
+                            
+                            for dr, dc in [(0,1), (1,0), (0,-1), (-1,0)]:
+                                nx, ny = x + dr, y + dc
+                                if 1 <= nx <= 19 and 1 <= ny <= 19:
+                                    if board[nx, ny] == player and (nx, ny) not in visited:
+                                        to_visit.append((nx, ny))
+                        
+                        for x, y in group:
+                            checked_groups.add((x, y))
+                        
+                        threatened.append((group, liberties))
+        
+        return threatened
+    
+    # Find opponent threatened groups
+    opponent_threatened = find_threatened_groups(2)
+    my_threatened = find_threatened_groups(1)
+    
+    # Tactical moves
+    candidate_moves = set()
+    
+    # 1. Capture opponent groups with 1 liberty
+    for group, liberties in opponent_threatened:
+        if len(liberties) == 1:
+            move = list(liberties)[0]
+            if is_legal_move(move[0], move[1]):
+                return (move, memory)
+    
+    # 2. Escape our threatened groups
+    for group, liberties in my_threatened:
+        if len(liberties) == 1:
+            move = list(liberties)[0]
+            if is_legal_move(move[0], move[1]):
+                return (move, memory)
+    
+    # 3. Reduce liberties of opponent groups
+    for group, liberties in opponent_threatened:
+        if len(liberties) == 2:
+            for move in liberties:
+                if is_legal_move(move[0], move[1]):
+                    candidate_moves.add(move)
+    
+    # 4. Add liberties to our threatened groups
+    for group, liberties in my_threatened:
+        if len(liberties) == 2:
+            for move in liberties:
+                if is_legal_move(move[0], move[1]):
+                    candidate_moves.add(move)
+    
+    # Convert candidate moves to list
+    candidate_moves = list(candidate_moves)
+    
+    # If we have candidates, evaluate them for territory potential
+    if candidate_moves:
+        best_move = None
+        best_score = -1
+        
+        for r, c in candidate_moves:
+            # Simple territory estimation
+            territory_score = 0
+            for dr in range(-3, 4):
+                for dc in range(-3, 4):
+                    nr, nc = r + dr, c + dc
+                    if 1 <= nr <= 19 and 1 <= nc <= 19:
+                        if board[nr, nc] == 0:
+                            # Manhattan distance
+                            dist = abs(dr) + abs(dc)
+                            if dist > 0:
+                                territory_score += 1.0 / dist
+            
+            if territory_score > best_score:
+                best_score = territory_score
+                best_move = (r, c)
+        
+        if best_move:
+            return (best_move, memory)
+    
+    # If early game, play opening moves
+    if total_stones < 10:
+        # Try to play an opening move
+        for r, c in opening_moves:
+            if is_legal_move(r, c):
+                return ((r, c), memory)
+    
+    # If still no move found, play a territorial move
+    # Simple territorial evaluation
+    best_move = None
+    best_territory = -1
+    
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r, c] == 0 and is_legal_move(r, c):
+                # Evaluate territory by counting empty neighbors with decaying weights
+                territory_score = 0
+                
+                # Check for empty space in all directions
+                for dr in range(-4, 5):
+                    for dc in range(-4, 5):
+                        nr, nc = r + dr, c + dc
+                        if 1 <= nr <= 19 and 1 <= nc <= 19:
+                            if board[nr, nc] == 0:
+                                distance = max(abs(dr), abs(dc))
+                                if distance > 0:
+                                    territory_score += 1.0 / (distance ** 1.5)
+                
+                # Bonus for positions not too close to edges/corners in mid-game
+                if 4 < r < 16 and 4 < c < 16:
+                    territory_score *= 1.2
+                
+                # Bonus for moves near opponent stones (influence)
+                for dr in range(-3, 4):
+                    for dc in range(-3, 4):
+                        nr, nc = r + dr, c + dc
+                        if 1 <= nr <= 19 and 1 <= nc <= 19:
+                            if board[nr, nc] == 2:
+                                distance = max(abs(dr), abs(dc))
+                                if distance > 0:
+                                    territory_score += 0.5 / distance
+                
+                if territory_score > best_territory:
+                    best_territory = territory_score
+                    best_move = (r, c)
+    
+    # If we found a good territorial move, play it
+    if best_move:
+        return (best_move, memory)
+    
+    # If all else fails, pass
+    return ((0, 0), memory)

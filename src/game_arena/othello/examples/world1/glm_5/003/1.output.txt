@@ -1,0 +1,313 @@
+The strategy for this policy is to use a Minimax search with Alpha-Beta pruning to determine the best move. It utilizes bitboards (64-bit integers) for efficient board representation, allowing for fast move generation and state evaluation. The evaluation function combines static positional weights (prioritizing corners and edges while penalizing adjacent squares) with a mobility heuristic (number of available moves) to guide the search. The search depth is adjusted dynamically based on the game phase to ensure the response fits within the time limit.
+
+<code>
+import numpy as np
+
+# Constants for bitboard masks
+FULL_MASK = 0xFFFFFFFFFFFFFFFF
+FILE_A = 0x0101010101010101
+FILE_H = 0x8080808080808080
+
+# Positional weights for evaluation
+# Corners are highly valuable, adjacent squares (X-squares, C-squares) are dangerous.
+# Indices map to 0(a1) ... 63(h8) if we view board as bits 0..63.
+# However, input mapping is row by row.
+# r=0 is rank 1. c=0 is file a.
+# bit index = r * 8 + c.
+WEIGHTS = [
+    100, -20, 10,  5,  5, 10, -20, 100,
+    -20, -50, -2, -2, -2, -2, -50, -20,
+     10,  -2,  1,  1,  1,  1,  -2,  10,
+      5,  -2,  1,  1,  1,  1,  -2,   5,
+      5,  -2,  1,  1,  1,  1,  -2,   5,
+     10,  -2,  1,  1,  1,  1,  -2,  10,
+    -20, -50, -2, -2, -2, -2, -50, -20,
+    100, -20, 10,  5,  5, 10, -20, 100
+]
+
+def get_moves(me, opp):
+    """Generate a bitboard of all legal moves for the current player."""
+    empty = ~(me | opp) & FULL_MASK
+    moves = 0
+
+    # Directions: Right, Left, Up, Down, DR, DL, UR, UL
+    # Masks prevent wrapping across file boundaries.
+    # Right: << 1 (mask ~File A to prevent wrap from H to A)
+    m = opp & (me << 1) & ~FILE_A
+    m |= opp & (m << 1) & ~FILE_A
+    m |= opp & (m << 1) & ~FILE_A
+    m |= opp & (m << 1) & ~FILE_A
+    m |= opp & (m << 1) & ~FILE_A
+    m |= opp & (m << 1) & ~FILE_A
+    moves |= empty & (m << 1) & ~FILE_A
+
+    # Left: >> 1 (mask ~File H)
+    m = opp & (me >> 1) & ~FILE_H
+    m |= opp & (m >> 1) & ~FILE_H
+    m |= opp & (m >> 1) & ~FILE_H
+    m |= opp & (m >> 1) & ~FILE_H
+    m |= opp & (m >> 1) & ~FILE_H
+    m |= opp & (m >> 1) & ~FILE_H
+    moves |= empty & (m >> 1) & ~FILE_H
+
+    # Up: >> 8
+    m = opp & (me >> 8)
+    m |= opp & (m >> 8)
+    m |= opp & (m >> 8)
+    m |= opp & (m >> 8)
+    m |= opp & (m >> 8)
+    m |= opp & (m >> 8)
+    moves |= empty & (m >> 8)
+
+    # Down: << 8
+    m = opp & (me << 8)
+    m |= opp & (m << 8)
+    m |= opp & (m << 8)
+    m |= opp & (m << 8)
+    m |= opp & (m << 8)
+    m |= opp & (m << 8)
+    moves |= empty & (m << 8)
+
+    # Down-Right: << 9 (mask ~File A)
+    m = opp & (me << 9) & ~FILE_A
+    m |= opp & (m << 9) & ~FILE_A
+    m |= opp & (m << 9) & ~FILE_A
+    m |= opp & (m << 9) & ~FILE_A
+    m |= opp & (m << 9) & ~FILE_A
+    m |= opp & (m << 9) & ~FILE_A
+    moves |= empty & (m << 9) & ~FILE_A
+
+    # Down-Left: << 7 (mask ~File H)
+    m = opp & (me << 7) & ~FILE_H
+    m |= opp & (m << 7) & ~FILE_H
+    m |= opp & (m << 7) & ~FILE_H
+    m |= opp & (m << 7) & ~FILE_H
+    m |= opp & (m << 7) & ~FILE_H
+    m |= opp & (m << 7) & ~FILE_H
+    moves |= empty & (m << 7) & ~FILE_H
+
+    # Up-Right: >> 7 (mask ~File A)
+    m = opp & (me >> 7) & ~FILE_A
+    m |= opp & (m >> 7) & ~FILE_A
+    m |= opp & (m >> 7) & ~FILE_A
+    m |= opp & (m >> 7) & ~FILE_A
+    m |= opp & (m >> 7) & ~FILE_A
+    m |= opp & (m >> 7) & ~FILE_A
+    moves |= empty & (m >> 7) & ~FILE_A
+
+    # Up-Left: >> 9 (mask ~File H)
+    m = opp & (me >> 9) & ~FILE_H
+    m |= opp & (m >> 9) & ~FILE_H
+    m |= opp & (m >> 9) & ~FILE_H
+    m |= opp & (m >> 9) & ~FILE_H
+    m |= opp & (m >> 9) & ~FILE_H
+    m |= opp & (m >> 9) & ~FILE_H
+    moves |= empty & (m >> 9) & ~FILE_H
+
+    return moves
+
+def apply_move(me, opp, move_bit):
+    """Apply a move and return the new (me, opp) bitboards."""
+    flipped = 0
+    # Calculate flipped discs in all 8 directions
+    # Right
+    m = 0
+    boundary = (move_bit << 1) & ~FILE_A
+    while boundary & opp:
+        m |= boundary
+        boundary = (boundary << 1) & ~FILE_A
+    if boundary & me:
+        flipped |= m
+
+    # Left
+    m = 0
+    boundary = (move_bit >> 1) & ~FILE_H
+    while boundary & opp:
+        m |= boundary
+        boundary = (boundary >> 1) & ~FILE_H
+    if boundary & me:
+        flipped |= m
+
+    # Down
+    m = 0
+    boundary = move_bit << 8
+    while boundary & opp:
+        m |= boundary
+        boundary = boundary << 8
+    if boundary & me:
+        flipped |= m
+
+    # Up
+    m = 0
+    boundary = move_bit >> 8
+    while boundary & opp:
+        m |= boundary
+        boundary = boundary >> 8
+    if boundary & me:
+        flipped |= m
+
+    # Down-Right
+    m = 0
+    boundary = (move_bit << 9) & ~FILE_A
+    while boundary & opp:
+        m |= boundary
+        boundary = (boundary << 9) & ~FILE_A
+    if boundary & me:
+        flipped |= m
+
+    # Down-Left
+    m = 0
+    boundary = (move_bit << 7) & ~FILE_H
+    while boundary & opp:
+        m |= boundary
+        boundary = (boundary << 7) & ~FILE_H
+    if boundary & me:
+        flipped |= m
+
+    # Up-Right
+    m = 0
+    boundary = (move_bit >> 7) & ~FILE_A
+    while boundary & opp:
+        m |= boundary
+        boundary = (boundary >> 7) & ~FILE_A
+    if boundary & me:
+        flipped |= m
+
+    # Up-Left
+    m = 0
+    boundary = (move_bit >> 9) & ~FILE_H
+    while boundary & opp:
+        m |= boundary
+        boundary = (boundary >> 9) & ~FILE_H
+    if boundary & me:
+        flipped |= m
+
+    new_me = me | move_bit | flipped
+    new_opp = opp & ~flipped
+    return new_me, new_opp
+
+def evaluate(me, opp):
+    """Evaluate the board state."""
+    # 1. Positional Score
+    score = 0
+    for i in range(64):
+        if (me >> i) & 1:
+            score += WEIGHTS[i]
+        elif (opp >> i) & 1:
+            score -= WEIGHTS[i]
+    
+    # 2. Mobility Score
+    my_moves = get_moves(me, opp).bit_count()
+    opp_moves = get_moves(opp, me).bit_count()
+    
+    if my_moves + opp_moves == 0:
+        # Game over
+        diff = me.bit_count() - opp.bit_count()
+        return 10000 * diff
+    
+    score += 5 * (my_moves - opp_moves)
+    return score
+
+def minimax(me, opp, depth, alpha, beta, maximizing):
+    """Minimax with Alpha-Beta pruning."""
+    my_moves = get_moves(me, opp)
+    opp_moves_bit = get_moves(opp, me) # Opponent's potential moves if they were to play
+    
+    # Terminal node or depth limit
+    if depth == 0:
+        return evaluate(me, opp), None
+    
+    if my_moves == 0:
+        # Current player must pass
+        if opp_moves_bit == 0:
+            # Game Over
+            diff = me.bit_count() - opp.bit_count()
+            return 10000 * diff, None
+        # Pass the turn
+        return minimax(opp, me, depth, alpha, beta, not maximizing)[0], None
+
+    # Generate list of moves
+    move_list = []
+    m = my_moves
+    while m:
+        b = m & -m
+        move_list.append(b)
+        m -= b
+
+    # Move ordering: prioritize corners
+    corners = (1 << 0) | (1 << 7) | (1 << 56) | (1 << 63)
+    def move_score(m):
+        if m & corners: return 1000
+        # Use static weight as a heuristic for ordering
+        return WEIGHTS[m.bit_length() - 1]
+    
+    move_list.sort(key=move_score, reverse=True)
+
+    best_move = move_list[0]
+
+    if maximizing:
+        max_eval = -float('inf')
+        for move in move_list:
+            next_me, next_opp = apply_move(me, opp, move)
+            # Switch perspective: next_opp becomes "me", next_me becomes "opp" for the recursive call
+            eval_val = minimax(next_opp, next_me, depth - 1, alpha, beta, False)[0]
+            if eval_val > max_eval:
+                max_eval = eval_val
+                best_move = move
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in move_list:
+            next_me, next_opp = apply_move(me, opp, move)
+            eval_val = minimax(next_opp, next_me, depth - 1, alpha, beta, True)[0]
+            if eval_val < min_eval:
+                min_eval = eval_val
+                best_move = move
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Convert numpy arrays to bitboards
+    me = 0
+    opp = 0
+    for r in range(8):
+        for c in range(8):
+            idx = r * 8 + c
+            if you[r][c]:
+                me |= (1 << idx)
+            elif opponent[r][c]:
+                opp |= (1 << idx)
+
+    # Determine depth based on game phase
+    total_discs = me.bit_count() + opp.bit_count()
+    if total_discs >= 54:
+        depth = 8
+    elif total_discs >= 50:
+        depth = 6
+    else:
+        depth = 4
+
+    # Run search
+    _, best_move_bit = minimax(me, opp, depth, -float('inf'), float('inf'), True)
+
+    if best_move_bit is None:
+        # Fallback if minimax fails or returns None (should not happen with valid moves)
+        moves = get_moves(me, opp)
+        if moves == 0:
+            return "pass"
+        best_move_bit = moves & -moves
+
+    # Convert bit to string "a1".."h8"
+    idx = best_move_bit.bit_length() - 1
+    r = idx // 8
+    c = idx % 8
+    col_char = chr(ord('a') + c)
+    row_char = str(r + 1)
+    
+    return col_char + row_char
+</code>

@@ -1,0 +1,33 @@
+
+import random
+
+def policy(board):
+    # Define the grid size
+    N = 10
+    
+    # First, try to find an adjacent cell to an existing hit (target mode)
+    # Check all directions from each hit
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1:
+                # Found a hit, check neighbors
+                for dr, dc in directions:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < N and 0 <= nc < N and board[nr][nc] == 0:
+                        return (nr, nc)
+    
+    # If no adjacent to hits, switch to search mode: randomly pick an unknown cell
+    # Collect all unknown cells
+    candidates = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                candidates.append((r, c))
+    
+    # If there are candidates, choose one randomly
+    if candidates:
+        return random.choice(candidates)
+    
+    # This should never happen if the game is properly managed
+    raise ValueError("No valid moves available")

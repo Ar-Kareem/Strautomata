@@ -1,0 +1,658 @@
+<thinking>
+The user wants a Python function `policy(board)` that takes a 3x3 Tic Tac Toe board as input and returns the next best move as a tuple `(row, col)`. The board representation is:
+- `0`: empty
+- `1`: my piece
+- `-1`: opponent's piece
+
+I need to implement a strategy for playing Tic Tac Toe. A good strategy involves checking for winning moves, blocking opponent's winning moves, and then making strategic moves. Minimax is a common algorithm for this, but for Tic Tac Toe, a simpler heuristic approach is usually sufficient and faster.
+
+Here's a breakdown of the strategy:
+1.  **Win:** If I can win in the next move, take it.
+2.  **Block:** If the opponent can win in the next move, block them.
+3.  **Center:** If the center is empty, take it. (Usually a strong opening move).
+4.  **Opposite Corner:** If the opponent is in a corner, occupy the opposite corner.
+5.  **Empty Corner:** Take any empty corner.
+6.  **Empty Side:** Take any empty side cell.
+
+Let's define helper functions to check lines (rows, columns, diagonals).
+
+**Winning move detection:**
+Iterate through all rows, columns, and diagonals. If any line has two of my pieces (`1`) and one empty cell (`0`), I can win by placing my piece in that empty cell.
+
+**Blocking move detection:**
+Iterate through all rows, columns, and diagonals. If any line has two of the opponent's pieces (`-1`) and one empty cell (`0`), the opponent can win. I must place my piece in that empty cell to block them.
+
+**Center move:**
+Check if `board[1][1]` is `0`.
+
+**Corner/Side moves:**
+If no winning or blocking moves are found, I'll need to pick a strategic empty cell.
+List all empty cells.
+Prioritize corners: `(0,0), (0,2), (2,0), (2,2)`.
+Then prioritize sides: `(0,1), (1,0), (1,2), (2,1)`.
+
+Let's refine the logic flow:
+
+1.  **Check for immediate win:**
+    Iterate through all lines (rows, columns, diagonals).
+    If a line has two `1`s and one `0`, return the coordinates of the `0`.
+
+2.  **Check for immediate block:**
+    Iterate through all lines.
+    If a line has two `-1`s and one `0`, return the coordinates of the `0`.
+
+3.  **Take the center:**
+    If `board[1][1]` is `0`, return `(1, 1)`.
+
+4.  **Take an opposite corner (optional but good):**
+    This needs more specific logic. If opponent plays corner, I play opposite corner.
+    If `board[0][0] == -1` and `board[2][2] == 0`, return `(2, 2)`.
+    If `board[0][2] == -1` and `board[2][0] == 0`, return `(2, 0)`.
+    If `board[2][0] == -1` and `board[0][2] == 0`, return `(0, 2)`.
+    If `board[2][2] == -1` and `board[0][0] == 0`, return `(0, 0)`.
+    Need to be careful not to overwrite a better move. This strategy is more advanced and might be better handled by the general empty cell selection. Let's stick to the simpler priority list for now and see if it passes the automated tests. The standard heuristic covers this implicitly by prioritizing corners.
+
+5.  **Take any empty corner:**
+    Check `(0,0), (0,2), (2,0), (2,2)` in order. If empty, take it.
+
+6.  **Take any empty side:**
+    Check `(0,1), (1,0), (1,2), (2,1)` in order. If empty, take it.
+
+Helper function to check lines:
+`check_line(cell1, cell2, cell3)`: returns coords of empty cell if win/block is possible, else None.
+`check_line(board, r1, c1, r2, c2, r3, c3)` where (r1,c1), (r2,c2), (r3,c3) are indices of cells in a line.
+
+Let's implement `find_win_or_block(player_id)` where `player_id` is `1` for me, `-1` for opponent.
+
+```python
+def find_win_or_block_move(board, player_id):
+    lines = []
+    # Rows
+    for r in range(3):
+        lines.append([(r, 0), (r, 1), (r, 2)])
+    # Columns
+    for c in range(3):
+        lines.append([(0, c), (1, c), (2, c)])
+    # Diagonals
+    lines.append([(0, 0), (1, 1), (2, 2)])
+    lines.append([(0, 2), (1, 1), (2, 0)])
+
+    for line in lines:
+        count_player = 0
+        count_empty = 0
+        empty_pos = None
+        for r, c in line:
+            if board[r][c] == player_id:
+                count_player += 1
+            elif board[r][c] == 0:
+                count_empty += 1
+                empty_pos = (r, c)
+
+        # If player has 2 pieces and there's 1 empty spot, it's a win/block
+        if count_player == 2 and count_empty == 1:
+            return empty_pos
+    return None
+```
+
+Now, integrate this into the `policy` function.
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # 1. Check if I can win
+    my_win_move = find_win_or_block_move(board, 1)
+    if my_win_move:
+        return my_win_move
+
+    # 2. Check if opponent can win and block them
+    opponent_win_move = find_win_or_block_move(board, -1)
+    if opponent_win_move:
+        return opponent_win_move
+
+    # 3. Take the center if available
+    if board[1][1] == 0:
+        return (1, 1)
+
+    # 4. Take an empty corner
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # 5. Take an empty side
+    sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in sides:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # Should not reach here in a valid game state with empty cells
+    # but as a fallback, return any empty cell if somehow missed.
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                return (r, c)
+    # This is a very unlikely scenario if the game is in progress
+    # and there are still empty cells.
+    return (-1, -1) # Indicate an error or no possible move (though not specified how to handle)
+```
+
+Let's consider the `find_win_or_block_move` helper. It's good, but could be made more robust by explicitly defining the lines within the main function if it makes things cleaner or if there are subtle edge cases. For now, it seems fine.
+
+The precedence of moves:
+1.  Win
+2.  Block
+3.  Center
+4.  Corners
+5.  Sides
+
+This order is generally considered optimal for Tic Tac Toe. The "opposite corner" strategy is implicitly handled by the corner selection. If the opponent takes a corner and I take the center, and then opponent takes another corner, my corner selection will pick the remaining corner, which might be opposite or adjacent. The heuristic logic is usually good enough.
+
+Let's draft the complete file.
+I'll put the helper function `find_win_or_block_move` inside `policy` or as a nested function, or keep it separate. For clarity, I'll keep it separate but within the same file.
+
+```python
+import numpy as np # Although numpy isn't strictly necessary for this logic, it's allowed.
+
+def find_win_or_block_move(board: list[list[int]], player_id: int) -> tuple[int, int] | None:
+    """
+    Checks if the given player can win or needs to block in the next move.
+    Returns the coordinates of the winning/blocking move, or None if not possible.
+    """
+    lines = []
+    # Rows
+    for r in range(3):
+        lines.append([(r, 0), (r, 1), (r, 2)])
+    # Columns
+    for c in range(3):
+        lines.append([(0, c), (1, c), (2, c)])
+    # Diagonals
+    lines.append([(0, 0), (1, 1), (2, 2)])
+    lines.append([(0, 2), (1, 1), (2, 0)])
+
+    for line in lines:
+        count_player = 0
+        count_empty = 0
+        empty_pos = None
+        for r, c in line:
+            if board[r][c] == player_id:
+                count_player += 1
+            elif board[r][c] == 0:
+                count_empty += 1
+                empty_pos = (r, c)
+
+        # A winning or blocking move exists if:
+        # The player has 2 pieces in the line AND there is exactly 1 empty spot.
+        if count_player == 2 and count_empty == 1:
+            return empty_pos
+    return None
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next best move for Tic Tac Toe.
+
+    Args:
+        board: A 3x3 list of lists representing the Tic Tac Toe board.
+               0: empty, 1: player (you), -1: opponent.
+
+    Returns:
+        A tuple (row, col) of the chosen move (0-2, 0-2).
+    """
+
+    # 1. Check if I (player 1) can win in the next move.
+    my_win_move = find_win_or_block_move(board, 1)
+    if my_win_move:
+        return my_win_move
+
+    # 2. Check if the opponent (-1) can win in the next move, and block them.
+    opponent_win_move = find_win_or_block_move(board, -1)
+    if opponent_win_move:
+        return opponent_win_move
+
+    # 3. If the center is available, take it. (Strongest strategic move)
+    if board[1][1] == 0:
+        return (1, 1)
+
+    # 4. Take any available corner.
+    # The order here doesn't strictly matter for correctness as much as the presence.
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # 5. Take any available side position.
+    sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in sides:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # Fallback: If somehow no move was found in the above logic (shouldn't happen in a valid game)
+    # This part only executes if all cells are filled and the game is over, or an error in logic.
+    # For a competition, we should ideally never reach here if there's an empty cell.
+    # If it *does* happen, it implies game is full or there's a bug.
+    # We can just return any empty cell as a last resort.
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                return (r, c)
+                
+    # This return should theoretically not be reached if the game logic is sound
+    # and there are still empty cells. However, for robustness, we might
+    # consider returning a default or raising an error if no move is possible.
+    # For this task, assuming valid game states with empty spots.
+    return (-1,-1) # Indicating no valid move or game is over.
+
+
+```
+
+Let's test with a few scenarios mentally:
+
+Scenario 1:
+Board:
+[[0, 0, 0],
+ [0, 0, 0],
+ [0, 0, 0]]
+Output: (1, 1) - Correct according to step 3.
+
+Scenario 2:
+Board:
+[[1, 1, 0],
+ [0, 0, 0],
+ [0, 0, 0]]
+`find_win_or_block_move(board, 1)` will find `(0, 2)` in the first row.
+Output: (0, 2) - Correct.
+
+Scenario 3:
+Board:
+[[1, -1, 0],
+ [0, 1, 0],
+ [0, 0, 0]]
+`find_win_or_block_move(board, 1)`: No immediate win for player 1.
+`find_win_or_block_move(board, -1)`:
+   Row 0: `[-1, 1]`
+   Col 1: `[-1, 1]`
+   Diag (0,0)-(2,2): `[1, 1]`
+   Diag (0,2)-(2,0): `[0, 1, 0]` - Wait, I need to check for `2 opponent pieces + 1 empty`.
+Let's trace `find_win_or_block_move(board, -1)`:
+Lines:
+Row 0: `[1, -1, 0]` -> count_player = 1 (-1), count_empty = 1 (0), empty_pos = (0,2). No, this is not `2 opponent pieces`.
+Row 1: `[0, 1, 0]` -> count_player = 1, count_empty = 2.
+Row 2: `[0, 0, 0]` -> count_player = 0, count_empty = 3.
+Col 0: `[1, 0, 0]` -> count_player = 1, count_empty = 2.
+Col 1: `[-1, 1, 0]` -> count_player = 1, count_empty = 1.
+Col 2: `[0, 0, 0]` -> count_player = 0, count_empty = 3.
+Diag (0,0)-(2,2): `[1, 1, 0]` -> count_player = 2, count_empty = 1, empty_pos = (2,2). Oh, this is for `player_id = 1`.
+Let's assume `player_id = -1` for opponent.
+`find_win_or_block_move(board, -1)` on `[[1, -1, 0], [0, 1, 0], [0, 0, 0]]`:
+   Row 0: `[1, -1, 0]` -> count_player_neg1 = 1, count_empty = 1, empty_pos = (0,2). Condition (count_player == 2) not met.
+   Col 1: `[-1, 1, 0]` -> count_player_neg1 = 1, count_empty = 1, empty_pos = (2,1). Condition (count_player == 2) not met.
+   No line has `2 opponent pieces`. So `opponent_win_move` is None.
+
+Then it checks step 3: Center. `board[1][1]` is `1`. Not empty.
+Step 4: Corners.
+(0,0) is `1`.
+(0,2) is `0`. Return `(0, 2)`.
+
+Let's consider a critical blocking scenario:
+Board:
+[[ 0,  1, -1],
+ [ 0,  1,  0],
+ [ 0, -1,  0]]
+
+1.  `find_win_or_block_move(board, 1)`:
+    Row 1: `[0, 1, 0]` -> count_player = 1, empty=2. No win.
+    Col 1: `[1, 1, -1]` -> count_player = 2, empty=1 (`board[2][1] == -1`). Ah, it's counting `player_id` which is `1`. So `count_player_1 = 2`, `empty = 0` at `(2,1)`. This is not an empty cell. My check is correct.
+    Hmm, `lines.append([(r, 0), (r, 1), (r, 2)])`
+    `board[1]`: `[0, 1, 0]`
+    Check line `[(1,0), (1,1), (1,2)]` for player `1`
+    `board[1][0] = 0`, `board[1][1] = 1`, `board[1][2] = 0`
+    `count_player = 1`, `count_empty = 2`, `empty_pos = (1,0)` or `(1,2)`. No win.
+
+    Let's re-evaluate `find_win_or_block_move` logic for win/block detection.
+    For player `1` to win, there must be `2` of `1`s and `1` of `0`.
+    For player `-1` to win, there must be `2` of `-1`s and `1` of `0`.
+
+    In current board:
+    [[ 0,  1, -1],
+     [ 0,  1,  0],
+     [ 0, -1,  0]]
+
+    Check for player `1` win:
+    Row 0: `[0, 1, -1]` - no
+    Row 1: `[0, 1, 0]` - no
+    Row 2: `[0, -1, 0]` - no
+    Col 0: `[0, 0, 0]` - no
+    Col 1: `[1, 1, -1]` - player `1` has `2`, but `board[2][1]` is `-1`, not `0`. No win.
+    Col 2: `[-1, 0, 0]` - no
+    Diag `(0,0)-(2,2)`: `[0, 1, 0]` - no
+    Diag `(0,2)-(2,0)`: `[-1, 1, 0]` - no
+    So, `my_win_move` is `None`.
+
+    Check for player `-1` block:
+    `find_win_or_block_move(board, -1)`
+    Row 0: `[0, 1, -1]` -> `count_neg_1 = 1`, `count_empty = 1` (`board[0][0]=0`), `empty_pos = (0,0)`. No block needed here. The condition is `count_player == 2`.
+    Row 2: `[0, -1, 0]` -> `count_neg_1 = 1`, `count_empty = 2`. No.
+    Col 0: `[0, 0, 0]` - no.
+    Col 2: `[-1, 0, 0]` -> `count_neg_1 = 1`, `count_empty = 2`. No.
+    Diag `(0,2)-(2,0)`: `[-1, 1, 0]` -> `count_neg_1 = 1`, `count_empty = 1` (`board[2][0]=0`), `empty_pos = (2,0)`. No block needed here.
+
+    Wait, the board state I wrote might be confusing.
+    Let's use a simpler example for blocking:
+    Board:
+    [[ 0,  1,  1],
+     [ 0, -1,  0],
+     [ 0,  0,  0]]
+
+    Player `1` (me) moves.
+    1.  `find_win_or_block_move(board, 1)`:
+        Row 0: `[0, 1, 1]`. `count_player_1 = 2`, `count_empty = 1` at `(0,0)`. `empty_pos = (0,0)`.
+        Return `(0,0)`. Correct.
+
+    Now, Player `-1` (opponent) moves.
+    Board:
+    [[ 1,  1,  1],  <- This state should not be possible if opponent can't win.
+     [ 0, -1,  0],
+     [ 0,  0,  0]]
+
+    Player `1` moves.
+    Board:
+    [[ 1,  1,  0],
+     [ 0, -1,  0],
+     [ 0,  0,  0]]
+
+    1.  `find_win_or_block_move(board, 1)`: No win for player 1.
+    2.  `find_win_or_block_move(board, -1)`:
+        Row 1: `[0, -1, 0]` -> `count_neg_1 = 1`, `count_empty = 2`. No.
+        Col 1: `[1, -1, 0]` -> `count_neg_1 = 1`, `count_empty = 1` at `(2,1)`. No.
+        The opponent needs two `-1`s to claim a block.
+
+    Let's put opponent winning:
+    Board:
+    [[ 1,  0,  0],
+     [ 0, -1,  0],
+     [-1,  0,  0]]
+
+    Player `1` moves.
+    1.  `find_win_or_block_move(board, 1)`: No win for player `1`.
+    2.  `find_win_or_block_move(board, -1)`:
+        Col 0: `[1, 0, -1]` -> `count_neg_1 = 1`, `count_empty = 1` at `(1,0)`. No.
+        Row 2: `[-1, 0, 0]` -> `count_neg_1 = 1`, `count_empty = 2`. No.
+        Col 2: `[0, 0, 0]` -> no.
+        Diag `(0,2)-(2,0)`: `[0, -1, -1]`. Player `-1` has `2`. `board[0][2]` is `0`. `count_neg_1 = 2`, `count_empty = 1`, `empty_pos = (0,2)`.
+        Return `(0,2)`. Correct.
+
+    The logic seems sound.
+    The `numpy` import is not actually used. I can remove it to keep it minimal unless some advanced path needs it. The current logic is pure Python.
+
+    Final check on requirements:
+    -   Complete Python file: Yes.
+    -   Defines `policy(board: list[list[int]]) -> tuple[int, int]`: Yes.
+    -   `board` format correctly understood: Yes.
+    -   Return tuple `(0-2, 0-2)`: Yes.
+    -   Standard Python imports: Only `typing` implicitly, no external libs like `numpy` actually used.
+    -   1 second execution time: The logic is O(1) because the board size is fixed at 3x3. Each check iterates through a fixed number of lines and cells. This will be extremely fast.
+
+    One minor consideration: what if multiple cells offer a win or block? The current `find_win_or_block_move` returns the *first* one it finds based on the order of `lines` list. For Tic Tac Toe, any such move is equally good in terms of winning/blocking, so this is fine. Similarly for corners and sides.
+
+    The fall-through `return (-1,-1)` is a safety measure. If all cells are filled, it will return this, signaling no possible move. For competitive programming, it's good to handle states where this might occur.
+
+    The problem statement said "You may use any standard Python imports, including numpy." So even if not used, including `import numpy as np` is fine. I will include it as requested, even though my current logic doesn't leverage it.
+
+    The `find_win_or_block_move` function could be written as a nested function within `policy` to keep the scope tighter if preferred, but as a separate helper function, it's also clear. I'll keep it separate for readability.
+
+    The type hint `tuple[int, int] | None` for `find_win_or_block_move` is good for type checking, but the `policy` function *must* return `tuple[int, int]`. This is handled because `policy` only returns `None` from `find_win_or_block_move` if `my_win_move` and `opponent_win_move` are both `None`, and then proceeds to other checks that are guaranteed to find an empty cell if one exists. The final fallback loop guarantees a `tuple[int, int]` return if any `0` exists.
+
+    One edge case: if the board is full and the function is called.
+    Board:
+    [[1, 1, -1],
+     [-1, -1, 1],
+     [1, -1, 1]]
+    `my_win_move` is None.
+    `opponent_win_move` is None.
+    Center (1,1) is -1.
+    Corners: all filled.
+    Sides: all filled.
+    The loop `for r in range(3): for c in range(3): if board[r][c] == 0:` will not find any `0`.
+    So it will reach `return (-1,-1)`. This is a reasonable way to indicate "no move possible" or "game over".
+
+    I'll ensure the code is formatted properly within the `<code>` tags.
+    The prompt requires *only* the python source code in the `<code>` block.
+    The `thinking` block should contain the explanation and reasoning.
+    I will put `import numpy as np` because it is allowed.
+    ```python
+    import numpy as np
+
+    def find_win_or_block_move(board: list[list[int]], player_id: int) -> tuple[int, int] | None:
+        """
+        Checks if the given player can win or needs to block in the next move.
+        This involves finding a line (row, column, or diagonal) that contains
+        two of the player's pieces and one empty cell.
+
+        Args:
+            board: The 3x3 Tic Tac Toe board.
+            player_id: The ID of the player to check for (1 for me, -1 for opponent).
+
+        Returns:
+            A tuple (row, col) of the winning/blocking move, or None if not possible.
+        """
+        lines_indices = []
+        # Rows
+        for r in range(3):
+            lines_indices.append([(r, 0), (r, 1), (r, 2)])
+        # Columns
+        for c in range(3):
+            lines_indices.append([(0, c), (1, c), (2, c)])
+        # Diagonals
+        lines_indices.append([(0, 0), (1, 1), (2, 2)]) # Top-left to bottom-right
+        lines_indices.append([(0, 2), (1, 1), (2, 0)]) # Top-right to bottom-left
+
+        for line in lines_indices:
+            player_pieces = 0
+            empty_cells = 0
+            empty_pos = None
+
+            for r, c in line:
+                if board[r][c] == player_id:
+                    player_pieces += 1
+                elif board[r][c] == 0:
+                    empty_cells += 1
+                    empty_pos = (r, c)
+
+            # If the player has exactly two pieces and there's one empty spot in the line,
+            # this is a potential winning or blocking move.
+            if player_pieces == 2 and empty_cells == 1:
+                return empty_pos # Return the coordinates of the empty cell
+
+        return None # No such winning or blocking move found in any line
+
+    def policy(board: list[list[int]]) -> tuple[int, int]:
+        """
+        Determines the next best move for the current player in a 3x3 Tic Tac Toe game.
+
+        The strategy follows a priority order:
+        1.  Win: If a move exists that wins the game for the current player, take it.
+        2.  Block: If the opponent can win in their next move, block that move.
+        3.  Center: Take the center cell if it's empty.
+        4.  Corner: Take any empty corner cell.
+        5.  Side: Take any empty side cell (edge).
+
+        Args:
+            board: A 3x3 list of lists representing the Tic Tac Toe board.
+                   Values are: 0 (empty), 1 (your piece), -1 (opponent's piece).
+
+        Returns:
+            A tuple of two integers (row, col) indicating the chosen move's coordinates.
+            Coordinates are 0-indexed, ranging from 0 to 2.
+            Returns (-1, -1) if no moves are possible (game is full).
+        """
+
+        # Priority 1: Check if player 1 (you) can win in the next move.
+        my_win_move = find_win_or_block_move(board, 1)
+        if my_win_move:
+            return my_win_move
+
+        # Priority 2: Check if the opponent (-1) can win, and block them.
+        opponent_win_move = find_win_or_block_move(board, -1)
+        if opponent_win_move:
+            return opponent_win_move
+
+        # Priority 3: If the center cell (1,1) is empty, take it.
+        # This is generally the strategically strongest move.
+        if board[1][1] == 0:
+            return (1, 1)
+
+        # Priority 4: If no immediate win or block, and center is taken, take an empty corner.
+        # The order of checking corners doesn't critically affect the optimal strategy,
+        # but defining an order ensures deterministic play.
+        corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+        for r, c in corners:
+            if board[r][c] == 0:
+                return (r, c)
+
+        # Priority 5: If no win, block, center, or corner move is available, take an empty side cell.
+        sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+        for r, c in sides:
+            if board[r][c] == 0:
+                return (r, c)
+
+        # Fallback: If the board is full and no moves are possible, return an indicator.
+        # This case should ideally only be reached if the game is already over.
+        # If this were to be reached with empty cells, it would indicate a logic error.
+        # However, the previous loops should cover all empty cells.
+        return (-1, -1) # Signal no valid move found.
+
+    ```
+    The code seems complete and follows the established Tic Tac Toe strategy. The helper function is clear, and the main policy function implements the prioritized moves. The fallback return value `(-1,-1)` is standard for signaling no valid move in some contexts.
+    The use of `numpy` is allowed but not implemented into the actual *logic*, which is fine. The imports are standard.
+    The docstrings explain the function's purpose, arguments, and return values.
+    The logic correctly identifies winning/blocking moves by checking for two pieces of a player and one empty cell in any line.
+    The priority of Center > Corner > Side is standard for optimal play when no immediate win/block is possible.
+    The code is concise and efficient for the 3x3 board.
+    ```<thinking>
+The user wants a Python function `policy(board)` that plays Tic Tac Toe. The function should take a 3x3 board (represented as a list of lists with `0` for empty, `1` for me, `-1` for opponent) and return the chosen move as `(row, col)`.
+
+I need to implement a strategic algorithm. The standard optimal strategy for Tic Tac Toe involves the following priorities:
+1.  **Win:** If I can win the game in the next move, take that move.
+2.  **Block:** If the opponent can win in their next move, block that move.
+3.  **Center:** If the center square (`board[1][1]`) is empty, take it. This is a strategically strong position.
+4.  **Opposite Corner:** If the opponent has taken a corner, and the opposite corner is empty, take it. (This is often covered implicitly by prioritizing any corner move).
+5.  **Empty Corner:** If there are any empty corner squares, take one.
+6.  **Empty Side:** If there are any empty side squares (not corners or center), take one.
+
+To implement this, I'll break it down:
+
+*   **Helper Function for Win/Block:** I'll create a helper function, say `find_win_or_block_move(board, player_id)`, that iterates through all rows, columns, and diagonals. For each line, it checks if `player_id` has two pieces and there's exactly one empty cell. If so, it returns the coordinates of that empty cell. This function can be used for both finding my winning moves (using `player_id=1`) and for finding opponent's winning moves to block (using `player_id=-1`).
+
+*   **Main `policy` Function Logic:**
+    1.  Call `find_win_or_block_move` for `player_id=1`. If a move is returned, that's my winning move.
+    2.  If no winning move, call `find_win_or_block_move` for `player_id=-1`. If a move is returned, that's the opponent's potential win, so I must block it.
+    3.  If neither of the above, check if the center `board[1][1]` is empty (`0`). If yes, return `(1, 1)`.
+    4.  If the center is taken, check the corners `(0,0)`, `(0,2)`, `(2,0)`, `(2,2)`. Return the first empty one found.
+    5.  If all corners are taken, check the side positions `(0,1)`, `(1,0)`, `(1,2)`, `(2,1)`. Return the first empty one found.
+    6.  As a failsafe, if all else fails (e.g., board is full), return `(-1, -1)` to indicate no move is possible.
+
+I will include `import numpy as np` as it is permitted, although for the simple heuristic strategy the logic doesn't strictly require numpy's capabilities. The execution time will be well within the 1-second limit for a 3x3 board as the number of checks is constant.
+</thinking>
+<code>
+```python
+import numpy as np
+
+def find_win_or_block_move(board: list[list[int]], player_id: int) -> tuple[int, int] | None:
+    """
+    Checks if the given player can win or needs to block in the next move.
+    This involves finding a line (row, column, or diagonal) that contains
+    two of the player's pieces and one empty cell.
+
+    Args:
+        board: The 3x3 Tic Tac Toe board.
+        player_id: The ID of the player to check for (1 for me, -1 for opponent).
+
+    Returns:
+        A tuple (row, col) of the winning/blocking move, or None if not possible.
+    """
+    lines_indices = []
+    # Rows
+    for r in range(3):
+        lines_indices.append([(r, 0), (r, 1), (r, 2)])
+    # Columns
+    for c in range(3):
+        lines_indices.append([(0, c), (1, c), (2, c)])
+    # Diagonals
+    lines_indices.append([(0, 0), (1, 1), (2, 2)]) # Top-left to bottom-right
+    lines_indices.append([(0, 2), (1, 1), (2, 0)]) # Top-right to bottom-left
+
+    for line in lines_indices:
+        player_pieces = 0
+        empty_cells = 0
+        empty_pos = None
+
+        for r, c in line:
+            if board[r][c] == player_id:
+                player_pieces += 1
+            elif board[r][c] == 0:
+                empty_cells += 1
+                empty_pos = (r, c)
+
+        # If the player has exactly two pieces and there's one empty spot in the line,
+        # this is a potential winning or blocking move.
+        if player_pieces == 2 and empty_cells == 1:
+            return empty_pos # Return the coordinates of the empty cell
+
+    return None # No such winning or blocking move found in any line
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next best move for the current player in a 3x3 Tic Tac Toe game.
+
+    The strategy follows a priority order:
+    1.  Win: If a move exists that wins the game for the current player, take it.
+    2.  Block: If the opponent can win in their next move, block that move.
+    3.  Center: Take the center cell if it's empty.
+    4.  Corner: Take any empty corner cell.
+    5.  Side: Take any empty side cell (edge).
+
+    Args:
+        board: A 3x3 list of lists representing the Tic Tac Toe board.
+               Values are: 0 (empty), 1 (your piece), -1 (opponent's piece).
+
+    Returns:
+        A tuple of two integers (row, col) indicating the chosen move's coordinates.
+        Coordinates are 0-indexed, ranging from 0 to 2.
+        Returns (-1, -1) if no moves are possible (game is full or an error state).
+    """
+
+    # Priority 1: Check if player 1 (you) can win in the next move.
+    my_win_move = find_win_or_block_move(board, 1)
+    if my_win_move:
+        return my_win_move
+
+    # Priority 2: Check if the opponent (-1) can win, and block them.
+    opponent_win_move = find_win_or_block_move(board, -1)
+    if opponent_win_move:
+        return opponent_win_move
+
+    # Priority 3: If the center cell (1,1) is empty, take it.
+    # This is generally the strategically strongest move.
+    if board[1][1] == 0:
+        return (1, 1)
+
+    # Priority 4: If no immediate win or block, and center is taken, take an empty corner.
+    # The order of checking corners doesn't critically affect the optimal strategy,
+    # but defining an order ensures deterministic play.
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for r, c in corners:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # Priority 5: If no win, block, center, or corner move is available, take an empty side cell.
+    sides = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for r, c in sides:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # Fallback: If the board is full and no moves are possible, return an indicator.
+    # This case should ideally only be reached if the game is already over.
+    # If this were to be reached with empty cells, it would indicate a logic error.
+    # However, the previous loops should cover all empty cells if they exist.
+    return (-1, -1) # Signal no valid move found.
+
+```
+```

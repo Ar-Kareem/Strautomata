@@ -1,0 +1,244 @@
+
+import time
+
+ROWS = 6
+COLS = 7
+MOVE_ORDER = [3, 2, 4, 1, 5, 0, 6]
+WIN_SCORE = 10**9
+
+
+class SearchTimeout(Exception):
+    pass
+
+
+def policy(board: list[list[int]]) -> int:
+    start = time.perf_counter()
+    time_limit = 0.92  # keep a little safety margin
+
+    def time_up():
+        if time.perf_counter() - start > time_limit:
+            raise SearchTimeout
+
+    def legal_moves(b):
+        return [c for c in MOVE_ORDER if b[0][c] == 0]
+
+    def first_legal(b):
+        for c in MOVE_ORDER:
+            if b[0][c] == 0:
+                return c
+        return 0  # should never happen on a valid non-full board
+
+    def drop(b, col, player):
+        for r in range(ROWS - 1, -1, -1):
+            if b[r][col] == 0:
+                b[r][col] = player
+                return r
+        return -1
+
+    def undo(b, row, col):
+        b[row][col] = 0
+
+    def check_win_from(b, row, col, player):
+        # 4 directions: horizontal, vertical, diag /, diag \
+        for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
+            count = 1
+
+            r, c = row + dr, col + dc
+            while 0 <= r < ROWS and 0 <= c < COLS and b[r][c] == player:
+                count += 1
+                r += dr
+                c += dc
+
+            r, c = row - dr, col - dc
+            while 0 <= r < ROWS and 0 <= c < COLS and b[r][c] == player:
+                count += 1
+                r -= dr
+                c -= dc
+
+            if count >= 4:
+                return True
+        return False
+
+    def winning_moves(b, player):
+        wins = []
+        for c in legal_moves(b):
+            r = drop(b, c, player)
+            if check_win_from(b, r, c, player):
+                wins.append(c)
+            undo(b, r, c)
+        return wins
+
+    def evaluate_window(window):
+        ours = window.count(1)
+        opps = window.count(-1)
+        empties = window.count(0)
+
+        if ours and opps:
+            return 0
+
+        if ours == 4:
+            return 100000
+        if opps == 4:
+            return -100000
+
+        score = 0
+        if ours == 3 and empties == 1:
+            score += 120
+        elif ours == 2 and empties == 2:
+            score += 12
+        elif ours == 1 and empties == 3:
+            score += 2
+
+        if opps == 3 and empties == 1:
+            score -= 140
+        elif opps == 2 and empties == 2:
+            score -= 14
+        elif opps == 1 and empties == 3:
+            score -= 2
+
+        return score
+
+    def evaluate_abs(b):
+        score = 0
+
+        # Center control
+        center_col = 3
+        center_vals = [b[r][center_col] for r in range(ROWS)]
+        score += 20 * center_vals.count(1)
+        score -= 20 * center_vals.count(-1)
+
+        # Horizontal windows
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                window = [b[r][c + i] for i in range(4)]
+                score += evaluate_window(window)
+
+        # Vertical windows
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                window = [b[r + i][c] for i in range(4)]
+                score += evaluate_window(window)
+
+        # Diagonal \
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [b[r + i][c + i] for i in range(4)]
+                score += evaluate_window(window)
+
+        # Diagonal /
+        for r in range(ROWS - 3):
+            for c in range(3, COLS):
+                window = [b[r + i][c - i] for i in range(4)]
+                score += evaluate_window(window)
+
+        return score
+
+    def ordered_moves(b, player):
+        moves = legal_moves(b)
+        scored = []
+        for c in moves:
+            r = drop(b, c, player)
+            if check_win_from(b, r, c, player):
+                s = 10**7
+            else:
+                # Center preference + static eval from current player's perspective
+                s = 100 * (3 - abs(3 - c)) + player * evaluate_abs(b)
+            undo(b, r, c)
+            scored.append((s, c))
+        scored.sort(reverse=True)
+        return [c for _, c in scored]
+
+    def negamax(b, player, depth, alpha, beta):
+        time_up()
+
+        moves = legal_moves(b)
+        if not moves:
+            return 0
+
+        if depth == 0:
+            return player * evaluate_abs(b)
+
+        best = -WIN_SCORE
+
+        for c in ordered_moves(b, player):
+            r = drop(b, c, player)
+
+            if check_win_from(b, r, c, player):
+                val = WIN_SCORE - (20 - depth)  # prefer faster wins
+            else:
+                val = -negamax(b, -player, depth - 1, -beta, -alpha)
+
+            undo(b, r, c)
+
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+
+        return best
+
+    def best_move_search(b):
+        legal = legal_moves(b)
+        fallback = first_legal(b)
+
+        # 1) Immediate win
+        my_wins = winning_moves(b, 1)
+        if my_wins:
+            return my_wins[0]
+
+        # 2) Immediate block if opponent has exactly one winning move now
+        opp_wins = winning_moves(b, -1)
+        if len(opp_wins) == 1 and opp_wins[0] in legal:
+            return opp_wins[0]
+
+        best_move = fallback
+
+        empties = sum(1 for r in range(ROWS) for c in range(COLS) if b[r][c] == 0)
+        max_depth = 8
+        if empties <= 14:
+            max_depth = 10
+        elif empties <= 20:
+            max_depth = 9
+
+        try:
+            for depth in range(4, max_depth + 1):
+                time_up()
+                current_best = None
+                current_best_score = -WIN_SCORE
+
+                alpha = -WIN_SCORE
+                beta = WIN_SCORE
+
+                for c in ordered_moves(b, 1):
+                    r = drop(b, c, 1)
+
+                    if check_win_from(b, r, c, 1):
+                        val = WIN_SCORE
+                    else:
+                        val = -negamax(b, -1, depth - 1, -beta, -alpha)
+
+                    undo(b, r, c)
+
+                    if val > current_best_score:
+                        current_best_score = val
+                        current_best = c
+
+                    if val > alpha:
+                        alpha = val
+
+                if current_best is not None:
+                    best_move = current_best
+
+        except SearchTimeout:
+            pass
+
+        if best_move not in legal:
+            return fallback
+        return best_move
+
+    move = best_move_search(board)
+    if move not in legal_moves(board):
+        move = first_legal(board)
+    return move

@@ -1,0 +1,115 @@
+
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the best move for player 1 on a 3x3 Tic-Tac-Toe board.
+    board: 3x3 list of ints: 0 empty, 1 (us), -1 (opponent)
+    Returns: (row, col) in 0..2
+    """
+    # Helper to check winner: returns 1, -1, or 0 (no winner).
+    def check_winner(b: List[List[int]]) -> int:
+        lines = []
+        # rows and cols
+        for i in range(3):
+            lines.append((b[i][0], b[i][1], b[i][2]))
+            lines.append((b[0][i], b[1][i], b[2][i]))
+        # diagonals
+        lines.append((b[0][0], b[1][1], b[2][2]))
+        lines.append((b[0][2], b[1][1], b[2][0]))
+        for a, c, d in lines:
+            s = a + c + d
+            if s == 3:
+                return 1
+            if s == -3:
+                return -1
+        return 0
+
+    # Check if board is full
+    def is_full(b: List[List[int]]) -> bool:
+        for r in b:
+            for x in r:
+                if x == 0:
+                    return False
+        return True
+
+    # Minimax with alpha-beta. Returns (score, move_row, move_col)
+    # Score: +1 win for us, -1 loss, 0 draw. We prefer faster wins / slower losses by factoring depth.
+    def minimax(b: List[List[int]], player: int, alpha: float, beta: float, depth: int) -> Tuple[float, Optional[int], Optional[int]]:
+        winner = check_winner(b)
+        if winner != 0:
+            # If winner == 1, we win; if -1 opponent wins.
+            return float(winner), None, None
+        if is_full(b):
+            return 0.0, None, None
+
+        best_move = (None, None)
+        if player == 1:
+            max_eval = -float('inf')
+            # Move ordering: center, corners, sides
+            moves = ordered_moves(b)
+            for r, c in moves:
+                b[r][c] = player
+                eval_score, _, _ = minimax(b, -player, alpha, beta, depth + 1)
+                # prefer quicker wins: add small factor
+                if eval_score > -0.5 and eval_score < 0.5:
+                    score = eval_score
+                else:
+                    # scale by remaining moves to prefer faster wins / slower losses
+                    score = eval_score * (1.0 - depth * 1e-3)
+                b[r][c] = 0
+                if score > max_eval:
+                    max_eval = score
+                    best_move = (r, c)
+                alpha = max(alpha, score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move[0], best_move[1]
+        else:
+            min_eval = float('inf')
+            moves = ordered_moves(b)
+            for r, c in moves:
+                b[r][c] = player
+                eval_score, _, _ = minimax(b, -player, alpha, beta, depth + 1)
+                if eval_score > -0.5 and eval_score < 0.5:
+                    score = eval_score
+                else:
+                    score = eval_score * (1.0 + depth * 1e-3)
+                b[r][c] = 0
+                if score < min_eval:
+                    min_eval = score
+                    best_move = (r, c)
+                beta = min(beta, score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move[0], best_move[1]
+
+    def ordered_moves(b: List[List[int]]) -> List[Tuple[int, int]]:
+        # Preference: center, corners, sides
+        prefs = [(1,1), (0,0), (0,2), (2,0), (2,2), (0,1), (1,0), (1,2), (2,1)]
+        return [(r, c) for (r, c) in prefs if b[r][c] == 0]
+
+    # If board already terminal, return first empty (or (0,0) if none)
+    if check_winner(board) != 0 or is_full(board):
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    return (i, j)
+        return (0, 0)
+
+    _, mr, mc = minimax([row[:] for row in board], 1, -float('inf'), float('inf'), 0)
+    if mr is None or mc is None:
+        # fallback
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    return (i, j)
+        return (0, 0)
+    return (mr, mc)
+
+
+# If run as a script, provide a simple test
+if __name__ == "__main__":
+    # Example empty board
+    b = [[0,0,0],[0,0,0],[0,0,0]]
+    print(policy(b))  # expect center (1,1)

@@ -1,0 +1,198 @@
+To implement the optimal policy for this simplified Blackjack game, we treat it as a two-player zero-sum game (or rather, a maximization of win-rate against an unknown opponent) with a restricted state space.
+
+The deck is small (13 cards), so the total number of subsets of cards is $2^{13} = 8192$. This allows us to use dynamic programming or recursion with memoization to solve the game completely within the time limit.
+
+### Strategy
+
+1.  **State Representation**: The state is defined by the set of cards currently held by the player (represented as a bitmask). The order doesn't matter, only the combination.
+2.  **Opponent Modeling**: Since we don't know the opponent's strategy, a robust assumption is that the opponent acts rationally to maximize their own expected score (risk-neutral). We first solve the game from the opponent's perspective to derive the probability distribution of their final score (including the probability of busting).
+    *   We compute `d_opp[score]`: The probability the opponent ends up with `score` (or BUST).
+3.  **Optimal Response**: Once we have the opponent's final score distribution, we can calculate the utility of "Standing" at any given score.
+    *   `Utility(Score)` = Probability we win + 0.5 * Probability we draw.
+    *   Winning condition: Our score > Opponent's score (and Opponent didn't bust), or Opponent busted (and we didn't).
+    *   Drawing condition: Scores are equal, or both busted.
+4.  **Policy Computation**: We then solve the game for ourself using these utilities. For each state (set of cards), we compare the utility of **STAY** (calculated from our current score against the opponent's distribution) versus **HIT** (average of the utilities of all possible next states).
+5.  **Caching**: Since the target `T` is fixed for a game but might vary between games, we cache the computed strategy for `T` to ensure subsequent calls are $O(1)$.
+
+### Python Implementation
+
+```python
+import numpy as np
+
+# Global cache to store computed strategies for specific target scores
+_STRATEGY_CACHE = {}
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Determines whether to HIT or STAY given the current hand and target score.
+    Implementation uses a Nash-like approximation where we assume the opponent 
+    plays to maximize their expected score, and calculate our best response 
+    to maximize win rate (Win + 0.5*Draw).
+    """
+    
+    # Card definitions
+    ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    rank_map = {r: i for i, r in enumerate(ranks)}
+    # Base values (Ace is 1 by default, dealt with dynamically)
+    rank_vals = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10]
+
+    # Convert hand to bitmask
+    hand_mask = 0
+    for card in hand:
+        hand_mask |= (1 << rank_map[card])
+
+    # If strategy for this target is already computed, use it
+    if target in _STRATEGY_CACHE:
+        return _STRATEGY_CACHE[target].get(hand_mask, "STAY")
+
+    # Helper to calculate score for a given hand mask
+    def get_score(mask):
+        s = 0
+        for i in range(13):
+            if (mask >> i) & 1:
+                s += rank_vals[i]
+        
+        # Check Ace handling: if there is an Ace (bit 0) and promoting it to 11
+        # keeps score <= target, do it. (Only one Ace in deck, so simple check).
+        if (mask & 1) and (s + 10 <= target):
+            s += 10
+        return s
+
+    # --- Step 1: Model the Opponent ---
+    # We assume the opponent plays a strategy that maximizes their Expected Score.
+    # We compute the probability distribution of their final score for this strategy.
+    # Indices 0..target are scores; index target+1 is BUST.
+    
+    memo_opp = {} # mask -> (expected_score, probability_distribution)
+    
+    def solve_opp(mask):
+        if mask in memo_opp:
+            return memo_opp[mask]
+        
+        score = get_score(mask)
+        
+        # Check bust
+        if score > target:
+            dist = np.zeros(target + 2)
+            dist[target + 1] = 1.0 # Bust probability 1
+            res = (0.0, dist) # Value of bust is 0 in Expected Score maximization
+            memo_opp[mask] = res
+            return res
+        
+        # Option: Stand
+        d_stand = np.zeros(target + 2)
+        d_stand[score] = 1.0
+        ev_stand = float(score)
+        
+        # Option: Hit
+        # Identify remaining cards
+        valid_draws = []
+        for i in range(13):
+            if not ((mask >> i) & 1):
+                valid_draws.append(i)
+        
+        if not valid_draws:
+            # Must stand if no cards left
+            res = (ev_stand, d_stand)
+            memo_opp[mask] = res
+            return res
+        
+        ev_hit_sum = 0.0
+        d_hit_sum = np.zeros(target + 2)
+        
+        for c in valid_draws:
+            e_child, d_child = solve_opp(mask | (1 << c))
+            ev_hit_sum += e_child
+            d_hit_sum += d_child
+            
+        ev_hit = ev_hit_sum / len(valid_draws)
+        d_hit = d_hit_sum / len(valid_draws)
+        
+        # Choose max EV (Standard greedy blackjack behavior)
+        if ev_hit > ev_stand:
+            res = (ev_hit, d_hit)
+        else:
+            res = (ev_stand, d_stand)
+            
+        memo_opp[mask] = res
+        return res
+
+    # Compute opponent's final distribution starting from empty hand
+    _, opp_dist = solve_opp(0)
+
+    # --- Step 2: Compute Optimal Policy for US ---
+    # We want to maximize Win Rate against opp_dist.
+    # Utility: Win=1, Draw=0.5, Lose=0.
+    
+    # Precompute utility of ending with a specific score 0..target, or Busted.
+    # If we Bust, we draw if opponent busts (0.5), lose otherwise (0).
+    
+    u_bust = 0.5 * opp_dist[target + 1]
+    
+    u_stand_scores = np.zeros(target + 1)
+    
+    # Cumulative probability that opponent scores < s
+    prob_opp_lower = 0.0
+    prob_opp_bust = opp_dist[target + 1]
+    
+    for s in range(target + 1):
+        prob_opp_eq = opp_dist[s]
+        # Win if (Opp Busts) OR (Opp < s)
+        # Draw if (Opp == s)
+        # Lose if (Opp > s and not Bust)
+        win_prob = prob_opp_bust + prob_opp_lower + 0.5 * prob_opp_eq
+        u_stand_scores[s] = win_prob
+        
+        prob_opp_lower += prob_opp_eq
+
+    strategy = {}
+    memo_me = {} # mask -> max_utility
+    
+    def solve_me(mask):
+        if mask in memo_me:
+            return memo_me[mask]
+        
+        score = get_score(mask)
+        
+        # If already busted
+        if score > target:
+            return u_bust
+        
+        # Value if we Stand
+        val_stand = u_stand_scores[score]
+        
+        # Value if we Hit
+        valid_draws = []
+        for i in range(13):
+            if not ((mask >> i) & 1):
+                valid_draws.append(i)
+        
+        if not valid_draws:
+            # Must stay
+            strategy[mask] = "STAY"
+            memo_me[mask] = val_stand
+            return val_stand
+        
+        val_hit_sum = 0.0
+        for c in valid_draws:
+            val_hit_sum += solve_me(mask | (1 << c))
+        
+        val_hit = val_hit_sum / len(valid_draws)
+        
+        # Decision: Hit if strictly better (floating point epsilon)
+        if val_hit > val_stand + 1e-9:
+            strategy[mask] = "HIT"
+            memo_me[mask] = val_hit
+            return val_hit
+        else:
+            strategy[mask] = "STAY"
+            memo_me[mask] = val_stand
+            return val_stand
+
+    # Populate strategy starting from empty hand
+    solve_me(0)
+    
+    # Cache and return the decision for current hand
+    _STRATEGY_CACHE[target] = strategy
+    return strategy.get(hand_mask, "STAY")
+```

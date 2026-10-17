@@ -1,0 +1,539 @@
+
+import re
+from typing import Dict, List, Tuple, Any
+
+# Piece values for evaluation
+PIECE_VALUES = {
+    'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 100
+}
+
+# Board squares indexed for easy access
+FILES = 'abcdefgh'
+RANKS = '12345678'
+
+def parse_square(square: str) -> Tuple[int, int]:
+    """Convert algebraic notation to (file, rank) indices."""
+    return FILES.index(square[0]), int(square[1]) - 1
+
+def square_to_algebraic(file_idx: int, rank_idx: int) -> str:
+    """Convert (file, rank) indices to algebraic notation."""
+    return FILES[file_idx] + str(rank_idx + 1)
+
+def get_piece_at(pieces: Dict[str, str], square: str) -> str:
+    """Get piece at a square, return empty string if empty."""
+    return pieces.get(square, '')
+
+def is_white(piece: str) -> bool:
+    """Check if piece is white."""
+    return piece and piece[0] == 'w'
+
+def is_black(piece: str) -> bool:
+    """Check if piece is black."""
+    return piece and piece[0] == 'b'
+
+def get_piece_type(piece: str) -> str:
+    """Get the type of a piece (K, Q, R, B, N, P)."""
+    return piece[1] if piece else ''
+
+def get_enemy_color(to_play: str) -> str:
+    """Get the enemy color."""
+    return 'black' if to_play == 'white' else 'white'
+
+def get_enemy_piece_prefix(to_play: str) -> str:
+    """Get the piece prefix for enemy pieces."""
+    return 'b' if to_play == 'white' else 'w'
+
+def parse_move(move: str) -> Dict[str, Any]:
+    """
+    Parse a move string into components.
+    Returns dict with 'from', 'to', 'piece', 'capture', 'promotion', 'castle', 'check', 'mate'
+    """
+    result = {
+        'from': '', 'to': '', 'piece': '', 'capture': False,
+        'promotion': '', 'castle': False, 'check': False, 'mate': False
+    }
+    
+    # Handle castling
+    if move in ['O-O', 'O-O-O']:
+        result['castle'] = True
+        result['piece'] = 'K'
+        return result
+    
+    # Remove check/mate symbols
+    clean_move = move.replace('+', '').replace('#', '')
+    if move != clean_move:
+        result['check'] = '+' in move
+        result['mate'] = '#' in move
+    clean_move = clean_move.replace('+', '').replace('#', '')
+    
+    # Handle promotions
+    if '=' in clean_move:
+        parts = clean_move.split('=')
+        result['promotion'] = parts[1]
+        clean_move = parts[0]
+    
+    # Handle captures
+    if 'x' in clean_move:
+        result['capture'] = True
+        clean_move = clean_move.replace('x', '')
+    
+    # Extract piece letter (if not pawn)
+    if clean_move[0].isupper():
+        result['piece'] = clean_move[0]
+        clean_move = clean_move[1:]
+    else:
+        result['piece'] = 'P'  # Pawn
+    
+    # Handle disambiguation
+    if len(clean_move) > 2:
+        # File or rank disambiguation
+        disambig = clean_move[0]
+        if disambig.isdigit():
+            # Rank disambiguation
+            result['disambig_rank'] = int(disambig)
+        else:
+            # File disambiguation
+            result['disambig_file'] = disambig
+        clean_move = clean_move[1:]
+    
+    # Destination square
+    result['to'] = clean_move
+    
+    return result
+
+def find_piece_moves(pieces: Dict[str, str], square: str, piece_type: str, color_prefix: str) -> List[str]:
+    """Find all possible moves for a piece from a square."""
+    file_idx, rank_idx = parse_square(square)
+    piece_code = color_prefix + piece_type
+    moves = []
+    
+    # Directions for each piece type
+    if piece_type == 'P':
+        # Pawn moves - simplified
+        direction = 1 if color_prefix == 'w' else -1
+        forward = square_to_algebraic(file_idx, rank_idx + direction)
+        if not get_piece_at(pieces, forward):
+            moves.append(forward)
+            # Double move from starting rank
+            start_rank = 1 if color_prefix == 'w' else 6
+            if rank_idx == start_rank:
+                double_forward = square_to_algebraic(file_idx, rank_idx + 2 * direction)
+                if not get_piece_at(pieces, double_forward):
+                    moves.append(double_forward)
+        # Captures
+        for df in [-1, 1]:
+            capture_square = square_to_algebraic(file_idx + df, rank_idx + direction)
+            target = get_piece_at(pieces, capture_square)
+            if target and target[0] != color_prefix:
+                moves.append(capture_square)
+                
+    elif piece_type in ['R', 'B', 'Q']:
+        directions = []
+        if piece_type in ['R', 'Q']:
+            directions.extend([(1, 0), (-1, 0), (0, 1), (0, -1)])
+        if piece_type in ['B', 'Q']:
+            directions.extend([(1, 1), (1, -1), (-1, 1), (-1, -1)])
+        
+        for df, dr in directions:
+            for i in range(1, 8):
+                new_file, new_rank = file_idx + df * i, rank_idx + dr * i
+                if not (0 <= new_file < 8 and 0 <= new_rank < 8):
+                    break
+                target_square = square_to_algebraic(new_file, new_rank)
+                target = get_piece_at(pieces, target_square)
+                if target:
+                    if target[0] != color_prefix:
+                        moves.append(target_square)
+                    break
+                moves.append(target_square)
+                
+    elif piece_type == 'N':
+        knight_moves = [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)]
+        for df, dr in knight_moves:
+            new_file, new_rank = file_idx + df, rank_idx + dr
+            if 0 <= new_file < 8 and 0 <= new_rank < 8:
+                target_square = square_to_algebraic(new_file, new_rank)
+                target = get_piece_at(pieces, target_square)
+                if not target or target[0] != color_prefix:
+                    moves.append(target_square)
+                    
+    elif piece_type == 'K':
+        king_moves = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+        for df, dr in king_moves:
+            new_file, new_rank = file_idx + df, rank_idx + dr
+            if 0 <= new_file < 8 and 0 <= new_rank < 8:
+                target_square = square_to_algebraic(new_file, new_rank)
+                target = get_piece_at(pieces, target_square)
+                if not target or target[0] != color_prefix:
+                    moves.append(target_square)
+    
+    return moves
+
+def reconstruct_from_square(pieces: Dict[str, str], move_info: Dict, to_play: str) -> str:
+    """Reconstruct the from square for a move."""
+    piece_type = move_info['piece']
+    to_square = move_info['to']
+    color_prefix = 'w' if to_play == 'white' else 'b'
+    
+    # Find all pieces of this type
+    candidates = []
+    for square, piece in pieces.items():
+        if piece == color_prefix + piece_type:
+            candidates.append(square)
+    
+    # Filter by disambiguation if present
+    if 'disambig_file' in move_info:
+        candidates = [c for c in candidates if c[0] == move_info['disambig_file']]
+    if 'disambig_rank' in move_info:
+        candidates = [c for c in candidates if c[1] == str(move_info['disambig_rank'])]
+    
+    # Filter by which pieces can actually make this move
+    valid_from = []
+    for from_square in candidates:
+        possible_moves = find_piece_moves(pieces, from_square, piece_type, color_prefix)
+        if to_square in possible_moves:
+            valid_from.append(from_square)
+    
+    if valid_from:
+        return valid_from[0]
+    return ''
+
+def evaluate_capture(pieces: Dict[str, str], move: str, to_play: str) -> float:
+    """Evaluate the material value of a capture."""
+    move_info = parse_move(move)
+    to_square = move_info['to']
+    
+    if not move_info['capture']:
+        return 0.0
+    
+    # Find the captured piece
+    target_piece = get_piece_at(pieces, to_square)
+    if target_piece:
+        piece_type = target_piece[1]
+        return PIECE_VALUES.get(piece_type, 0)
+    
+    return 0.0
+
+def evaluate_check_or_mate(pieces: Dict[str, str], move: str, to_play: str) -> Tuple[float, bool]:
+    """Check if a move gives check or mate."""
+    move_info = parse_move(move)
+    
+    # Castling doesn't give immediate check in standard notation
+    if move_info['castle']:
+        return 0.0, False
+    
+    # Check for check/mate symbols
+    if move_info['mate']:
+        return 100.0, True
+    if move_info['check']:
+        return 5.0, False
+    
+    # Simulate move and check if it gives check
+    color_prefix = 'w' if to_play == 'white' else 'b'
+    enemy_prefix = 'b' if to_play == 'white' else 'w'
+    
+    # Reconstruct the move
+    from_square = reconstruct_from_square(pieces, move_info, to_play)
+    if not from_square:
+        return 0.0, False
+    
+    to_square = move_info['to']
+    
+    # Make temporary move
+    piece = pieces.get(from_square, '')
+    captured = pieces.get(to_square, '')
+    
+    temp_pieces = pieces.copy()
+    del temp_pieces[from_square]
+    if captured:
+        del temp_pieces[to_square]
+    temp_pieces[to_square] = piece
+    
+    # Handle promotion
+    if move_info['promotion']:
+        temp_pieces[to_square] = color_prefix + move_info['promotion']
+    
+    # Check if enemy king is in check
+    enemy_king_square = None
+    for square, p in temp_pieces.items():
+        if p == enemy_prefix + 'K':
+            enemy_king_square = square
+            break
+    
+    if enemy_king_square:
+        # Check if any of our pieces attack the enemy king
+        for square, p in temp_pieces.items():
+            if p and p[0] == color_prefix:
+                piece_type = p[1]
+                possible_moves = find_piece_moves(temp_pieces, square, piece_type, color_prefix)
+                if enemy_king_square in possible_moves:
+                    return 3.0, False
+    
+    return 0.0, False
+
+def evaluate_king_safety(pieces: Dict[str, str], move: str, to_play: str, memory: Dict) -> float:
+    """Evaluate king safety considerations."""
+    color_prefix = 'w' if to_play == 'white' else 'b'
+    
+    move_info = parse_move(move)
+    from_square = move_info['from']
+    to_square = move_info['to']
+    
+    score = 0.0
+    
+    # Prefer castling
+    if move_info['castle']:
+        score += 2.0
+    
+    # Check if we're moving the king
+    if move_info['piece'] == 'K':
+        file_idx, rank_idx = parse_square(to_square)
+        
+        # Penalize moving king toward center early in game
+        center_distance = abs(3.5 - file_idx) + abs(3.5 - rank_idx)
+        score -= center_distance * 0.3
+        
+        # Check if king is exposed
+        exposed_penalty = 0
+        for df in [-1, 0, 1]:
+            for dr in [-1, 0, 1]:
+                if df == 0 and dr == 0:
+                    continue
+                check_file, check_rank = file_idx + df, rank_idx + dr
+                if 0 <= check_file < 8 and 0 <= check_rank < 8:
+                    check_square = square_to_algebraic(check_file, check_rank)
+                    if get_piece_at(pieces, check_square):
+                        exposed_penalty += 0.5
+        score -= exposed_penalty
+    
+    return score
+
+def evaluate_development(pieces: Dict[str, str], move: str, to_play: str) -> float:
+    """Evaluate piece development."""
+    move_info = parse_move(move)
+    piece_type = move_info['piece']
+    
+    score = 0.0
+    
+    # Prefer developing knights and bishops
+    if piece_type in ['N', 'B']:
+        from_square = move_info['from']
+        to_square = move_info['to']
+        
+        from_file, from_rank = parse_square(from_square)
+        to_file, to_rank = parse_square(to_square)
+        
+        # Prefer moving toward center
+        center_distance_from = abs(3.5 - from_file) + abs(3.5 - from_rank)
+        center_distance_to = abs(3.5 - to_file) + abs(3.5 - to_rank)
+        
+        if center_distance_to < center_distance_from:
+            score += 1.0
+        
+        # Prefer getting pieces off back rank
+        if from_rank == 0 or from_rank == 7:
+            if to_rank != 0 and to_rank != 7:
+                score += 0.5
+    
+    return score
+
+def evaluate_pawn_structure(pieces: Dict[str, str], move: str, to_play: str) -> float:
+    """Evaluate pawn structure considerations."""
+    move_info = parse_move(move)
+    
+    score = 0.0
+    
+    # Penalize moving pawns that leave king exposed
+    if move_info['piece'] == 'P':
+        to_square = move_info['to']
+        file_idx, rank_idx = parse_square(to_square)
+        
+        # Discourage pawn moves that open lines to king (f3, g3, h3 for white king on e1)
+        # This is a simplification
+        pass
+    
+    return score
+
+def evaluate_pinned_pieces(pieces: Dict[str, str], move: str, to_play: str) -> float:
+    """Check if move would expose king (simplified pin detection)."""
+    color_prefix = 'w' if to_play == 'white' else 'b'
+    
+    move_info = parse_move(move)
+    from_square = move_info['from']
+    
+    # Find our king
+    king_square = None
+    for square, piece in pieces.items():
+        if piece == color_prefix + 'K':
+            king_square = square
+            break
+    
+    if not king_square:
+        return 0.0
+    
+    piece_at_from = get_piece_at(pieces, from_square)
+    if not piece_at_from or piece_at_from[0] != color_prefix:
+        return 0.0
+    
+    # Simplified: check if piece is on same file/rank/diagonal as king
+    from_file, from_rank = parse_square(from_square)
+    king_file, king_rank = parse_square(king_square)
+    
+    on_same_line = False
+    
+    # Same file
+    if from_file == king_file:
+        on_same_line = True
+    # Same rank
+    elif from_rank == king_rank:
+        on_same_line = True
+    # Same diagonal
+    elif abs(from_file - king_file) == abs(from_rank - king_rank):
+        on_same_line = True
+    
+    if on_same_line:
+        # Moving along the line - might be pinned
+        # Penalize unless capturing along the line
+        if not move_info['capture']:
+            return -1.0
+    
+    return 0.0
+
+def evaluate_tactical_threats(pieces: Dict[str, str], move: str, to_play: str) -> float:
+    """Evaluate if move avoids tactical threats."""
+    move_info = parse_move(move)
+    
+    score = 0.0
+    
+    # Check if we're moving a piece that's under attack
+    from_square = move_info['from']
+    piece = get_piece_at(pieces, from_square)
+    
+    if piece:
+        color_prefix = piece[0]
+        enemy_prefix = 'b' if color_prefix == 'w' else 'w'
+        
+        # Check if the piece is defended
+        is_defended = False
+        for square, p in pieces.items():
+            if p and p[0] == color_prefix:
+                piece_type = p[1]
+                possible_moves = find_piece_moves(pieces, square, piece_type, color_prefix)
+                if from_square in possible_moves:
+                    is_defended = True
+                    break
+        
+        # If piece is valuable and not defended, be careful
+        piece_type = piece[1]
+        if piece_type in ['Q', 'R', 'N', 'B']:
+            if not is_defended and not move_info['capture']:
+                score -= 0.5
+    
+    return score
+
+def evaluate_center_control(pieces: Dict[str, str], move: str, to_play: str) -> float:
+    """Evaluate center control."""
+    move_info = parse_move(move)
+    to_square = move_info['to']
+    
+    file_idx, rank_idx = parse_square(to_square)
+    
+    # Center squares (d4, d5, e4, e5)
+    center_squares = ['d4', 'd5', 'e4', 'e5']
+    extended_center = ['c3', 'c4', 'c5', 'c6', 'd3', 'd6', 'e3', 'e6', 'f3', 'f4', 'f5', 'f6']
+    
+    score = 0.0
+    
+    if to_square in center_squares:
+        score += 2.0
+    elif to_square in extended_center:
+        score += 1.0
+    
+    return score
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str], memory: Dict) -> Tuple[str, Dict]:
+    """
+    Chess move selection policy.
+    Returns (action, memory) where action is a legal move string.
+    """
+    
+    # Initialize memory if needed
+    if 'move_history' not in memory:
+        memory['move_history'] = []
+    if 'repetition_count' not in memory:
+        memory['repetition_count'] = {}
+    
+    # Track move history for repetition detection
+    move_str = ','.join(sorted(pieces.items()))
+    if move_str not in memory['repetition_count']:
+        memory['repetition_count'][move_str] = 0
+    memory['repetition_count'][move_str] += 1
+    memory['move_history'].append(move_str)
+    
+    # Keep only recent history
+    if len(memory['move_history']) > 20:
+        memory['move_history'] = memory['move_history'][-20:]
+    
+    # Evaluate each legal move
+    scored_moves = []
+    
+    for move in legal_moves:
+        score = 0.0
+        reasons = []
+        
+        # 1. Check for checkmate (highest priority)
+        mate_score, is_mate = evaluate_check_or_mate(pieces, move, to_play)
+        if is_mate:
+            return move, memory  # Immediate mate return
+        score += mate_score
+        if mate_score > 0:
+            reasons.append(f"check:{mate_score}")
+        
+        # 2. Evaluate captures
+        capture_score = evaluate_capture(pieces, move, to_play)
+        score += capture_score * 10  # Weight captures heavily
+        if capture_score > 0:
+            reasons.append(f"capture:{capture_score}")
+        
+        # 3. King safety
+        king_score = evaluate_king_safety(pieces, move, to_play, memory)
+        score += king_score
+        if king_score != 0:
+            reasons.append(f"king:{king_score}")
+        
+        # 4. Development
+        dev_score = evaluate_development(pieces, move, to_play)
+        score += dev_score
+        if dev_score > 0:
+            reasons.append(f"dev:{dev_score}")
+        
+        # 5. Center control
+        center_score = evaluate_center_control(pieces, move, to_play)
+        score += center_score
+        if center_score > 0:
+            reasons.append(f"center:{center_score}")
+        
+        # 6. Tactical safety (avoid blunders)
+        tactic_score = evaluate_tactical_threats(pieces, move, to_play)
+        score += tactic_score
+        if tactic_score < 0:
+            reasons.append(f"tactic:{tactic_score}")
+        
+        # 7. Pin considerations
+        pin_score = evaluate_pinned_pieces(pieces, move, to_play)
+        score += pin_score
+        if pin_score < 0:
+            reasons.append(f"pin:{pin_score}")
+        
+        scored_moves.append((score, move, reasons))
+    
+    # Sort by score (descending)
+    scored_moves.sort(key=lambda x: x[0], reverse=True)
+    
+    # Return best move
+    if scored_moves:
+        best_move = scored_moves[0][1]
+        return best_move, memory
+    
+    # Fallback: return first legal move
+    return legal_moves[0] if legal_moves else '', memory

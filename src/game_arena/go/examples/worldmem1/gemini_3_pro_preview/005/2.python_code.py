@@ -1,0 +1,277 @@
+
+import numpy as np
+import random
+import time
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # 1. Configuration and Board Setup
+    BOARD_SIZE = 19
+    EMPTY = 0
+    ME = 1
+    OPPONENT = -1
+    
+    # Time management to ensure valid return within 1s
+    start_time = time.time()
+    
+    # Initialize board grid (0=Empty, 1=Me, -1=Opp)
+    board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.int8)
+    for r, c in me:
+        board[r-1, c-1] = ME
+    for r, c in opponent:
+        board[r-1, c-1] = OPPONENT
+
+    # 2. Board Analysis (Groups and Liberties)
+    # Returns: group_map (r,c)->id, group_libs {id: set}, group_sizes {id: int}, group_colors {id: int}
+    # This allows O(1) lookups for group properties during simulation
+    def analyze_board(b):
+        group_map = np.full((BOARD_SIZE, BOARD_SIZE), -1, dtype=np.int16)
+        group_libs = {}
+        group_sizes = {}
+        group_colors = {}
+        next_id = 0
+        
+        deltas = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if b[r, c] != EMPTY and group_map[r, c] == -1:
+                    color = b[r, c]
+                    stack = [(r, c)]
+                    group_map[r, c] = next_id
+                    
+                    liberties = set()
+                    size = 0
+                    
+                    while stack:
+                        curr_r, curr_c = stack.pop()
+                        size += 1
+                        for dr, dc in deltas:
+                            nr, nc = curr_r + dr, curr_c + dc
+                            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                                if b[nr, nc] == EMPTY:
+                                    liberties.add((nr, nc))
+                                elif b[nr, nc] == color and group_map[nr, nc] == -1:
+                                    group_map[nr, nc] = next_id
+                                    stack.append((nr, nc))
+                    
+                    group_libs[next_id] = liberties
+                    group_sizes[next_id] = size
+                    group_colors[next_id] = color
+                    next_id += 1
+        return group_map, group_libs, group_sizes, group_colors
+
+    group_map, group_libs, group_sizes, group_colors = analyze_board(board)
+    
+    # 3. Simulate Move Function
+    # Checks legality (Suicide, Captures)
+    def simulate(r, c):
+        deltas = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        
+        opp_ids = set()
+        own_ids = set()
+        empty_neighbors_count = 0
+        
+        # Identify immediate surroundings
+        for dr, dc in deltas:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                nid = group_map[nr, nc]
+                if nid != -1:
+                    if group_colors[nid] == OPPONENT:
+                        opp_ids.add(nid)
+                    else:
+                        own_ids.add(nid)
+                else:
+                    if board[nr, nc] == EMPTY:
+                        empty_neighbors_count += 1
+                        
+        # Check captures (If we fill the last liberty of an opponent group)
+        captured_stones_count = 0
+        captured_groups = set()
+        for oid in opp_ids:
+            if len(group_libs[oid]) == 1 and (r, c) in group_libs[oid]:
+                captured_groups.add(oid)
+                captured_stones_count += group_sizes[oid]
+                
+        # Calculate resulting liberties for the placed stone's group
+        # New Libs = Empty Neighbors + Libs of Joined Friendly Groups - 1 (the stone itself played)
+        merged_libs = set()
+        
+        # Add immediate empty neighbors
+        for dr, dc in deltas:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr, nc] == EMPTY:
+                merged_libs.add((nr, nc))
+                
+        # Add liberties from connected friendlies
+        for mid in own_ids:
+            merged_libs.update(group_libs[mid])
+            
+        # The placed stone fills a liberty of the friendly groups
+        if (r, c) in merged_libs:
+            merged_libs.remove((r, c))
+            
+        # Suicide Rule: A move is suicide if it results in a group with 0 liberties AND captures nothing.
+        # However, if we capture stones, their spots become liberties (or at least empty), so it's legal.
+        has_liberties = len(merged_libs) > 0 or captured_stones_count > 0
+        
+        if not has_liberties:
+            return False, 0, 0 # Illegal Suicide
+            
+        return True, captured_stones_count, len(merged_libs)
+
+    # 4. Generate Candidates
+    candidates = set()
+    
+    # A. Critical: Play on liberties of weak (1-lib) groups to Save or Capture
+    for gid, libs in group_libs.items():
+        if len(libs) <= 1:
+            candidates.update(libs)
+            
+    # B. Shape: Star points (Corners/Sides) if empty
+    star_points = [(3,3), (3,15), (15,3), (15,15), (9,9), (3,9), (15,9), (9,3), (9,15)]
+    for sp in star_points:
+        if board[sp] == EMPTY:
+            candidates.add(sp)
+            
+    # C. Local: Moves adjacent to existing stones
+    # Limit processing if board is very full, though 19x19 allows ~200 simulations easily.
+    occupied_indices = np.argwhere(board != EMPTY)
+    
+    # If board is essentially empty, just check stars. If not, check neighbors.
+    if len(occupied_indices) > 0:
+        # Check neighbors
+        for r, c in occupied_indices:
+             for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                 nr, nc = r + dr, c + dc
+                 if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr, nc] == EMPTY:
+                     candidates.add((nr, nc))
+
+    candidate_list = list(candidates)
+    
+    # Fallback: Random empty spot if no candidates found
+    if not candidate_list:
+        empties = np.argwhere(board == EMPTY)
+        if len(empties) > 0:
+            idx = np.random.choice(len(empties))
+            candidate_list.append(tuple(empties[idx]))
+            
+    random.shuffle(candidate_list)
+    
+    # 5. Evaluate and Score Candidates
+    best_move = (0, 0) # Default Pass
+    best_score = -float('inf')
+    prev_board_str = memory.get('prev_board', None)
+    
+    for r, c in candidate_list:
+        # Safety cutoff - ensure we don't timeout
+        if time.time() - start_time > 0.90:
+            break
+            
+        valid, captured, libs = simulate(r, c)
+        if not valid:
+            continue
+            
+        # Ko Check (Simple Ko)
+        # If I capture 1 stone, I must ensure the board doesn't revert to the state I just left.
+        # This requires recreating the board temporarily.
+        if captured == 1 and prev_board_str:
+            temp_board = board.copy()
+            temp_board[r, c] = ME
+            # Remove captured group
+            deltas = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            for dr, dc in deltas:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                    nid = group_map[nr, nc]
+                    if nid != -1 and group_colors[nid] == OPPONENT and len(group_libs[nid]) == 1 and (r, c) in group_libs[nid]:
+                        # Clear specific group
+                        for tr in range(BOARD_SIZE):
+                            for tc in range(BOARD_SIZE):
+                                if group_map[tr, tc] == nid:
+                                    temp_board[tr, tc] = EMPTY
+            
+            if temp_board.tobytes() == prev_board_str:
+                continue # Illegal Ko move
+        
+        # --- SCORING HEURISTICS ---
+        score = 0
+        
+        # 1. Capture Bonus
+        score += captured * 1000 
+        
+        # 2. General Liberty Bonus (Shape strength)
+        score += libs * 5
+        
+        # 3. Save from Atari (Defensive)
+        # Verify if this move increments 'libs' significantly for an adjacent friendly group in danger
+        saved_atari = False
+        deltas = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        for dr, dc in deltas:
+             nr, nc = r + dr, c + dc
+             if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                 nid = group_map[nr, nc]
+                 if nid != -1 and group_colors[nid] == ME:
+                     # Check if neighbor was in atari and we improve it (libs > 1)
+                     if len(group_libs[nid]) == 1 and libs > 1:
+                         saved_atari = True
+        if saved_atari:
+            score += 2000 # Priority #1
+            
+        # 4. Put Opponent in Atari (Offensive)
+        atari_caused = False
+        for dr, dc in deltas:
+             nr, nc = r + dr, c + dc
+             if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                 nid = group_map[nr, nc]
+                 if nid != -1 and group_colors[nid] == OPPONENT:
+                     # If we filled one of their 2 liberties
+                     if len(group_libs[nid]) == 2:
+                         atari_caused = True
+        if atari_caused:
+            score += 300
+            
+        # 5. Avoid Edges (Line 1/2) unless necessary
+        # 0-indexed coords: 0, 18 is edge; 1, 17 is second line.
+        if (r == 0 or r == 18 or c == 0 or c == 18):
+            score -= 50
+        elif (r == 1 or r == 17 or c == 1 or c == 17):
+            score -= 20
+            
+        # 6. Centrality Bias (Encourage growth towards center)
+        score -= (abs(r-9) + abs(c-9))
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r + 1, c + 1) # Convert to 1-based index
+            
+    # 6. Prepare Memory for Next Turn (Ko Handling)
+    # Store the exact binary state of the board produced by this move
+    next_memory = {}
+    if best_move != (0, 0):
+        final_r, final_c = best_move[0]-1, best_move[1]-1
+        temp_board = board.copy()
+        temp_board[final_r, final_c] = ME
+        
+        # Remove captures for accurate hash
+        deltas = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        captured_groups = set()
+        for dr, dc in deltas:
+            nr, nc = final_r + dr, final_c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                nid = group_map[nr, nc]
+                if nid != -1 and group_colors[nid] == OPPONENT and len(group_libs[nid]) == 1 and (final_r, final_c) in group_libs[nid]:
+                    captured_groups.add(nid)
+        
+        if captured_groups:
+             for tr in range(BOARD_SIZE):
+                 for tc in range(BOARD_SIZE):
+                     if group_map[tr, tc] in captured_groups:
+                         temp_board[tr, tc] = EMPTY
+                         
+        next_memory['prev_board'] = temp_board.tobytes()
+    else:
+        # If we pass, board state is unchanged
+        next_memory['prev_board'] = board.tobytes()
+        
+    return best_move, next_memory

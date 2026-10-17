@@ -1,0 +1,301 @@
+
+from collections import deque
+
+N = 11
+SIZE = N * N
+BLACK = 1
+WHITE = 2
+INF = 99
+WINVAL = 100000
+
+
+def _idx(r: int, c: int) -> int:
+    return r * N + c
+
+
+IDX2RC = [(i // N, i % N) for i in range(SIZE)]
+
+# Hex neighbors for the coordinate system in the prompt:
+# (r, c-1), (r, c+1), (r-1, c), (r-1, c+1), (r+1, c), (r+1, c-1)
+NEI = [[] for _ in range(SIZE)]
+for r in range(N):
+    for c in range(N):
+        i = _idx(r, c)
+        for dr, dc in ((0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, -1)):
+            rr, cc = r + dr, c + dc
+            if 0 <= rr < N and 0 <= cc < N:
+                NEI[i].append(_idx(rr, cc))
+
+NEI_SETS = [set(x) for x in NEI]
+
+TOP = [_idx(0, c) for c in range(N)]
+LEFT = [_idx(r, 0) for r in range(N)]
+
+BOTTOM_GOAL = [False] * SIZE
+RIGHT_GOAL = [False] * SIZE
+for c in range(N):
+    BOTTOM_GOAL[_idx(N - 1, c)] = True
+for r in range(N):
+    RIGHT_GOAL[_idx(r, N - 1)] = True
+
+CENTER = _idx(5, 5)
+
+# Centrality and side-orientation bonuses.
+CENTER_SCORE = [0] * SIZE
+SIDE_SCORE_BLACK = [0] * SIZE
+SIDE_SCORE_WHITE = [0] * SIZE
+for i, (r, c) in enumerate(IDX2RC):
+    dr = r - 5
+    dc = c - 5
+    # Axial/hex distance for this coordinate system.
+    hex_dist = (abs(dr) + abs(dc) + abs(dr + dc)) // 2
+    CENTER_SCORE[i] = 20 - 2 * hex_dist
+    SIDE_SCORE_BLACK[i] = 6 - abs(c - 5) + (2 if r == 0 or r == N - 1 else 0)
+    SIDE_SCORE_WHITE[i] = 6 - abs(r - 5) + (2 if c == 0 or c == N - 1 else 0)
+
+# Precompute bridge-like second-neighbor relations:
+# pairs of non-adjacent cells with exactly two common neighbors.
+BRIDGES = [[] for _ in range(SIZE)]
+for u in range(SIZE):
+    nu = NEI_SETS[u]
+    for v in range(SIZE):
+        if v == u or v in nu:
+            continue
+        common = nu.intersection(NEI_SETS[v])
+        if len(common) == 2:
+            c1, c2 = tuple(common)
+            BRIDGES[u].append((v, c1, c2))
+
+OPENING_BLACK = [
+    _idx(5, 5), _idx(4, 5), _idx(6, 5), _idx(5, 4), _idx(5, 6),
+    _idx(4, 6), _idx(6, 4), _idx(4, 4), _idx(6, 6),
+    _idx(3, 5), _idx(7, 5), _idx(5, 3), _idx(5, 7),
+]
+OPENING_WHITE = [
+    _idx(5, 5), _idx(5, 4), _idx(5, 6), _idx(4, 5), _idx(6, 5),
+    _idx(4, 6), _idx(6, 4), _idx(4, 4), _idx(6, 6),
+    _idx(5, 3), _idx(5, 7), _idx(3, 5), _idx(7, 5),
+]
+
+
+def _other(player_code: int) -> int:
+    return BLACK if player_code == WHITE else WHITE
+
+
+def _first_legal(board, pref):
+    for i in pref:
+        if board[i] == 0:
+            return IDX2RC[i]
+    for i, v in enumerate(board):
+        if v == 0:
+            return IDX2RC[i]
+    return (0, 0)
+
+
+def _shortest_path_cost(board, player_code: int) -> int:
+    opp = _other(player_code)
+    if player_code == BLACK:
+        starts = TOP
+        goal = BOTTOM_GOAL
+    else:
+        starts = LEFT
+        goal = RIGHT_GOAL
+
+    dist = [INF] * SIZE
+    dq = deque()
+
+    for s in starts:
+        cell = board[s]
+        if cell == opp:
+            continue
+        w = 0 if cell == player_code else 1
+        if w < dist[s]:
+            dist[s] = w
+            if w == 0:
+                dq.appendleft(s)
+            else:
+                dq.append(s)
+
+    while dq:
+        u = dq.popleft()
+        du = dist[u]
+        if goal[u]:
+            return du
+        for v in NEI[u]:
+            cell = board[v]
+            if cell == opp:
+                continue
+            nd = du if cell == player_code else du + 1
+            if nd < dist[v]:
+                dist[v] = nd
+                if cell == player_code:
+                    dq.appendleft(v)
+                else:
+                    dq.append(v)
+    return INF
+
+
+def _immediate_winning_moves(board, player_code: int, empties):
+    wins = []
+    for m in empties:
+        board[m] = player_code
+        if _shortest_path_cost(board, player_code) == 0:
+            wins.append(m)
+        board[m] = 0
+    return wins
+
+
+def _root_move_score(board, move: int, player_code: int, base_my: int, base_opp: int,
+                     my_cost: int, opp_cost: int) -> int:
+    opp = _other(player_code)
+
+    own_n = 0
+    opp_n = 0
+    for v in NEI[move]:
+        if board[v] == player_code:
+            own_n += 1
+        elif board[v] == opp:
+            opp_n += 1
+
+    bridge_bonus = 0
+    for v, c1, c2 in BRIDGES[move]:
+        if board[v] != player_code:
+            continue
+        b1 = board[c1]
+        b2 = board[c2]
+        if b1 != opp and b2 != opp:
+            if b1 == 0 and b2 == 0:
+                bridge_bonus += 8
+            elif b1 == player_code and b2 == player_code:
+                bridge_bonus += 12
+            else:
+                bridge_bonus += 10
+        elif b1 != opp or b2 != opp:
+            bridge_bonus += 2
+
+    delta_my = base_my - my_cost
+    delta_opp = opp_cost - base_opp
+
+    side = SIDE_SCORE_BLACK[move] if player_code == BLACK else SIDE_SCORE_WHITE[move]
+
+    score = 90 * (opp_cost - my_cost)
+    score += 35 * delta_my + 25 * delta_opp
+    score += 12 * own_n + 5 * opp_n
+    score += bridge_bonus
+    score += CENTER_SCORE[move] + side
+    return score
+
+
+def _static_eval(board, root_code: int, known_opp_cost=None) -> int:
+    opp_code = _other(root_code)
+    opp_cost = known_opp_cost if known_opp_cost is not None else _shortest_path_cost(board, opp_code)
+    my_cost = _shortest_path_cost(board, root_code)
+    return 100 * (opp_cost - my_cost)
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    my_code = BLACK if color == 'b' else WHITE
+    opp_code = _other(my_code)
+
+    board = [0] * SIZE
+    for r, c in me:
+        board[_idx(r, c)] = my_code
+    for r, c in opp:
+        board[_idx(r, c)] = opp_code
+
+    empties = [i for i, v in enumerate(board) if v == 0]
+    if not empties:
+        return (0, 0)
+
+    total_stones = len(me) + len(opp)
+
+    # Early opening preference.
+    if len(me) == 0 and total_stones <= 1:
+        pref = OPENING_BLACK if my_code == BLACK else OPENING_WHITE
+        return _first_legal(board, pref)
+
+    # Immediate win.
+    my_wins = _immediate_winning_moves(board, my_code, empties)
+    if my_wins:
+        return IDX2RC[my_wins[0]]
+
+    # Immediate block.
+    opp_wins = _immediate_winning_moves(board, opp_code, empties)
+    if len(opp_wins) == 1:
+        return IDX2RC[opp_wins[0]]
+
+    # If opponent has multiple immediate wins, we're likely lost, but at least block one.
+    candidate_moves = opp_wins[:] if opp_wins else empties[:]
+
+    base_my = _shortest_path_cost(board, my_code)
+    base_opp = _shortest_path_cost(board, opp_code)
+
+    scored = []
+    for m in candidate_moves:
+        board[m] = my_code
+        my_cost = _shortest_path_cost(board, my_code)
+        if my_cost == 0:
+            board[m] = 0
+            return IDX2RC[m]
+        opp_cost = _shortest_path_cost(board, opp_code)
+        score = _root_move_score(board, m, my_code, base_my, base_opp, my_cost, opp_cost)
+        board[m] = 0
+        scored.append((score, m))
+
+    if not scored:
+        return _first_legal(board, OPENING_BLACK if my_code == BLACK else OPENING_WHITE)
+
+    scored.sort(reverse=True)
+    top_k = 12 if len(scored) > 12 else len(scored)
+    top_moves = scored[:top_k]
+
+    best_pair = (-WINVAL, -WINVAL)
+    best_move = top_moves[0][1]
+
+    for root_score, m in top_moves:
+        board[m] = my_code
+
+        worst_reply_value = WINVAL
+
+        had_reply = False
+        for om in empties:
+            if om == m:
+                continue
+            had_reply = True
+            board[om] = opp_code
+
+            opp_cost = _shortest_path_cost(board, opp_code)
+            if opp_cost == 0:
+                worst_reply_value = -WINVAL
+                board[om] = 0
+                break
+
+            val = _static_eval(board, my_code, known_opp_cost=opp_cost)
+            if val < worst_reply_value:
+                worst_reply_value = val
+
+            board[om] = 0
+
+            # Simple alpha-beta style pruning.
+            if worst_reply_value < best_pair[0]:
+                break
+
+        if not had_reply:
+            worst_reply_value = _static_eval(board, my_code)
+
+        board[m] = 0
+
+        pair = (worst_reply_value, root_score)
+        if pair > best_pair:
+            best_pair = pair
+            best_move = m
+
+    # Final safety: ensure legal.
+    if board[best_move] == 0:
+        return IDX2RC[best_move]
+
+    for i in empties:
+        if board[i] == 0:
+            return IDX2RC[i]
+
+    return (0, 0)

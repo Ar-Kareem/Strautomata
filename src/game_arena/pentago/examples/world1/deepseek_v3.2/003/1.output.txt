@@ -1,0 +1,193 @@
+The strategy is:  
+1. Prioritize winning immediately by checking all possible placements and rotations for a direct 5-in-a-row.  
+2. If none, prioritize blocking the opponent from winning on their next turn by simulating their possible moves after ours.  
+3. Otherwise, use a heuristic evaluation that favors:  
+   - Creating open 4-in-a-rows and 3-in-a-rows.  
+   - Controlling the center squares (they are part of more potential lines).  
+   - Rotating quadrants to improve our alignment or disrupt opponent's alignment.  
+   - Avoiding giving the opponent an immediate winning rotation.  
+
+Implementation approach:  
+- Represent board as 6x6 array with values: 1 for us, -1 for opponent, 0 empty.  
+- Use functions to apply moves, rotate quadrants, check wins, evaluate board.  
+- Generate all legal moves (empty cell + quadrant + direction).  
+- Score each move: large positive for immediate win, large negative if opponent wins next turn, otherwise heuristic based on threats and position.  
+
+We’ll implement the policy with a simple minimax depth=2 to avoid giving opponent a win, and fallback to greedy heuristic.
+
+Let’s write the code.
+
+<code>
+import numpy as np
+import itertools
+
+def policy(you, opponent):
+    # Convert to our representation: 1 for us, -1 for opponent
+    board = np.zeros((6, 6), dtype=int)
+    you_arr = np.array(you, dtype=int)
+    opponent_arr = np.array(opponent, dtype=int)
+    board[you_arr == 1] = 1
+    board[opponent_arr == 1] = -1
+    
+    # Quadrant boundaries
+    quadrants = {
+        0: (0, 3, 0, 3),
+        1: (0, 3, 3, 6),
+        2: (3, 6, 0, 3),
+        3: (3, 6, 3, 6)
+    }
+    
+    # Helper: rotate quadrant
+    def rotate(board, quad, dir):
+        new_board = board.copy()
+        r_start, r_end, c_start, c_end = quadrants[quad]
+        sub = board[r_start:r_end, c_start:c_end]
+        if dir == 'L':  # anticlockwise
+            rotated = np.rot90(sub, 1)
+        else:  # 'R', clockwise
+            rotated = np.rot90(sub, -1)
+        new_board[r_start:r_end, c_start:c_end] = rotated
+        return new_board
+    
+    # Helper: check if player has 5+ in a row
+    def has_five(board, player):
+        b = (board == player)
+        # horizontal
+        for r in range(6):
+            for c in range(2):
+                if np.all(b[r, c:c+5]):
+                    return True
+        # vertical
+        for r in range(2):
+            for c in range(6):
+                if np.all(b[r:r+5, c]):
+                    return True
+        # diagonal down-right
+        for r in range(2):
+            for c in range(2):
+                if all(b[r+i, c+i] for i in range(5)):
+                    return True
+        # diagonal up-right
+        for r in range(4, 6):
+            for c in range(2):
+                if all(b[r-i, c+i] for i in range(5)):
+                    return True
+        return False
+    
+    # Helper: generate all legal moves
+    def legal_moves(board):
+        moves = []
+        empty_pos = list(zip(*np.where(board == 0)))
+        for (r, c) in empty_pos:
+            for quad in range(4):
+                for dir in ('L', 'R'):
+                    moves.append((r, c, quad, dir))
+        return moves
+    
+    # Helper: apply move
+    def apply_move(board, move):
+        r, c, quad, dir = move
+        new_board = board.copy()
+        new_board[r, c] = 1  # our move
+        new_board = rotate(new_board, quad, dir)
+        return new_board
+    
+    # Heuristic evaluation
+    def evaluate(board):
+        score = 0
+        # weights for lengths
+        weight = {0: 0, 1: 1, 2: 4, 3: 20, 4: 80, 5: 1000}
+        # all possible segments of length 5
+        segments = []
+        # horizontal
+        for r in range(6):
+            for c in range(2):
+                segments.append(board[r, c:c+5])
+        # vertical
+        for r in range(2):
+            for c in range(6):
+                segments.append(board[r:r+5, c])
+        # diagonal down-right
+        for r in range(2):
+            for c in range(2):
+                segments.append([board[r+i, c+i] for i in range(5)])
+        # diagonal up-right
+        for r in range(4, 6):
+            for c in range(2):
+                segments.append([board[r-i, c+i] for i in range(5)])
+        
+        for seg in segments:
+            us_count = sum(1 for x in seg if x == 1)
+            opp_count = sum(1 for x in seg if x == -1)
+            if us_count > 0 and opp_count == 0:
+                score += weight[us_count]
+            elif opp_count > 0 and us_count == 0:
+                score -= weight[opp_count]
+        # center control
+        center = [(2,2),(2,3),(3,2),(3,3)]
+        for (r,c) in center:
+            if board[r,c] == 1:
+                score += 3
+            elif board[r,c] == -1:
+                score -= 3
+        return score
+    
+    # Check immediate win
+    best_move = None
+    best_score = -10**9
+    
+    for (r, c, quad, dir) in legal_moves(board):
+        new_board = apply_move(board, (r, c, quad, dir))
+        if has_five(new_board, 1):
+            # winning move found
+            return f"{r+1},{c+1},{quad},{dir}"
+    
+    # Check opponent winning next turn
+    opponent_win_moves = []
+    safe_moves = []
+    for (r, c, quad, dir) in legal_moves(board):
+        new_board = apply_move(board, (r, c, quad, dir))
+        # See if opponent can win immediately after
+        opponent_can_win = False
+        opp_moves = legal_moves(new_board)
+        for (or_, oc, oq, od) in opp_moves:
+            opp_board = new_board.copy()
+            opp_board[or_, oc] = -1
+            opp_board = rotate(opp_board, oq, od)
+            if has_five(opp_board, -1):
+                opponent_can_win = True
+                break
+        if not opponent_can_win:
+            safe_moves.append((r, c, quad, dir))
+        else:
+            opponent_win_moves.append((r, c, quad, dir))
+    
+    if safe_moves:
+        # Evaluate safe moves with depth 2 heuristic
+        for (r, c, quad, dir) in safe_moves:
+            new_board = apply_move(board, (r, c, quad, dir))
+            # Simulate opponent's best response (minimize our evaluation)
+            opp_moves = legal_moves(new_board)
+            if not opp_moves:
+                score = evaluate(new_board)
+            else:
+                opp_scores = []
+                for (or_, oc, oq, od) in opp_moves:
+                    opp_board = new_board.copy()
+                    opp_board[or_, oc] = -1
+                    opp_board = rotate(opp_board, oq, od)
+                    opp_scores.append(evaluate(opp_board))
+                score = min(opp_scores)  # opponent's best for them
+            if score > best_score:
+                best_score = score
+                best_move = (r, c, quad, dir)
+    else:
+        # No safe moves, pick one that delays loss (maybe opponent missing win)
+        if opponent_win_moves:
+            best_move = opponent_win_moves[0]
+        else:
+            best_move = legal_moves(board)[0]
+    
+    r, c, quad, dir = best_move
+    return f"{r+1},{c+1},{quad},{dir}"
+</code>

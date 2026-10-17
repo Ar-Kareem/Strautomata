@@ -1,0 +1,176 @@
+Thestrategy for this policy is based on an **Iterative Deepening Depth-First Search (IDDFS) with Alpha-Beta Pruning**.
+
+This approach allows the AI to utilize the full 1-second execution time effectively. It starts by searching the game tree to a depth of 1, then depth 2, and so on, until time runs out. By returning the best move found at the deepest completed level, the policy ensures strong play within the computational constraints.
+
+Key features of the implementation:
+1.  **Alpha-Beta Pruning**: This drastically reduces the number of nodes evaluated by cutting off branches that cannot possibly influence the final decision, allowing the search to go deeper.
+2.  **Heuristic Evaluation**: A static evaluation function scores non-terminal states based on the difference in store seeds (primary goal) and the difference in seeds on the board (material control). Seeds on your own side are valued higher as they represent immediate moves and capture potential.
+3.  **Move Ordering**: At each node, legal moves are sorted roughly by the number of seeds they contain (a simple heuristic) before searching. This increases the likelihood of finding a strong move early, which maximizes the effectiveness of alpha-beta pruning.
+4.  **Correct Kalah Logic**: The move simulation accurately handles sowing (skipping the opponent's store), extra moves (landing in own store), and captures (landing in an empty house on own side opposite a non-empty opponent house).
+
+```python
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Returns the best move for the current player in the game of Kalah.
+    Uses Iterative Deepening with Alpha-Beta Pruning.
+    """
+    
+    # Combine lists into a single board representation for easier indexing
+    # Indices 0-5: Your houses
+    # Index 6: Your store
+    # Indices 7-12: Opponent's houses
+    # Index 13: Opponent's store
+    board = you + opponent
+    
+    start_time = time.time()
+    time_limit = 0.95  # Leave a small buffer for safety
+    
+    best_move = -1
+    
+    # Evaluation function
+    def evaluate(b):
+        # Heuristic: Difference in stores + weighted difference in houses
+        # Seeds in own houses are valuable because they represent potential moves/captures.
+        store_diff = b[6] - b[13]
+        houses_diff = sum(b[0:6]) - sum(b[7:13])
+        return store_diff + 0.5 * houses_diff
+
+    # Check if the game is over
+    def is_game_over(b):
+        return sum(b[0:6]) == 0 or sum(b[7:13]) == 0
+
+    # Simulation function for a single move
+    def apply_move_state(b, start_idx, player):
+        """
+        Applies a move on a copy of the board and returns (new_board, next_player).
+        player 0 is 'you' (indices 0-5, store 6).
+        player 1 is 'opponent' (indices 7-12, store 13).
+        """
+        nb = b[:]  # Create a copy of the board
+        seeds = nb[start_idx]
+        nb[start_idx] = 0
+        current = start_idx
+        
+        # Sowing
+        while seeds > 0:
+            current = (current + 1) % 14
+            
+            # Skip opponent's store
+            if (player == 0 and current == 13) or (player == 1 and current == 6):
+                continue
+            
+            nb[current] += 1
+            seeds -= 1
+            
+        # Capture Logic
+        # Check if last seed landed in player's own house
+        is_my_house = (player == 0 and 0 <= current <= 5) or (player == 1 and 7 <= current <= 12)
+        
+        if is_my_house and nb[current] == 1:
+            # Calculate opposite index: 
+            # 0 <-> 12, 1 <-> 11, ..., 5 <-> 7
+            opp_idx = 12 - current
+            
+            if nb[opp_idx] > 0:
+                my_store = 6 if player == 0 else 13
+                nb[my_store] += nb[current] + nb[opp_idx]
+                nb[current] = 0
+                nb[opp_idx] = 0
+        
+        # Extra Move Logic
+        my_store = 6 if player == 0 else 13
+        if current == my_store:
+            return nb, player  # Same player moves again
+        else:
+            return nb, 1 - player  # Switch player
+
+    # Alpha-Beta Pruning Search
+    def alpha_beta(b, depth, player, alpha, beta):
+        # Time check
+        if time.time() - start_time > time_limit:
+            raise TimeoutError
+            
+        if is_game_over(b):
+            # If game over, score is difference in stores plus remaining seeds
+            # (which technically would be swept into stores, so we sum them up)
+            return (b[6] + sum(b[0:6])) - (b[13] + sum(b[7:13]))
+            
+        if depth == 0:
+            return evaluate(b)
+            
+        moves = []
+        start_range = 0 if player == 0 else 7
+        end_range = 6 if player == 0 else 13
+        
+        # Generate legal moves
+        for i in range(start_range, end_range):
+            if b[i] > 0:
+                moves.append(i)
+        
+        # Move ordering: Sort by seed count descending (simple heuristic)
+        # Better moves are found earlier, increasing pruning efficiency
+        moves.sort(key=lambda x: b[x], reverse=True)
+        
+        if player == 0:  # Maximizing Player
+            max_eval = -float('inf')
+            for move in moves:
+                new_board, next_p = apply_move_state(b, move, player)
+                eval_score = alpha_beta(new_board, depth - 1, next_p, alpha, beta)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:  # Minimizing Player
+            min_eval = float('inf')
+            for move in moves:
+                new_board, next_p = apply_move_state(b, move, player)
+                eval_score = alpha_beta(new_board, depth - 1, next_p, alpha, beta)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # Iterative Deepening
+    # Start from depth 1 and go deeper until time runs out
+    root_moves = [i for i in range(6) if board[i] > 0]
+    
+    # Safety fallback: if no legal moves (shouldn't happen per problem statement)
+    if not root_moves:
+        return 0
+    
+    for depth in range(1, 20):  # Max depth 20 is safe for Kalah
+        best_val_this_depth = -float('inf')
+        current_best_move = root_moves[0]
+        
+        try:
+            # Search root moves with Alpha-Beta to find the best one for this depth
+            alpha = -float('inf')
+            beta = float('inf')
+            
+            # Re-sort root moves based on seeds for better pruning at root
+            root_moves.sort(key=lambda x: board[x], reverse=True)
+            
+            for move in root_moves:
+                new_board, next_p = apply_move_state(board, move, 0)
+                val = alpha_beta(new_board, depth - 1, next_p, alpha, beta)
+                
+                if val > best_val_this_depth:
+                    best_val_this_depth = val
+                    current_best_move = move
+                
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            
+            best_move = current_best_move
+            
+        except TimeoutError:
+            # Time is up, return the best move found from the previous completed depth
+            break
+            
+    return best_move
+```

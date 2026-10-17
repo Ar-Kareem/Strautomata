@@ -1,0 +1,177 @@
+
+from collections import deque
+
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+N = 10
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Safety: find all legal cells first
+    legal = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+    if not legal:
+        return (0, 0)  # Should never happen, but keeps API total
+
+    scores = [[0.0 for _ in range(N)] for _ in range(N)]
+    hit_exists = any(board[r][c] == 1 for r in range(N) for c in range(N))
+
+    # 1) Probability heatmap from all valid ship placements.
+    # A placement is valid if it contains no known miss (-1).
+    # Placements containing hits are heavily upweighted.
+    for L in SHIP_LENGTHS:
+        # Horizontal placements
+        for r in range(N):
+            for c in range(N - L + 1):
+                cells = [(r, c + k) for k in range(L)]
+                if any(board[rr][cc] == -1 for rr, cc in cells):
+                    continue
+                hits = sum(1 for rr, cc in cells if board[rr][cc] == 1)
+                # Strongly emphasize placements that include existing hits
+                weight = 1.0
+                if hits > 0:
+                    weight *= 8.0 ** hits
+                for rr, cc in cells:
+                    if board[rr][cc] == 0:
+                        scores[rr][cc] += weight
+
+        # Vertical placements
+        for r in range(N - L + 1):
+            for c in range(N):
+                cells = [(r + k, c) for k in range(L)]
+                if any(board[rr][cc] == -1 for rr, cc in cells):
+                    continue
+                hits = sum(1 for rr, cc in cells if board[rr][cc] == 1)
+                weight = 1.0
+                if hits > 0:
+                    weight *= 8.0 ** hits
+                for rr, cc in cells:
+                    if board[rr][cc] == 0:
+                        scores[rr][cc] += weight
+
+    # 2) Target-mode bonuses around hit clusters
+    components = _hit_components(board)
+    for comp in components:
+        _add_component_target_bonus(board, scores, comp)
+
+    # 3) Hunt-mode refinements when there are no hits
+    if not hit_exists:
+        for r in range(N):
+            for c in range(N):
+                if board[r][c] != 0:
+                    continue
+                # Mild checkerboard preference
+                if (r + c) % 2 == 0:
+                    scores[r][c] += 0.5
+                # Mild center preference for tie-breaking
+                scores[r][c] += 0.01 * (10 - (abs(r - 4.5) + abs(c - 4.5)))
+
+    # 4) General tie-break preference toward center even in target mode
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                scores[r][c] += 0.001 * (10 - (abs(r - 4.5) + abs(c - 4.5)))
+
+    # 5) Pick best legal move
+    best = None
+    best_score = None
+    for r, c in legal:
+        s = scores[r][c]
+        if best is None or s > best_score or (
+            s == best_score and _better_tiebreak((r, c), best)
+        ):
+            best = (r, c)
+            best_score = s
+
+    if best is not None:
+        return best
+
+    # 6) Final safety fallback: always legal
+    return legal[0]
+
+
+def _hit_components(board):
+    seen = [[False for _ in range(N)] for _ in range(N)]
+    comps = []
+
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] != 1 or seen[r][c]:
+                continue
+            q = deque([(r, c)])
+            seen[r][c] = True
+            comp = []
+            while q:
+                rr, cc = q.popleft()
+                comp.append((rr, cc))
+                for nr, nc in _neighbors(rr, cc):
+                    if board[nr][nc] == 1 and not seen[nr][nc]:
+                        seen[nr][nc] = True
+                        q.append((nr, nc))
+            comps.append(comp)
+
+    return comps
+
+
+def _add_component_target_bonus(board, scores, comp):
+    rows = {r for r, _ in comp}
+    cols = {c for _, c in comp}
+
+    # If clearly horizontal, strongly extend left/right
+    if len(rows) == 1 and len(comp) >= 2:
+        r = next(iter(rows))
+        cs = sorted(c for _, c in comp)
+        left = cs[0] - 1
+        right = cs[-1] + 1
+        if 0 <= left < N and board[r][left] == 0:
+            scores[r][left] += 1000.0
+        if 0 <= right < N and board[r][right] == 0:
+            scores[r][right] += 1000.0
+
+        # Slight local support near the line
+        for c in cs:
+            for nr, nc in _neighbors(r, c):
+                if board[nr][nc] == 0:
+                    scores[nr][nc] += 10.0
+        return
+
+    # If clearly vertical, strongly extend up/down
+    if len(cols) == 1 and len(comp) >= 2:
+        c = next(iter(cols))
+        rs = sorted(r for r, _ in comp)
+        up = rs[0] - 1
+        down = rs[-1] + 1
+        if 0 <= up < N and board[up][c] == 0:
+            scores[up][c] += 1000.0
+        if 0 <= down < N and board[down][c] == 0:
+            scores[down][c] += 1000.0
+
+        for r in rs:
+            for nr, nc in _neighbors(r, c):
+                if board[nr][nc] == 0:
+                    scores[nr][nc] += 10.0
+        return
+
+    # Otherwise, treat as ambiguous and score orthogonal perimeter heavily
+    for r, c in comp:
+        for nr, nc in _neighbors(r, c):
+            if board[nr][nc] == 0:
+                scores[nr][nc] += 200.0
+
+
+def _neighbors(r, c):
+    if r > 0:
+        yield (r - 1, c)
+    if r < N - 1:
+        yield (r + 1, c)
+    if c > 0:
+        yield (r, c - 1)
+    if c < N - 1:
+        yield (r, c + 1)
+
+
+def _better_tiebreak(a, b):
+    # Prefer center, then row-major stability
+    da = abs(a[0] - 4.5) + abs(a[1] - 4.5)
+    db = abs(b[0] - 4.5) + abs(b[1] - 4.5)
+    if da != db:
+        return da < db
+    return a < b

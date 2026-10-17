@@ -1,0 +1,220 @@
+<thinking>
+I need to create a policy function for Kalah that selects the best move. Let me think about this step by step:
+
+1. **Basic Strategy**: I want to maximize my captures and extra moves, while minimizing my opponent's opportunities.
+
+2. **Key Considerations**:
+   - Extra moves (landing in my store) are very valuable as they give me another turn
+   - Captures (landing in an empty house where the opposite house has seeds) are also valuable
+   - I should try to set up future opportunities
+   - I need to avoid giving my opponent easy captures or extra moves
+
+3. **Evaluation Approach**:
+   - For each legal move, I'll simulate the result
+   - Score each outcome based on:
+     - Seeds captured (+ points)
+     - Extra moves (+ significant points)
+     - Positional advantages
+
+4. **Implementation Plan**:
+   - Create a helper function to simulate a move
+   - For each legal move, simulate it and evaluate the position
+   - Return the move with the highest evaluation
+
+5. **Scoring Heuristics**:
+   - Immediate captures: +2 points per seed captured
+   - Extra move: +3 points (since it's another turn)
+   - Seeds in my store: +1 point each
+   - Try to maintain flexibility (don't leave too many houses empty)
+
+Let me write the code with this approach:
+</thinking>
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate_move(you_state, opponent_state, move):
+        """Simulate a move and return the resulting states and any capture/extras"""
+        # Create copies to avoid modifying originals
+        new_you = you_state[:]
+        new_opponent = opponent_state[:]
+        
+        # Pick up seeds
+        seeds = new_you[move]
+        new_you[move] = 0
+        
+        # Distribute seeds
+        current_pos = move + 1
+        side = 0  # 0 = my side, 1 = opponent side
+        captured = 0
+        extra_turn = False
+        
+        for _ in range(seeds):
+            if side == 0:  # My side
+                if current_pos < 6:  # Houses
+                    new_you[current_pos] += 1
+                    current_pos += 1
+                elif current_pos == 6:  # My store
+                    new_you[6] += 1
+                    if _ == seeds - 1:  # Last seed
+                        extra_turn = True
+                    current_pos = 0
+                    side = 1  # Switch to opponent side next
+                else:  # Shouldn't happen
+                    side = 1
+                    current_pos = 0
+            else:  # Opponent side
+                if current_pos < 6:  # Houses
+                    new_opponent[current_pos] += 1
+                    current_pos += 1
+                else:  # End of opponent row
+                    current_pos = 0
+                    side = 0
+                    # Skip opponent store, go back to my side
+                    if current_pos < 6:
+                        new_you[current_pos] += 1
+                        current_pos += 1
+        
+        # Check for capture (if last seed was placed on my side in an empty house)
+        # Need to adjust this logic based on where the last seed actually landed
+        last_side = side
+        last_pos = current_pos - 1 if current_pos > 0 else (5 if last_side == 1 else 5)
+        
+        # Actually, let me re-implement the distribution more carefully
+        return new_you, new_opponent, captured, extra_turn
+    
+    def simulate_move_better(you_state, opponent_state, move):
+        """Better simulation of a move"""
+        # Create copies
+        new_you = you_state[:]
+        new_opponent = opponent_state[:]
+        
+        # Pick up seeds
+        seeds = new_you[move]
+        new_you[move] = 0
+        
+        # Distribute seeds
+        position = move + 1
+        on_my_side = True
+        captured = 0
+        extra_turn = False
+        
+        for i in range(seeds):
+            # Last seed flag
+            is_last_seed = (i == seeds - 1)
+            
+            if on_my_side:
+                if position < 6:  # My houses
+                    new_you[position] += 1
+                    position += 1
+                elif position == 6:  # My store
+                    new_you[position] += 1
+                    if is_last_seed:
+                        extra_turn = True
+                    # Switch to opponent side
+                    on_my_side = False
+                    position = 0
+                else:
+                    # This shouldn't happen with correct logic
+                    on_my_side = False
+                    position = 0
+            else:  # Opponent side
+                if position < 6:  # Opponent houses
+                    new_opponent[position] += 1
+                    position += 1
+                else:  # End of opponent houses
+                    # Switch back to my side
+                    on_my_side = True
+                    position = 0
+                    if position < 6:
+                        new_you[position] += 1
+                        position += 1
+        
+        # Check for capture - need to know where last seed landed
+        # This is getting complex, let me think of a cleaner way
+        
+        return new_you, new_opponent, captured, extra_turn
+
+    def simulate_move_clean(you_state, opponent_state, move):
+        """Clean simulation of move distribution"""
+        new_you = you_state[:]
+        new_opponent = opponent_state[:]
+        
+        seeds = new_you[move]
+        new_you[move] = 0
+        
+        # Positions: 0-5 my houses, 6 my store, 7-12 opponent houses
+        current_pos = move + 1
+        captured = 0
+        extra_turn = False
+        
+        for i in range(seeds):
+            is_last = (i == seeds - 1)
+            
+            if current_pos <= 5:  # My houses
+                new_you[current_pos] += 1
+                if is_last:
+                    # Check for capture
+                    if new_you[current_pos] == 1 and new_opponent[5 - current_pos] > 0:
+                        captured = 1 + new_opponent[5 - current_pos]
+                        new_you[6] += captured
+                        new_you[current_pos] = 0
+                        new_opponent[5 - current_pos] = 0
+            elif current_pos == 6:  # My store
+                new_you[6] += 1
+                if is_last:
+                    extra_turn = True
+            elif current_pos <= 12:  # Opponent houses (7-12 map to 0-5)
+                opp_index = current_pos - 7
+                new_opponent[opp_index] += 1
+            else:  # Wrap around to my houses again
+                my_index = current_pos - 13
+                new_you[my_index] += 1
+            
+            current_pos += 1
+            # Skip opponent store (position 13 in our counting)
+            if current_pos == 13:
+                current_pos = 0
+        
+        return new_you, new_opponent, captured, extra_turn
+
+    def evaluate_position(you_state, opponent_state, captured, extra_turn):
+        """Evaluate a position"""
+        score = 0
+        score += you_state[6] - opponent_state[6]  # Store difference
+        score += captured * 2  # Value captures
+        if extra_turn:
+            score += 3  # Value extra turns
+        return score
+
+    # Get all legal moves
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    
+    if not legal_moves:
+        return 0  # Should never happen according to problem statement
+    
+    # If only one move, take it
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Evaluate each move
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        new_you, new_opponent, captured, extra_turn = simulate_move_clean(you, opponent, move)
+        score = evaluate_position(new_you, new_opponent, captured, extra_turn)
+        
+        # If this gives an extra turn, we get to evaluate our next move too
+        if extra_turn:
+            # Simple heuristic for second move
+            next_legal = [i for i in range(6) if new_you[i] > 0]
+            if next_legal:
+                # Just take the first available for now
+                score += 1  # Small bonus for having options
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+</code>

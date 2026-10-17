@@ -1,0 +1,92 @@
+The strategy for this policy is based on the optimal solution for Misère Nim (where the player who takes the last object loses).
+
+1.  **Endgame Analysis**: The policy first checks if the game is in the "Endgame" state, where all piles have a size of 0 or 1. In this state, the winning condition depends on the parity of the number of non-empty piles. If the count is even, the current player can force a win by taking one object to leave an odd count. If the count is odd, the current player is in a losing position (assuming perfect play from the opponent) and makes a random legal move.
+2.  **Winning Move Detection**: If the game is not in the Endgame, the policy checks for a winning opportunity by attempting to move directly to an Endgame state with an odd number of piles of size 1. This handles specific Misère Nim scenarios where the standard Nim strategy (making the XOR sum 0) would actually lead to a loss (e.g., leaving an even number of 1s).
+3.  **Standard Nim Strategy**: If no immediate Endgame transition is available, the policy defaults to standard Nim play. It calculates the Nim-sum (bitwise XOR of all pile sizes). If the Nim-sum is non-zero, it is a winning position. The policy finds a pile to reduce such that the resulting Nim-sum becomes zero.
+4.  **Losing State Fallback**: If the Nim-sum is zero, the current position is losing against perfect play. In this case, the policy makes a defensive move by taking exactly 1 object from the largest pile, aiming to prolong the game and potentially force the opponent into an error.
+
+```python
+import operator
+from functools import reduce
+
+def policy(piles: list[int]) -> str:
+    """
+    Returns the optimal move for Misere Nim with 4 piles.
+    Format: 'pile,take'
+    """
+    
+    # Helper to calculate the Nim-sum (XOR of all pile sizes)
+    def get_nim_sum(piles_list):
+        return reduce(operator.xor, piles_list, 0)
+
+    # Helper to count non-zero piles
+    def count_non_zero(piles_list):
+        return sum(1 for x in piles_list if x > 0)
+
+    # 1. Endgame Strategy: All piles are 0 or 1
+    if max(piles) <= 1:
+        count_ones = count_non_zero(piles)
+        # If count is even, we are winning. We want to leave an odd count for the opponent.
+        # If count is odd, we are losing. Any move is technically a losing move against perfect play,
+        # but we must return a legal move. We just take one.
+        if count_ones % 2 == 0:
+            # Find a pile with 1 and take it
+            for i, val in enumerate(piles):
+                if val == 1:
+                    return f"{i},1"
+        else:
+            # Losing position, take 1 from the first available pile
+            for i, val in enumerate(piles):
+                if val == 1:
+                    return f"{i},1"
+
+    # 2. Midgame Strategy
+    nim_sum = get_nim_sum(piles)
+
+    # Check if we can force a win by moving to an Endgame state with an ODD number of 1s.
+    # This handles the edge case in Misere Nim where standard Nim play fails 
+    # (e.g. reducing [2, 1] to [1, 1] is bad, but to [0, 1] is good).
+    for i in range(4):
+        if piles[i] > 0:
+            # Option A: Reduce pile i to 0
+            temp_piles = piles[:]
+            temp_piles[i] = 0
+            if max(temp_piles) <= 1: # Did we reach endgame?
+                if sum(temp_piles) % 2 == 1: # Is the count of 1s odd?
+                    return f"{i},{piles[i]}" # Take all
+
+            # Option B: Reduce pile i to 1
+            if piles[i] > 1:
+                temp_piles = piles[:]
+                temp_piles[i] = 1
+                if max(temp_piles) <= 1: # Did we reach endgame?
+                    if sum(temp_piles) % 2 == 1: # Is the count of 1s odd?
+                        return f"{i},{piles[i] - 1}" # Take all but 1
+
+    # 3. Standard Nim Strategy
+    # If we can't force a win immediately via endgame transition, play standard Nim.
+    if nim_sum != 0:
+        # We are in a winning position. Make a move that makes nim_sum 0.
+        for i in range(4):
+            if piles[i] > 0:
+                # We want piles[i] ^ nim_sum < piles[i]
+                # This means the new value (piles[i] ^ nim_sum) is smaller than current.
+                target_val = piles[i] ^ nim_sum
+                if target_val < piles[i]:
+                    take_amount = piles[i] - target_val
+                    return f"{i},{take_amount}"
+    
+    # 4. Losing Position (nim_sum == 0)
+    # If nim_sum is 0, we are in a losing position against a perfect opponent.
+    # Just make a move that minimizes immediate disadvantage or delays the end.
+    # Taking 1 from the largest pile is a common heuristic.
+    max_pile_size = -1
+    max_pile_index = -1
+    for i in range(4):
+        if piles[i] > max_pile_size:
+            max_pile_size = piles[i]
+            max_pile_index = i
+    
+    # Take 1 from the largest pile
+    return f"{max_pile_index},1"
+```

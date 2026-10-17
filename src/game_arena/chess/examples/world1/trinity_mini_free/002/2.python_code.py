@@ -1,0 +1,126 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    # Piece values for material evaluation
+    PIECE_VALUES = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9}
+    
+    # Helper: Check if king is in check after a move
+    def is_in_check(new_pieces, king_square):
+        king_color = new_pieces[king_square][0]
+        opponent_color = 'w' if king_color == 'b' else 'b'
+        opponent_pieces = {sq: piece for sq, piece in new_pieces.items() if piece[0] == opponent_color}
+        
+        for sq, piece in opponent_pieces.items():
+            piece_type = piece[1]
+            if piece_type == 'K':
+                return True  # King attacks king's square
+            # Check if piece can attack king's square
+            if piece_type == 'N':
+                # Knight moves: ±1 file, ±2 rank or ±2 file, ±1 rank
+                moves = [(1,2), (2,1), (-1,2), (-2,1), (1,-2), (2,-1), (-1,-2), (-2,-1)]
+            elif piece_type == 'B':
+                moves = [(1,1), (1,-1), (-1,1), (-1,-1)]
+            elif piece_type == 'R':
+                moves = [(1,0), (-1,0), (0,1), (0,-1)]
+            elif piece_type == 'Q':
+                moves = [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]
+            
+            for dx, dy in moves:
+                target = f"{chr(ord('a') + (ord(sq[0]) - ord('a') + dx))}{int(sq[1]) + dy}"
+                if target == king_square:
+                    return True
+        return False
+
+    # Helper: Calculate material balance
+    def material_balance(new_pieces, king_square):
+        white_pieces = {sq: piece for sq, piece in new_pieces.items() if piece[0] == 'w'}
+        black_pieces = {sq: piece for sq, piece in new_pieces.items() if piece[0] == 'b'}
+        
+        white_value = sum(PIECE_VALUES[piece[1]] for piece in white_pieces.values())
+        black_value = sum(PIECE_VALUES[piece[1]] for piece in black_pieces.values())
+        return white_value - black_value
+
+    # Helper: Check if king has safe squares
+    def king_safe(new_pieces, king_square):
+        king_color = new_pieces[king_square][0]
+        opponent_color = 'w' if king_color == 'b' else 'b'
+        opponent_pieces = {sq: piece for sq, piece in new_pieces.items() if piece[0] == opponent_color}
+        
+        safe_squares = []
+        for dx, dy in [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]:
+            target = f"{chr(ord('a') + (ord(king_square[0]) - ord('a') + dx))}{int(king_square[1]) + dy}"
+            if target in new_pieces and new_pieces[target][0] == king_color:
+                safe_squares.append(target)
+        
+        # Check if any safe square is attacked by opponent
+        for sq in safe_squares:
+            if is_in_check(new_pieces, sq):
+                return False
+        return True
+
+    # Evaluate each move
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        # Create copy of current pieces
+        new_pieces = pieces.copy()
+        
+        # Parse move
+        if move in ['O-O', 'O-O-O']:
+            # Castling
+            king_start = 'e1' if to_play == 'white' else 'e8'
+            rook_start = 'h1' if to_play == 'white' else 'h8'
+            king_end = 'g1' if to_play == 'white' else 'g8'
+            rook_end = 'f1' if to_play == 'white' else 'f8'
+            
+            # Update king and rook positions
+            new_pieces[king_end] = new_pieces[king_start]
+            new_pieces[rook_end] = new_pieces[rook_start]
+            del new_pieces[king_start]
+            del new_pieces[rook_start]
+        else:
+            # Standard move
+            source, target = move[0:2], move[2:]
+            
+            # Handle promotions
+            promotion = None
+            if len(move) > 4 and move[4] == '=':
+                promotion = move[5]
+                target = move[2:4]
+            
+            # Update pieces
+            moving_piece = new_pieces[source]
+            captured_piece = new_pieces[target] if target in new_pieces else None
+            
+            # Apply move
+            new_pieces[target] = moving_piece
+            del new_pieces[source]
+            if captured_piece:
+                del new_pieces[target]
+            if promotion:
+                new_pieces[target] = moving_piece[0] + promotion
+        
+        # Check for check/checkmate
+        king_square = 'e1' if to_play == 'white' else 'e8'
+        if is_in_check(new_pieces, king_square):
+            continue  # Avoid moves that leave king in check
+        
+        # Evaluate position
+        material = material_balance(new_pieces, king_square)
+        king_safe = king_safe(new_pieces, king_square)
+        
+        # Score calculation
+        score = material
+        if king_safe:
+            score += 10  # King safety bonus
+        
+        # Prioritize checkmate if available
+        if material > 0:
+            score += 5  # Material advantage bonus
+        
+        # Select best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

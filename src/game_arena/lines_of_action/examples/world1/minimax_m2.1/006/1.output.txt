@@ -1,0 +1,397 @@
+# Strategy for Lines of Action Policy
+
+My strategy focuses on the core objective of Lines of Action: **connectivity**. While captures are possible, the primary goal is to connect all your pieces into a single contiguous group. My approach implements:
+
+1. **Connectivity-First Evaluation**: Prioritizes moves that reduce the number of connected components and increases the size of the largest component
+2. **Smart Move Ordering**: Uses alpha-beta pruning with iterative deepening to efficiently explore the game tree
+3. **Multi-Factor Heuristic**: Combines connectivity metrics with positional advantages (center control, chain formation, blocking opponent connectivity)
+4. **Threat Detection**: Identifies winning moves and blocks opponent connectivity threats
+
+The policy generates all legal moves, evaluates them using a sophisticated heuristic, and selects the best move based on minimax search with alpha-beta pruning.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Optional
+import time
+
+def policy(board) -> str:
+    """
+    Lines of Action policy using minimax search with alpha-beta pruning.
+    Focuses on connectivity as the primary objective.
+    """
+    board_array = np.array(board)
+    start_time = time.time()
+    max_time = 0.95  # Reserve some time for overhead
+    
+    # Find all legal moves for current player (1)
+    legal_moves = get_legal_moves(board_array, 1)
+    
+    if not legal_moves:
+        # No moves available - should not happen in valid game states
+        return ""
+    
+    # Try to find an immediate win
+    for move in legal_moves:
+        if is_winning_move(board_array, move, 1):
+            return format_move(move)
+    
+    # Use iterative deepening with alpha-beta pruning
+    depth = 1
+    best_move = None
+    
+    while time.time() - start_time < max_time and depth <= 6:
+        try:
+            _, best_move = minimax_alpha_beta(
+                board_array, depth, -float('inf'), float('inf'), 
+                True, 1, start_time, max_time
+            )
+            depth += 1
+        except TimeoutError:
+            break
+    
+    if best_move is None:
+        # Fallback to best move from previous iteration or first legal move
+        if best_move is None:
+            best_move = legal_moves[0]
+    
+    return format_move(best_move)
+
+def format_move(move: Tuple[int, int, int, int]) -> str:
+    """Format move as 'from_row,from_col:to_row,to_col'"""
+    return f"{move[0]},{move[1]}:{move[2]},{move[3]}"
+
+def get_legal_moves(board: np.ndarray, player: int) -> List[Tuple[int, int, int, int]]:
+    """Get all legal moves for the given player"""
+    moves = []
+    opponent = -player
+    
+    # Find all pieces belonging to the player
+    pieces = np.where(board == player)
+    piece_positions = list(zip(pieces[0], pieces[1]))
+    
+    for row, col in piece_positions:
+        # Check all 8 directions
+        for direction in [(-1, -1), (-1, 0), (-1, 1), (0, -1), 
+                          (0, 1), (1, -1), (1, 0), (1, 1)]:
+            # Calculate the number of pieces in this line
+            line_count = count_line_pieces(board, row, col, direction)
+            
+            if line_count <= 0:
+                continue
+                
+            # Calculate destination
+            dest_row = row + direction[0] * line_count
+            dest_col = col + direction[1] * line_count
+            
+            # Check if destination is on board
+            if not (0 <= dest_row < 8 and 0 <= dest_col < 8):
+                continue
+            
+            # Check if destination is empty or contains opponent
+            if board[dest_row, dest_col] == player:
+                continue
+            
+            # Check if path is clear (can jump over own pieces, not opponent's)
+            if is_path_clear(board, row, col, dest_row, dest_col, direction, player):
+                moves.append((row, col, dest_row, dest_col))
+    
+    return moves
+
+def count_line_pieces(board: np.ndarray, row: int, col: int, direction: Tuple[int, int]) -> int:
+    """Count pieces in the line of movement (excluding starting position)"""
+    dr, dc = direction
+    count = 0
+    
+    # Check in positive direction
+    r, c = row + dr, col + dc
+    while 0 <= r < 8 and 0 <= c < 8:
+        if board[r, c] != 0:
+            count += 1
+        r += dr
+        c += dc
+    
+    # Check in negative direction  
+    r, c = row - dr, col - dc
+    while 0 <= r < 8 and 0 <= c < 8:
+        if board[r, c] != 0:
+            count += 1
+        r -= dr
+        c -= dc
+    
+    return count
+
+def is_path_clear(board: np.ndarray, start_row: int, start_col: int,
+                  end_row: int, end_col: int, direction: Tuple[int, int],
+                  player: int) -> bool:
+    """Check if path is clear (can jump over own pieces, not opponent's)"""
+    dr, dc = direction
+    current_row, current_col = start_row + dr, start_col + dc
+    
+    while (current_row, current_col) != (end_row, end_col):
+        if board[current_row, current_col] == -player:
+            # Cannot jump over opponent pieces
+            return False
+        current_row += dr
+        current_col += dc
+    
+    return True
+
+def evaluate_board(board: np.ndarray, player: int) -> float:
+    """
+    Evaluate board state from player's perspective.
+    Focuses on connectivity as primary objective.
+    """
+    opponent = -player
+    
+    # Check for terminal states
+    if is_connected(board, player):
+        return 10000.0  # Win
+    if is_connected(board, opponent):
+        return -10000.0  # Loss
+    
+    # Count connected components for both players
+    my_components, my_largest = count_components(board, player)
+    opp_components, opp_largest = count_components(board, opponent)
+    
+    # Primary evaluation: connectivity
+    # Fewer components is better, larger largest component is better
+    connectivity_score = 0
+    
+    # Reward for reducing my components (primary)
+    connectivity_score += (12 - my_components) * 500
+    
+    # Reward for having larger connected component (secondary)
+    connectivity_score += my_largest * 100
+    
+    # Penalty for opponent connectivity
+    connectivity_score -= (12 - opp_components) * 300
+    connectivity_score -= opp_largest * 50
+    
+    # Secondary evaluation: positional advantages
+    positional_score = 0
+    
+    # Center control (pieces in center 6x6 are more valuable)
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == player:
+                center_bonus = 0
+                if 2 <= r <= 5 and 2 <= c <= 5:
+                    center_bonus = 3
+                elif 1 <= r <= 6 and 1 <= c <= 6:
+                    center_bonus = 2
+                else:
+                    center_bonus = 1
+                
+                positional_score += center_bonus
+                
+            elif board[r, c] == opponent:
+                # Slightly penalize opponent center control
+                center_penalty = 0
+                if 2 <= r <= 5 and 2 <= c <= 5:
+                    center_penalty = 3
+                elif 1 <= r <= 6 and 1 <= c <= 6:
+                    center_penalty = 2
+                else:
+                    center_penalty = 1
+                
+                positional_score -= center_penalty
+    
+    # Chain formation bonus (pieces adjacent to own pieces)
+    adjacency_bonus = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] == player:
+                if has_adjacent_own(board, r, c, player):
+                    adjacency_bonus += 2
+    
+    # Material advantage (slight, as connectivity is primary)
+    my_pieces = np.sum(board == player)
+    opp_pieces = np.sum(board == opponent)
+    material_score = (my_pieces - opp_pieces) * 10
+    
+    return connectivity_score + positional_score + adjacency_bonus + material_score
+
+def count_components(board: np.ndarray, player: int) -> Tuple[int, int]:
+    """Count connected components and size of largest component"""
+    visited = set()
+    num_components = 0
+    largest_component = 0
+    
+    # Find all pieces for this player
+    pieces = [(r, c) for r in range(8) for c in range(8) if board[r, c] == player]
+    
+    for piece in pieces:
+        if piece not in visited:
+            # BFS to find this component
+            component_size = 0
+            queue = [piece]
+            visited.add(piece)
+            
+            while queue:
+                current = queue.pop(0)
+                component_size += 1
+                
+                # Check all 8 neighbors
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        
+                        nr, nc = current[0] + dr, current[1] + dc
+                        if (0 <= nr < 8 and 0 <= nc < 8 and 
+                            board[nr, nc] == player and 
+                            (nr, nc) not in visited):
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+            
+            num_components += 1
+            largest_component = max(largest_component, component_size)
+    
+    return num_components, largest_component
+
+def is_connected(board: np.ndarray, player: int) -> bool:
+    """Check if all pieces of player are connected"""
+    components, _ = count_components(board, player)
+    return components == 1
+
+def has_adjacent_own(board: np.ndarray, row: int, col: int, player: int) -> bool:
+    """Check if piece has at least one adjacent own piece"""
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                if board[nr, nc] == player:
+                    return True
+    return False
+
+def is_winning_move(board: np.ndarray, move: Tuple[int, int, int, int], player: int) -> bool:
+    """Check if a move results in immediate win"""
+    new_board = board.copy()
+    new_board[move[0], move[1]] = 0
+    new_board[move[2], move[3]] = player
+    return is_connected(new_board, player)
+
+def minimax_alpha_beta(board: np.ndarray, depth: int, alpha: float, beta: float,
+                      maximizing_player: bool, player: int, start_time: float, 
+                      max_time: float) -> Tuple[float, Optional[Tuple[int, int, int, int]]]:
+    """Minimax with alpha-beta pruning and time checking"""
+    
+    # Check timeout
+    if time.time() - start_time > max_time:
+        raise TimeoutError
+    
+    opponent = -player
+    
+    if depth == 0:
+        return evaluate_board(board, player), None
+    
+    # Generate legal moves
+    if maximizing_player:
+        moves = get_legal_moves(board, player)
+        if not moves:
+            return evaluate_board(board, player), None
+        
+        best_move = None
+        best_value = -float('inf')
+        
+        # Order moves for better pruning
+        moves = order_moves(board, moves, player)
+        
+        for move in moves:
+            new_board = board.copy()
+            new_board[move[0], move[1]] = 0
+            new_board[move[2], move[3]] = player
+            
+            # Check for win
+            if is_connected(new_board, player):
+                return 10000.0, move
+            
+            value, _ = minimax_alpha_beta(new_board, depth - 1, alpha, beta, 
+                                         False, opponent, start_time, max_time)
+            
+            if value > best_value:
+                best_value = value
+                best_move = move
+            
+            alpha = max(alpha, best_value)
+            if alpha >= beta:
+                break
+        
+        return best_value, best_move
+    
+    else:
+        moves = get_legal_moves(board, opponent)
+        if not moves:
+            return evaluate_board(board, player), None
+        
+        worst_move = None
+        worst_value = float('inf')
+        
+        # Order moves for better pruning
+        moves = order_moves(board, moves, opponent)
+        
+        for move in moves:
+            new_board = board.copy()
+            new_board[move[0], move[1]] = 0
+            new_board[move[2], move[3]] = opponent
+            
+            # Check for opponent win
+            if is_connected(new_board, opponent):
+                return -10000.0, move
+            
+            value, _ = minimax_alpha_beta(new_board, depth - 1, alpha, beta, 
+                                         True, player, start_time, max_time)
+            
+            if value < worst_value:
+                worst_value = value
+                worst_move = move
+            
+            beta = min(beta, worst_value)
+            if alpha >= beta:
+                break
+        
+        return worst_value, worst_move
+
+def order_moves(board: np.ndarray, moves: List[Tuple[int, int, int, int]], 
+               player: int) -> List[Tuple[int, int, int, int]]:
+    """Order moves to improve alpha-beta pruning efficiency"""
+    move_scores = []
+    
+    for move in moves:
+        score = 0
+        new_board = board.copy()
+        new_board[move[0], move[1]] = 0
+        new_board[move[2], move[3]] = player
+        
+        # Prioritize winning moves
+        if is_connected(new_board, player):
+            score += 10000
+        
+        # Prioritize moves that connect components
+        components, largest = count_components(new_board, player)
+        score += (12 - components) * 100 + largest * 20
+        
+        # Prioritize center control
+        dest_row, dest_col = move[2], move[3]
+        if 2 <= dest_row <= 5 and 2 <= dest_col <= 5:
+            score += 10
+        elif 1 <= dest_row <= 6 and 1 <= dest_col <= 6:
+            score += 5
+        
+        # Penalize moves to edges
+        if dest_row in [0, 7] or dest_col in [0, 7]:
+            score -= 3
+        
+        # Prioritize captures
+        if board[dest_row, dest_col] == -player:
+            score += 15
+        
+        move_scores.append((score, move))
+    
+    # Sort by score descending
+    move_scores.sort(reverse=True, key=lambda x: x[0])
+    return [move for _, move in move_scores]
+</code>

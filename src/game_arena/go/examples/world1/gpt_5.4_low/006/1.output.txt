@@ -1,0 +1,299 @@
+The strategy for this policy is a fast tactical Go heuristic:
+
+1. Build the current board from `me` and `opponent`.
+2. Always enforce legality:
+   - never play on an occupied point,
+   - allow captures,
+   - reject suicide,
+   - pass with `(0, 0)` only if no legal move exists.
+3. Prioritize strong tactical moves:
+   - capture opponent groups in atari,
+   - save own groups in atari,
+   - avoid self-atari.
+4. Otherwise score promising local candidate moves using:
+   - captures,
+   - saving endangered stones,
+   - connecting own groups,
+   - putting opponent groups under pressure,
+   - resulting liberties,
+   - mild preference for central / useful shape moves,
+   - penalties for filling your own eye-like points or making weak self-atari.
+5. In the opening, prefer standard good points such as center, star points, and side star points if they are legal.
+
+This is not a full search engine, but it is efficient and tactically solid under a 1-second limit.
+
+<code>
+from typing import List, Tuple, Set, Dict
+
+BOARD_SIZE = 19
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opponent)
+    occupied = me_set | opp_set
+
+    def on_board(p: Tuple[int, int]) -> bool:
+        r, c = p
+        return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+
+    def neighbors(p: Tuple[int, int]):
+        r, c = p
+        if r > 1:
+            yield (r - 1, c)
+        if r < BOARD_SIZE:
+            yield (r + 1, c)
+        if c > 1:
+            yield (r, c - 1)
+        if c < BOARD_SIZE:
+            yield (r, c + 1)
+
+    def group_and_liberties(stones: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], start: Tuple[int, int]):
+        stack = [start]
+        group = {start}
+        libs = set()
+        while stack:
+            x = stack.pop()
+            for nb in neighbors(x):
+                if nb in stones:
+                    if nb not in group:
+                        group.add(nb)
+                        stack.append(nb)
+                elif nb not in opp:
+                    libs.add(nb)
+        return group, libs
+
+    def all_groups(stones: Set[Tuple[int, int]], opp: Set[Tuple[int, int]]):
+        seen = set()
+        groups = []
+        for s in stones:
+            if s in seen:
+                continue
+            g, libs = group_and_liberties(stones, opp, s)
+            seen |= g
+            groups.append((g, libs))
+        return groups
+
+    def simulate_move(move: Tuple[int, int], my_stones: Set[Tuple[int, int]], their_stones: Set[Tuple[int, int]]):
+        if move in my_stones or move in their_stones:
+            return None
+
+        new_me = set(my_stones)
+        new_opp = set(their_stones)
+        new_me.add(move)
+
+        captured = 0
+        checked = set()
+        for nb in neighbors(move):
+            if nb in new_opp and nb not in checked:
+                g, libs = group_and_liberties(new_opp, new_me, nb)
+                checked |= g
+                if len(libs) == 0:
+                    captured += len(g)
+                    new_opp -= g
+
+        my_group, my_libs = group_and_liberties(new_me, new_opp, move)
+        if len(my_libs) == 0:
+            return None
+
+        return new_me, new_opp, captured, my_group, my_libs
+
+    def legal(move: Tuple[int, int]) -> bool:
+        return simulate_move(move, me_set, opp_set) is not None
+
+    total_stones = len(me) + len(opponent)
+
+    # Opening preferences
+    opening_moves = [
+        (10, 10),
+        (4, 4), (4, 16), (16, 4), (16, 16),
+        (4, 10), (10, 4), (10, 16), (16, 10),
+        (7, 7), (7, 13), (13, 7), (13, 13),
+        (4, 7), (4, 13), (7, 4), (7, 16),
+        (13, 4), (13, 16), (16, 7), (16, 13),
+    ]
+
+    # Precompute group information on current board
+    my_groups = all_groups(me_set, opp_set)
+    opp_groups = all_groups(opp_set, me_set)
+
+    opp_atari_targets: Dict[Tuple[int, int], int] = {}
+    for g, libs in opp_groups:
+        if len(libs) == 1:
+            lib = next(iter(libs))
+            opp_atari_targets[lib] = opp_atari_targets.get(lib, 0) + len(g)
+
+    my_atari_saves: Dict[Tuple[int, int], int] = {}
+    for g, libs in my_groups:
+        if len(libs) == 1:
+            lib = next(iter(libs))
+            my_atari_saves[lib] = my_atari_saves.get(lib, 0) + len(g)
+
+    # Immediate tactical priority: capture opponent groups in atari
+    capture_moves = []
+    for mv, stones_captured in opp_atari_targets.items():
+        sim = simulate_move(mv, me_set, opp_set)
+        if sim is not None:
+            r, c = mv
+            center_bonus = -((r - 10) ** 2 + (c - 10) ** 2)
+            capture_moves.append((stones_captured, center_bonus, mv))
+    if capture_moves:
+        capture_moves.sort(reverse=True)
+        return capture_moves[0][2]
+
+    # Next priority: save own groups in atari if possible
+    save_moves = []
+    for mv, stones_saved in my_atari_saves.items():
+        sim = simulate_move(mv, me_set, opp_set)
+        if sim is not None:
+            _, _, captured, _, my_libs = sim
+            libs_count = len(my_libs)
+            r, c = mv
+            center_bonus = -((r - 10) ** 2 + (c - 10) ** 2)
+            save_moves.append((stones_saved, captured, libs_count, center_bonus, mv))
+    if save_moves:
+        save_moves.sort(reverse=True)
+        return save_moves[0][4]
+
+    # Early opening move selection
+    if total_stones <= 2:
+        for mv in opening_moves:
+            if legal(mv):
+                return mv
+
+    # Build candidate moves near existing stones plus opening points
+    candidates = set()
+    stones_union = me_set | opp_set
+
+    if not stones_union:
+        return (10, 10)
+
+    for s in stones_union:
+        r, c = s
+        for dr in (-2, -1, 0, 1, 2):
+            for dc in (-2, -1, 0, 1, 2):
+                if abs(dr) + abs(dc) > 3:
+                    continue
+                p = (r + dr, c + dc)
+                if on_board(p) and p not in occupied:
+                    candidates.add(p)
+
+    for mv in opening_moves:
+        if mv not in occupied:
+            candidates.add(mv)
+
+    # If candidate set somehow too small, include all empty neighbors of stones
+    if not candidates:
+        for s in stones_union:
+            for nb in neighbors(s):
+                if nb not in occupied:
+                    candidates.add(nb)
+
+    def score_move(move: Tuple[int, int]):
+        sim = simulate_move(move, me_set, opp_set)
+        if sim is None:
+            return None
+
+        new_me, new_opp, captured, my_group, my_libs = sim
+        libs_count = len(my_libs)
+        r, c = move
+
+        score = 0.0
+
+        # Tactical priorities
+        score += captured * 900
+        score += my_atari_saves.get(move, 0) * 500
+        score += opp_atari_targets.get(move, 0) * 700
+
+        # Resulting liberties
+        score += libs_count * 18
+
+        # Connection / local shape
+        adjacent_own_groups = set()
+        adjacent_opp_groups = set()
+        own_adj = 0
+        opp_adj = 0
+        empty_adj = 0
+
+        for nb in neighbors(move):
+            if nb in me_set:
+                own_adj += 1
+                adjacent_own_groups.add(nb)
+            elif nb in opp_set:
+                opp_adj += 1
+                adjacent_opp_groups.add(nb)
+            else:
+                empty_adj += 1
+
+        score += own_adj * 10
+        score += opp_adj * 8
+        score += empty_adj * 2
+
+        # Reward connecting multiple friendly groups
+        seen_friendly_groups = []
+        touched = set()
+        for nb in neighbors(move):
+            if nb in me_set and nb not in touched:
+                g, _ = group_and_liberties(me_set, opp_set, nb)
+                seen_friendly_groups.append(g)
+                touched |= g
+        if len(seen_friendly_groups) >= 2:
+            score += 35 * (len(seen_friendly_groups) - 1)
+
+        # Reward moves that pressure opponent groups after play
+        pressured = 0
+        checked = set()
+        for nb in neighbors(move):
+            if nb in new_opp and nb not in checked:
+                g, libs = group_and_liberties(new_opp, new_me, nb)
+                checked |= g
+                if len(libs) == 1:
+                    pressured += len(g)
+        score += pressured * 30
+
+        # Penalize self-atari
+        if libs_count == 1 and captured == 0:
+            score -= 1000
+
+        # Mild eye-filling penalty
+        if own_adj >= 3 and opp_adj == 0:
+            score -= 120
+
+        # Centrality / board utility
+        score -= 0.7 * ((r - 10) ** 2 + (c - 10) ** 2)
+
+        # Prefer star points a bit in quieter positions
+        if move in opening_moves:
+            score += 12
+
+        # Slight edge penalty in early game
+        if total_stones < 20:
+            if r in (1, 19) or c in (1, 19):
+                score -= 30
+            elif r in (2, 18) or c in (2, 18):
+                score -= 10
+
+        return score
+
+    best_move = None
+    best_score = None
+
+    for mv in candidates:
+        sc = score_move(mv)
+        if sc is None:
+            continue
+        if best_score is None or sc > best_score:
+            best_score = sc
+            best_move = mv
+
+    if best_move is not None:
+        return best_move
+
+    # Full-board legal fallback
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            mv = (r, c)
+            if legal(mv):
+                return mv
+
+    return (0, 0)
+</code>

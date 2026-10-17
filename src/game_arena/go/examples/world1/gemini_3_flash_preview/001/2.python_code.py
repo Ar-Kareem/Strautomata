@@ -1,0 +1,84 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    BOARD_SIZE = 19
+    me_set = set(me)
+    opp_set = set(opponent)
+    all_occupied = me_set | opp_set
+
+    def get_neighbors(r, c):
+        neighbors = []
+        if r > 1: neighbors.append((r - 1, c))
+        if r < BOARD_SIZE: neighbors.append((r + 1, c))
+        if c > 1: neighbors.append((r, c - 1))
+        if c < BOARD_SIZE: neighbors.append((r, c + 1))
+        return neighbors
+
+    def get_liberties(coords_set):
+        liberties = set()
+        for r, c in coords_set:
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) not in all_occupied:
+                    liberties.add((nr, nc))
+        return liberties
+
+    def get_group(start_r, start_c, player_set):
+        group = {(start_r, start_c)}
+        stack = [(start_r, start_c)]
+        while stack:
+            r, c = stack.pop()
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in player_set and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    stack.append((nr, nc))
+        return group
+
+    # 1. Capture Opponent Stones in Atari
+    for r, c in opp_set:
+        group = get_group(r, c, opp_set)
+        libs = get_liberties(group)
+        if len(libs) == 1:
+            move = list(libs)[0]
+            if move not in all_occupied:
+                return move
+
+    # 2. Defend Own Stones in Atari
+    for r, c in me_set:
+        group = get_group(r, c, me_set)
+        libs = get_liberties(group)
+        if len(libs) == 1:
+            move = list(libs)[0]
+            # Verify if moving there actually increases liberties (not a suicide move)
+            if move not in all_occupied:
+                return move
+
+    # 3. Opening: Take Star Points
+    star_points = [(4, 4), (4, 16), (16, 4), (16, 16), (10, 10), (4, 10), (10, 4), (10, 16), (16, 10)]
+    for pt in star_points:
+        if pt not in all_occupied:
+            return pt
+
+    # 4. Tactical: Play near existing stones (Clumping)
+    for r, c in me_set:
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) not in all_occupied:
+                # Simple suicide check
+                n_libs = 0
+                for nnr, nnc in get_neighbors(nr, nc):
+                    if (nnr, nnc) not in all_occupied:
+                        n_libs += 1
+                if n_libs > 0:
+                    return (nr, nc)
+
+    # 5. Backup: Random valid move
+    all_coords = [(r, c) for r in range(1, 20) for c in range(1, 20)]
+    random.shuffle(all_coords)
+    for r, c in all_coords:
+        if (r, c) not in all_occupied:
+            # Basic check to avoid immediate suicide
+            adj = get_neighbors(r, c)
+            if any((nr, nc) not in all_occupied for nr, nc in adj):
+                return (r, c)
+
+    return (0, 0)

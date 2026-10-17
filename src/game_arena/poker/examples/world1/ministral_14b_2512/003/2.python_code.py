@@ -1,0 +1,209 @@
+
+import random
+from collections import defaultdict
+
+# Card ranks: 2=2, ..., 10=10, 11=J, 12=Q, 13=A
+# Suits: 0=hearts, 1=diamonds, 2=clubs, 3=spades
+
+def policy(state):
+    # Extract state info
+    private_cards = state['private_cards']
+    public_cards = state['public_cards']
+    pot = state['pot']
+    my_spent = state['my_spent']
+    opponent_spent = state['opponent_spent']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    my_stack = my_spent + (pot - my_spent - opponent_spent)  # Simplified; actual stack is not given, but we can infer
+
+    # --- Hand Strength Evaluation ---
+    hand_strength = evaluate_hand(private_cards, public_cards)
+
+    # --- Preflop Logic (no public cards) ---
+    if not public_cards:
+        return preflop_strategy(private_cards, pot, my_spent, opponent_spent, to_call, allowed_actions, hand_strength)
+
+    # --- Postflop Logic ---
+    else:
+        return postflop_strategy(
+            private_cards, public_cards, pot, my_spent, opponent_spent,
+            to_call, allowed_actions, hand_strength, my_stack
+        )
+
+def evaluate_hand(private_cards, public_cards):
+    """Evaluate hand strength (0=weak, 100=strong)."""
+    if not public_cards:
+        # Preflop: rank based on standard ranges
+        ranks = [card['rank'] for card in private_cards]
+        ranks_sorted = sorted(ranks)
+        if len(ranks) == 2:
+            if ranks_sorted[1] == 14:  # Ace-high pairs
+                return (ranks_sorted[1] - 2) * 10 + (ranks_sorted[0] - 2)
+            else:
+                return (ranks_sorted[1] - 2) * 10 + (ranks_sorted[0] - 2)
+        else:
+            return 0  # Shouldn't happen (only 1 card in private_cards per problem statement)
+    else:
+        # Postflop: evaluate best possible 5-card hand
+        all_cards = private_cards + public_cards
+        best_hand = evaluate_best_hand(all_cards)
+        return hand_rank_to_strength(best_hand)
+
+def evaluate_best_hand(cards):
+    """Evaluate the best 5-card hand from the given cards."""
+    ranks = [card['rank'] for card in cards]
+    suits = [card['suit'] for card in cards]
+
+    # Check for flushes
+    suit_counts = defaultdict(int)
+    for suit in suits:
+        suit_counts[suit] += 1
+    flush_suit = None
+    for suit, count in suit_counts.items():
+        if count >= 5:
+            flush_suit = suit
+            break
+
+    # Check for straights
+    unique_ranks = sorted(list(set(ranks)))
+    straight = False
+    for i in range(len(unique_ranks) - 4):
+        if unique_ranks[i+4] - unique_ranks[i] == 4:
+            straight = True
+            break
+
+    # Check for pairs, trips, etc.
+    rank_counts = defaultdict(int)
+    for rank in ranks:
+        rank_counts[rank] += 1
+    pairs = [rank for rank, count in rank_counts.items() if count == 2]
+    trips = [rank for rank, count in rank_counts.items() if count == 3]
+    quads = [rank for rank, count in rank_counts.items() if count == 4]
+
+    # Determine hand strength
+    if quads:
+        return ('quads', max(quads))
+    elif trips and pairs:
+        return ('full_house', max(trips), max(pairs))
+    elif flush_suit and straight:
+        return ('straight_flush', max(ranks))
+    elif flush_suit:
+        return ('flush', max(ranks))
+    elif straight:
+        return ('straight', max(ranks))
+    elif len(pairs) == 2:
+        return ('two_pair', max(pairs), min(pairs))
+    elif len(pairs) == 1:
+        kicker = [rank for rank in rank_counts if rank not in pairs][0]
+        return ('pair', max(pairs), kicker)
+    else:
+        return ('high_card', max(ranks))
+
+def hand_rank_to_strength(hand):
+    """Convert hand rank to a strength score (0-100)."""
+    rank_map = {
+        'quads': 95,
+        'full_house': 90,
+        'straight_flush': 98,
+        'flush': 85,
+        'straight': 80,
+        'two_pair': 70,
+        'pair': 60,
+        'high_card': 50
+    }
+    return rank_map.get(hand[0], 50)
+
+def preflop_strategy(private_cards, pot, my_spent, opponent_spent, to_call, allowed_actions, hand_strength):
+    """Preflop strategy (no public cards)."""
+    ranks = [card['rank'] for card in private_cards]
+    ranks_sorted = sorted(ranks)
+
+    # Strong hands: raise or all-in
+    if hand_strength >= 80:  # AA, KK, AK, QQ, etc.
+        if 'raise' in allowed_actions:
+            return 'raise'
+        elif 'all-in' in allowed_actions:
+            return 'all-in'
+        else:
+            return 'call'
+
+    # Medium hands: call or raise depending on opponent's bet
+    elif hand_strength >= 50:  # AJ, TT, etc.
+        if opponent_spent > my_spent and to_call > 0:
+            if hand_strength >= 60:  # Stronger medium hands
+                return 'call'
+            else:
+                return 'fold'
+        else:
+            if 'raise' in allowed_actions:
+                return 'raise'
+            else:
+                return 'call'
+
+    # Weak hands: fold
+    else:
+        return 'fold'
+
+def postflop_strategy(private_cards, public_cards, pot, my_spent, opponent_spent, to_call, allowed_actions, hand_strength, my_stack):
+    """Postflop strategy (public cards exist)."""
+    # If opponent has raised significantly, play tighter
+    if opponent_spent > my_spent and to_call > 0:
+        if hand_strength >= 80:  # Strong hands
+            return 'call'
+        elif hand_strength >= 60 and 'raise' in allowed_actions:
+            return 'raise'
+        else:
+            return 'fold'
+
+    # If opponent has checked/called, can bluff or bet for value
+    else:
+        # Strong hands: bet for value
+        if hand_strength >= 70:
+            if 'raise' in allowed_actions:
+                return 'raise'
+            else:
+                return 'call'
+
+        # Medium hands: bluff or call depending on board
+        elif hand_strength >= 50:
+            if is_bluff_worthy(public_cards, private_cards):
+                if 'raise' in allowed_actions:
+                    return 'raise'
+                else:
+                    return 'call'
+            else:
+                return 'call'
+
+        # Weak hands: fold unless bluffing
+        else:
+            if is_bluff_worthy(public_cards, private_cards) and 'raise' in allowed_actions:
+                return 'raise'
+            else:
+                return 'fold'
+
+def is_bluff_worthy(public_cards, private_cards):
+    """Check if bluffing is reasonable (e.g., dry board, opponent shows weakness)."""
+    # Simple heuristic: bluff if board is not scary and we have a draw
+    ranks = [card['rank'] for card in public_cards]
+    suits = [card['suit'] for card in public_cards]
+    private_ranks = [card['rank'] for card in private_cards]
+    private_suits = [card['suit'] for card in private_cards]
+
+    # Check for flush draws
+    flush_draw = False
+    for suit in private_suits:
+        if suits.count(suit) >= 4:
+            flush_draw = True
+            break
+
+    # Check for straight draws
+    straight_draw = False
+    unique_ranks = sorted(list(set(ranks)))
+    for i in range(len(unique_ranks) - 1):
+        if unique_ranks[i+1] - unique_ranks[i] == 1:
+            if (unique_ranks[i] == 2 and unique_ranks[i+1] == 3) or (unique_ranks[i] == 10 and unique_ranks[i+1] == 11):
+                straight_draw = True
+                break
+
+    # Bluff if we have a draw or the board is dry
+    return flush_draw or straight_draw or (len(public_cards) <= 3 and random.random() < 0.3)

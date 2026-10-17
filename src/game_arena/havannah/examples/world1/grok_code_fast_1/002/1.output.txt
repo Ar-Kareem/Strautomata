@@ -1,0 +1,61 @@
+The strategy for this policy is to evaluatemove candidates based on how well they increase the size of the largest group of corners (defined as the cells (0,0), (0,7), (0,14), (14,0), (14,7), (14,14)) that can be connected via the player's own stones. This heuristic promotes building towards bridges, one of the winning conditions in Havannah, while ignoring rings and forks for simplicity and speed. From the set of legal unoccupied moves on the valid_mask, it selects the move that maximizes this value (post-move), with random tiebreaking. If time allowed, it would simulate more complex playouts, but this provides a balanced, defensive approach aiming for long-term connectivity advantages.
+
+<code>
+import random
+
+def get_neighbors(r, c):
+    neighbors = []
+    if r > 0: neighbors.append((r - 1, c))
+    if r < 14: neighbors.append((r + 1, c))
+    if c > 0: neighbors.append((r, c - 1))
+    if c < 14: neighbors.append((r, c + 1))
+    if r > 0 and c > 0: neighbors.append((r - 1, c - 1))
+    if r > 0 and c < 14: neighbors.append((r - 1, c + 1))
+    return neighbors
+
+corners = [(0, 0), (0, 7), (0, 14), (14, 0), (14, 7), (14, 14)]
+
+def get_max_connected_corners(stones_set):
+    visited = set()
+    max_connected = 0
+    for start in stones_set:
+        if start not in visited:
+            # BFS to find component, count corners in it
+            queue = [start]
+            vis = {start}
+            corner_count = 1 if start in corners else 0
+            while queue:
+                cur = queue.pop()
+                for neigh in get_neighbors(cur[0], cur[1]):
+                    if neigh in stones_set and neigh not in vis:
+                        vis.add(neigh)
+                        queue.append(neigh)
+                        if neigh in corners: corner_count += 1
+            max_connected = max(max_connected, corner_count)
+    return max_connected
+
+def policy(me, opp, valid_mask):
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+    possible_moves = []
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c] and (r, c) not in occupied:
+                possible_moves.append((r, c))
+    if not possible_moves:
+        raise ValueError("No possible moves, which should not happen.")
+    current_me_value = get_max_connected_corners(me_set)
+    best_score = -1
+    best_moves = []
+    for move in possible_moves:
+        new_me_set = me_set | {move}
+        new_me_value = get_max_connected_corners(new_me_set)
+        score = new_me_value
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+    return random.choice(best_moves)
+</code>

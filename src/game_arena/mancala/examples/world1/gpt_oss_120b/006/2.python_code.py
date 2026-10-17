@@ -1,0 +1,161 @@
+
+import sys
+import functools
+
+# --------------------------------------------------------------
+# Negamax search with alpha‑beta pruning for Kalah (6 houses)
+# --------------------------------------------------------------
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Return the index (0‑5) of a legal move for the current player.
+    """
+    # Depth can be tuned; 8 gives a good trade‑off between speed and strength.
+    SEARCH_DEPTH = 8
+
+    # Pre‑compute legal moves (houses with at least one seed)
+    legal_moves = [i for i in range(6) if you[i] > 0]
+
+    # If only one move is possible, return it immediately.
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+
+    # Negamax evaluation cache (optional but cheap)
+    @functools.lru_cache(maxsize=None)
+    def negamax(y: tuple, o: tuple, depth: int, alpha: float, beta: float) -> float:
+        """
+        Returns the negamax value from the perspective of the player
+        whose houses are `y`.  `y` and `o` are immutable tuples.
+        """
+        # Terminal test
+        if depth == 0 or all(v == 0 for v in y[:6]) or all(v == 0 for v in o[:6]):
+            return evaluate(y, o)
+
+        max_val = -float('inf')
+        # Generate moves
+        for move in (i for i, v in enumerate(y[:6]) if v > 0):
+            ny, no, extra = apply_move(list(y), list(o), move)
+
+            if extra:
+                # Same player moves again
+                val = negamax(tuple(ny), tuple(no), depth - 1, alpha, beta)
+            else:
+                # Switch perspective (negate the value)
+                val = -negamax(tuple(no), tuple(ny), depth - 1, -beta, -alpha)
+
+            if val > max_val:
+                max_val = val
+            if max_val > alpha:
+                alpha = max_val
+            if alpha >= beta:
+                break  # beta‑cutoff
+        return max_val
+
+    # Choose the move with the highest negamax value
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    for mv in legal_moves:
+        ny, no, extra = apply_move(you.copy(), opponent.copy(), mv)
+        if extra:
+            score = negamax(tuple(ny), tuple(no), SEARCH_DEPTH - 1, -float('inf'), float('inf'))
+        else:
+            score = -negamax(tuple(no), tuple(ny), SEARCH_DEPTH - 1, -float('inf'), float('inf'))
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    return best_move
+
+
+# --------------------------------------------------------------
+# Helper functions
+# --------------------------------------------------------------
+
+def apply_move(you: list[int], opp: list[int], house: int):
+    """
+    Perform a Kalah move from `you[house]`. Returns the new board
+    (you, opp), a flag indicating whether the player gets an extra turn,
+    and handles captures and game‑end collection.
+    """
+    seeds = you[house]
+    you[house] = 0
+    idx = house
+    side = 'you'          # whose side we are sowing onto
+    extra_turn = False
+
+    while seeds > 0:
+        # Advance to next pit
+        if side == 'you':
+            if idx < 5:
+                idx += 1
+            elif idx == 5:
+                idx = 6          # your store
+            else:               # idx == 6 (store) -> go to opponent side
+                side = 'opp'
+                idx = -1
+                continue
+        else:  # side == 'opp'
+            if idx < 5:
+                idx += 1
+            elif idx == 5:
+                # opponent store – skip it
+                side = 'you'
+                idx = -1
+                continue
+            else:               # after opponent houses wrap to your side
+                side = 'you'
+                idx = -1
+                continue
+
+        # Sow one seed
+        if side == 'you':
+            if idx == 6:                # your store
+                you[6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    extra_turn = True
+                continue
+            else:                       # a house on your side
+                # Capture check: this is the last seed AND the house was empty before placement
+                if seeds == 1 and you[idx] == 0:
+                    opp_idx = 5 - idx
+                    if opp[opp_idx] > 0:
+                        # capture the opponent's seeds and the landing seed
+                        captured = opp[opp_idx] + 1
+                        you[6] += captured
+                        you[idx] = 0
+                        opp[opp_idx] = 0
+                        seeds = 0
+                        break
+                you[idx] += 1
+                seeds -= 1
+        else:  # side == 'opp'
+            opp[idx] += 1
+            seeds -= 1
+
+    # Check for game end
+    if all(v == 0 for v in you[:6]) or all(v == 0 for v in opp[:6]):
+        # Move remaining seeds to the appropriate store
+        you[6] += sum(you[:6])
+        opp[6] += sum(opp[:6])
+        for i in range(6):
+            you[i] = 0
+            opp[i] = 0
+
+    return you, opp, extra_turn
+
+
+def evaluate(you: tuple, opp: tuple) -> float:
+    """
+    Simple heuristic: store difference plus a small weight for remaining seeds.
+    """
+    store_diff = you[6] - opp[6]
+    my_seeds = sum(you[:6])
+    opp_seeds = sum(opp[:6])
+    return store_diff + 0.1 * (my_seeds - opp_seeds)
+
+
+# --------------------------------------------------------------
+# End of policy file
+# --------------------------------------------------------------

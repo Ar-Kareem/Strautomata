@@ -1,0 +1,222 @@
+Strategy:
+- I use an iterative-deepening negamax search with alpha-beta pruning and a small transposition table.
+- The evaluation favors positions with higher mobility (number of legal captures) and fewer opponent pieces, so the policy pursues moves that reduce the opponent's options and preserve capture potential for itself.
+- I order moves by the immediate reduction of opponent mobility (capture moves that leave the opponent with fewer replies are tried first), to increase pruning and find strong moves quickly.
+- A short time budget per move (≈0.95s) ensures the policy returns a legal move quickly; the best move found so far is returned if time runs out.
+
+<code>
+import time
+import random
+from typing import List, Tuple
+
+# Board dimensions
+ROWS = 5
+COLS = 6
+
+# Directions mapping
+DIRS = {'U': (-1, 0), 'R': (0, 1), 'D': (1, 0), 'L': (0, -1)}
+DIR_KEYS = ['U', 'R', 'D', 'L']
+
+# Time limit per call (seconds)
+TIME_LIMIT = 0.95
+
+def _normalize_board(arr: List[int]) -> List[List[int]]:
+    """
+    Accept either a nested list [[...], ...] of shape 5x6 or a flat list of length 30.
+    Return a 5x6 nested list of ints.
+    """
+    if isinstance(arr, list) and len(arr) == ROWS and all(isinstance(r, list) and len(r) == COLS for r in arr):
+        return [[int(arr[r][c]) for c in range(COLS)] for r in range(ROWS)]
+    # flat list
+    if isinstance(arr, list) and len(arr) == ROWS * COLS:
+        flat = [int(x) for x in arr]
+        return [[flat[r * COLS + c] for c in range(COLS)] for r in range(ROWS)]
+    # fallback: try to coerce into nested shape
+    flat = []
+    for elem in arr:
+        if isinstance(elem, list):
+            flat.extend(elem)
+        else:
+            flat.append(elem)
+    if len(flat) >= ROWS * COLS:
+        flat = flat[:ROWS * COLS]
+        return [[int(flat[r * COLS + c]) for c in range(COLS)] for r in range(ROWS)]
+    # if all else fails, return empty board
+    return [[0] * COLS for _ in range(ROWS)]
+
+def get_moves(you: List[List[int]], opp: List[List[int]]) -> List[Tuple[int,int,str]]:
+    moves = []
+    for r in range(ROWS):
+        for c in range(COLS):
+            if you[r][c]:
+                for dkey, (dr, dc) in DIRS.items():
+                    rr = r + dr
+                    cc = c + dc
+                    if 0 <= rr < ROWS and 0 <= cc < COLS and opp[rr][cc]:
+                        moves.append((r, c, dkey))
+    return moves
+
+def apply_move(you: List[List[int]], opp: List[List[int]], move: Tuple[int,int,str]):
+    r, c, d = move
+    dr, dc = DIRS[d]
+    rr = r + dr
+    cc = c + dc
+    # copy boards
+    you2 = [row[:] for row in you]
+    opp2 = [row[:] for row in opp]
+    # move: capture opponent at (rr,cc)
+    opp2[rr][cc] = 0
+    you2[r][c] = 0
+    you2[rr][cc] = 1
+    # For the opponent's turn, they see these arrays swapped:
+    return you2, opp2
+
+def board_to_key(you: List[List[int]], opp: List[List[int]]):
+    # create immutable tuple key
+    return tuple(sum(you, [])), tuple(sum(opp, []))
+
+def evaluate(you: List[List[int]], opp: List[List[int]]):
+    """
+    Heuristic evaluation from the perspective of the side to move (you).
+    Positive = good for you.
+    """
+    # Piece counts
+    your_pieces = sum(sum(row) for row in you)
+    opp_pieces = sum(sum(row) for row in opp)
+    # Mobility
+    your_moves = len(get_moves(you, opp))
+    # For opponent mobility we must simulate opponent's view (swap)
+    opp_moves = len(get_moves(opp, you))
+    # Weighted evaluation:
+    # mobility is primary, piece count secondary
+    # coefficients chosen empirically for small board
+    val = 120 * (your_moves - opp_moves) + 30 * (your_pieces - opp_pieces)
+    # small random tie-break to vary choices and avoid cycles
+    val += random.uniform(-0.5, 0.5)
+    return val
+
+def order_moves(you, opp, moves):
+    """
+    Order moves by how much they reduce opponent mobility (prefer bigger reductions).
+    Also break ties by moves that reduce opponent piece count as all do equally, so fallback to random.
+    """
+    scored = []
+    base_opp_moves = len(get_moves(opp, you))
+    for m in moves:
+        you2, opp2 = apply_move(you, opp, m)
+        # opponent's available moves after our move:
+        opp_after_moves = len(get_moves(opp2, you2))
+        score = base_opp_moves - opp_after_moves
+        scored.append((score, m))
+    # sort descending by reduction (higher is better), tie-break random
+    scored.sort(key=lambda x: (-x[0], random.random()))
+    return [m for _, m in scored]
+
+def negamax(you, opp, depth, alpha, beta, start_time, tt):
+    """
+    Negamax with alpha-beta pruning.
+    Returns (best_score, best_move) where best_move is a move tuple or None.
+    """
+    # Time check
+    if time.time() - start_time > TIME_LIMIT:
+        raise TimeoutError()
+
+    key = board_to_key(you, opp)
+    if key in tt and tt[key][0] >= depth:
+        return tt[key][1], tt[key][2]
+
+    moves = get_moves(you, opp)
+    if not moves:
+        # no moves -> loss for player to move
+        return -99999, None
+    if depth == 0:
+        return evaluate(you, opp), None
+
+    best_score = -10**9
+    best_move = None
+
+    # Move ordering
+    moves = order_moves(you, opp, moves)
+
+    for m in moves:
+        you2, opp2 = apply_move(you, opp, m)
+        # For opponent turn, swap roles and negate
+        try:
+            score, _ = negamax(opp2, you2, depth-1, -beta, -alpha, start_time, tt)
+        except TimeoutError:
+            raise
+        score = -score
+        if score > best_score:
+            best_score = score
+            best_move = m
+        alpha = max(alpha, score)
+        if alpha >= beta:
+            break
+
+    tt[key] = (depth, best_score, best_move)
+    return best_score, best_move
+
+def policy(you: List[int], opponent: List[int]) -> str:
+    """
+    Return a move string 'row,col,dir' for a legal capture move.
+    """
+    # normalize inputs
+    you_board = _normalize_board(you)
+    opp_board = _normalize_board(opponent)
+
+    start_time = time.time()
+    deadline = start_time + TIME_LIMIT
+
+    # generate legal moves
+    moves = get_moves(you_board, opp_board)
+    if not moves:
+        # No legal moves: return a deterministic but syntactically-correct move if possible.
+        # In practice the engine shouldn't be called in a no-move situation, but handle gracefully.
+        # Try to find any capturing move (should not exist), otherwise return a dummy legal string from valid indices (0,0,U)
+        return "0,0,U"
+
+    # If only one move, return it immediately
+    if len(moves) == 1:
+        r, c, d = moves[0]
+        return f"{r},{c},{d}"
+
+    # iterative deepening
+    best_move = moves[0]
+    tt = {}
+    depth = 1
+    try:
+        while True:
+            # respect remaining time
+            if time.time() >= deadline:
+                break
+            # run negamax at given depth
+            try:
+                score, mv = negamax(you_board, opp_board, depth, -10**9, 10**9, start_time, tt)
+            except TimeoutError:
+                break
+            if mv is not None:
+                best_move = mv
+            depth += 1
+            # safety cap on depth to avoid runaway
+            if depth > 8:
+                break
+    except Exception:
+        # in case of unexpected errors, fall back to a simple heuristic move
+        pass
+
+    r, c, d = best_move
+    return f"{r},{c},{d}"
+
+# Expose policy for import
+if __name__ == "__main__":
+    # quick random test
+    # create a sample position
+    you = [[0]*COLS for _ in range(ROWS)]
+    opp = [[0]*COLS for _ in range(ROWS)]
+    # some pieces
+    you[2][2] = 1
+    you[1][2] = 1
+    opp[2][3] = 1
+    opp[3][2] = 1
+    print(policy(you, opp))
+</code>

@@ -1,0 +1,1092 @@
+# Strategy
+
+I implement a **complete self-contained chess engine** (no `chess` module) inside the policy:
+
+- **Board/rules**: 0x88 mailbox board with full legal-move generation — pins and check evasions verified by attack tests, castling (rights inferred from king/rook placement, path/through-check validated), en passant modeled correctly inside search, all four promotions.
+- **Search**: iterative-deepening negamax alpha-beta with PVS, transposition table (Zobrist hashing), null-move pruning, check extensions, killer/history + MVV-LVA move ordering, and a **quiescence search** (captures/promotions, full evasions when in check, delta pruning) so it never loses material to horizon effects.
+- **Evaluation**: material + piece-square tables (separate middlegame/endgame king tables), bishop pair, tempo, and a mop-up term that drives kings together when winning — so it can actually convert winning endgames and deliver mates.
+- **Draw awareness**: repetition detection against the search path and remembered game history (avoids shuffling away a win, seeks draws when losing), stalemate scored as 0.
+- **Safety**: strict time management (~0.75 s per move with abort), the returned move always comes from the verified legal root-move list, and a defensive fallback guarantees a legal move string even on unexpected errors.
+
+<code>
+import sys
+import random
+from time import perf_counter
+
+sys.setrecursionlimit(30000)
+
+_pc = perf_counter
+
+
+class Timeout(Exception):
+    pass
+
+
+INF = 1 << 24
+MATE = 1000000
+MATE_BOUND = MATE - 2000
+
+SQ64 = tuple(r * 16 + f for r in range(8) for f in range(8))
+
+MATV = (0, 100, 320, 330, 500, 900, 0, 0, 0, 100, 320, 330, 500, 900, 0)
+VALQ = (0, 100, 320, 330, 500, 900, 1300, 0, 0, 100, 320, 330, 500, 900, 1300)
+
+# ---------------- precomputed geometry (0x88) ----------------
+N_MOVES = [None] * 128
+K_MOVES = [None] * 128
+W_CAPS = [None] * 128
+B_CAPS = [None] * 128
+W_FROM = [None] * 128
+B_FROM = [None] * 128
+R_RAYS = [None] * 128
+B_RAYS = [None] * 128
+ALIGN = [0] * 16384
+CMASK = [15] * 128
+
+for _sq in SQ64:
+    _r, _f = _sq >> 4, _sq & 15
+    N_MOVES[_sq] = tuple((_r + a) * 16 + (_f + b)
+                         for a, b in ((2, 1), (2, -1), (-2, 1), (-2, -1),
+                                      (1, 2), (1, -2), (-1, 2), (-1, -2))
+                         if 0 <= _r + a < 8 and 0 <= _f + b < 8)
+    K_MOVES[_sq] = tuple((_r + a) * 16 + (_f + b)
+                         for a, b in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                                      (1, 1), (1, -1), (-1, 1), (-1, -1))
+                         if 0 <= _r + a < 8 and 0 <= _f + b < 8)
+    W_CAPS[_sq] = tuple((_r + a) * 16 + (_f + b) for a, b in ((1, -1), (1, 1))
+                        if 0 <= _r + a < 8 and 0 <= _f + b < 8)
+    B_CAPS[_sq] = tuple((_r + a) * 16 + (_f + b) for a, b in ((-1, -1), (-1, 1))
+                        if 0 <= _r + a < 8 and 0 <= _f + b < 8)
+    W_FROM[_sq] = tuple((_r + a) * 16 + (_f + b) for a, b in ((-1, -1), (-1, 1))
+                        if 0 <= _r + a < 8 and 0 <= _f + b < 8)
+    B_FROM[_sq] = tuple((_r + a) * 16 + (_f + b) for a, b in ((1, -1), (1, 1))
+                        if 0 <= _r + a < 8 and 0 <= _f + b < 8)
+    _rr = []
+    for _a, _b in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        _ray = []
+        _tr, _tf = _r + _a, _f + _b
+        while 0 <= _tr < 8 and 0 <= _tf < 8:
+            _ray.append(_tr * 16 + _tf)
+            _tr += _a
+            _tf += _b
+        _rr.append(tuple(_ray))
+    R_RAYS[_sq] = tuple(_rr)
+    _bb = []
+    for _a, _b in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+        _ray = []
+        _tr, _tf = _r + _a, _f + _b
+        while 0 <= _tr < 8 and 0 <= _tf < 8:
+            _ray.append(_tr * 16 + _tf)
+            _tr += _a
+            _tf += _b
+        _bb.append(tuple(_ray))
+    B_RAYS[_sq] = tuple(_bb)
+    for _d in (1, -1, 16, -16, 15, 17, -15, -17):
+        _t = _sq + _d
+        while not (_t & 0x88):
+            ALIGN[(_sq << 7) + _t] = _d
+            _t += _d
+
+CMASK[4] = 12
+CMASK[7] = 14
+CMASK[0] = 13
+CMASK[116] = 3
+CMASK[119] = 11
+CMASK[112] = 7
+
+# ---------------- zobrist ----------------
+_rng = random.Random(0x5EEDC0DE)
+ZP = [[_rng.getrandbits(64) for _ in range(128)] for _ in range(15)]
+ZC = [_rng.getrandbits(64) for _ in range(16)]
+ZEP = [_rng.getrandbits(64) for _ in range(8)]
+ZSIDE = _rng.getrandbits(64)
+
+# ---------------- piece-square tables ----------------
+_PST_P = (0, 0, 0, 0, 0, 0, 0, 0,
+          50, 50, 50, 50, 50, 50, 50, 50,
+          10, 10, 20, 30, 30, 20, 10, 10,
+          5, 5, 10, 25, 25, 10, 5, 5,
+          0, 0, 0, 20, 20, 0, 0, 0,
+          5, -5, -10, 0, 0, -10, -5, 5,
+          5, 10, 10, -20, -20, 10, 10, 5,
+          0, 0, 0, 0, 0, 0, 0, 0)
+_PST_N = (-50, -40, -30, -30, -30, -30, -40, -50,
+          -40, -20, 0, 0, 0, 0, -20, -40,
+          -30, 0, 10, 15, 15, 10, 0, -30,
+          -30, 5, 15, 20, 20, 15, 5, -30,
+          -30, 0, 15, 20, 20, 15, 0, -30,
+          -30, 5, 10, 15, 15, 10, 5, -30,
+          -40, -20, 0, 5, 5, 0, -20, -40,
+          -50, -40, -30, -30, -30, -30, -40, -50)
+_PST_B = (-20, -10, -10, -10, -10, -10, -10, -20,
+          -10, 0, 0, 0, 0, 0, 0, -10,
+          -10, 0, 5, 10, 10, 5, 0, -10,
+          -10, 5, 5, 10, 10, 5, 5, -10,
+          -10, 0, 10, 10, 10, 10, 0, -10,
+          -10, 10, 10, 10, 10, 10, 10, -10,
+          -10, 5, 0, 0, 0, 0, 5, -10,
+          -20, -10, -10, -10, -10, -10, -10, -20)
+_PST_R = (0, 0, 0, 0, 0, 0, 0, 0,
+          5, 10, 10, 10, 10, 10, 10, 5,
+          -5, 0, 0, 0, 0, 0, 0, -5,
+          -5, 0, 0, 0, 0, 0, 0, -5,
+          -5, 0, 0, 0, 0, 0, 0, -5,
+          -5, 0, 0, 0, 0, 0, 0, -5,
+          -5, 0, 0, 0, 0, 0, 0, -5,
+          0, 0, 0, 5, 5, 0, 0, 0)
+_PST_Q = (-20, -10, -10, -5, -5, -10, -10, -20,
+          -10, 0, 0, 0, 0, 0, 0, -10,
+          -10, 0, 5, 5, 5, 5, 0, -10,
+          -5, 0, 5, 5, 5, 5, 0, -5,
+          0, 0, 5, 5, 5, 5, 0, -5,
+          -10, 5, 5, 5, 5, 5, 0, -10,
+          -10, 0, 5, 0, 0, 0, 0, -10,
+          -20, -10, -10, -5, -5, -10, -10, -20)
+_KST_MG = (-30, -40, -40, -50, -50, -40, -40, -30,
+           -30, -40, -40, -50, -50, -40, -40, -30,
+           -30, -40, -40, -50, -50, -40, -40, -30,
+           -30, -40, -40, -50, -50, -40, -40, -30,
+           -20, -30, -30, -40, -40, -30, -30, -20,
+           -10, -20, -20, -20, -20, -20, -20, -10,
+           20, 20, 0, 0, 0, 0, 20, 20,
+           20, 30, 10, 0, 0, 10, 30, 20)
+_KST_EG = (-50, -40, -30, -20, -20, -30, -40, -50,
+           -30, -20, -10, 0, 0, -10, -20, -30,
+           -30, -10, 20, 30, 30, 20, -10, -30,
+           -30, -10, 30, 40, 40, 30, -10, -30,
+           -30, -10, 30, 40, 40, 30, -10, -30,
+           -30, -10, 20, 30, 30, 20, -10, -30,
+           -30, -30, 0, 0, 0, 0, -30, -30,
+           -50, -30, -30, -30, -30, -30, -30, -50)
+
+
+def _mkpst(tbl, t):
+    w = [0] * 128
+    b = [0] * 128
+    mv = MATV[t]
+    for sq in SQ64:
+        r = sq >> 4
+        f = sq & 15
+        w[sq] = mv + tbl[(7 - r) * 8 + f]
+        b[sq] = -(mv + tbl[r * 8 + f])
+    return w, b
+
+
+_PW, _PB = _mkpst(_PST_P, 1)
+_NW, _NB = _mkpst(_PST_N, 2)
+_BW, _BB = _mkpst(_PST_B, 3)
+_RW, _RB = _mkpst(_PST_R, 4)
+_QW, _QB = _mkpst(_PST_Q, 5)
+_KMW, _KMB = _mkpst(_KST_MG, 6)
+_KEW, _KEB = _mkpst(_KST_EG, 6)
+
+PBASE_MG = [None] * 15
+PBASE_MG[1] = _PW
+PBASE_MG[2] = _NW
+PBASE_MG[3] = _BW
+PBASE_MG[4] = _RW
+PBASE_MG[5] = _QW
+PBASE_MG[6] = _KMW
+PBASE_MG[9] = _PB
+PBASE_MG[10] = _NB
+PBASE_MG[11] = _BB
+PBASE_MG[12] = _RB
+PBASE_MG[13] = _QB
+PBASE_MG[14] = _KMB
+PBASE_EG = list(PBASE_MG)
+PBASE_EG[6] = _KEW
+PBASE_EG[14] = _KEB
+
+# ---------------- dynamic state ----------------
+BD = [0] * 128
+WTM = True
+EP = -1
+CASTLE = 0
+HASH = 0
+SCORE = 0
+WK = -1
+BK = -1
+NPMW = 0
+NPMB = 0
+WBISH = 0
+BBISH = 0
+PST = PBASE_MG
+TT = {}
+PATHSET = set()
+HISTGAME = set()
+KILLERS = [[None, None] for _ in range(130)]
+HISTTBL = [0] * 16384
+NODES = 0
+DEADLINE = 0.0
+
+TYPE = {'P': 1, 'N': 2, 'B': 3, 'R': 4, 'Q': 5, 'K': 6}
+PROMO_CH = {2: 'n', 3: 'b', 4: 'r', 5: 'q'}
+
+_FILES = 'abcdefgh'
+_BACK = 'RNBQKBNR'
+STARTPIECES = {}
+for _i in range(8):
+    STARTPIECES[_FILES[_i] + '1'] = 'w' + _BACK[_i]
+    STARTPIECES[_FILES[_i] + '8'] = 'b' + _BACK[_i]
+    STARTPIECES[_FILES[_i] + '2'] = 'wP'
+    STARTPIECES[_FILES[_i] + '7'] = 'bP'
+
+
+# ---------------- attack detection ----------------
+def attacked(bd, sq, white):
+    if white:
+        for s in W_FROM[sq]:
+            if bd[s] == 1:
+                return True
+        for s in N_MOVES[sq]:
+            if bd[s] == 2:
+                return True
+        for s in K_MOVES[sq]:
+            if bd[s] == 6:
+                return True
+        for ray in R_RAYS[sq]:
+            for s in ray:
+                p = bd[s]
+                if p:
+                    if p == 4 or p == 5:
+                        return True
+                    break
+        for ray in B_RAYS[sq]:
+            for s in ray:
+                p = bd[s]
+                if p:
+                    if p == 3 or p == 5:
+                        return True
+                    break
+        return False
+    for s in B_FROM[sq]:
+        if bd[s] == 9:
+            return True
+    for s in N_MOVES[sq]:
+        if bd[s] == 10:
+            return True
+    for s in K_MOVES[sq]:
+        if bd[s] == 14:
+            return True
+    for ray in R_RAYS[sq]:
+        for s in ray:
+            p = bd[s]
+            if p:
+                if p == 12 or p == 13:
+                    return True
+                break
+    for ray in B_RAYS[sq]:
+        for s in ray:
+            p = bd[s]
+            if p:
+                if p == 11 or p == 13:
+                    return True
+                break
+    return False
+
+
+# ---------------- move generation ----------------
+def gen_pseudo(bd, white, ep, castle, in_chk):
+    moves = []
+    add = moves.append
+    if white:
+        for frm in SQ64:
+            p = bd[frm]
+            if p == 0 or p > 6:
+                continue
+            if p == 1:
+                r = frm >> 4
+                to = frm + 16
+                if bd[to] == 0:
+                    if r == 6:
+                        add((frm, to, 0, 5))
+                        add((frm, to, 0, 4))
+                        add((frm, to, 0, 3))
+                        add((frm, to, 0, 2))
+                    else:
+                        add((frm, to, 0, 0))
+                        if r == 1 and bd[frm + 32] == 0:
+                            add((frm, frm + 32, 1, 0))
+                for to in W_CAPS[frm]:
+                    q = bd[to]
+                    if q > 6:
+                        if r == 6:
+                            add((frm, to, 0, 5))
+                            add((frm, to, 0, 4))
+                            add((frm, to, 0, 3))
+                            add((frm, to, 0, 2))
+                        else:
+                            add((frm, to, 0, 0))
+                    elif ep == to:
+                        add((frm, to, 2, 0))
+            elif p == 2:
+                for to in N_MOVES[frm]:
+                    q = bd[to]
+                    if q == 0 or q > 6:
+                        add((frm, to, 0, 0))
+            elif p == 6:
+                for to in K_MOVES[frm]:
+                    q = bd[to]
+                    if q == 0 or q > 6:
+                        add((frm, to, 0, 0))
+                if not in_chk:
+                    if (castle & 1) and bd[5] == 0 and bd[6] == 0 and bd[7] == 4 and not attacked(bd, 5, False) and not attacked(bd, 6, False):
+                        add((4, 6, 3, 0))
+                    if (castle & 2) and bd[1] == 0 and bd[2] == 0 and bd[3] == 0 and bd[0] == 4 and not attacked(bd, 3, False) and not attacked(bd, 2, False):
+                        add((4, 2, 3, 0))
+            else:
+                if p != 3:
+                    for ray in R_RAYS[frm]:
+                        for to in ray:
+                            q = bd[to]
+                            if q == 0:
+                                add((frm, to, 0, 0))
+                            else:
+                                if q > 6:
+                                    add((frm, to, 0, 0))
+                                break
+                if p != 4:
+                    for ray in B_RAYS[frm]:
+                        for to in ray:
+                            q = bd[to]
+                            if q == 0:
+                                add((frm, to, 0, 0))
+                            else:
+                                if q > 6:
+                                    add((frm, to, 0, 0))
+                                break
+    else:
+        for frm in SQ64:
+            p = bd[frm]
+            if p < 9:
+                continue
+            if p == 9:
+                r = frm >> 4
+                to = frm - 16
+                if bd[to] == 0:
+                    if r == 1:
+                        add((frm, to, 0, 5))
+                        add((frm, to, 0, 4))
+                        add((frm, to, 0, 3))
+                        add((frm, to, 0, 2))
+                    else:
+                        add((frm, to, 0, 0))
+                        if r == 6 and bd[frm - 32] == 0:
+                            add((frm, frm - 32, 1, 0))
+                for to in B_CAPS[frm]:
+                    q = bd[to]
+                    if 0 < q < 7:
+                        if r == 1:
+                            add((frm, to, 0, 5))
+                            add((frm, to, 0, 4))
+                            add((frm, to, 0, 3))
+                            add((frm, to, 0, 2))
+                        else:
+                            add((frm, to, 0, 0))
+                    elif ep == to:
+                        add((frm, to, 2, 0))
+            elif p == 10:
+                for to in N_MOVES[frm]:
+                    q = bd[to]
+                    if q == 0 or 0 < q < 7:
+                        add((frm, to, 0, 0))
+            elif p == 14:
+                for to in K_MOVES[frm]:
+                    q = bd[to]
+                    if q == 0 or 0 < q < 7:
+                        add((frm, to, 0, 0))
+                if not in_chk:
+                    if (castle & 4) and bd[117] == 0 and bd[118] == 0 and bd[119] == 12 and not attacked(bd, 117, True) and not attacked(bd, 118, True):
+                        add((116, 118, 3, 0))
+                    if (castle & 8) and bd[113] == 0 and bd[114] == 0 and bd[115] == 0 and bd[112] == 12 and not attacked(bd, 115, True) and not attacked(bd, 114, True):
+                        add((116, 114, 3, 0))
+            else:
+                if p != 11:
+                    for ray in R_RAYS[frm]:
+                        for to in ray:
+                            q = bd[to]
+                            if q == 0:
+                                add((frm, to, 0, 0))
+                            else:
+                                if 0 < q < 7:
+                                    add((frm, to, 0, 0))
+                                break
+                if p != 12:
+                    for ray in B_RAYS[frm]:
+                        for to in ray:
+                            q = bd[to]
+                            if q == 0:
+                                add((frm, to, 0, 0))
+                            else:
+                                if 0 < q < 7:
+                                    add((frm, to, 0, 0))
+                                break
+    return moves
+
+
+def gen_caps(bd, white, ep):
+    moves = []
+    add = moves.append
+    if white:
+        for frm in SQ64:
+            p = bd[frm]
+            if p == 0 or p > 6:
+                continue
+            if p == 1:
+                r = frm >> 4
+                if r == 6:
+                    to = frm + 16
+                    if bd[to] == 0:
+                        add((frm, to, 0, 5))
+                        add((frm, to, 0, 2))
+                    for to in W_CAPS[frm]:
+                        if bd[to] > 6:
+                            add((frm, to, 0, 5))
+                            add((frm, to, 0, 2))
+                else:
+                    for to in W_CAPS[frm]:
+                        q = bd[to]
+                        if q > 6:
+                            add((frm, to, 0, 0))
+                        elif ep == to:
+                            add((frm, to, 2, 0))
+            elif p == 2:
+                for to in N_MOVES[frm]:
+                    if bd[to] > 6:
+                        add((frm, to, 0, 0))
+            elif p == 6:
+                for to in K_MOVES[frm]:
+                    if bd[to] > 6:
+                        add((frm, to, 0, 0))
+            else:
+                if p != 3:
+                    for ray in R_RAYS[frm]:
+                        for to in ray:
+                            q = bd[to]
+                            if q:
+                                if q > 6:
+                                    add((frm, to, 0, 0))
+                                break
+                if p != 4:
+                    for ray in B_RAYS[frm]:
+                        for to in ray:
+                            q = bd[to]
+                            if q:
+                                if q > 6:
+                                    add((frm, to, 0, 0))
+                                break
+    else:
+        for frm in SQ64:
+            p = bd[frm]
+            if p < 9:
+                continue
+            if p == 9:
+                r = frm >> 4
+                if r == 1:
+                    to = frm - 16
+                    if bd[to] == 0:
+                        add((frm, to, 0, 5))
+                        add((frm, to, 0, 2))
+                    for to in B_CAPS[frm]:
+                        if 0 < bd[to] < 7:
+                            add((frm, to, 0, 5))
+                            add((frm, to, 0, 2))
+                else:
+                    for to in B_CAPS[frm]:
+                        q = bd[to]
+                        if 0 < q < 7:
+                            add((frm, to, 0, 0))
+                        elif ep == to:
+                            add((frm, to, 2, 0))
+            elif p == 10:
+                for to in N_MOVES[frm]:
+                    q = bd[to]
+                    if 0 < q < 7:
+                        add((frm, to, 0, 0))
+            elif p == 14:
+                for to in K_MOVES[frm]:
+                    q = bd[to]
+                    if 0 < q < 7:
+                        add((frm, to, 0, 0))
+            else:
+                if p != 11:
+                    for ray in R_RAYS[frm]:
+                        for to in ray:
+                            q = bd[to]
+                            if q:
+                                if 0 < q < 7:
+                                    add((frm, to, 0, 0))
+                                break
+                if p != 12:
+                    for ray in B_RAYS[frm]:
+                        for to in ray:
+                            q = bd[to]
+                            if q:
+                                if 0 < q < 7:
+                                    add((frm, to, 0, 0))
+                                break
+    return moves
+
+
+# ---------------- make / unmake ----------------
+def make(m):
+    global EP, CASTLE, HASH, SCORE, WK, BK, NPMW, NPMB, WBISH, BBISH, WTM
+    frm, to, flag, promo = m
+    bd = BD
+    p = bd[frm]
+    cap = bd[to]
+    cap_sq = to
+    if flag == 2:
+        cap_sq = to - 16 if WTM else to + 16
+        cap = bd[cap_sq]
+    oep = EP
+    old = (m, p, cap, cap_sq, oep, CASTLE, HASH, SCORE, NPMW, NPMB, WK, BK, WBISH, BBISH)
+    h = HASH ^ ZP[p][frm]
+    sc = SCORE - PST[p][frm]
+    if cap:
+        bd[cap_sq] = 0
+        h ^= ZP[cap][cap_sq]
+        sc -= PST[cap][cap_sq]
+        ct = cap & 7
+        if ct != 1:
+            if cap < 7:
+                NPMW -= MATV[ct]
+                if ct == 3:
+                    WBISH -= 1
+            else:
+                NPMB -= MATV[ct]
+                if ct == 3:
+                    BBISH -= 1
+    if promo:
+        np_ = promo if WTM else (promo | 8)
+        bd[to] = np_
+        h ^= ZP[np_][to]
+        sc += PST[np_][to]
+        if WTM:
+            NPMW += MATV[promo] - 100
+            if promo == 3:
+                WBISH += 1
+        else:
+            NPMB += MATV[promo] - 100
+            if promo == 3:
+                BBISH += 1
+    else:
+        bd[to] = p
+        h ^= ZP[p][to]
+        sc += PST[p][to]
+    bd[frm] = 0
+    if flag == 1:
+        EP = (frm + to) >> 1
+    else:
+        EP = -1
+    if flag == 3:
+        if (to & 15) == 6:
+            rf = to + 1
+            rt = to - 1
+        else:
+            rf = to - 2
+            rt = to + 1
+        rk = bd[rf]
+        bd[rf] = 0
+        bd[rt] = rk
+        h ^= ZP[rk][rf] ^ ZP[rk][rt]
+        sc += PST[rk][rt] - PST[rk][rf]
+    if p == 6:
+        WK = to
+    elif p == 14:
+        BK = to
+    oc = CASTLE
+    nc = oc & CMASK[frm] & CMASK[to]
+    if oep != -1:
+        h ^= ZEP[oep & 15]
+    if EP != -1:
+        h ^= ZEP[EP & 15]
+    if nc != oc:
+        h ^= ZC[oc] ^ ZC[nc]
+        CASTLE = nc
+    WTM = not WTM
+    HASH = h ^ ZSIDE
+    SCORE = sc
+    return old
+
+
+def unmake(old):
+    global EP, CASTLE, HASH, SCORE, WK, BK, NPMW, NPMB, WBISH, BBISH, WTM
+    m, p, cap, cap_sq, oep, ocast, ohash, oscore, onpmw, onpmb, owk, obk, owbi, obbi = old
+    frm, to, flag, promo = m
+    bd = BD
+    WTM = not WTM
+    bd[frm] = p
+    if cap:
+        if cap_sq == to:
+            bd[to] = cap
+        else:
+            bd[to] = 0
+            bd[cap_sq] = cap
+    else:
+        bd[to] = 0
+    if flag == 3:
+        if (to & 15) == 6:
+            rf = to + 1
+            rt = to - 1
+        else:
+            rf = to - 2
+            rt = to + 1
+        rk = bd[rt]
+        bd[rt] = 0
+        bd[rf] = rk
+    EP = oep
+    CASTLE = ocast
+    HASH = ohash
+    SCORE = oscore
+    NPMW = onpmw
+    NPMB = onpmb
+    WK = owk
+    BK = obk
+    WBISH = owbi
+    BBISH = obbi
+
+
+def make_null():
+    global EP, HASH, WTM
+    o = (EP, HASH)
+    if EP != -1:
+        HASH ^= ZEP[EP & 15]
+    EP = -1
+    WTM = not WTM
+    HASH ^= ZSIDE
+    return o
+
+
+def unmake_null(o):
+    global EP, HASH, WTM
+    EP, HASH = o
+    WTM = not WTM
+
+
+# ---------------- evaluation ----------------
+def evaluate():
+    s = SCORE
+    if WBISH >= 2:
+        s += 35
+    if BBISH >= 2:
+        s -= 35
+    if WK >= 0 and BK >= 0:
+        md = abs((WK >> 4) - (BK >> 4)) + abs((WK & 15) - (BK & 15))
+        if s > 600 and NPMB <= 500:
+            kf = BK & 15
+            kr = BK >> 4
+            cf = (abs(2 * kf - 7) - 1) // 2
+            cr = (abs(2 * kr - 7) - 1) // 2
+            s += (14 - md) * 5 + (3 - (cf if cf > cr else cr)) * 4
+        elif s < -600 and NPMW <= 500:
+            kf = WK & 15
+            kr = WK >> 4
+            cf = (abs(2 * kf - 7) - 1) // 2
+            cr = (abs(2 * kr - 7) - 1) // 2
+            s -= (14 - md) * 5 + (3 - (cf if cf > cr else cr)) * 4
+    return (s if WTM else -s) + 12
+
+
+# ---------------- ordering helpers ----------------
+def mscore(m, tt_move, ply):
+    if m == tt_move:
+        return 1 << 28
+    frm, to, flag, promo = m
+    bd = BD
+    q = bd[to]
+    sc = 0
+    if q or flag == 2:
+        v = VALQ[q] if q else 100
+        sc = 10000000 + v * 32 - VALQ[bd[frm]]
+    if promo:
+        sc += 5000000 + VALQ[promo]
+    if sc == 0:
+        kl = KILLERS[ply]
+        if m == kl[0]:
+            sc = 9000000
+        elif m == kl[1]:
+            sc = 8999999
+        else:
+            sc = HISTTBL[(frm << 7) + to]
+    return sc
+
+
+def ttstore(h, depth, flag, sc, mv, ply):
+    if sc >= MATE_BOUND:
+        sc += ply
+    elif sc <= -MATE_BOUND:
+        sc -= ply
+    TT[h] = (depth, flag, sc, mv)
+
+
+# ---------------- quiescence ----------------
+def qsearch(alpha, beta, ply):
+    global NODES
+    NODES += 1
+    if (NODES & 255) == 0 and _pc() > DEADLINE:
+        raise Timeout
+    h = HASH
+    if h in PATHSET or h in HISTGAME:
+        return 0
+    if ply >= 96:
+        return evaluate()
+    white = WTM
+    ksq = WK if white else BK
+    in_chk = ksq >= 0 and attacked(BD, ksq, not white)
+    if in_chk:
+        moves = gen_pseudo(BD, white, EP, CASTLE, True)
+        scored = [(mscore(m, None, ply), m) for m in moves]
+        scored.sort(reverse=True)
+        best = -INF
+        legal = 0
+        for _s, m in scored:
+            old = make(m)
+            if ksq >= 0:
+                k2 = WK if white else BK
+                if attacked(BD, k2, not white):
+                    unmake(old)
+                    continue
+            legal += 1
+            sc = -qsearch(-beta, -alpha, ply + 1)
+            unmake(old)
+            if sc > best:
+                best = sc
+                if sc > alpha:
+                    alpha = sc
+                    if alpha >= beta:
+                        return sc
+        if legal == 0:
+            return -(MATE - ply)
+        return best
+    stand = evaluate()
+    if stand >= beta:
+        return stand
+    if stand > alpha:
+        alpha = stand
+    best = stand
+    moves = gen_caps(BD, white, EP)
+    if not moves:
+        return best
+    scored = [(mscore(m, None, ply), m) for m in moves]
+    scored.sort(reverse=True)
+    for _s, m in scored:
+        frm, to, flag, promo = m
+        if not promo:
+            q = BD[to]
+            if q:
+                if stand + VALQ[q] + 250 <= alpha:
+                    continue
+            elif flag == 2:
+                if stand + 350 <= alpha:
+                    continue
+        old = make(m)
+        if ksq >= 0:
+            mt = frm == ksq or flag == 2 or ALIGN[(frm << 7) + ksq] != 0
+            if mt:
+                k2 = WK if white else BK
+                if attacked(BD, k2, not white):
+                    unmake(old)
+                    continue
+        sc = -qsearch(-beta, -alpha, ply + 1)
+        unmake(old)
+        if sc > best:
+            best = sc
+            if sc > alpha:
+                alpha = sc
+                if alpha >= beta:
+                    return sc
+    return best
+
+
+# ---------------- main search ----------------
+def search(depth, alpha, beta, ply, can_null):
+    global NODES
+    NODES += 1
+    if (NODES & 255) == 0 and _pc() > DEADLINE:
+        raise Timeout
+    h = HASH
+    if h in PATHSET or h in HISTGAME:
+        return 0
+    if ply >= 96:
+        return evaluate()
+    white = WTM
+    ksq = WK if white else BK
+    in_chk = ksq >= 0 and attacked(BD, ksq, not white)
+    if in_chk:
+        depth += 1
+    if depth <= 0:
+        return qsearch(alpha, beta, ply)
+    PATHSET.add(h)
+    try:
+        tt_move = None
+        e = TT.get(h)
+        if e is not None:
+            ed, ef, esc, emv = e
+            tt_move = emv
+            if ed >= depth:
+                if esc >= MATE_BOUND:
+                    esc -= ply
+                elif esc <= -MATE_BOUND:
+                    esc += ply
+                if ef == 0:
+                    return esc
+                if ef == 1:
+                    if esc >= beta:
+                        return esc
+                elif esc <= alpha:
+                    return esc
+        if can_null and not in_chk and depth >= 3 and beta < MATE_BOUND and (NPMW if white else NPMB) >= 400:
+            o = make_null()
+            sc = -search(depth - 3, -beta, -beta + 1, ply + 1, False)
+            unmake_null(o)
+            if sc >= beta:
+                ttstore(h, depth, 1, beta, None, ply)
+                return beta
+        moves = gen_pseudo(BD, white, EP, CASTLE, in_chk)
+        scored = [(mscore(m, tt_move, ply), m) for m in moves]
+        scored.sort(reverse=True)
+        a = alpha
+        best = -INF
+        bestmove = None
+        legal = 0
+        for _s, m in scored:
+            frm = m[0]
+            to = m[1]
+            mt = in_chk or frm == ksq or m[2] == 2 or (ksq >= 0 and ALIGN[(frm << 7) + ksq] != 0)
+            quiet = BD[to] == 0 and m[2] != 2 and not m[3]
+            old = make(m)
+            if mt and ksq >= 0:
+                k2 = WK if white else BK
+                if attacked(BD, k2, not white):
+                    unmake(old)
+                    continue
+            legal += 1
+            if legal == 1:
+                sc = -search(depth - 1, -beta, -a, ply + 1, True)
+            else:
+                sc = -search(depth - 1, -a - 1, -a, ply + 1, True)
+                if a < sc < beta:
+                    sc = -search(depth - 1, -beta, -a, ply + 1, True)
+            unmake(old)
+            if sc > best:
+                best = sc
+                bestmove = m
+                if sc > a:
+                    a = sc
+                    if a >= beta:
+                        if quiet:
+                            kl = KILLERS[ply]
+                            if kl[0] != m:
+                                kl[1] = kl[0]
+                                kl[0] = m
+                            hi = (frm << 7) + to
+                            if HISTTBL[hi] < 8000000:
+                                HISTTBL[hi] += depth * depth
+                        ttstore(h, depth, 1, sc, m, ply)
+                        return sc
+        if legal == 0:
+            sc = -(MATE - ply) if in_chk else 0
+            ttstore(h, depth, 0, sc, None, ply)
+            return sc
+        ttstore(h, depth, 0 if best > alpha else 2, best, bestmove, ply)
+        return best
+    finally:
+        PATHSET.discard(h)
+
+
+# ---------------- root / driver ----------------
+def root_search(depth, root_moves):
+    alpha = -INF
+    best = None
+    bestsc = -INF
+    first = True
+    for m in root_moves:
+        if _pc() > DEADLINE:
+            raise Timeout
+        old = make(m)
+        try:
+            if first:
+                sc = -search(depth - 1, -INF, INF, 1, True)
+                first = False
+            else:
+                sc = -search(depth - 1, -alpha - 1, -alpha, 1, True)
+                if sc > alpha:
+                    sc = -search(depth - 1, INF, -alpha, 1, True)
+        finally:
+            unmake(old)
+        if sc > bestsc:
+            bestsc = sc
+            best = m
+            if sc > alpha:
+                alpha = sc
+    return bestsc, best
+
+
+def id_search(root_moves):
+    best = root_moves[0]
+    d = 1
+    while d <= 60:
+        PATHSET.clear()
+        PATHSET.add(HASH)
+        try:
+            sc, mv = root_search(d, root_moves)
+        except Timeout:
+            break
+        if mv is not None:
+            best = mv
+            if root_moves[0] != mv:
+                root_moves.remove(mv)
+                root_moves.insert(0, mv)
+            if sc >= MATE - 64:
+                break
+        d += 1
+    return best
+
+
+def gen_legal_root():
+    bd = BD
+    white = WTM
+    ksq = WK if white else BK
+    in_chk = ksq >= 0 and attacked(bd, ksq, not white)
+    moves = gen_pseudo(bd, white, -1, CASTLE, in_chk)
+    legal = []
+    for m in moves:
+        frm = m[0]
+        if ksq < 0:
+            legal.append(m)
+            continue
+        mt = in_chk or frm == ksq or m[2] == 2 or ALIGN[(frm << 7) + ksq] != 0
+        if not mt:
+            legal.append(m)
+            continue
+        old = make(m)
+        k2 = WK if white else BK
+        bad = attacked(BD, k2, not white)
+        unmake(old)
+        if not bad:
+            legal.append(m)
+    return legal
+
+
+def fmt(m):
+    frm, to, flag, promo = m
+    s = ("abcdefgh"[frm & 15] + "12345678"[frm >> 4] +
+         "abcdefgh"[to & 15] + "12345678"[to >> 4])
+    if promo:
+        s += PROMO_CH[promo]
+    return s
+
+
+# ---------------- setup / policy ----------------
+def _setup(pieces, to_play):
+    global WTM, EP, CASTLE, HASH, SCORE, WK, BK, NPMW, NPMB, WBISH, BBISH, PST
+    bd = BD
+    for i in range(128):
+        bd[i] = 0
+    wk = -1
+    bk = -1
+    npmw = 0
+    npmb = 0
+    wbi = 0
+    bbi = 0
+    if pieces:
+        for s, code in pieces.items():
+            try:
+                sq = (int(s[1]) - 1) * 16 + (ord(s[0]) - 97)
+                pt = TYPE[code[1]]
+            except Exception:
+                continue
+            if sq & 0x88:
+                continue
+            if code[0] == 'w':
+                p = pt
+                if pt == 6:
+                    wk = sq
+                elif pt != 1:
+                    npmw += MATV[pt]
+                    if pt == 3:
+                        wbi += 1
+            else:
+                p = pt | 8
+                if pt == 6:
+                    bk = sq
+                elif pt != 1:
+                    npmb += MATV[pt]
+                    if pt == 3:
+                        bbi += 1
+            bd[sq] = p
+    WK = wk
+    BK = bk
+    NPMW = npmw
+    NPMB = npmb
+    WBISH = wbi
+    BBISH = bbi
+    WTM = str(to_play).strip().lower()[:1] == 'w'
+    EP = -1
+    CASTLE = 0
+    if bd[4] == 6:
+        if bd[7] == 4:
+            CASTLE |= 1
+        if bd[0] == 4:
+            CASTLE |= 2
+    if bd[116] == 14:
+        if bd[119] == 12:
+            CASTLE |= 4
+        if bd[112] == 12:
+            CASTLE |= 8
+    PST = PBASE_EG if (npmw + npmb) <= 1400 else PBASE_MG
+    h = 0
+    sc = 0
+    for sq in SQ64:
+        p = bd[sq]
+        if p:
+            h ^= ZP[p][sq]
+            sc += PST[p][sq]
+    if not WTM:
+        h ^= ZSIDE
+    h ^= ZC[CASTLE]
+    HASH = h
+    SCORE = sc
+
+
+def _choose(pieces, to_play):
+    global NODES, DEADLINE, TT, PATHSET, KILLERS, HISTTBL
+    DEADLINE = _pc() + 0.75
+    NODES = 0
+    if pieces == STARTPIECES and str(to_play).strip().lower() == 'white':
+        HISTGAME.clear()
+    _setup(pieces, to_play)
+    if len(HISTGAME) > 600:
+        HISTGAME.clear()
+    HISTGAME.add(HASH)
+    TT = {}
+    PATHSET = set()
+    KILLERS = [[None, None] for _ in range(130)]
+    HISTTBL = [0] * 16384
+    root_moves = gen_legal_root()
+    if not root_moves:
+        pseudo = gen_pseudo(BD, WTM, -1, CASTLE, False)
+        return fmt(pseudo[0]) if pseudo else 'e2e4'
+    if len(root_moves) == 1:
+        return fmt(root_moves[0])
+    root_moves.sort(key=lambda m: -mscore(m, None, 0))
+    return fmt(id_search(root_moves))
+
+
+def policy(pieces, to_play):
+    try:
+        return _choose(pieces, to_play)
+    except Exception:
+        try:
+            _setup(pieces, to_play)
+            moves = gen_legal_root()
+            if moves:
+                return fmt(moves[0])
+            pseudo = gen_pseudo(BD, WTM, -1, CASTLE, False)
+            if pseudo:
+                return fmt(pseudo[0])
+        except Exception:
+            pass
+        return 'e2e4'
+</code>

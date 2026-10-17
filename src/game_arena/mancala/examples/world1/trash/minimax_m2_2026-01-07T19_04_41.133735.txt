@@ -1,0 +1,231 @@
+**Solution Overview**
+
+The program implements a strong Kalah move‑selection policy by performing a
+depth‑limited alpha‑beta search (negamax) with iterative deepening.
+For each board the policy searches as deep as possible within a 1‑second time
+budget, ordering the moves by simple heuristics (extra‑turn moves first,
+then the resulting store difference).  
+Terminal positions are evaluated according to the official rules: when one side
+has no seeds left in its houses, the opponent automatically moves all of his
+remaining houses into his store.
+
+Key components
+
+* **apply_move** – simulates a single move exactly according to the rules,
+  returning the new board and whether the last seed landed in the player’s
+  store (extra‑turn flag).
+
+* **negamax** – standard zero‑sum search.  
+  * Handles the terminal condition (empty houses) by computing the exact
+    final score.  
+  * Uses alpha‑beta pruning with move ordering.  
+  * Returns the score from the perspective of the player to move.
+
+* **root_search** – evaluates every legal first move at a given depth,
+  using the negamax value for the continuation. The move with the highest
+  value is kept.
+
+* **policy** – runs iterative deepening, increasing the depth until the time
+  limit of 0.98 s is reached, then returns the best move found in the last
+  completed depth.
+
+The implementation is fully self‑contained, uses only the Python standard
+library, and conforms to the required function signature.
+
+```python
+import time
+from typing import List, Tuple
+
+def apply_move(board: Tuple[List[int], List[int]],
+               turn: int,
+               i: int) -> Tuple[Tuple[List[int], List[int]], bool]:
+    """
+    Simulate a move on the given board.
+    board[0] – list of 7 ints for the original player (you)
+    board[1] – list of 7 ints for the opponent
+    turn = 0 → player 0 (you) moves; turn = 1 → opponent moves
+    i      – house index (0‑5) selected for the move
+
+    Returns (new_board, extra_turn_flag)
+    new_board is a tuple (list, list) containing the copied, updated state.
+    extra_turn_flag is True iff the last seed fell into the mover’s store.
+    """
+    p0, p1 = board
+    # copy both sides so the original board stays unchanged
+    cur0 = list(p0)
+    cur1 = list(p1)
+
+    if turn == 0:
+        side_cur = cur0          # mover is you
+        side_opp = cur1
+    else:
+        side_cur = cur1          # mover is opponent
+        side_opp = cur0
+
+    seeds = side_cur[i]
+    if seeds == 0:
+        raise ValueError("illegal move")
+
+    side_cur[i] = 0               # remove the seeds from the chosen house
+
+    # order of pits for distribution: own houses 0‑5, own store, opponent houses 0‑5
+    mapping = []
+    for idx in range(6):
+        mapping.append((side_cur, idx))   # own houses
+    mapping.append((side_cur, 6))        # own store
+    for idx in range(6):
+        mapping.append((side_opp, idx))   # opponent houses (skip opponent store)
+
+    pos = (i + 1) % 13                # start right after the chosen house
+    extra = False
+
+    while seeds > 0:
+        side_ref, idx = mapping[pos]
+        old = side_ref[idx]           # value before the drop
+        side_ref[idx] += 1
+        seeds -= 1
+
+        if seeds == 0:                # last seed placed
+            # capture rule
+            if side_ref is side_cur and 0 <= idx <= 5:
+                if old == 0:                      # house was empty before drop
+                    opp_idx = 5 - idx
+                    if side_opp[opp_idx] > 0:
+                        captured = side_ref[idx] + side_opp[opp_idx]
+                        side_cur[6] += captured
+                        side_ref[idx] = 0
+                        side_opp[opp_idx] = 0
+            # extra‑turn rule
+            if side_ref is side_cur and idx == 6:
+                extra = True
+
+        pos = (pos + 1) % 13
+
+    return ((cur0, cur1), extra)
+
+
+def terminal_score(board: Tuple[List[int], List[int]]) -> int:
+    """
+    Return the exact score (you store – opponent store) for a terminal
+    position according to the Kalah rules.
+    """
+    you, opp = board
+    if sum(you[:6]) == 0:               # you have no houses left
+        # opponent moves his remaining houses into his store
+        return you[6] - (opp[6] + sum(opp[:6]))
+    else:                               # opponent has no houses left
+        return you[6] + sum(you[:6]) - opp[6]
+
+
+def negamax(board: Tuple[List[int], List[int]],
+            depth: int,
+            turn: int,
+            alpha: float,
+            beta: float) -> float:
+    """
+    Negamax search with alpha‑beta pruning.
+    turn = 0 → player to move is you, turn = 1 → opponent.
+    Returns the evaluation from the perspective of the player to move.
+    """
+    you, opp = board
+
+    # terminal check – game over
+    if sum(you[:6]) == 0 or sum(opp[:6]) == 0:
+        score = terminal_score(board)
+        return score if turn == 0 else -score
+
+    if depth == 0:
+        # simple terminal heuristic – store difference only
+        diff = you[6] - opp[6]
+        return diff if turn == 0 else -diff
+
+    side = you if turn == 0 else opp
+
+    # generate move candidates and order them
+    candidates = []
+    for m in range(6):
+        if side[m] == 0:
+            continue
+        new_board, extra = apply_move(board, turn, m)
+        # immediate store difference as ordering key
+        diff = new_board[0][6] - new_board[1][6]
+        score_key = diff + (1000 if extra else 0)   # prefer extra‑turn moves
+        candidates.append((score_key, new_board, extra, m))
+
+    # sort descending by the ordering key
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    # alpha‑beta loop
+    for _, new_board, extra, _ in candidates:
+        nxt_turn = turn if extra else 1 - turn
+        val = -negamax(new_board, depth - 1, nxt_turn, -beta, -alpha)
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+    return alpha
+
+
+def root_search(board: Tuple[List[int], List[int]],
+                depth: int,
+                start_time: float,
+                time_limit: float) -> Tuple[int, float]:
+    """
+    Evaluate all legal first moves for a given depth and return the best move
+    and its value (from the original player’s perspective).
+    """
+    you, opp = board
+    best_move = None
+    best_val = -float('inf')
+
+    for m in range(6):
+        if you[m] == 0:
+            continue
+        if time.time() - start_time >= time_limit:
+            break
+        new_board, extra = apply_move(board, 0, m)
+        if extra:
+            val = negamax(new_board, depth - 1, 0, -float('inf'), float('inf'))
+        else:
+            val = -negamax(new_board, depth - 1, 1, -float('inf'), float('inf'))
+        if val > best_val:
+            best_val = val
+            best_move = m
+
+    if best_move is None:          # fallback – should never happen in normal play
+        for i in range(6):
+            if you[i] > 0:
+                best_move = i
+                break
+    return best_move, best_val
+
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    """
+    Select a legal move for the current player (you) on a standard Kalah board.
+    Implements a depth‑limited alpha‑beta search with iterative deepening
+    and a 0.98 s time budget.
+    """
+    start = time.time()
+    TIME_LIMIT = 0.98                      # leave a small safety margin
+    board = (list(you), list(opponent))
+
+    best_move = 0
+    best_val = -float('inf')
+    depth = 0
+
+    # iterative deepening – increase depth until time runs out
+    while True:
+        if time.time() - start >= TIME_LIMIT:
+            break
+        depth += 1
+        move, val = root_search(board, depth, start, TIME_LIMIT)
+        if time.time() - start >= TIME_LIMIT:
+            break
+        best_move = move
+        best_val = val
+        # optional early stop: very deep search can be left to finish naturally
+        if depth > 20:          # avoid unbounded growth
+            break
+    return best_move
+```

@@ -1,0 +1,181 @@
+
+import math
+import random
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Calculates the optimal move for Connect 4 using Minimax with Alpha-Beta pruning.
+    """
+    ROWS = 6
+    COLS = 7
+    PLAYER = 1
+    OPPONENT = -1
+    EMPTY = 0
+
+    def get_valid_columns(b):
+        return [c for c in range(COLS) if b[0][c] == EMPTY]
+
+    def get_next_open_row(b, col):
+        for r in range(ROWS - 1, -1, -1):
+            if b[r][col] == EMPTY:
+                return r
+        return -1
+
+    def check_win(b, piece):
+        # Check horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                if b[r][c] == piece and b[r][c+1] == piece and b[r][c+2] == piece and b[r][c+3] == piece:
+                    return True
+        # Check vertical
+        for r in range(ROWS - 3):
+            for c in range(COLS):
+                if b[r][c] == piece and b[r+1][c] == piece and b[r+2][c] == piece and b[r+3][c] == piece:
+                    return True
+        # Check positively sloped diagonals
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                if b[r][c] == piece and b[r+1][c+1] == piece and b[r+2][c+2] == piece and b[r+3][c+3] == piece:
+                    return True
+        # Check negatively sloped diagonals
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                if b[r][c] == piece and b[r-1][c+1] == piece and b[r-2][c+2] == piece and b[r-3][c+3] == piece:
+                    return True
+        return False
+
+    def evaluate_window(window, piece):
+        score = 0
+        opp_piece = OPPONENT if piece == PLAYER else PLAYER
+
+        if window.count(piece) == 4:
+            score += 100
+        elif window.count(piece) == 3 and window.count(EMPTY) == 1:
+            score += 5
+        elif window.count(piece) == 2 and window.count(EMPTY) == 2:
+            score += 2
+
+        if window.count(opp_piece) == 3 and window.count(EMPTY) == 1:
+            score -= 4
+
+        return score
+
+    def score_position(b, piece):
+        score = 0
+
+        # Score center column
+        center_array = [row[COLS // 2] for row in b]
+        center_count = center_array.count(piece)
+        score += center_count * 3
+
+        # Score horizontal
+        for r in range(ROWS):
+            row_array = b[r]
+            for c in range(COLS - 3):
+                window = row_array[c:c+4]
+                score += evaluate_window(window, piece)
+
+        # Score vertical
+        for c in range(COLS):
+            for r in range(ROWS - 3):
+                window = [b[r+i][c] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        # Score positive diagonal
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [b[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        # Score negative diagonal
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                window = [b[r-i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        return score
+
+    def is_terminal_node(b):
+        return check_win(b, PLAYER) or check_win(b, OPPONENT) or len(get_valid_columns(b)) == 0
+
+    def minimax(b, depth, alpha, beta, maximizingPlayer):
+        valid_cols = get_valid_columns(b)
+        is_terminal = is_terminal_node(b)
+        
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if check_win(b, PLAYER):
+                    return (None, 100000000000000)
+                elif check_win(b, OPPONENT):
+                    return (None, -100000000000000)
+                else: # Game is over, no more valid moves
+                    return (None, 0)
+            else: # Depth is zero
+                return (None, score_position(b, PLAYER))
+        
+        # Move ordering: prioritize center columns
+        valid_cols = sorted(valid_cols, key=lambda x: abs(x - 3))
+        
+        if maximizingPlayer:
+            value = -math.inf
+            best_col = random.choice(valid_cols)
+            for col in valid_cols:
+                row = get_next_open_row(b, col)
+                if row == -1: continue
+                
+                b[row][col] = PLAYER
+                new_score = minimax(b, depth - 1, alpha, beta, False)[1]
+                b[row][col] = EMPTY # Backtrack
+                
+                if new_score > value:
+                    value = new_score
+                    best_col = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break # Beta cutoff
+            return best_col, value
+
+        else: # Minimizing Player
+            value = math.inf
+            best_col = random.choice(valid_cols)
+            for col in valid_cols:
+                row = get_next_open_row(b, col)
+                if row == -1: continue
+                
+                b[row][col] = OPPONENT
+                new_score = minimax(b, depth - 1, alpha, beta, True)[1]
+                b[row][col] = EMPTY # Backtrack
+                
+                if new_score < value:
+                    value = new_score
+                    best_col = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break # Alpha cutoff
+            return best_col, value
+
+    valid_cols = get_valid_columns(board)
+    if not valid_cols:
+        return 0 # Should not happen in a valid game
+
+    # 1. Check for immediate win
+    for col in valid_cols:
+        row = get_next_open_row(board, col)
+        board[row][col] = PLAYER
+        if check_win(board, PLAYER):
+            board[row][col] = EMPTY
+            return col
+        board[row][col] = EMPTY
+
+    # 2. Check for opponent immediate win (block)
+    for col in valid_cols:
+        row = get_next_open_row(board, col)
+        board[row][col] = OPPONENT
+        if check_win(board, OPPONENT):
+            board[row][col] = EMPTY
+            return col
+        board[row][col] = EMPTY
+
+    # 3. Run Minimax
+    col, _ = minimax(board, 5, -math.inf, math.inf, True)
+    return col

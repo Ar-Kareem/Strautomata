@@ -1,0 +1,274 @@
+**Strategy**  
+The policy uses a depth‑2 minimax search with alpha‑beta pruning. It always prioritizes capture moves because they are mandatory, and explores all possible capture sequences (including multi‑jump chains). If no capture exists, it evaluates non‑capturing moves. The evaluation function rewards kings, central pieces, and overall material balance, giving a quick yet accurate estimate of the position quality. By searching two plies ahead and pruning dominated branches, the policy can reliably choose moves that improve the material or mobility advantage, which is sufficient to outplay weaker opponents in the arena.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Set
+
+# Constants
+DIRS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+DARK_SQUARES = {(r, c) for r in range(8) for c in range(8) if (r + c) % 2 == 0}
+BACK_ROWS = {'b': {0}, 'w': {7}}
+PROMOTION = {'b': 0, 'w': 7}
+# The piece that lands on its back row becomes a king
+
+def piece_type(pos, men_set, king_set) -> str:
+    """Return 'man' or 'king' for a given piece position."""
+    if pos in king_set:
+        return 'king'
+    else:
+        return 'man'
+
+def generate_all_moves(my_men: Set, my_kings: Set,
+                      opp_men: Set, opp_kings: Set,
+                      color: str) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """Return all legal moves (captures first, then non‑captures) for `color`."""
+    moves = []
+    men_set = my_men if color == 'b' else opp_men
+    king_set = my_kings if color == 'b' else opp_kings
+    opp_men_set = opp_men if color == 'b' else my_men
+    opp_kings_set = opp_kings if color == 'b' else my_kings
+
+    for from_sq in men_set | king_set:
+        piece = piece_type(from_sq, my_men, my_kings)
+        if piece == 'king':
+            allowed = DIRS
+        else:
+            allowed = [d for d in DIRS if d[0] == -1 if color == 'b' else 1]
+
+        for dr, dc in allowed:
+            over_sq = (from_sq[0] + dr, from_sq[1] + dc)
+            landing_sq = (over_sq[0] + dr, over_sq[1] + dc)
+
+            # Capture
+            if over_sq in opp_men_set or over_sq in opp_kings_set and landing_sq in DARK_SQUARES:
+                moves.append(((from_sq), (landing_sq)))
+            # Non‑capture
+            if landing_sq in DARK_SQUARES:
+                moves.append(((from_sq), (landing_sq)))
+
+    # Prioritize captures
+    capture_moves = [m for m in moves if any(over_sq in (opp_men_set|opp_kings_set) for (from_sq, to_sq) in moves]
+    if capture_moves:
+        return capture_moves
+    else:
+        return moves
+
+def capture_moves_from_sq(board_state: Tuple[Set, Set, Set, Set],
+                         sq: Tuple[int, int],
+                         color: str) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """Return all capture jumps starting from a given square."""
+    from_sq, king_set, opp_men_set, opp_king_set = board_state
+    piece = piece_type(sq, from_sq, king_set)
+    if piece == 'king':
+        allowed = DIRS
+    else:
+        allowed = [d for d in DIRS if d[0] == -1 if color == 'b' else 1]
+
+    moves = []
+    for dr, dc in allowed:
+        over_sq = (sq[0] + dr, sq[1] + dc)
+        landing_sq = (over_sq[0] + dr, over_sq[1] + dc)
+
+        if (over_sq in opp_men_set or over_sq in opp_king_set) and landing_sq in DARK_SQUARES:
+            moves.append(((sq), (landing_sq)))
+    return moves
+
+def capture_sequences_from_move(board_state: Tuple[Set, Set, Set, Set],
+                               first_move: Tuple[Tuple[int, int], Tuple[int, int]],
+                               color: str) -> List[List[Tuple[Tuple[int, int], Tuple[int, int]]]]:
+    """Generate every capture chain that starts with `first_move`."""
+    seqs = []
+    from_sq, king_set, opp_men_set, opp_king_set = board_state
+    start_from, start_to = first_move
+    # Apply the first jump
+    new_board = apply_first_capture(board_state, first_move, color)
+
+    # Continue jumping from the piece now at start_to
+    for second in capture_moves_from_sq(new_board, start_to, color):
+        for tail in capture_sequences_from_move(new_board, second, color):
+            seq = [first_move] + [second] + tail
+            seqs.append(seq)
+
+    # No further jumps – the chain ends with just the first move
+    seqs.append([first_move])
+    return seqs
+
+def apply_first_capture(board_state: Tuple[Set, Set, Set, Set],
+                       move: Tuple[Tuple[int, int], Tuple[int, int]],
+                       color: str) -> Tuple[Set, Set, Set, Set]:
+    """Apply a single capture (first jump) and promote if needed."""
+    from_sq, to_sq = move
+    from_king_set, king_set, opp_men_set, opp_king_set = board_state
+
+    # Locate piece to move
+    if from_sq in from_king_set:
+        our_type = 'king'
+        our_set = king_set
+    elif from_sq in from_king_set:
+        our_type = 'king'
+        our_set = king_set
+    else:  # man
+        our_type = 'man'
+        our_set = from_king_set
+
+    # Locate opponent piece being jumped
+    dir_vec = tuple(map(int, (to_sq[0] - from_sq[0], to_sq[1] - from_sq[1])))
+    over_sq = (from_sq[0] + dir_vec[0], from_sq[1] + dir_vec[1])
+    # Remove opponent piece
+    if over_sq in opp_men_set:
+        opp_men_set.remove(over_sq)
+    elif over_sq in opp_king_set:
+        opp_king_set.remove(over_sq)
+    else:
+        raise ValueError("Capture move without opponent piece")
+
+    # Remove our piece from original location
+    if our_type == 'king':
+        our_set.remove(from_sq)
+    else:
+        our_set.remove(from_sq)
+
+    # Place piece on destination
+    if to_sq in opp_king_set or to_sq in opp_men_set:
+        raise ValueError("Landing on opponent piece")
+
+    if our_type == 'king':
+        king_set.add(to_sq)
+    else:
+        king_set.add(to_sq)   # promote if reaching back row
+        if to_sq in BACK_ROWS[color]:
+            # promotion
+            if from_sq in from_king_set:
+                from_king_set.remove(from_sq)
+                king_set.add(to_sq)
+            else:
+                from_king_set.remove(from_sq)
+                king_set.add(to_sq)
+
+    return (from_king_set, king_set, opp_men_set, opp_king_set)
+
+def apply_capture_sequence(board_state: Tuple[Set, Set, Set, Set],
+                          seq: List[Tuple[Tuple[int, int], Tuple[int, int]]]) -> Tuple[Set, Set, Set, Set]:
+    """Apply a complete capture chain (seq) to the board."""
+    board = list(board_state)
+    for move in seq:
+        board = apply_first_capture(board, move, 'b' if board[0] == board[2] else 'w')
+    return tuple(board)
+
+def is_mandatory_capture(board_state: Tuple[Set, Set, Set, Set],
+                        color: str) -> bool:
+    """Return True if the player to move has at least one capture."""
+    my_men = board_state[0] if color == 'b' else board_state[2]
+    my_kings = board_state[1] if color == 'b' else board_state[3]
+    opp_men = board_state[2] if color == 'b' else board_state[0]
+    opp_kings = board_state[3] if color == 'b' else board_state[1]
+    return len(capture_moves_from_sq(board_state, 'any', color)) > 0
+
+def evaluate(board_state: Tuple[Set, Set, Set, Set],
+             color: str) -> float:
+    """Simple material + centralisation heuristic."""
+    men = len(board_state[0]) + len(board_state[1])
+    kings = len(board_state[2]) + len(board_state[3])
+    score = kings * 2 + men
+    # Central bonus
+    centre = 0
+    for pieces in board_state[:2]:
+        for r, c in pieces:
+            if 3 <= r <= 4:
+                centre += 1
+    for pieces in board_state[2:]:
+        for r, c in pieces:
+            if 3 <= r <= 4:
+                centre -= 1
+    score += centre
+    return score
+
+def minimax(board_state: Tuple[Set, Set, Set, Set],
+            depth: int,
+            is_max: bool,
+            moving_color: str,
+            original_color: str,
+            alpha: float,
+            beta: float) -> Tuple[float, Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """Depth‑limited minimax with alpha‑beta pruning."""
+    if depth == 0:
+        return evaluate(board_state, original_color), None
+
+    moves = generate_all_moves(*board_state, color=moving_color)
+    if not moves:
+        return evaluate(board_state, original_color), None
+
+    best_score = float('-inf') if is_max else float('inf')
+    best_move = None
+
+    for move in moves:
+        seqs = capture_sequences_from_move(board_state, move, moving_color)
+        for seq in seqs:
+            new_board = apply_capture_sequence(board_state, seq)
+
+            # Apply opponent’s turn if we haven’t reached leaf
+            opponent_color = 'w' if moving_color == 'b' else 'b'
+            if depth > 1:
+                # Opponent will also do captures if possible
+                opp_moves = generate_all_moves(*new_board, color=opponent_color)
+                if not opp_moves:
+                    score = evaluate(new_board, original_color)
+                else:
+                    # Opponent chooses best (minimising our score)
+                    _, opp_move = minimax(new_board, depth - 1, False, opponent_color,
+                                          original_color, alpha, beta)
+                    # We need to apply the chosen opponent move
+                    if opp_move:
+                        # Build opponent’s full capture chain
+                        opp_seqs = capture_sequences_from_move(new_board, opp_move, opponent_color)
+                        # Choose the best opponent sequence
+                        best_opp_seq = max(opp_seqs, key=lambda s: evaluate(apply_capture_sequence(new_board, s), original_color))
+                        new_board2 = apply_capture_sequence(new_board, best_opp_seq)
+                        score = evaluate(new_board2, original_color)
+                    else:
+                        # No opponent move – should not happen
+                        score = evaluate(new_board, original_color)
+            else:
+                score = evaluate(new_board, original_color)
+
+            # Alpha‑beta pruning
+            if is_max:
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+                alpha = max(alpha, best_score)
+            else:
+                if score < best_score:
+                    best_score = score
+                    best_move = move
+                beta = min(beta, best_score)
+            if alpha >= beta:
+                break
+
+    return best_score, best_move
+
+def policy(my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]],
+           opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """Return the best legal move for the player."""
+    # Convert lists to sets for fast lookup
+    my_men_set = set(my_men)
+    my_kings_set = set(my_kings)
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+
+    board_state = (my_men_set, my_kings_set, opp_men_set, opp_kings_set)
+    original_color = color
+
+    # Depth‑2 search (our move + opponent response)
+    best_score, best_move = minimax(board_state, depth=2,
+                                   is_max=True,
+                                   moving_color=color,
+                                   original_color=original_color,
+                                   alpha=float('-inf'), beta=float('inf'))
+
+    # best_move is guaranteed to be legal (captures are mandatory)
+    return best_move
+
+</code>

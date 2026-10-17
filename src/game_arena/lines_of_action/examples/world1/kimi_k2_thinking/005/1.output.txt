@@ -1,0 +1,293 @@
+**Strategy**
+
+For every legal move we look one move ahead for ourselves and one move ahead for the
+opponent (a 2‑ply mini‑max search).  
+The move that gives us the best *worst‑case* result after the opponent’s reply is chosen.
+
+*Move generation* – all moves are generated exactly as the rules of *Lines of Action*
+prescribe:
+* a piece may move in any of the eight directions,
+* the number of squares it must travel is equal to the total number of pieces (both colours)
+  that lie in that direction,
+* it may jump over its own pieces but never over an opponent piece,
+* it may land on an opponent piece and capture it.
+
+*Evaluation* – a board is evaluated from our (player = 1) point of view.  
+The heuristic contains:
+
+* **Piece count** – each extra own piece counts +100.
+* **Connectivity** – the size of the largest 8‑connected component of our pieces
+  minus a penalty of 2 for every additional component (fewer components are better).
+  The same is computed for the opponent and the difference is taken.
+* **Centralisation** – for each piece we add `(7 − Manhattan distance to the board centre)`.
+  The difference of the two players is used.
+* **Win/Loss** – if a player has all his pieces in a single component the game ends.
+  A board where we have already connected everything receives +∞, a board where the
+  opponent has connected everything receives ‑∞.
+
+During the 2‑ply search we treat a move that immediately connects all our pieces as a
+forced win and a move that allows the opponent to connect all his pieces on the next turn
+as a forced loss. The search is very fast (thousands of nodes at most) and easily fits
+into the 1 s time limit.
+
+**Python implementation**
+
+```python
+<code>
+# ------------------------------------------------------------
+# Lines of Action – policy for the 8×8 board
+# ------------------------------------------------------------
+import sys
+
+# ----------------------------------------------------------------------
+# 1.  Helper data
+# ----------------------------------------------------------------------
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
+                (0, -1),           (0, 1),
+                (1, -1),  (1, 0),  (1, 1)]
+
+# a very large number that still leaves head‑room for normal scores
+INF = 10 ** 9
+
+# ----------------------------------------------------------------------
+# 2.  Move generation
+# ----------------------------------------------------------------------
+def generate_moves(board, player):
+    """
+    Return a list of all legal move strings for *player* (1 or -1) on the given board.
+    Move format: "from_row,from_col:to_row,to_col" (0‑based).
+    """
+    opponent = -player
+    moves = []
+
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] != player:
+                continue
+
+            for dr, dc in DIRECTIONS:
+                # count pieces (both colours) lying in this direction beyond the piece
+                cnt = 0
+                rr, cc = r + dr, c + dc
+                while 0 <= rr < 8 and 0 <= cc < 8:
+                    if board[rr][cc] != 0:
+                        cnt += 1
+                    rr += dr
+                    cc += dc
+
+                distance = 1 + cnt                     # how many squares we must move
+                tr = r + dr * distance
+                tc = c + dc * distance
+
+                # destination must be inside the board
+                if not (0 <= tr < 8 and 0 <= tc < 8):
+                    continue
+
+                # we may not jump over opponent pieces on the way
+                illegal = False
+                for step in range(1, distance):
+                    pr = r + dr * step
+                    pc = c + dc * step
+                    if board[pr][pc] == opponent:
+                        illegal = True
+                        break
+                if illegal:
+                    continue
+
+                # destination may not be occupied by our own piece
+                if board[tr][tc] == player:
+                    continue
+
+                # all tests passed – the move is legal
+                moves.append(f"{r},{c}:{tr},{tc}")
+    return moves
+
+
+def apply_move(board, move, player):
+    """
+    Return a *new* board where *move* (string) has been executed for *player*.
+    The original board is never modified.
+    """
+    from_part, to_part = move.split(':')
+    fr, fc = map(int, from_part.split(','))
+    tr, tc = map(int, to_part.split(','))
+
+    new_board = [row[:] for row in board]          # shallow copy of rows
+    new_board[fr][fc] = 0                         # lift the piece
+    new_board[tr][tc] = player                     # place it (capture if opponent was there)
+    return new_board
+
+
+# ----------------------------------------------------------------------
+# 3.  Connectivity / win detection
+# ----------------------------------------------------------------------
+def is_fully_connected(board, player):
+    """
+    Return True if all *player* pieces form a single 8‑connected component.
+    (An empty set of pieces is considered *not* connected.)
+    """
+    # collect all squares belonging to player
+    squares = [(r, c) for r in range(8) for c in range(8) if board[r][c] == player]
+    if not squares:
+        return False
+
+    visited = set()
+    stack = [squares[0]]
+
+    while stack:
+        r, c = stack.pop()
+        if (r, c) in visited:
+            continue
+        visited.add((r, c))
+
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == player and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+
+    # if we visited every piece, they are all in one component
+    return len(visited) == len(squares)
+
+
+# ----------------------------------------------------------------------
+# 4.  Heuristic evaluation (from player = 1 point of view)
+# ----------------------------------------------------------------------
+def evaluate(board):
+    """
+    Return a numeric score of *board* seen from player = 1.
+    Large positive means we are ahead, large negative means the opponent is ahead.
+    """
+    # terminal wins/losses -------------------------------------------------
+    if is_fully_connected(board, 1):
+        return INF
+    if is_fully_connected(board, -1):
+        return -INF
+
+    # piece counts ---------------------------------------------------------
+    count_us = sum(1 for row in board for v in row if v == 1)
+    count_them = sum(1 for row in board for v in row if v == -1)
+    piece_diff = count_us - count_them
+
+    # connectivity ---------------------------------------------------------
+    def connectivity_score(pl):
+        squares = [(r, c) for r in range(8) for c in range(8) if board[r][c] == pl]
+        total = len(squares)
+        if total == 0:
+            return 0
+
+        visited = set()
+        largest = 0
+        components = 0
+
+        for sr, sc in squares:
+            if (sr, sc) in visited:
+                continue
+            components += 1
+            # BFS/DFS for this component
+            stack = [(sr, sc)]
+            size = 0
+            while stack:
+                r, c = stack.pop()
+                if (r, c) in visited:
+                    continue
+                visited.add((r, c))
+                size += 1
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8 and board[nr][nc] == pl and (nr, nc) not in visited:
+                            stack.append((nr, nc))
+            largest = max(largest, size)
+
+        # reward a larger largest component, penalise each extra component
+        penalty = 2   # heuristic penalty per extra component
+        return largest - (components - 1) * penalty
+
+    conn_us = connectivity_score(1)
+    conn_them = connectivity_score(-1)
+    conn_diff = conn_us - conn_them
+
+    # centralisation -------------------------------------------------------
+    def centre_score(pl):
+        score = 0
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] == pl:
+                    # Manhattan distance to the board centre (3.5, 3.5)
+                    d = abs(r - 3.5) + abs(c - 3.5)
+                    score += 7 - d               # 7 is the maximal Manhattan distance on 8×8
+        return score
+
+    centre_diff = centre_score(1) - centre_score(-1)
+
+    # combine --------------------------------------------------------------
+    return piece_diff * 100 + conn_diff * 10 + centre_diff * 1
+
+
+# ----------------------------------------------------------------------
+# 5.  Policy – choose the best move
+# ----------------------------------------------------------------------
+def policy(board):
+    """
+    Return a legal move for player = 1 on the supplied 8×8 board.
+    The move is chosen by a 2‑ply minimax search (our move + opponent reply).
+    """
+    # ---- all legal moves for the current player -------------------------
+    moves = generate_moves(board, 1)
+    if not moves:                     # should never happen, but be safe
+        return "0,0:0,0"
+
+    best_move = None
+    best_score = -INF
+
+    # ---- evaluate every candidate move ---------------------------------
+    for mv in moves:
+        # 1. apply our move
+        brd1 = apply_move(board, mv, 1)
+
+        # immediate win?
+        if is_fully_connected(brd1, 1):
+            return mv                 # we can win right now
+
+        # 2. opponent's possible replies – we assume opponent tries to minimise our score
+        opp_moves = generate_moves(brd1, -1)
+
+        # if opponent has no move, treat as a huge advantage (practically a win)
+        if not opp_moves:
+            # this move makes the opponent pass – it is certainly good
+            return mv
+
+        worst_for_us = INF   # opponent will try to give us the smallest evaluation
+        for om in opp_moves:
+            brd2 = apply_move(brd1, om, -1)
+
+            # opponent wins immediately? then this reply is catastrophic for us
+            if is_fully_connected(brd2, -1):
+                worst_for_us = -INF
+                break                     # opponent would certainly pick this line
+
+            # otherwise assess the resulting board
+            val = evaluate(brd2)
+            if val < worst_for_us:
+                worst_for_us = val
+                if worst_for_us == -INF:  # cannot get any worse
+                    break
+
+        # 3. maximise the worst case (the classic "maximin" rule)
+        if worst_for_us > best_score:
+            best_score = worst_for_us
+            best_move = mv
+            if best_score == INF:        # perfect cannot be improved
+                break
+
+    # safety fallback – should never be needed
+    if best_move is None:
+        best_move = moves[0]
+
+    return best_move
+</code>

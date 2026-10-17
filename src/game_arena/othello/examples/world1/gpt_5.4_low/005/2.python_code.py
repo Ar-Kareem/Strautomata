@@ -1,0 +1,369 @@
+
+import numpy as np
+
+FULL = (1 << 64) - 1
+
+# File masks for bitboard shifts
+NOT_A = 0xfefefefefefefefe  # not file a
+NOT_H = 0x7f7f7f7f7f7f7f7f  # not file h
+
+# Positional weights: corners are great, X/C-squares are risky
+WEIGHTS = [
+    120, -20,  20,   5,   5,  20, -20, 120,
+    -20, -40,  -5,  -5,  -5,  -5, -40, -20,
+     20,  -5,  15,   3,   3,  15,  -5,  20,
+      5,  -5,   3,   3,   3,   3,  -5,   5,
+      5,  -5,   3,   3,   3,   3,  -5,   5,
+     20,  -5,  15,   3,   3,  15,  -5,  20,
+    -20, -40,  -5,  -5,  -5,  -5, -40, -20,
+    120, -20,  20,   5,   5,  20, -20, 120,
+]
+
+CORNERS = [0, 7, 56, 63]
+X_SQUARES = [(9, 0), (14, 7), (49, 56), (54, 63)]   # (x-square, adjacent corner)
+C_SQUARES = [
+    (1, 0), (8, 0),
+    (6, 7), (15, 7),
+    (48, 56), (57, 56),
+    (55, 63), (62, 63)
+]
+
+TT = {}
+
+def shift_n(x):  return x >> 8
+def shift_s(x):  return (x << 8) & FULL
+def shift_e(x):  return ((x & NOT_H) << 1) & FULL
+def shift_w(x):  return (x & NOT_A) >> 1
+def shift_ne(x): return (x & NOT_H) >> 7
+def shift_nw(x): return (x & NOT_A) >> 9
+def shift_se(x): return ((x & NOT_H) << 9) & FULL
+def shift_sw(x): return ((x & NOT_A) << 7) & FULL
+
+SHIFTS = [shift_n, shift_s, shift_e, shift_w, shift_ne, shift_nw, shift_se, shift_sw]
+
+def bit_to_move(idx: int) -> str:
+    return chr(ord('a') + (idx & 7)) + str((idx >> 3) + 1)
+
+def bits_of(x: int):
+    while x:
+        lsb = x & -x
+        yield lsb.bit_length() - 1
+        x ^= lsb
+
+def legal_moves(me: int, opp: int) -> int:
+    empty = (~(me | opp)) & FULL
+    moves = 0
+    for sh in SHIFTS:
+        t = sh(me) & opp
+        for _ in range(5):
+            t |= sh(t) & opp
+        moves |= sh(t) & empty
+    return moves
+
+def make_move(me: int, opp: int, idx: int):
+    move = 1 << idx
+    flips = 0
+    for sh in SHIFTS:
+        x = sh(move) & opp
+        captured = 0
+        while x:
+            captured |= x
+            nx = sh(x)
+            if nx & me:
+                flips |= captured
+                break
+            x = nx & opp
+    me2 = me | move | flips
+    opp2 = opp & ~flips
+    return me2, opp2
+
+def positional_score(me: int, opp: int) -> int:
+    score = 0
+    for i, w in enumerate(WEIGHTS):
+        b = 1 << i
+        if me & b:
+            score += w
+        elif opp & b:
+            score -= w
+    return score
+
+def corner_score(me: int, opp: int) -> int:
+    s = 0
+    for c in CORNERS:
+        b = 1 << c
+        if me & b:
+            s += 1
+        elif opp & b:
+            s -= 1
+    return 250 * s
+
+def corner_adjacency_score(me: int, opp: int) -> int:
+    s = 0
+    for sq, corner in X_SQUARES:
+        cb = 1 << corner
+        sb = 1 << sq
+        if ((me | opp) & cb) == 0:
+            if me & sb:
+                s -= 70
+            elif opp & sb:
+                s += 70
+    for sq, corner in C_SQUARES:
+        cb = 1 << corner
+        sb = 1 << sq
+        if ((me | opp) & cb) == 0:
+            if me & sb:
+                s -= 25
+            elif opp & sb:
+                s += 25
+    return s
+
+def mobility_score(me: int, opp: int) -> int:
+    mym = legal_moves(me, opp).bit_count()
+    oppm = legal_moves(opp, me).bit_count()
+    return 18 * (mym - oppm)
+
+def edge_stability_score(me: int, opp: int) -> int:
+    # Approximate stability from owned corners extending along edges.
+    s = 0
+
+    def owner(bitboard, idx):
+        return 1 if (bitboard >> idx) & 1 else 0
+
+    # top edge from corners
+    if owner(me, 0):
+        i = 0
+        while i < 8 and owner(me, i):
+            s += 12
+            i += 1
+    elif owner(opp, 0):
+        i = 0
+        while i < 8 and owner(opp, i):
+            s -= 12
+            i += 1
+
+    if owner(me, 7):
+        i = 7
+        while i >= 0 and owner(me, i):
+            s += 12
+            i -= 1
+    elif owner(opp, 7):
+        i = 7
+        while i >= 0 and owner(opp, i):
+            s -= 12
+            i -= 1
+
+    # bottom edge
+    if owner(me, 56):
+        i = 56
+        while i < 64 and owner(me, i):
+            s += 12
+            i += 1
+    elif owner(opp, 56):
+        i = 56
+        while i < 64 and owner(opp, i):
+            s -= 12
+            i += 1
+
+    if owner(me, 63):
+        i = 63
+        while i >= 56 and owner(me, i):
+            s += 12
+            i -= 1
+    elif owner(opp, 63):
+        i = 63
+        while i >= 56 and owner(opp, i):
+            s -= 12
+            i -= 1
+
+    # left edge
+    if owner(me, 0):
+        i = 0
+        while i < 64 and owner(me, i):
+            s += 12
+            i += 8
+    elif owner(opp, 0):
+        i = 0
+        while i < 64 and owner(opp, i):
+            s -= 12
+            i += 8
+
+    if owner(me, 56):
+        i = 56
+        while i >= 0 and owner(me, i):
+            s += 12
+            i -= 8
+    elif owner(opp, 56):
+        i = 56
+        while i >= 0 and owner(opp, i):
+            s -= 12
+            i -= 8
+
+    # right edge
+    if owner(me, 7):
+        i = 7
+        while i < 64 and owner(me, i):
+            s += 12
+            i += 8
+    elif owner(opp, 7):
+        i = 7
+        while i < 64 and owner(opp, i):
+            s -= 12
+            i += 8
+
+    if owner(me, 63):
+        i = 63
+        while i >= 0 and owner(me, i):
+            s += 12
+            i -= 8
+    elif owner(opp, 63):
+        i = 63
+        while i >= 0 and owner(opp, i):
+            s -= 12
+            i -= 8
+
+    return s
+
+def evaluate(me: int, opp: int) -> int:
+    occupied = (me | opp).bit_count()
+    empties = 64 - occupied
+
+    pos = positional_score(me, opp)
+    cor = corner_score(me, opp)
+    cadj = corner_adjacency_score(me, opp)
+    mob = mobility_score(me, opp)
+    edge = edge_stability_score(me, opp)
+
+    disc_diff = me.bit_count() - opp.bit_count()
+
+    if empties > 40:
+        return pos + cor + cadj + mob + edge + disc_diff
+    elif empties > 20:
+        return pos + cor + cadj + mob + edge + 3 * disc_diff
+    else:
+        return pos + cor + cadj + mob + edge + 8 * disc_diff
+
+def terminal_score(me: int, opp: int) -> int:
+    diff = me.bit_count() - opp.bit_count()
+    if diff > 0:
+        return 100000 + diff
+    if diff < 0:
+        return -100000 + diff
+    return 0
+
+def ordered_moves(me: int, opp: int, moves_bits: int):
+    moves = []
+    opp_moves_now = legal_moves(opp, me).bit_count()
+
+    for idx in bits_of(moves_bits):
+        score = WEIGHTS[idx]
+
+        if idx in CORNERS:
+            score += 10000
+
+        me2, opp2 = make_move(me, opp, idx)
+        oppm = legal_moves(opp2, me2).bit_count()
+        score -= 20 * oppm
+        score += 6 * (opp_moves_now - oppm)
+
+        # Prefer moves that flip fewer discs early; they often preserve mobility
+        flipped = (me2.bit_count() - me.bit_count() - 1)
+        empties = 64 - (me | opp).bit_count()
+        if empties > 20:
+            score -= 2 * flipped
+        else:
+            score += flipped
+
+        moves.append((score, idx))
+
+    moves.sort(reverse=True)
+    return [idx for _, idx in moves]
+
+def negamax(me: int, opp: int, depth: int, alpha: int, beta: int, passed: bool) -> int:
+    key = (me, opp, depth, passed)
+    if key in TT:
+        return TT[key]
+
+    my_moves = legal_moves(me, opp)
+
+    if my_moves == 0:
+        opp_moves = legal_moves(opp, me)
+        if opp_moves == 0:
+            val = terminal_score(me, opp)
+            TT[key] = val
+            return val
+        val = -negamax(opp, me, depth, -beta, -alpha, True) if depth > 0 else -evaluate(opp, me)
+        TT[key] = val
+        return val
+
+    if depth == 0:
+        val = evaluate(me, opp)
+        TT[key] = val
+        return val
+
+    best = -10**18
+    for idx in ordered_moves(me, opp, my_moves):
+        me2, opp2 = make_move(me, opp, idx)
+        val = -negamax(opp2, me2, depth - 1, -beta, -alpha, False)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    TT[key] = best
+    return best
+
+def choose_depth(me: int, opp: int) -> int:
+    empties = 64 - (me | opp).bit_count()
+    if empties <= 10:
+        return empties
+    if empties <= 14:
+        return 10
+    if empties <= 18:
+        return 8
+    if empties <= 26:
+        return 6
+    if empties <= 44:
+        return 5
+    return 4
+
+def array_to_bitboard(arr: np.ndarray) -> int:
+    bb = 0
+    flat = arr.ravel()
+    for idx in np.flatnonzero(flat):
+        bb |= 1 << int(idx)
+    return bb
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    me = array_to_bitboard(you)
+    opp = array_to_bitboard(opponent)
+
+    moves = legal_moves(me, opp)
+    if moves == 0:
+        return "pass"
+
+    TT.clear()
+
+    depth = choose_depth(me, opp)
+    best_move = None
+    best_score = -10**18
+    alpha = -10**18
+    beta = 10**18
+
+    move_list = ordered_moves(me, opp, moves)
+
+    for idx in move_list:
+        me2, opp2 = make_move(me, opp, idx)
+        score = -negamax(opp2, me2, depth - 1, -beta, -alpha, False)
+        if score > best_score:
+            best_score = score
+            best_move = idx
+        if score > alpha:
+            alpha = score
+
+    if best_move is None:
+        # Failsafe: return first legal move
+        best_move = next(bits_of(moves))
+
+    return bit_to_move(best_move)

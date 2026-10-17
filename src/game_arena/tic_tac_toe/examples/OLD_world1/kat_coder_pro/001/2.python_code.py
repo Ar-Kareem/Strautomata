@@ -1,0 +1,190 @@
+
+import numpy as np
+from collections import defaultdict
+import math
+import random
+
+def policy(board):
+    # Convert to numpy array for easier manipulation
+    board = np.array(board)
+    
+    # Check if we have a winning move
+    move = find_winning_move(board, 1)
+    if move:
+        return move
+    
+    # Check if opponent has a winning move and block it
+    move = find_winning_move(board, -1)
+    if move:
+        return move
+    
+    # Apply opening theory with probabilistic choices
+    
+    # Count moves played
+    empty_count = np.sum(board == 0)
+    if empty_count == 9:  # First move
+        # First player: prefer center (50%), then corners (30%), then edges (20%)
+        choice = random.random()
+        if choice < 0.5:
+            return (1, 1)
+        elif choice < 0.8:
+            corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+            return random.choice(corners)
+        else:
+            edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+            return random.choice(edges)
+    
+    elif empty_count == 8:  # Second player's first move
+        if board[1, 1] == 0:  # Center is empty, take it
+            return (1, 1)
+        else:  # Center taken, play a corner
+            corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+            return random.choice(corners)
+    
+    elif empty_count == 7:  # First player's second move
+        if board[1, 1] == 1:  # We have center
+            # Look for an opposite corner to opponent's move
+            opponent_pos = None
+            for i in range(3):
+                for j in range(3):
+                    if board[i, j] == -1:
+                        opponent_pos = (i, j)
+                        break
+                if opponent_pos:
+                    break
+            
+            if opponent_pos and opponent_pos in [(0, 0), (0, 2), (2, 0), (2, 2)]:
+                # Opponent in corner, take opposite corner
+                i, j = opponent_pos
+                return (2 - i, 2 - j)
+            else:
+                # Opponent in edge, take any corner
+                corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+                empty_corners = [(i, j) for (i, j) in corners if board[i, j] == 0]
+                return random.choice(empty_corners)
+        else:  # We're in corner, opponent in center
+            # Take opposite corner
+            our_pos = None
+            for i in range(3):
+                for j in range(3):
+                    if board[i, j] == 1:
+                        our_pos = (i, j)
+                        break
+                if our_pos:
+                    break
+            i, j = our_pos
+            return (2 - i, 2 - j)
+    
+    # For later moves, use a combination of strategies
+    
+    # 1. Try to create a fork (two winning ways)
+    fork_move = find_fork(board, 1)
+    if fork_move:
+        return fork_move
+    
+    # 2. Block opponent's fork
+    opp_fork = find_fork(board, -1)
+    if opp_fork:
+        return opp_fork
+    
+    # 3. Take center if available
+    if board[1, 1] == 0:
+        return (1, 1)
+    
+    # 4. Take opposite corner if opponent is in a corner
+    opponent_corner = None
+    for (i, j) in [(0, 0), (0, 2), (2, 0), (2, 2)]:
+        if board[i, j] == -1:
+            opponent_corner = (i, j)
+            break
+    if opponent_corner:
+        i, j = opponent_corner
+        if board[2-i, 2-j] == 0:
+            return (2-i, 2-j)
+    
+    # 5. Take any empty corner
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    empty_corners = [(i, j) for (i, j) in corners if board[i, j] == 0]
+    if empty_corners:
+        return random.choice(empty_corners)
+    
+    # 6. Take any empty edge
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    empty_edges = [(i, j) for (i, j) in edges if board[i, j] == 0]
+    if empty_edges:
+        return random.choice(empty_edges)
+    
+    # 7. Fallback: return any empty cell
+    for i in range(3):
+        for j in range(3):
+            if board[i, j] == 0:
+                return (i, j)
+
+def find_winning_move(board, player):
+    """Find a move that creates three in a row for the given player."""
+    # Check rows
+    for i in range(3):
+        if np.sum(board[i, :] == player) == 2 and np.sum(board[i, :] == 0) == 1:
+            j = np.where(board[i, :] == 0)[0][0]
+            return (i, j)
+    
+    # Check columns
+    for j in range(3):
+        if np.sum(board[:, j] == player) == 2 and np.sum(board[:, j] == 0) == 1:
+            i = np.where(board[:, j] == 0)[0][0]
+            return (i, j)
+    
+    # Check diagonals
+    if board[0, 0] == player and board[1, 1] == player and board[2, 2] == 0:
+        return (2, 2)
+    if board[0, 0] == player and board[2, 2] == player and board[1, 1] == 0:
+        return (1, 1)
+    if board[1, 1] == player and board[2, 2] == player and board[0, 0] == 0:
+        return (0, 0)
+    
+    if board[0, 2] == player and board[1, 1] == player and board[2, 0] == 0:
+        return (2, 0)
+    if board[0, 2] == player and board[2, 0] == player and board[1, 1] == 0:
+        return (1, 1)
+    if board[1, 1] == player and board[2, 0] == player and board[0, 2] == 0:
+        return (0, 2)
+    
+    return None
+
+def find_fork(board, player):
+    """Find a move that creates a fork (two potential winning lines) for the given player."""
+    # Try each empty cell
+    for i in range(3):
+        for j in range(3):
+            if board[i, j] == 0:
+                # Simulate placing our mark
+                board[i, j] = player
+                
+                # Count how many winning moves this creates
+                winning_moves = 0
+                
+                # Check if we have two in a row in any line
+                # Rows
+                for row in range(3):
+                    if np.sum(board[row, :] == player) == 2 and np.sum(board[row, :] == 0) == 1:
+                        winning_moves += 1
+                
+                # Columns
+                for col in range(3):
+                    if np.sum(board[:, col] == player) == 2 and np.sum(board[:, col] == 0) == 1:
+                        winning_moves += 1
+                
+                # Diagonals
+                if np.sum([board[k, k] for k in range(3)] == player) == 2 and np.sum([board[k, k] for k in range(3)] == 0) == 1:
+                    winning_moves += 1
+                if np.sum([board[k, 2-k] for k in range(3)] == player) == 2 and np.sum([board[k, 2-k] for k in range(3)] == 0) == 1:
+                    winning_moves += 1
+                
+                # Restore board
+                board[i, j] = 0
+                
+                # If this creates multiple winning threats, it's a fork
+                if winning_moves >= 2:
+                    return (i, j)
+    
+    return None

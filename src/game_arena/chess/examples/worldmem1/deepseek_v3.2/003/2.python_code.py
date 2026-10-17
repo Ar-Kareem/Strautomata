@@ -1,0 +1,222 @@
+
+import numpy as np
+import time
+
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+}
+
+# Piece-square tables (midgame) for white perspective
+PST = {
+    'P': np.array([
+        [0,   0,   0,   0,   0,   0,   0,   0],
+        [50, 50, 50, 50, 50, 50, 50, 50],
+        [10, 10, 20, 30, 30, 20, 10, 10],
+        [5,   5, 10, 25, 25, 10,  5,  5],
+        [0,   0,  0, 20, 20,  0,  0,  0],
+        [5,  -5,-10,  0,  0,-10, -5,  5],
+        [5,  10, 10,-20,-20, 10, 10,  5],
+        [0,   0,  0,  0,  0,  0,  0,  0]
+    ]),
+    'N': np.array([
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+        [-40,-20,  0,  0,  0,  0,-20,-40],
+        [-30,  0, 10, 15, 15, 10,  0,-30],
+        [-30,  5, 15, 20, 20, 15,  5,-30],
+        [-30,  0, 15, 20, 20, 15,  0,-30],
+        [-30,  5, 10, 15, 15, 10,  5,-30],
+        [-40,-20,  0,  5,  5,  0,-20,-40],
+        [-50,-40,-30,-30,-30,-30,-40,-50]
+    ]),
+    'B': np.array([
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5, 10, 10,  5,  0,-10],
+        [-10,  5,  5, 10, 10,  5,  5,-10],
+        [-10,  0, 10, 10, 10, 10,  0,-10],
+        [-10, 10, 10, 10, 10, 10, 10,-10],
+        [-10,  5,  0,  0,  0,  0,  5,-10],
+        [-20,-10,-10,-10,-10,-10,-10,-20]
+    ]),
+    'R': np.array([
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [5, 10, 10, 10, 10, 10, 10,  5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [0,  0,  0,  5,  5,  0,  0,  0]
+    ]),
+    'Q': np.array([
+        [-20,-10,-10, -5, -5,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5,  5,  5,  5,  0,-10],
+        [-5,  0,  5,  5,  5,  5,  0, -5],
+        [0,  0,  5,  5,  5,  5,  0, -5],
+        [-10,  5,  5,  5,  5,  5,  0,-10],
+        [-10,  0,  5,  0,  0,  0,  0,-10],
+        [-20,-10,-10, -5, -5,-10,-10,-20]
+    ]),
+    'K': np.array([
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-20,-30,-30,-40,-40,-30,-30,-20],
+        [-10,-20,-20,-20,-20,-20,-20,-10],
+        [20, 20,  0,  0,  0,  0, 20, 20],
+        [20, 30, 10,  0,  0, 10, 30, 20]
+    ])
+}
+
+# Convert algebraic square to indices
+def square_to_idx(sq):
+    file = ord(sq[0]) - ord('a')
+    rank = int(sq[1]) - 1
+    return rank, file
+
+# Evaluation from perspective of white
+def evaluate_board(pieces):
+    score = 0
+    for square, piece_code in pieces.items():
+        color = piece_code[0]
+        piece_type = piece_code[1]
+        val = PIECE_VALUES[piece_type]
+        row, col = square_to_idx(square)
+        pst = PST[piece_type]
+        pst_score = pst[row, col] if color == 'w' else -pst[7 - row, col]
+        total = val + pst_score
+        score += total if color == 'w' else -total
+    return score
+
+def order_moves(moves):
+    # Prioritize checks, captures, promotions
+    def move_priority(move):
+        priority = 0
+        if 'x' in move: priority += 10
+        if '+' in move: priority += 5
+        if '=' in move: priority += 15
+        if move.startswith('O'): priority += 3
+        return priority
+    return sorted(moves, key=move_priority, reverse=True)
+
+def simulate_move(pieces, move_str, to_play_color):
+    # Very basic move simulation for search
+    # We assume move_str is legal
+    # Returns new pieces dict
+    new_pieces = pieces.copy()
+    color_char = 'w' if to_play_color == 'white' else 'b'
+    
+    # Handle castling
+    if move_str == 'O-O':
+        if color_char == 'w':
+            new_pieces.pop('e1')
+            new_pieces.pop('h1')
+            new_pieces['g1'] = 'wK'
+            new_pieces['f1'] = 'wR'
+        else:
+            new_pieces.pop('e8')
+            new_pieces.pop('h8')
+            new_pieces['g8'] = 'bK'
+            new_pieces['f8'] = 'bR'
+        return new_pieces
+    if move_str == 'O-O-O':
+        if color_char == 'w':
+            new_pieces.pop('e1')
+            new_pieces.pop('a1')
+            new_pieces['c1'] = 'wK'
+            new_pieces['d1'] = 'wR'
+        else:
+            new_pieces.pop('e8')
+            new_pieces.pop('a8')
+            new_pieces['c8'] = 'bK'
+            new_pieces['d8'] = 'bR'
+        return new_pieces
+    
+    # Regular move parsing (simplified)
+    # This is a huge simplification; real chess move parsing is complex
+    # For competition, we'd use a proper chess library but can't here.
+    # Instead we rely on legal_moves being correct and just pick one.
+    # Since we can't fully simulate without a full board, we fallback to
+    # returning the same board (this makes search inaccurate but legal).
+    # In practice, you'd implement full move simulation.
+    return new_pieces
+
+def alpha_beta(pieces, to_play_color, depth, alpha, beta, maximizing, move_sequence, memory, start_time):
+    if time.time() - start_time > 0.5:  # time limit for search
+        return evaluate_board(pieces) if maximizing else -evaluate_board(pieces)
+    
+    if depth == 0:
+        # Quiescence search (limited to captures and checks)
+        return evaluate_board(pieces) if maximizing else -evaluate_board(pieces)
+    
+    # Fake legal moves list (not provided here) – this is a major simplification.
+    # In reality we need a full chess engine to generate moves.
+    # For the competition, we rely on the provided legal_moves list in the policy.
+    # So we cannot search deeper without move generation.
+    # Therefore, we fallback to a shallow evaluation.
+    return evaluate_board(pieces) if maximizing else -evaluate_board(pieces)
+
+def policy(pieces, to_play, legal_moves, memory):
+    start_time = time.time()
+    my_color = 'w' if to_play == 'white' else 'b'
+    
+    # Initialize memory for transposition table if not present
+    if 'tt' not in memory:
+        memory['tt'] = {}
+    
+    # Immediate win check
+    for move in legal_moves:
+        if move.endswith('#'):  # checkmate
+            return move, memory
+    
+    # Order moves
+    ordered_moves = order_moves(legal_moves)
+    
+    # If we have a capture, try to capture highest value piece
+    best_move = ordered_moves[0]
+    best_score = -999999
+    
+    # Quick evaluation of each move (1-ply)
+    for move in ordered_moves:
+        # Simulate move (simplified)
+        # Since we can't fully simulate, we approximate with material and PST
+        # We'll evaluate the board after move by assuming piece moves to destination
+        # This is hacky and incomplete but works for basic decisions.
+        
+        # Guess destination square (last two chars usually, except promotions)
+        dest = move[-2:] if '=' not in move else move[-4:-2]
+        if dest in pieces:
+            captured_piece = pieces[dest]
+            captured_val = PIECE_VALUES.get(captured_piece[1], 0)
+        else:
+            captured_val = 0
+        
+        # Encourage castling
+        bonus = 0
+        if move.startswith('O'):
+            bonus += 50
+        if my_color == 'w' and move == 'e1g1':
+            bonus += 30
+        if my_color == 'b' and move == 'e8g8':
+            bonus += 30
+        
+        # Penalize moving king early
+        if my_color == 'w' and 'K' in pieces.get('e1', '') and move.startswith('K'):
+            bonus -= 20
+        if my_color == 'b' and 'K' in pieces.get('e8', '') and move.startswith('K'):
+            bonus -= 20
+        
+        score = captured_val * 10 + bonus
+        
+        # Prefer checks
+        if '+' in move:
+            score += 15
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Fallback: if no good capture, pick first ordered move
+    return best_move, memory

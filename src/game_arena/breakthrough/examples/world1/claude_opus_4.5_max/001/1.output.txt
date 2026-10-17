@@ -1,0 +1,153 @@
+Looking at this Breakthrough game, I need to develop a strong policy that can compete against other players. Here's my strategy:
+
+**Strategy:**
+1. **Search Algorithm**: Use Negamax with Alpha-Beta pruning for efficient adversarial search
+2. **Iterative Deepening**: Start with shallow searches and go deeper until time runs out, ensuring we always have a valid move
+3. **Move Ordering**: Prioritize winning moves, captures, and advances for better pruning
+4. **Evaluation Function**:
+   - Material advantage (number of pieces)
+   - Piece advancement (quadratic bonus for pieces closer to goal)
+   - High threat bonus for pieces one step from winning (row 6/1)
+   - Slight center control preference
+5. **Time Management**: Regular timeout checks to ensure we return within 1 second
+
+The key insight is that in Breakthrough, advancement is crucial - pieces closer to the goal are exponentially more valuable since they threaten to win. Material also matters significantly since capturing removes opponent's ability to block or advance.
+
+<code>
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    import time
+    
+    start_time = time.time()
+    TIME_LIMIT = 0.9
+    
+    me = tuple(me)
+    opp = tuple(opp)
+    
+    direction = 1 if color == 'w' else -1
+    my_goal = 7 if color == 'w' else 0
+    
+    def get_moves(pieces, opponents, dir):
+        result = []
+        piece_set = set(pieces)
+        opp_set = set(opponents)
+        
+        for r, c in pieces:
+            nr = r + dir
+            if 0 <= nr <= 7:
+                if (nr, c) not in piece_set and (nr, c) not in opp_set:
+                    result.append(((r, c), (nr, c)))
+                if c > 0 and (nr, c-1) not in piece_set:
+                    result.append(((r, c), (nr, c-1)))
+                if c < 7 and (nr, c+1) not in piece_set:
+                    result.append(((r, c), (nr, c+1)))
+        return result
+    
+    def apply_move(pieces, opponents, move):
+        frm, to = move
+        new_pieces = tuple(p for p in pieces if p != frm) + (to,)
+        new_opponents = tuple(p for p in opponents if p != to)
+        return new_pieces, new_opponents
+    
+    def evaluate(my_pieces, opp_pieces, dir):
+        score = 200 * (len(my_pieces) - len(opp_pieces))
+        
+        for r, c in my_pieces:
+            adv = r if dir == 1 else (7 - r)
+            score += adv * adv * 2
+            if adv == 6:
+                score += 200
+            score += 3.5 - abs(c - 3.5)
+        
+        for r, c in opp_pieces:
+            adv = (7 - r) if dir == 1 else r
+            score -= adv * adv * 2
+            if adv == 6:
+                score -= 200
+            score -= 3.5 - abs(c - 3.5)
+        
+        return score
+    
+    nodes = [0]
+    
+    def negamax(my_p, opp_p, dir, depth, alpha, beta):
+        nodes[0] += 1
+        if nodes[0] % 4000 == 0 and time.time() - start_time > TIME_LIMIT:
+            return None, None
+        
+        goal = 7 if dir == 1 else 0
+        opp_goal = 0 if dir == 1 else 7
+        
+        if not my_p:
+            return -10000000 - depth, None
+        if not opp_p:
+            return 10000000 + depth, None
+        
+        for r, c in opp_p:
+            if r == opp_goal:
+                return -10000000 - depth, None
+        
+        if depth == 0:
+            return evaluate(my_p, opp_p, dir), None
+        
+        moves = get_moves(my_p, opp_p, dir)
+        if not moves:
+            return -10000000, None
+        
+        opp_set = set(opp_p)
+        moves.sort(key=lambda m: (100000 if m[1][0] == goal else 0) + (1000 if m[1] in opp_set else 0) + (m[1][0] if dir == 1 else 7 - m[1][0]) * 10, reverse=True)
+        
+        best_score = float('-inf')
+        best_move = moves[0]
+        
+        for move in moves:
+            if move[1][0] == goal:
+                return 10000000 + depth, move
+            
+            new_my, new_opp = apply_move(my_p, opp_p, move)
+            score, _ = negamax(new_opp, new_my, -dir, depth - 1, -beta, -alpha)
+            
+            if score is None:
+                return None, best_move
+            
+            score = -score
+            
+            if score > best_score:
+                best_score = score
+                best_move = move
+            
+            alpha = max(alpha, score)
+            if alpha >= beta:
+                break
+        
+        return best_score, best_move
+    
+    initial_moves = get_moves(me, opp, direction)
+    
+    if not initial_moves:
+        if me:
+            r, c = me[0]
+            nr = r + direction
+            if 0 <= nr <= 7:
+                return ((r, c), (nr, c))
+        return ((0, 0), (direction if direction > 0 else 0, 0))
+    
+    for move in initial_moves:
+        if move[1][0] == my_goal:
+            return move
+    
+    best_move = initial_moves[0]
+    
+    for depth in range(1, 30):
+        if time.time() - start_time > TIME_LIMIT * 0.6:
+            break
+        
+        nodes[0] = 0
+        score, move = negamax(me, opp, direction, depth, float('-inf'), float('inf'))
+        
+        if move is not None:
+            best_move = move
+            if score is not None and score > 5000000:
+                break
+    
+    return best_move
+</code>

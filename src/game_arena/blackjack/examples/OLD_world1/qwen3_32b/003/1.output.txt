@@ -1,0 +1,115 @@
+To solve this simplified **Blackjack-like game**, we define a **policy function** that determines whether to **HIT** or **STAY** based on the current hand and the target score `T`. The goal is to **maximize the chance of not busting and getting as close as possible to the target**, while minimizing risk.
+
+---
+
+### **Overview**
+
+The game is played with a 13-card deck. Cards have the following values:
+- `2`–`10`: Face value
+- `J`, `Q`, `K`: 10
+- `A`: **11** if hand value ≤ `T`, **1** otherwise
+
+The policy function must return either `"HIT"` or `"STAY"` for each call. The policy uses a **recursive approach with memoization** to compute the expected value of staying or hitting.
+
+---
+
+### **Key Steps in the Policy:**
+
+1. **Card Value Calculation**:
+   - Calculate the value of each hand, considering aces correctly (11 if not over target, 1 otherwise).
+
+2. **Best Expected Value Function**:
+   - For each hand, recursively compute the **expected value** of continuing to hit or staying.
+   - Memoization is used to avoid re-calculating for the same hand.
+
+3. **Action Decision**:
+   - Compare the expected value **if you choose to hit** with the **value of staying**.
+   - Return `"HIT"` if it improves the expected outcome, `"STAY"` otherwise.
+
+---
+
+### **Python Implementation**
+
+```python
+import functools
+
+def calculate_value(hand, target):
+    total = 0
+    aces = 0
+    for card in hand:
+        if card == 'A':
+            total += 11
+            aces += 1
+        elif card in ('J', 'Q', 'K'):
+            total += 10
+        else:
+            total += int(card)
+    if total > target:
+        total -= 10 * aces
+    return total
+
+# List of all cards in the deck
+ALL_CARDS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+
+# Memoized function to compute the best expected value for a given hand and target
+@functools.lru_cache(maxsize=None)
+def best_expected_value(hand_tuple, target):
+    hand = list(hand_tuple)
+    value = calculate_value(hand, target)
+    
+    if value > target:
+        return -10000  # Represents a busted hand
+    
+    remaining_cards = [card for card in ALL_CARDS if card not in hand]
+    
+    if not remaining_cards:
+        return value
+    
+    hit_values = []
+    for card in remaining_cards:
+        new_hand = hand + [card]
+        new_hand_tuple = tuple(sorted(new_hand))
+        hit_values.append(best_expected_value(new_hand_tuple, target))
+    
+    hit_avg = sum(hit_values) / len(remaining_cards)
+    return max(value, hit_avg)
+
+def policy(hand: list[str], target: int) -> str:
+    hand_tuple = tuple(sorted(hand))
+    value = calculate_value(hand, target)
+    remaining_cards = [card for card in ALL_CARDS if card not in hand]
+
+    if not remaining_cards:
+        return "STAY"
+    
+    hit_values = []
+    for card in remaining_cards:
+        new_hand = hand + [card]
+        new_hand_tuple = tuple(sorted(new_hand))
+        hit_values.append(best_expected_value(new_hand_tuple, target))
+    
+    hit_avg = sum(hit_values) / len(remaining_cards)
+
+    return "HIT" if hit_avg > value else "STAY"
+```
+
+---
+
+### **Explanation**
+
+- **`calculate_value`** is responsible for calculating the real-time value of the hand based on current rules for ace valuation.
+- **`best_expected_value`** evaluates the expected future value of continuing to hit from a given hand. The recursion explores all possible next moves and uses a negative number to represent a busted hand.
+- **`policy`** compares the value of staying versus the **average expected value of continuing to hit**, selecting the better option.
+
+---
+
+### **Performance**
+
+- Thanks to **memoization (`@functools.lru_cache`)**, many repeated states are cached, significantly improving performance.
+- For valid inputs (hand with total value ≤ `T`) and reasonable `T`-values (within the allowed range 10 to 30), the recursive approach performs well under the **1-second time constraint**.
+
+---
+
+### **Conclusion**
+
+This policy balances **risk and reward** effectively. It avoids busting where possible, and leverages the structure of the cards and target values to guide decisions optimally.

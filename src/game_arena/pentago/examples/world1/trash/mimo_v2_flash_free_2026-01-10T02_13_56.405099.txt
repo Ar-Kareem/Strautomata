@@ -1,0 +1,361 @@
+The problem asks me to implement a move-selection policy for Pentago. The game is played on a 6x6 board, and a turn consists of placing a marble and then rotating a 3x3 quadrant. I need to output a move string that maximizes my chances of winning.
+
+### Strategy
+I will implement a function `policy(you, opponent)` that uses a 2-ply lookahead (my move -> opponent's best move -> my best response) combined with a greedy heuristic. This approach is chosen because it's computationally feasible within the 1-second time limit (even in pure Python) and provides a decent level of strategic depth without the complexity of a full Alpha-Beta search which might be too slow or require deep optimizations.
+
+1.  **Representation**: I'll convert the input lists `you` and `opponent` into a NumPy array of size 6x6, where `1` represents my marble, `2` represents the opponent's marble, and `0` is empty. This simplifies processing.
+2.  **Move Generation**: I will generate all legal moves (placing on an empty cell + rotating any of the 4 quadrants in either direction).
+3.  **Evaluation**: I will implement a `evaluate(board, player)` function that assigns a score based on the presence of "lines" (sequences of marbles). I'll assign high weights to lines of 5 (win), 4 (threats), and 3 (open threats). The evaluation will also reward having threats that are not blocked by the opponent.
+4.  **Search (Lookahead)**:
+    *   **Root Level (Max)**: Iterate through all my legal moves. Apply the move to the board.
+    *   **Opponent Level (Min)**: For each of my moves, generate all of the opponent's legal moves. Apply them. Evaluate the board from *my* perspective (positive score is good for me).
+    *   Since I want to maximize my outcome, I will select the move that leads to the highest score after the opponent makes their *best* response (the move that minimizes my score).
+5.  **Optimization**: To ensure the code runs within the time limit, I will limit the lookahead search to a subset of promising moves if the total number of legal moves is very high (e.g., near the start of the game). I will prioritize placements that connect with existing my marbles or block opponent's lines.
+6.  **Win/Loss Detection**: I will check if any move results in an immediate win (5-in-a-row) and prioritize that. I will also try to block immediate opponent wins.
+
+This approach balances intelligence and performance.
+
+```python
+import numpy as np
+import itertools
+
+def policy(you, opponent):
+    """
+    Pentago policy implementation using a 2-ply search with heuristic evaluation.
+    """
+    
+    # --- 1. State Representation ---
+    # 0: Empty, 1: You, 2: Opponent
+    board = np.zeros((6, 6), dtype=int)
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 1:
+                board[r, c] = 1
+            elif opponent[r][c] == 1:
+                board[r, c] = 2
+    
+    # Helper: Check for 5-in-a-row
+    def check_win(bd, player_id):
+        # Check horizontal, vertical, diagonals
+        # We look for sequences of 5.
+        # We need to handle the edges carefully.
+        
+        # Directions: (dr, dc)
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        
+        for r in range(6):
+            for c in range(6):
+                if bd[r, c] != player_id:
+                    continue
+                for dr, dc in directions:
+                    # Check if 5-in-row fits
+                    if 0 <= r + 4*dr < 6 and 0 <= c + 4*dc < 6:
+                        count = 1
+                        for i in range(1, 5):
+                            if bd[r + i*dr, c + i*dc] == player_id:
+                                count += 1
+                            else:
+                                break
+                        if count == 5:
+                            return True
+        return False
+
+    # Helper: Rotate Quadrant
+    # Quad 0: (0,0) to (2,2)
+    # Quad 1: (0,3) to (2,5)
+    # Quad 2: (3,0) to (5,2)
+    # Quad 3: (3,3) to (5,5)
+    def rotate_quadrant(bd, quad, dir):
+        new_bd = bd.copy()
+        
+        # Define top-left corner of the quadrant
+        if quad == 0: r0, c0 = 0, 0
+        elif quad == 1: r0, c0 = 0, 3
+        elif quad == 2: r0, c0 = 3, 0
+        elif quad == 3: r0, c0 = 3, 3
+        
+        # Extract 3x3
+        sub = bd[r0:r0+3, c0:c0+3].copy()
+        
+        if dir == 'R': # Clockwise
+            # New[r, c] = Old[2-c, r]
+            rotated = np.rot90(sub, 3) # or -1
+        else: # 'L' Counter-clockwise
+            # New[r, c] = Old[c, 2-r]
+            rotated = np.rot90(sub, 1)
+            
+        new_bd[r0:r0+3, c0:c0+3] = rotated
+        return new_bd
+
+    # Helper: Evaluation Function
+    # Returns score from P1's perspective (positive = P1 winning)
+    def evaluate(bd, p1_id, p2_id):
+        if check_win(bd, p1_id): return 1000000
+        if check_win(bd, p2_id): return -1000000
+        
+        score = 0
+        # Scan all lines (horizontal, vertical, diag, anti-diag)
+        # We look for sequences of 0, p1, p2.
+        # We score based on length of contiguous p1/p2 and number of empty spots around.
+        
+        # Extract lines is tricky on 6x6. 
+        # Let's iterate all starting positions and directions.
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        
+        for r in range(6):
+            for c in range(6):
+                for dr, dc in directions:
+                    # We want to iterate over segments of length 5 or 4 to count threats
+                    # But to avoid double counting, let's just check every cell as start of a line of 5
+                    # Actually, let's look for "patterns" in 5-cell windows.
+                    
+                    end_r = r + 4*dr
+                    end_c = c + 4*dc
+                    if 0 <= end_r < 6 and 0 <= end_c < 6:
+                        # Collect cells in this line
+                        line = []
+                        for i in range(5):
+                            line.append(bd[r + i*dr, c + i*dc])
+                        
+                        # Score this line
+                        p1_count = sum(1 for x in line if x == p1_id)
+                        p2_count = sum(1 for x in line if x == p2_id)
+                        empty_count = sum(1 for x in line if x == 0)
+                        
+                        # If both present, it's blocked. Lower value.
+                        if p1_count > 0 and p2_count > 0:
+                            continue
+                        
+                        if p1_count > 0:
+                            # P1 threat
+                            val = 0
+                            if p1_count == 4: val = 5000
+                            elif p1_count == 3: val = 100 # 100
+                            elif p1_count == 2: val = 10   # 10
+                            else: val = 1
+                            
+                            # Bonus if open (empty spots on ends)
+                            # We check the cells immediately before and after the line of 5?
+                            # Actually, just having empty cells in the line helps.
+                            # Let's just boost based on empty_count in the 5-window
+                            val += empty_count * 5
+                            score += val
+                            
+                        elif p2_count > 0:
+                            # P2 threat (subtraction from score)
+                            val = 0
+                            if p2_count == 4: val = 6000 # Slightly higher priority to block than to build
+                            elif p2_count == 3: val = 100
+                            elif p2_count == 2: val = 10
+                            else: val = 1
+                            
+                            val += empty_count * 5
+                            score -= val
+                            
+        return score
+
+    # --- 2. Generate Moves ---
+    # We need to generate (row, col, quad, dir)
+    
+    # Optimization: Near the start of the game, there are 36 * 4 * 2 = 288 moves.
+    # Searching 288 * (up to remaining cells * 8) is too slow.
+    # We need to prune.
+    
+    # Get empty cells
+    empty_cells = []
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 0:
+                empty_cells.append((r, c))
+                
+    # Get valid quads (0, 1, 2, 3) and dirs
+    rotations = [(q, d) for q in range(4) for d in ['L', 'R']]
+    
+    # --- Strategy Logic ---
+    
+    # 1. Check for immediate win
+    # If I can place a marble and rotate to win, do it.
+    # Iterating all moves might be heavy, but we can optimize.
+    # Actually, let's just loop. 288 moves is okay if evaluation is fast.
+    
+    best_score = -float('inf')
+    best_move = None
+    
+    # Pruning: If board is dense, search all. If sparse, search only near existing marbles.
+    # Let's use a heuristic: prioritize placing near my marbles or blocking opponent marbles.
+    
+    candidate_placements = []
+    
+    # If early game (e.g., < 10 marbles total), restrict placements
+    my_count = np.count_nonzero(board == 1)
+    opp_count = np.count_nonzero(board == 2)
+    total_stones = my_count + opp_count
+    
+    if total_stones < 8:
+        # Prioritize center or corners? Pentago is connection-based.
+        # Let's just pick a few random empty cells + center-ish area if empty
+        # But wait, we need a guaranteed legal move.
+        # Let's use a heuristic filter: look for cells that are neighbors to existing my stones
+        # or opponent stones (to block).
+        neighbors = set()
+        # Add neighbors of my stones
+        dr_dc = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+        for r in range(6):
+            for c in range(6):
+                if board[r, c] == 1:
+                    for dr, dc in dr_dc:
+                        nr, nc = r+dr, c+dc
+                        if 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+                            neighbors.add((nr, nc))
+                elif board[r, c] == 2:
+                    for dr, dc in dr_dc:
+                        nr, nc = r+dr, c+dc
+                        if 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+                            neighbors.add((nr, nc))
+        
+        if neighbors:
+            candidate_placements = list(neighbors)
+        else:
+            # Fallback: all empty cells
+            candidate_placements = empty_cells
+    else:
+        # Mid/Late game: search all
+        candidate_placements = empty_cells
+        
+    # Speed limit: if too many candidates, take top N by distance from center or just random subset
+    # Actually, let's just take all if possible. 288 candidates.
+    # For each candidate, we try 8 rotations.
+    
+    # We need to generate moves.
+    # To speed up, we can check for immediate wins first.
+    # If an immediate win exists, we don't need to do deep search.
+    
+    # Check for immediate wins
+    for r, c in candidate_placements:
+        for q, d in rotations:
+            # Temp place
+            temp_board = board.copy()
+            temp_board[r, c] = 1 # I place
+            
+            # Rotate
+            rotated_board = rotate_quadrant(temp_board, q, d)
+            
+            if check_win(rotated_board, 1):
+                # Found a winning move! Return it immediately.
+                # Convert 0-index to 1-index for output
+                return f"{r+1},{c+1},{q},{d}"
+                
+    # Check for immediate blocks (opponent win next turn if I don't block)
+    # This is a bit harder to do without lookahead, but we can simulate:
+    # If I place at P and rotate R, does opponent have a win on the resulting board?
+    # Actually, the best defense is a good offense, or just lookahead.
+    
+    # --- 2-Ply Search (Maximize My Score, Minimize Opponent Score) ---
+    
+    # To save time, if the search space is huge, we might reduce candidate placements further.
+    if len(candidate_placements) * 8 > 500:
+        # Fallback to greedy? Or reduce placements.
+        # Let's reduce placements to those that form lines of 2+ of my stones
+        prioritized = []
+        for r, c in candidate_placements:
+            # Count my neighbors
+            neighbors = 0
+            for dr, dc in dr_dc:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 1:
+                    neighbors += 1
+            if neighbors > 0:
+                prioritized.append((r, c))
+        
+        if prioritized:
+            candidate_placements = prioritized[:20] # Cap at 20
+        else:
+            candidate_placements = candidate_placements[:20] # Cap at 20
+            
+    # Evaluate all moves in candidate list
+    for r, c in candidate_placements:
+        for q, d in rotations:
+            # My Move
+            my_board = board.copy()
+            my_board[r, c] = 1
+            board_after_me = rotate_quadrant(my_board, q, d)
+            
+            # Check if this move blocks opponent win? (Implicit in eval)
+            # Evaluate immediate state? 
+            # If immediate score is very high, it's probably good.
+            # But we need to anticipate opponent.
+            
+            # Generate Opponent Responses
+            # Optimization: Only check opponent responses that matter.
+            # 1. Can opponent win immediately on board_after_me?
+            # 2. Can opponent block my win?
+            
+            # Let's do a quick check for opponent immediate win
+            opp_wins = False
+            # Get opponent empty cells
+            opp_empty = []
+            for rr in range(6):
+                for cc in range(6):
+                    if board_after_me[rr, cc] == 0:
+                        opp_empty.append((rr, cc))
+            
+            # Prune opponent responses to save time? 
+            # If we don't prune, this is (n_my_moves * 8) * (n_opp_moves * 8).
+            # If n_my_moves is 20, n_opp_moves might be 32. 20*8 * 32*8 = 40960 evals.
+            # 40k evals is acceptable if eval is fast (numpy).
+            
+            worst_score_for_me = float('inf')
+            
+            # Limit opponent search if too many
+            search_opp_moves = []
+            for rr, cc in opp_empty:
+                for oq, od in rotations:
+                    search_opp_moves.append((rr, cc, oq, od))
+            
+            # If too many opponent moves, maybe just evaluate the state after my move?
+            # But that ignores defense.
+            # Let's cap opponent moves to 50 if too many.
+            if len(search_opp_moves) > 50:
+                # Sort opponent moves by potential to win (simple heuristic)
+                # But for speed, just take first 50 or random 50.
+                # Actually, taking the first 50 is biased by iteration order.
+                # Let's take a slice.
+                search_opp_moves = search_opp_moves[:50]
+            
+            for orr, oc, oq, od in search_opp_moves:
+                opp_board = board_after_me.copy()
+                opp_board[orr, oc] = 2
+                final_board = rotate_quadrant(opp_board, oq, od)
+                
+                # Eval from My perspective
+                val = evaluate(final_board, 1, 2)
+                
+                # Update worst case for this my-move
+                if val < worst_score_for_me:
+                    worst_score_for_me = val
+                    
+                # Pruning: If opponent found a winning move (val very negative), 
+                # this my-move is bad, stop searching opponent moves.
+                if val < -500000:
+                    worst_score_for_me = -1000000 # Very bad
+                    break
+            
+            # Now, we want to maximize this worst_score (Maximin)
+            if worst_score_for_me > best_score:
+                best_score = worst_score_for_me
+                best_move = (r, c, q, d)
+            elif worst_score_for_me == best_score:
+                # Tie breaker: prefer moves that result in better immediate state?
+                # Or just keep the first found. Or random?
+                if best_move is None:
+                    best_move = (r, c, q, d)
+    
+    # Fallback: If no move found (shouldn't happen), pick random
+    if best_move is None:
+        r, c = empty_cells[0]
+        best_move = (r, c, 0, 'R')
+        
+    # Return formatted string
+    r, c, q, d = best_move
+    return f"{r+1},{c+1},{q},{d}"
+```

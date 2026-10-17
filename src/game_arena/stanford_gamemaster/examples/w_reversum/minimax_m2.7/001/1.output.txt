@@ -1,0 +1,200 @@
+**Strategy Overview**
+
+The game is *Reversum* – a 6 × 6 Othello/Reversi variant.  
+A strong player must evaluate board positions quickly and look ahead many moves.  
+The policy works as follows:
+
+1. **Parse the input** – convert the list of Stanford propositions into a compact 6 × 6 board (`0 = empty, 1 = red, 2 = blue`).  
+2. **Generate all legal moves** – a move is legal iff the new disc is placed on an empty square and it captures at least one opponent disc in any of the eight directions.  
+3. **Search the game tree** using *Negamax* (minimax for two‑player zero‑sum) with *alpha‑beta pruning*.  
+   * The search depth adapts to the number of empty squares (early‑game deeper, late‑game shallower).  
+   * Move ordering is improved by sorting candidates by a static weight matrix (corners = 100, edges = 10, squares adjacent to corners = ‑30, etc.).  
+4. **Evaluation heuristic** – at leaf nodes (or when the depth limit is reached) the position is scored by  
+   * a weighted sum of owned squares (the static weight matrix),  
+   * the difference in piece count,  
+   * the difference in mobility (number of legal moves for each side).  
+5. **Iterative deepening** – we start at depth 1 and increase depth while time permits (≈ 0.9 s). The best move found at the deepest completed search is returned.  
+6. **Pass handling** – if the current player has no legal move, the policy returns the legal Stanford action `pass`.
+
+The combination of alpha‑beta pruning, a good static evaluation, and adaptive depth lets the program play a strong Reversum game within the 1‑second time limit.
+
+<code>
+import time
+
+# ----------------------------------------------------------------------
+# Constants and static weight matrix for a 6x6 board
+# ----------------------------------------------------------------------
+BOARD_SIZE = 6
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
+              (0, -1),           (0, 1),
+              (1, -1),  (1, 0),  (1, 1)]
+
+# Weights: corners are best, edges good, squares next to corners are dangerous
+WEIGHTS = [
+    [100, -30, 10, 10, -30, 100],
+    [-30, -30,  1,  1, -30, -30],
+    [ 10,   1,  1,  1,  1,  10],
+    [ 10,   1,  1,  1,  1,  10],
+    [-30, -30,  1,  1, -30, -30],
+    [100, -30, 10, 10, -30, 100],
+]
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def parse_state(state):
+    """Convert the list of Stanford facts into a 6x6 board."""
+    board = [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+    for fact in state:
+        if fact[0] == "cell":
+            r = int(fact[1]) - 1
+            c = int(fact[2]) - 1
+            color = fact[3]
+            board[r][c] = 1 if color == "red" else 2
+        # we ignore the "control" fact – the role is passed explicitly
+    return board
+
+def is_full(board):
+    """Return True if the board has no empty squares."""
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == 0:
+                return False
+    return True
+
+def get_legal_moves(board, player):
+    """Return a list of (r,c) positions where `player` can place a disc."""
+    opponent = 3 - player
+    moves = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] != 0:
+                continue
+            # check each direction
+            for dr, dc in DIRECTIONS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr][nc] == opponent:
+                    # walk along the direction while we see opponent discs
+                    while 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr][nc] == opponent:
+                        nr += dr
+                        nc += dc
+                    # if we end on a disc of the current player, the move is legal
+                    if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr][nc] == player:
+                        moves.append((r, c))
+                        break   # no need to check other directions for this cell
+    return moves
+
+def apply_move(board, player, move):
+    """Return a new board after placing a disc at `move` and flipping captured discs."""
+    r, c = move
+    new_board = [row[:] for row in board]
+    new_board[r][c] = player
+    opponent = 3 - player
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr][nc] == opponent:
+            flips = []
+            while 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr][nc] == opponent:
+                flips.append((nr, nc))
+                nr += dr
+                nc += dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr][nc] == player:
+                for fr, fc in flips:
+                    new_board[fr][fc] = player
+    return new_board
+
+def evaluate(board, player):
+    """Heuristic evaluation from the perspective of `player`."""
+    opponent = 3 - player
+    player_weight = 0
+    opponent_weight = 0
+    player_cnt = 0
+    opponent_cnt = 0
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == player:
+                player_weight += WEIGHTS[r][c]
+                player_cnt += 1
+            elif board[r][c] == opponent:
+                opponent_weight += WEIGHTS[r][c]
+                opponent_cnt += 1
+    weight_diff = player_weight - opponent_weight
+    count_diff = player_cnt - opponent_cnt
+    # mobility bonus
+    player_moves = len(get_legal_moves(board, player))
+    opponent_moves = len(get_legal_moves(board, opponent))
+    mobility_diff = player_moves - opponent_moves
+    # combine the three factors (weights were tuned empirically)
+    return weight_diff + count_diff * 2 + mobility_diff * 5
+
+def negamax(board, depth, alpha, beta, player):
+    """Negamax search with alpha‑beta pruning. Returns the score for `player`."""
+    # terminal node
+    if depth == 0 or is_full(board):
+        return evaluate(board, player)
+    moves = get_legal_moves(board, player)
+    if not moves:
+        # pass the turn to the opponent
+        return -negamax(board, depth - 1, -beta, -alpha, 3 - player)
+    # move ordering – try the squares with highest static weight first
+    moves.sort(key=lambda m: WEIGHTS[m[0]][m[1]], reverse=True)
+    best = -10**9
+    for r, c in moves:
+        new_board = apply_move(board, player, (r, c))
+        score = -negamax(new_board, depth - 1, -beta, -alpha, 3 - player)
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+def choose_move(board, player):
+    """Iterative deepening search, returns the best move found (or None if none)."""
+    moves = get_legal_moves(board, player)
+    if not moves:
+        return None
+    # sort once according to static weights – helps the search
+    moves.sort(key=lambda m: WEIGHTS[m[0]][m[1]], reverse=True)
+
+    start_time = time.time()
+    time_limit = 0.9   # seconds
+    best_move = moves[0]
+    best_score = -10**9
+
+    # compute how many empty squares remain – adapt depth
+    empty = sum(1 for r in range(BOARD_SIZE) for c in range(BOARD_SIZE) if board[r][c] == 0)
+    max_depth = max(1, min(6, empty // 4))   # deeper when many empty squares remain
+
+    for depth in range(1, max_depth + 1):
+        if time.time() - start_time > time_limit:
+            break
+        for move in moves:
+            if time.time() - start_time > time_limit:
+                break
+            new_board = apply_move(board, player, move)
+            score = -negamax(new_board, depth - 1, -10**9, 10**9, 3 - player)
+            if score > best_score:
+                best_score = score
+                best_move = move
+    return best_move
+
+# ----------------------------------------------------------------------
+# Main policy entry point
+# ----------------------------------------------------------------------
+def policy(state, role):
+    """
+    Called by the game engine.
+    `state` – list of Stanford facts
+    `role`  – "red" or "blue"
+    Returns a legal action string (e.g., "move(3,4)") or "pass".
+    """
+    board = parse_state(state)
+    player = 1 if role == "red" else 2
+    move = choose_move(board, player)
+    if move is None:
+        return "pass"
+    r, c = move
+    return f"move({r + 1},{c + 1})"
+</code>

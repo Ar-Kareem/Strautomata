@@ -1,0 +1,364 @@
+
+import time
+from math import inf
+
+# Kalah policy:
+# - Iterative deepening alpha-beta / negamax
+# - Correct handling of extra turns, captures, and terminal sweeping
+# - Move ordering favors extra turns, captures, and larger tactical gains
+# - Time-bounded and always returns a legal move
+
+
+HOUSES = 6
+STORE = 6
+
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    legal = [i for i in range(HOUSES) if you[i] > 0]
+    if not legal:
+        return 0  # should not happen per prompt
+
+    start = time.perf_counter()
+    # Conservative time budget for arena safety
+    TIME_LIMIT = 0.92
+
+    # Fast path if only one move
+    if len(legal) == 1:
+        return legal[0]
+
+    # Opening / tactical quick choice before search
+    quick = quick_tactical_move(you, opponent)
+    best_move = quick if quick in legal else legal[0]
+
+    # Iterative deepening
+    depth = 1
+    tt = {}
+
+    try:
+        while True:
+            if time.perf_counter() - start > TIME_LIMIT:
+                break
+            move = search_root(you, opponent, depth, start, TIME_LIMIT, tt)
+            if move is not None:
+                best_move = move
+            depth += 1
+            # Practical cap; deeper rarely helps under 1s unless branching collapses
+            if depth > 16:
+                break
+    except TimeoutError:
+        pass
+
+    if best_move not in legal:
+        best_move = legal[0]
+    return best_move
+
+
+def quick_tactical_move(you, opp):
+    legal = [i for i in range(HOUSES) if you[i] > 0]
+    best = legal[0]
+    best_score = -10**18
+    for m in legal:
+        ny, no, extra = apply_move(you, opp, m)
+        score = 0
+        if extra:
+            score += 1000
+        score += 30 * (ny[STORE] - you[STORE])
+        score -= 10 * (no[STORE] - opp[STORE])
+        score += sum(ny[:HOUSES]) - sum(no[:HOUSES])
+        # Prefer immediate terminal wins
+        if is_terminal(ny, no):
+            finalize_terminal(ny, no)
+            score += 100000 * terminal_result(ny, no)
+        if score > best_score:
+            best_score = score
+            best = m
+    return best
+
+
+def search_root(you, opp, depth, start, time_limit, tt):
+    legal = ordered_moves(you, opp)
+    if not legal:
+        return None
+
+    alpha = -inf
+    beta = inf
+    best_move = legal[0]
+    best_val = -inf
+
+    for m in legal:
+        check_time(start, time_limit)
+        ny, no, extra = apply_move(you, opp, m)
+        if extra:
+            val = negamax(ny, no, depth - 1, alpha, beta, True, start=start, time_limit=time_limit, tt=tt)
+        else:
+            val = -negamax(no, ny, depth - 1, -beta, -alpha, True, start=start, time_limit=time_limit, tt=tt)
+        if val > best_val:
+            best_val = val
+            best_move = m
+        if val > alpha:
+            alpha = val
+    return best_move
+
+
+def negamax(you, opp, depth, alpha, beta, allow_tt, start, time_limit, tt):
+    check_time(start, time_limit)
+
+    if is_terminal(you, opp):
+        y = you[:]
+        o = opp[:]
+        finalize_terminal(y, o)
+        return terminal_eval(y, o)
+
+    if depth <= 0:
+        return evaluate(you, opp)
+
+    key = None
+    if allow_tt:
+        key = (tuple(you), tuple(opp), depth)
+        if key in tt:
+            return tt[key]
+
+    best = -inf
+    moves = ordered_moves(you, opp)
+
+    # If only one legal move, no need for broad branching effects
+    for m in moves:
+        ny, no, extra = apply_move(you, opp, m)
+        if extra:
+            val = negamax(ny, no, depth - 1, alpha, beta, allow_tt, start, time_limit, tt)
+        else:
+            val = -negamax(no, ny, depth - 1, -beta, -alpha, allow_tt, start, time_limit, tt)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    if allow_tt and key is not None:
+        tt[key] = best
+    return best
+
+
+def ordered_moves(you, opp):
+    moves = [i for i in range(HOUSES) if you[i] > 0]
+    scored = []
+    for m in moves:
+        ny, no, extra = apply_move(you, opp, m)
+        score = 0
+
+        # Strongly prioritize extra moves
+        if extra:
+            score += 100000
+
+        # Immediate store gain
+        score += 200 * (ny[STORE] - you[STORE])
+
+        # Captures typically reflected in store gain; also reward opp depletion
+        score += 10 * (sum(opp[:HOUSES]) - sum(no[:HOUSES]))
+
+        # Prefer creating low-vulnerability / active positions
+        score += sum(ny[:HOUSES]) - sum(no[:HOUSES])
+
+        # Terminal tactical bonus
+        if is_terminal(ny, no):
+            fy = ny[:]
+            fo = no[:]
+            finalize_terminal(fy, fo)
+            score += 1000000 * terminal_result(fy, fo)
+
+        scored.append((score, m))
+
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+
+def apply_move(you, opp, move):
+    y = you[:]
+    o = opp[:]
+
+    seeds = y[move]
+    y[move] = 0
+
+    side = 0  # 0 => your side y, 1 => opponent side o
+    idx = move + 1
+    last_side = None
+    last_idx = None
+
+    while seeds > 0:
+        if side == 0:
+            while idx < HOUSES and seeds > 0:
+                was_empty = (y[idx] == 0)
+                y[idx] += 1
+                seeds -= 1
+                last_side, last_idx = 0, idx
+                idx += 1
+            if seeds == 0:
+                break
+
+            # your store
+            y[STORE] += 1
+            seeds -= 1
+            last_side, last_idx = 0, STORE
+            if seeds == 0:
+                break
+
+            side = 1
+            idx = 0
+        else:
+            while idx < HOUSES and seeds > 0:
+                o[idx] += 1
+                seeds -= 1
+                last_side, last_idx = 1, idx
+                idx += 1
+            if seeds == 0:
+                break
+
+            # skip opponent store; wrap to your side
+            side = 0
+            idx = 0
+
+    extra = (last_side == 0 and last_idx == STORE)
+
+    # Capture if last seed landed in your empty house and opposite had seeds
+    if (not extra) and last_side == 0 and 0 <= last_idx < HOUSES:
+        if y[last_idx] == 1 and o[HOUSES - 1 - last_idx] > 0:
+            y[STORE] += y[last_idx] + o[HOUSES - 1 - last_idx]
+            y[last_idx] = 0
+            o[HOUSES - 1 - last_idx] = 0
+
+    # Terminal sweep
+    if all(v == 0 for v in y[:HOUSES]) or all(v == 0 for v in o[:HOUSES]):
+        finalize_terminal(y, o)
+
+    return y, o, extra
+
+
+def is_terminal(you, opp):
+    return all(v == 0 for v in you[:HOUSES]) or all(v == 0 for v in opp[:HOUSES])
+
+
+def finalize_terminal(you, opp):
+    sy = sum(you[:HOUSES])
+    so = sum(opp[:HOUSES])
+    if sy == 0 or so == 0:
+        you[STORE] += sy
+        opp[STORE] += so
+        for i in range(HOUSES):
+            you[i] = 0
+            opp[i] = 0
+
+
+def terminal_result(you, opp):
+    if you[STORE] > opp[STORE]:
+        return 1
+    if you[STORE] < opp[STORE]:
+        return -1
+    return 0
+
+
+def terminal_eval(you, opp):
+    # Huge margin for solved terminal states
+    return 10_000_000 * terminal_result(you, opp) + (you[STORE] - opp[STORE])
+
+
+def evaluate(you, opp):
+    # Terminal safety
+    if is_terminal(you, opp):
+        y = you[:]
+        o = opp[:]
+        finalize_terminal(y, o)
+        return terminal_eval(y, o)
+
+    my_store = you[STORE]
+    op_store = opp[STORE]
+    my_side = sum(you[:HOUSES])
+    op_side = sum(opp[:HOUSES])
+
+    val = 0
+
+    # Core material / score terms
+    val += 120 * (my_store - op_store)
+    val += 12 * (my_side - op_side)
+
+    # Extra-turn opportunities
+    my_extra = 0
+    op_extra = 0
+    for i in range(HOUSES):
+        if you[i] > 0 and lands_in_own_store(you, i):
+            my_extra += 1
+        if opp[i] > 0 and lands_in_own_store(opp, i):
+            op_extra += 1
+    val += 45 * (my_extra - op_extra)
+
+    # Capture potential
+    val += 18 * (capture_potential(you, opp) - capture_potential(opp, you))
+
+    # Encourage moving seeds toward scoring / avoid stranded heaps
+    val -= 2 * distribution_penalty(you[:HOUSES])
+    val += 2 * distribution_penalty(opp[:HOUSES])
+
+    # Endgame sensitivity: stores matter more when few seeds remain
+    remaining = my_side + op_side
+    if remaining <= 18:
+        val += 40 * (my_store - op_store)
+    if remaining <= 10:
+        val += 80 * (my_store - op_store)
+
+    return val
+
+
+def lands_in_own_store(side_arr, move):
+    seeds = side_arr[move]
+    if seeds <= 0:
+        return False
+    cycle = 13  # 6 houses + own store + 6 opp houses
+    return (move + seeds) % cycle == STORE
+
+
+def capture_potential(you, opp):
+    total = 0
+    for m in range(HOUSES):
+        seeds = you[m]
+        if seeds <= 0:
+            continue
+        pos = final_landing_pos_from_your_side(m, seeds)
+        if pos is None:
+            continue
+        if 0 <= pos < HOUSES:
+            # Approximate "was empty before landing" for direct landing cases
+            # Most important for short tactical captures.
+            if m + seeds < HOUSES + 1:
+                if you[pos] == 0 and opp[HOUSES - 1 - pos] > 0:
+                    total += 1 + opp[HOUSES - 1 - pos]
+            else:
+                # Weakened estimate for long wraps
+                if opp[HOUSES - 1 - pos] > 0:
+                    total += opp[HOUSES - 1 - pos] * 0.3
+    return total
+
+
+def final_landing_pos_from_your_side(move, seeds):
+    route_len = 13
+    t = (move + seeds) % route_len
+    if t == STORE:
+        return None  # own store
+    if 0 <= t < HOUSES:
+        return t
+    # t in 7..12 are opponent houses; no capture there
+    return None
+
+
+def distribution_penalty(houses):
+    # Penalize clumping a bit; smoother distributions are tactically flexible
+    s = 0
+    avg = sum(houses) / HOUSES
+    for x in houses:
+        d = x - avg
+        s += d * d
+    return s
+
+
+def check_time(start, limit):
+    if time.perf_counter() - start > limit:
+        raise TimeoutError()

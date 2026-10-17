@@ -1,0 +1,93 @@
+<thinking>
+The policy must decide where to fire next based only on the known board state (0 = unknown, -1 = miss, 1 = hit).  
+A classic approach is a “probability heat‑map”: for every possible placement of each remaining ship we check whether it contradicts any known miss and whether it could contain known hits. Every placement that is still legal contributes one count to every unknown cell it occupies. After tallying all placements the unknown cell with the highest count is the most likely to hide a ship segment, so we fire there.
+
+Implementation details:
+1. Ship lengths are fixed (5,4,3,3,2). We do not try to infer which ships have already been sunk; the heat‑map works regardless.
+2. For each ship length and orientation we slide the ship over the board. A placement is legal if:
+   * No cell of the placement is a known miss (‑1).
+   * Every known hit (1) that lies inside the ship is allowed – we do **not** require the ship to cover all current hits, because hits may belong to different ships. This still gives higher scores to cells that could extend existing hits.
+3. For every legal placement we add 1 to a weight matrix for each unknown cell (value 0) covered by the ship.
+4. After all placements are processed we pick the unknown cell with the highest weight. If several cells tie we choose one at random to avoid deterministic patterns.
+5. If, for any reason, the weight matrix stays all zeros (e.g., board completely filled with misses), we fallback to picking a random unknown cell.
+
+The algorithm runs in well under a second: at most ~2 × 10 × 10 × 5 ≈ 1000 placement checks, each examining ≤5 cells.
+
+The code below follows these steps and defines the required `policy` function. It also imports `random` for tie‑breaking.
+</thinking>
+
+<code>
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the next firing coordinate on a 10x10 Battleship board.
+
+    board: 10x10 matrix where
+        0  = unknown (not fired yet)
+       -1  = miss
+        1  = hit
+    Returns (row, col) of an unknown cell.
+    """
+    SIZE = 10
+    SHIP_LENGTHS = [5, 4, 3, 3, 2]
+
+    # Weight matrix for each cell
+    weight = [[0 for _ in range(SIZE)] for _ in range(SIZE)]
+
+    # Helper: check if a placement of given length and orientation is compatible
+    def placement_ok(start_r: int, start_c: int, length: int, dr: int, dc: int) -> bool:
+        """Return True if a ship of given length placed starting at (start_r,start_c)
+        moving by (dr,dc) each step does not conflict with known misses."""
+        for k in range(length):
+            r = start_r + dr * k
+            c = start_c + dc * k
+            cell = board[r][c]
+            if cell == -1:          # miss – cannot occupy this cell
+                return False
+        return True
+
+    # Iterate over all ships, orientations and start positions
+    for length in SHIP_LENGTHS:
+        # Horizontal (dr=0, dc=1)
+        for r in range(SIZE):
+            for c in range(SIZE - length + 1):
+                if placement_ok(r, c, length, 0, 1):
+                    # Add weight to every unknown cell this ship would cover
+                    for k in range(length):
+                        rr = r
+                        cc = c + k
+                        if board[rr][cc] == 0:   # only count unknown cells
+                            weight[rr][cc] += 1
+        # Vertical (dr=1, dc=0)
+        for r in range(SIZE - length + 1):
+            for c in range(SIZE):
+                if placement_ok(r, c, length, 1, 0):
+                    for k in range(length):
+                        rr = r + k
+                        cc = c
+                        if board[rr][cc] == 0:
+                            weight[rr][cc] += 1
+
+    # Find the unknown cell(s) with maximal weight
+    max_weight = -1
+    candidates = []
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == 0:          # only consider cells we haven't fired at
+                w = weight[r][c]
+                if w > max_weight:
+                    max_weight = w
+                    candidates = [(r, c)]
+                elif w == max_weight:
+                    candidates.append((r, c))
+
+    # If for some reason no candidates were found (shouldn't happen), pick any unknown cell
+    if not candidates:
+        unknown_cells = [(r, c) for r in range(SIZE) for c in range(SIZE) if board[r][c] == 0]
+        return random.choice(unknown_cells)
+
+    # Choose randomly among the best cells to avoid deterministic play
+    return random.choice(candidates)
+</code>

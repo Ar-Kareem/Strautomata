@@ -1,0 +1,84 @@
+
+import numpy as np
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    # Convert lists to numpy arrays
+    you = np.array(you)
+    opponent = np.array(opponent)
+    
+    rows, cols = you.shape  # 5x6
+    
+    # Directions: [dr, dc, char]
+    directions = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    
+    def is_valid_position(r, c):
+        return 0 <= r < rows and 0 <= c < cols
+    
+    # Find all legal moves
+    legal_moves = []
+    for r in range(rows):
+        for c in range(cols):
+            if you[r, c] == 1:  # Our piece
+                for dr, dc, dir_char in directions:
+                    nr, nc = r + dr, c + dc
+                    if is_valid_position(nr, nc) and opponent[nr, nc] == 1:
+                        legal_moves.append((r, c, dir_char, nr, nc))
+    
+    # If no legal moves, must still return something (should not happen in normal play)
+    if not legal_moves:
+        # Fallback: find any piece and try to move it somewhere (will fail legality check, but per rules we must return)
+        for r in range(rows):
+            for c in range(cols):
+                if you[r, c] == 1:
+                    # Just pick first possible direction
+                    for dr, dc, dir_char in [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]:
+                        nr, nc = r + dr, c + dc
+                        if is_valid_position(nr, nc):
+                            return f"{r},{c},{dir_char}"
+        # Last resort
+        return "0,0,U"
+    
+    # Scoring function for each move
+    def evaluate_move(r, c, dir_char, nr, nc):
+        score = 0
+        
+        # 1. Mobility after move: count liberties of the moved piece
+        post_move_liberties = 0
+        for dr, dc, _ in directions:
+            lr, lc = nr + dr, nc + dc
+            if is_valid_position(lr, lc) and (you[lr, lc] == 0 and opponent[lr, lc] == 0):  # Empty square
+                post_move_liberties += 1
+            elif is_valid_position(lr, lc) and opponent[lr, lc] == 1:  # Opponent piece to capture next
+                post_move_liberties += 2  # Bonus for potential captures
+        
+        score += post_move_liberties * 10
+        
+        # 2. Positional value: prefer center control
+        center_r, center_c = 2, 2.5
+        dist_to_center = abs(nr - center_r) + abs(nc - center_c)
+        positional_score = 6 - dist_to_center  # Higher score for closer to center
+        score += positional_score * 5
+        
+        # 3. Avoid edges slightly
+        if nr == 0 or nr == rows - 1 or nc == 0 or nc == cols - 1:
+            score -= 3
+            
+        # 4. Immediate capture bonus (already captured one, so base score reflects this)
+        # Additional check for double capture possibility (very rare in Clobber, but worth considering)
+        
+        return score
+    
+    # Evaluate all legal moves
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        r, c, dir_char, nr, nc = move
+        score = evaluate_move(r, c, dir_char, nr, nc)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Return the best move in required format
+    r, c, dir_char, _, _ = best_move
+    return f"{r},{c},{dir_char}"

@@ -1,0 +1,285 @@
+**Solution Explanation**
+
+For every round the function `policy(hand, target)` is called.  
+* `hand` – the list of cards we already have.  
+* `target` – the fixed score `T` we are trying to reach (10 ≤ T ≤ 30).
+
+The deck contains each rank once, therefore a card can never appear twice.
+The whole game state is completely described by
+
+```
+   current_sum   – value of our hand (Ace = 11 if it does not bust, else 1)
+   remaining     – set of cards still in our deck
+```
+
+The opponent’s actions are completely independent of ours – they have a
+different 13‑card deck.  
+The only thing that matters for us is **how close we can get to `T`
+without busting**.  If we never bust, the opponent can only beat us by
+reaching a larger (still safe) sum.
+
+Hence an optimal player never takes a card that makes the hand bust.
+Among all safe draws we would like to continue as long as we can still
+reach a larger total sum.  When no further safe draw can improve the
+final total we stop.
+
+The problem therefore reduces to the following deterministic decision
+problem:
+
+```
+state = (mask_of_remaining_cards, current_sum)
+allowed actions = draw any remaining card that does not bust
+value(state)    = maximum reachable total sum ≤ T from this state
+```
+
+`value(state)` is a simple recursion – we either stay (value = current_sum)
+or draw a safe card `c` and continue from the state where that card is
+removed.  Because the deck has only 13 cards the total number of different
+states is at most 2¹³ · 31 ≈ 250 000, far below the time limit.
+Memoising the recursion makes the evaluation O(1) after the first
+computation.
+
+If `value(state) == current_sum` there is no safe draw that can improve
+the final total → we must **STAY**.  
+Otherwise we **HIT** with a card that still lets us achieve the optimal
+value.  Any such card is safe, so we never bust.
+
+The algorithm is deterministic, risk‑averse (never busts) and always ends
+with the largest possible sum ≤ `target`.  Against any opponent that can
+bust, this is a very strong strategy; against an opponent that also
+avoids busting the result is a draw, which is optimal for both sides.
+
+--------------------------------------------------------------------
+
+**Correctness Proof**
+
+We prove that the implementation always returns an optimal action.
+
+*Lemma 1* – *Value recursion correctness*  
+For any state `(mask, s)` let `V(mask, s)` be the maximum sum ≤ `T`
+obtainable from that state when we continue to draw only safe cards.
+Then
+
+```
+V(mask, s) = max( s , max_{c∈mask, s+val(c) ≤ T} V(mask\{c}, s+val(c)) )
+```
+
+*Proof.*  
+From the state we have two possibilities:
+
+* stay → final sum is `s`;
+* draw a safe card `c` → the hand becomes `s+val(c)` and the remaining
+  deck is `mask\{c}`. From there we can achieve at most `V(mask\{c},
+  s+val(c))`.
+
+Taking the maximum over all admissible moves yields exactly the right
+hand side, which is therefore equal to `V(mask,s)`. ∎
+
+
+
+*Lemma 2* – *Memoised recursion computes the true `V`.*  
+The function `_max_sum` implements exactly the recursion of Lemma 1
+with memoisation, therefore it returns `V(mask, s)` for every reachable
+state.
+
+*Proof.*  
+`_max_sum(target, mask, s)` evaluates the two options described in
+Lemma 1: staying (`best = s`) and trying every bit set in `mask`.  
+For each safe card it recursively calls itself on the smaller mask and
+the new sum.  Because the recursion follows the recurrence and memoisation
+stores every result, the function returns the unique solution of the
+recurrence, i.e. `V(mask, s)`. ∎
+
+
+
+*Lemma 3* – *If `max_reach > current_sum` then a safe card exists that
+preserves optimality.*  
+Let `M = V(mask, s)`. By definition `M` is obtained by some safe card
+`c` (or by staying). If `M > s` the staying case cannot give `M`,
+hence there exists a safe card `c` with `V(mask\{c}, s+val(c)) = M`.  
+
+*Proof.* Directly from the definition of `M` as a maximum over all safe
+moves (including staying). ∎
+
+
+
+*Lemma 4* – *The algorithm’s decision rule is optimal.*  
+If the algorithm returns **STAY** then no safe draw can increase the final
+sum, therefore any alternative would not improve the outcome.  
+If it returns **HIT**, it selects a safe card `c` such that
+`V(mask\{c}, s+val(c)) = M`. By Lemma 3 such a card always exists.
+Drawing `c` keeps the attainable final total equal to the optimal value
+`M`. Any other safe draw yields a final total ≤ `M`; consequently the
+chosen move is at least as good as any possible move.
+
+*Proof.*  
+The algorithm computes `M = _max_sum(target, mask, s)`.  
+*If `M == s`* it stays – staying is the only way to reach `M`.  
+*If `M > s`* Lemma 3 guarantees the existence of a safe card with
+optimal continuation. The algorithm scans the remaining cards, evaluates
+that continuation for each safe card and returns **HIT** exactly when it
+finds a card achieving `M`. ∎
+
+
+
+*Theorem* – *`policy` always returns an optimal action.*  
+For the current hand the function computes the exact reachable optimum
+`M` (Lemma 2) and applies the decision rule proven optimal in
+Lemma 4. Therefore the returned action cannot be worse than any other
+legal action; i.e. it is optimal.
+
+*Proof.* Immediate from Lemma 4. ∎
+
+
+
+--------------------------------------------------------------------
+
+**Complexity Analysis**
+
+* `n = 13` – number of distinct ranks.
+* Number of possible remaining‑card masks = `2ⁿ = 8192`.
+* Current sum `s` can take at most `T+1 ≤ 31` different values.
+
+The memoised recursion explores each state once, each transition scans at
+most `n` bits.  Hence the total work over the whole program is  
+
+```
+O( 2ⁿ · (T+1) · n )  ≤  O(8192·31·13)  ≈ 3·10⁶ operations
+```
+
+well below the 1 second limit.  
+Memory consumption is one integer per state → at most `8192·31·4 bytes`
+≈ 1 MiB.
+
+--------------------------------------------------------------------
+
+**Reference Implementation (Python 3)**
+
+```python
+# Blackjack-like game – optimal safe‑draw policy
+# ------------------------------------------------
+# The deck contains each rank exactly once:
+#   A 2 3 4 5 6 7 8 9 10 J Q K
+# Value of J, Q, K is 10, Ace is 11 unless that would bust,
+# in which case it counts as 1.
+# ------------------------------------------------
+# The function policy(hand, target) must return "HIT" or "STAY".
+
+from functools import lru_cache
+from typing import List
+
+# ---- static data -------------------------------------------------
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+# card → base value (Ace handled separately)
+CARD_VALUE = {
+    "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7,
+    "8": 8, "9": 9, "10": 10, "J": 10, "Q": 10, "K": 10
+}
+# map rank to its index in the fixed order
+RANK_TO_IDX = {r: i for i, r in enumerate(RANKS)}
+
+# ---- helper: hand value -----------------------------------------
+def _hand_sum(hand: List[str], target: int) -> int:
+    """Value of the current hand respecting the Ace rule."""
+    base = 0
+    ace = False
+    for c in hand:
+        if c == "A":
+            ace = True
+        else:
+            base += CARD_VALUE[c]
+    if ace:
+        # Ace as 11 if it does not bust, otherwise 1
+        return base + 11 if base + 11 <= target else base + 1
+    return base
+
+# ---- DP: maximal reachable sum (never bust) ----------------------
+# memoisation table per target
+_max_sum_memo = {}
+
+def _max_sum(target: int, mask: int, cur_sum: int) -> int:
+    """
+    Return the largest sum ≤ target reachable from the state
+    (mask of remaining cards, cur_sum of the hand).
+    """
+    memo = _max_sum_memo.setdefault(target, {})
+    key = (mask, cur_sum)
+    if key in memo:
+        return memo[key]
+
+    best = cur_sum                     # staying gives current sum
+    m = mask
+    while m:
+        lsb = m & -m                   # lowest set bit
+        idx = (lsb.bit_length() - 1)   # its position
+        rank = RANKS[idx]
+
+        # effective value of the card in the current situation
+        if rank == "A":
+            val = 11 if cur_sum + 11 <= target else 1
+        else:
+            val = CARD_VALUE[rank]
+
+        if cur_sum + val <= target:    # safe draw
+            new_sum = cur_sum + val
+            best = max(best, _max_sum(target, mask ^ (1 << idx), new_sum))
+        m ^= lsb                       # clear processed bit
+
+    memo[key] = best
+    return best
+
+# ---- policy -------------------------------------------------------
+def policy(hand: List[str], target: int) -> str:
+    """
+    Return the optimal action ("HIT" or "STAY").
+    """
+    # current hand value
+    cur_sum = _hand_sum(hand, target)
+
+    # already bust – the game is already lost; stay is the only legal answer
+    if cur_sum > target:
+        return "STAY"
+
+    # bitmask of cards still in our deck (one copy of each rank)
+    hand_set = set(hand)
+    mask = 0
+    for i, rank in enumerate(RANKS):
+        if rank not in hand_set:
+            mask |= (1 << i)
+
+    # exact match – nothing more to gain
+    if cur_sum == target:
+        return "STAY"
+
+    # maximal reachable safe sum from now on
+    max_reach = _max_sum(target, mask, cur_sum)
+
+    # cannot improve → stay
+    if max_reach <= cur_sum:
+        return "STAY"
+
+    # there is at least one safe draw that keeps us optimal – pick the first one
+    m = mask
+    while m:
+        lsb = m & -m
+        idx = (lsb.bit_length() - 1)
+        rank = RANKS[idx]
+
+        # value of this card under current situation
+        if rank == "A":
+            val = 11 if cur_sum + 11 <= target else 1
+        else:
+            val = CARD_VALUE[rank]
+
+        if cur_sum + val <= target:
+            # after drawing this card we must still be able to reach max_reach
+            if _max_sum(target, mask ^ (1 << idx), cur_sum + val) == max_reach:
+                return "HIT"
+        m ^= lsb
+
+    # fallback (should never be reached)
+    return "STAY"
+```
+
+The code follows exactly the algorithm proven correct above and conforms
+to the required function signature.

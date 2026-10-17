@@ -1,0 +1,245 @@
+The strategy for this policy is to **compute (and cache) an optimal hit/stay decision for each target `T` and each possible hand**, by maximizing an estimate of **win probability**.  
+It models the opponent as a **mixture of reasonable “threshold” players** (they hit until reaching `T - margin`, for several margins), computes the opponent’s resulting final-score distribution exactly (no Monte Carlo), then uses dynamic programming over our remaining deck to choose `"HIT"` or `"STAY"` with the higher expected win rate. This produces an adaptive, target-aware stopping policy that is usually more competitive than fixed-threshold rules.
+
+<code>
+# blackjack_policy.py
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import List, Tuple, Dict, Optional
+
+RANKS: List[str] = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+IDX: Dict[str, int] = {r: i for i, r in enumerate(RANKS)}
+ALL_MASK: int = (1 &lt;&lt; 13) - 1
+
+# Base values with Ace counted as 11 (we'll "soften" it down to 1 as needed)
+BASE_VAL: List[int] = [11, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10]
+ACE_IDX = 0
+
+# Precompute for all masks: sum with A=11, and ace count
+SUM11 = [0] * (1 &lt;&lt; 13)
+ACNT = [0] * (1 &lt;&lt; 13)
+for m in range(1 &lt;&lt; 13):
+    s = 0
+    a = 0
+    x = m
+    while x:
+        b = x &amp; -x
+        i = (b.bit_length() - 1)
+        s += BASE_VAL[i]
+        if i == ACE_IDX:
+            a += 1
+        x ^= b
+    SUM11[m] = s
+    ACNT[m] = a
+
+
+def _hand_mask(hand: List[str]) -&gt; int:
+    m = 0
+    for c in hand:
+        i = IDX.get(c)
+        if i is None:
+            continue
+        m |= 1 &lt;&lt; i
+    return m
+
+
+def _total(mask: int, target: int) -&gt; int:
+    """Blackjack-like total: A counts as 11 unless it would exceed target, then as 1 (as many as needed)."""
+    t = SUM11[mask]
+    a = ACNT[mask]
+    while t &gt; target and a &gt; 0:
+        t -= 10
+        a -= 1
+    return t
+
+
+def _popcount(x: int) -&gt; int:
+    return x.bit_count()
+
+
+class _Solver:
+    """
+    For a fixed target, compute an optimal HIT/STAY policy via DP that maximizes
+    expected win probability against a mixture of opponent threshold models.
+    """
+
+    def __init__(self, target: int):
+        self.target = target
+        self.totals = [_total(m, target) for m in range(1 &lt;&lt; 13)]
+
+        # Opponent model mixture: margins for "stay at or above T - margin"
+        # Including several makes the policy robust across common arena heuristics.
+        self.margins = (1, 2, 3, 4)
+
+        # Build opponent win-utility tables for our terminal totals
+        self.utility_score, self.utility_bust = self._build_terminal_utilities()
+
+        # Our DP caches
+        self._u: List[float] = [float("nan")] * (1 &lt;&lt; 13)
+        self._act: List[Optional[str]] = [None] * (1 &lt;&lt; 13)
+
+    def _build_terminal_utilities(self) -&gt; Tuple[List[float], float]:
+        target = self.target
+
+        # Compute opponent distributions for each margin from empty hand
+        opp_busts: List[float] = []
+        opp_pmfs: List[Tuple[float, ...]] = []
+
+        for margin in self.margins:
+            bust, pmf = self._opp_distribution(margin)
+            opp_busts.append(bust)
+            opp_pmfs.append(pmf)
+
+        # Precompute CDFs per model
+        opp_cdfs: List[List[float]] = []
+        for pmf in opp_pmfs:
+            cdf = [0.0] * (target + 1)
+            run = 0.0
+            for s in range(target + 1):
+                run += pmf[s]
+                cdf[s] = run
+            opp_cdfs.append(cdf)
+
+        n_models = len(self.margins)
+
+        # Utility if we finish with score s (s &lt;= target): P(win) + 0.5*P(tie)
+        utility_score = [0.0] * (target + 1)
+        for s in range(target + 1):
+            u = 0.0
+            for mi in range(n_models):
+                bust = opp_busts[mi]
+                pmf = opp_pmfs[mi]
+                cdf = opp_cdfs[mi]
+                p_less = cdf[s - 1] if s &gt; 0 else 0.0
+                p_eq = pmf[s]
+                u += bust + p_less + 0.5 * p_eq
+            utility_score[s] = u / n_models
+
+        # Utility if we bust: we only avoid losing if opponent also busts (draw)
+        utility_bust = 0.5 * (sum(opp_busts) / n_models)
+
+        return utility_score, utility_bust
+
+    def _opp_distribution(self, margin: int) -&gt; Tuple[float, Tuple[float, ...]]:
+        """
+        Opponent distribution from empty hand under policy:
+        HIT while total &lt; T - margin, else STAY.
+        Returns (bust_prob, pmf[0..T]) where pmf sums to (1 - bust_prob).
+        """
+        target = self.target
+
+        @lru_cache(maxsize=None)
+        def rec(mask: int) -&gt; Tuple[float, Tuple[float, ...]]:
+            t = self.totals[mask]
+            if t &gt; target:
+                return 1.0, tuple([0.0] * (target + 1))
+
+            rem = ALL_MASK ^ mask
+            if rem == 0 or t &gt;= target - margin:
+                pmf = [0.0] * (target + 1)
+                pmf[t] = 1.0
+                return 0.0, tuple(pmf)
+
+            n = _popcount(rem)
+            bust = 0.0
+            pmf_acc = [0.0] * (target + 1)
+
+            r = rem
+            while r:
+                b = r &amp; -r
+                nxt = mask | b
+                b2, pmf2 = rec(nxt)
+                w = 1.0 / n
+                bust += b2 * w
+                # pmf2 is a tuple
+                for s in range(target + 1):
+                    pmf_acc[s] += pmf2[s] * w
+                r ^= b
+
+            return bust, tuple(pmf_acc)
+
+        return rec(0)
+
+    def action(self, mask: int) -&gt; str:
+        self._solve(mask)
+        act = self._act[mask]
+        return act if act in ("Hif1 (should never happen), default safe
+        else "STAY"
+
+    def _solve(self, mask: int) -&gt; float:
+        u = self._u[mask]
+        if u == u:  # not NaN
+            return u
+
+        target = self.target
+        t = self.totals[mask]
+
+        # If already bust (shouldn't be asked by engine, but be safe)
+        if t &gt; target:
+            self._u[mask] = self.utility_bust
+            self._act[mask] = "STAY"
+            return self._u[mask]
+
+        rem = ALL_MASK ^ mask
+        u_stay = self.utility_score[t]
+
+        # If no cards remain or perfect score, must/should stay
+        if rem == 0 or t == target:
+            self._u[mask] = u_stay
+            self._act[mask] = "STAY"
+            return u_stay
+
+        # Expected utility if we HIT once then continue optimally
+        n = _popcount(rem)
+        u_hit = 0.0
+        r = rem
+        while r:
+            b = r &amp; -r
+            u_hit += self._solve(mask | b)
+            r ^= b
+        u_hit /= n
+
+        # Choose better action (tiny epsilon to avoid float tie noise)
+        if u_hit &gt; u_stay + 1e-12:
+            self._u[mask] = u_hit
+            self._act[mask] = "HIT"
+            return u_hit
+        else:
+            self._u[mask] = u_stay
+            self._act[mask] = "STAY"
+            return u_stay
+
+
+_SOLVERS: Dict[int, _Solver] = {}
+
+
+def policy(hand: list[str], target: int) -&gt; str:
+    """
+    Return "HIT" or "STAY" for the simplified Blackjack-like game.
+    Always returns a legal move string.
+    """
+    # Defensive bounds (arena says 10..30, but keep robust)
+    if not isinstance(target, int):
+        return "STAY"
+    if target &lt; 1:
+        return "STAY"
+
+    mask = _hand_mask(hand)
+
+    # If already bust according to rules, stay
+    # (engine likely stops calling, but disqualification-safe)
+    t = _total(mask, target)
+    if t &gt; target:
+        return "STAY"
+
+    solver = _SOLVERS.get(target)
+    if solver is None:
+        solver = _Solver(target)
+        _SOLVERS[target] = solver
+
+    act = solver.action(mask)
+    if act not in ("HIT", "STAY"):
+        return "STAY"
+    return act
+</code>

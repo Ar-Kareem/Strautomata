@@ -1,0 +1,89 @@
+The strategy for this policy is a time-bounded alpha–beta search (iterative deepening negamax) with strong move ordering and a Breakthrough-specific evaluation. It prioritizes immediate wins (reaching the back rank), then high-value captures, then fast advancement of passed pawns while maintaining pawn protection and mobility. A transposition table speeds up repeated positions, and a strict time check guarantees a legal move is always returned within the 1-second budget.
+
+<code>
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import List, Tuple, Optional, Dict
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+
+# ----------------------------
+# Bitboard helpers / constants
+# ----------------------------
+FULL_MASK = (1 << 64) - 1
+
+FILE_A = 0x0101010101010101
+FILE_H = 0x8080808080808080
+NOT_FILE_A = FULL_MASK ^ FILE_A
+NOT_FILE_H = FULL_MASK ^ FILE_H
+
+GOAL_WHITE = 0xFF << 56  # row 7
+GOAL_BLACK = 0xFF        # row 0
+
+WIN_SCORE = 1_000_000
+
+
+def opp_color(color: str) -> str:
+    return "b" if color == "w" else "w"
+
+
+def to_bit(r: int, c: int) -> int:
+    return 1 << (r * 8 + c)
+
+
+def bb_from_list(pieces: List[Tuple[int, int]]) -> int:
+    bb = 0
+    for r, c in pieces:
+        bb |= to_bit(r, c)
+    return bb
+
+
+def idx_to_rc(idx: int) -> Tuple[int, int]:
+    return idx // 8, idx % 8
+
+
+def bit_iter(bb: int):
+    # yields indices of set bits
+    while bb:
+        lsb = bb & -bb
+        idx = (lsb.bit_length() - 1)
+        yield idx
+        bb ^= lsb
+
+
+def goal_mask(color: str) -> int:
+    return GOAL_WHITE if color == "w" else GOAL_BLACK
+
+
+# ----------------------------
+# Move generation (bitboards)
+# ----------------------------
+@dataclass(frozen=True)
+class GenMove:
+    frm: int
+    to: int
+    capture: bool
+
+
+def gen_moves(p: int, q: int, color: str) -> List[GenMove]:
+    """Generate all legal moves for side 'p' to move against 'q'."""
+    occ = p | q
+    empty = (~occ) & FULL_MASK
+    moves: List[GenMove] = []
+
+    if color == "w":
+        # forward: +8
+        fwd_targets = (p << 8) & empty
+        for to in bit_iter(fwd_targets):
+            moves.append(GenMove(frm=to - 8, to=to, capture=False))
+
+        # diagonals: +7 (from not file A), +9 (from not file H)
+        diag_l = ((p & NOT_FILE_A) << 7)
+        diag_r = ((p & NOT_FILE_H) << 9)
+
+        cap_l = diag_l & q
+        cap_r = diag_r & q
+       

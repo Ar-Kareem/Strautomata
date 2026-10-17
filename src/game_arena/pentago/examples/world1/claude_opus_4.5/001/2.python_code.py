@@ -1,0 +1,102 @@
+
+import numpy as np
+
+def policy(you, opponent) -> str:
+    you = np.array(you, dtype=np.int8)
+    opponent = np.array(opponent, dtype=np.int8)
+    
+    QUAD_OFFSETS = [(0, 0), (0, 3), (3, 0), (3, 3)]
+    DIRS = ['L', 'R']
+    
+    def rotate_quad(board, quad, direction):
+        new_board = board.copy()
+        r0, c0 = QUAD_OFFSETS[quad]
+        sub = board[r0:r0+3, c0:c0+3]
+        if direction == 'L':
+            rotated = np.rot90(sub, 1)
+        else:
+            rotated = np.rot90(sub, -1)
+        new_board[r0:r0+3, c0:c0+3] = rotated
+        return new_board
+    
+    def check_win(board):
+        for r in range(6):
+            for c in range(2):
+                if np.all(board[r, c:c+5] == 1):
+                    return True
+        for c in range(6):
+            for r in range(2):
+                if np.all(board[r:r+5, c] == 1):
+                    return True
+        for r in range(2):
+            for c in range(2):
+                if all(board[r+i, c+i] == 1 for i in range(5)):
+                    return True
+                if all(board[r+i, c+4-i] == 1 for i in range(5)):
+                    return True
+        return False
+    
+    def evaluate(my_board, opp_board):
+        score = 0
+        lines = []
+        for r in range(6):
+            for c in range(2):
+                lines.append([(r, c+i) for i in range(5)])
+        for c in range(6):
+            for r in range(2):
+                lines.append([(r+i, c) for i in range(5)])
+        for r in range(2):
+            for c in range(2):
+                lines.append([(r+i, c+i) for i in range(5)])
+                lines.append([(r+i, c+4-i) for i in range(5)])
+        
+        for line in lines:
+            my_count = sum(my_board[r, c] for r, c in line)
+            opp_count = sum(opp_board[r, c] for r, c in line)
+            if opp_count == 0 and my_count > 0:
+                score += 10 ** my_count
+            if my_count == 0 and opp_count > 0:
+                score -= 10 ** opp_count
+        
+        return score
+    
+    def get_moves():
+        moves = []
+        for r in range(6):
+            for c in range(6):
+                if you[r, c] == 0 and opponent[r, c] == 0:
+                    for q in range(4):
+                        for d in DIRS:
+                            moves.append((r, c, q, d))
+        return moves
+    
+    best_move = None
+    best_score = float('-inf')
+    
+    moves = get_moves()
+    
+    for (r, c, q, d) in moves:
+        new_you = you.copy()
+        new_you[r, c] = 1
+        new_opp = opponent.copy()
+        
+        new_you = rotate_quad(new_you, q, d)
+        new_opp = rotate_quad(new_opp, q, d)
+        
+        if check_win(new_you):
+            return f"{r+1},{c+1},{q},{d}"
+        
+        if check_win(new_opp):
+            score = -100000
+        else:
+            score = evaluate(new_you, new_opp)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c, q, d)
+    
+    if best_move is None:
+        best_move = moves[0]
+    
+    r, c, q, d = best_move
+    return f"{r+1},{c+1},{q},{d}"

@@ -1,0 +1,450 @@
+The strategy for this policy is a fast tactical minimax with alpha-beta pruning plus a strong evaluation tailored to Breakthrough. It always generates legal moves, checks immediate wins first, prefers forced tactical gains, and evaluates positions using:
+- promotion threat / distance to goal,
+- material,
+- safe advancement,
+- capture opportunities,
+- danger / vulnerability,
+- mobility,
+- passed-lane style bonuses.
+
+Because the arena only asks for the next move, the file exposes `policy(...)` and internally:
+1. builds a compact board,
+2. generates all legal moves,
+3. returns an immediate winning move if available,
+4. otherwise searches a few plies deep with alpha-beta,
+5. falls back safely to a legal move in all cases.
+
+The search is implemented from the perspective of the side to move, and handles the unusual rule here that diagonal forward moves into empty squares are also legal. The evaluation is designed to reward pieces that are both advanced and hard to stop.
+
+<code>
+from __future__ import annotations
+
+from typing import List, Tuple, Dict
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+BOARD_N = 8
+INF = 10**12
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Move:
+    """
+    Return a legal move for Breakthrough.
+
+    me: my piece coordinates
+    opp: opponent piece coordinates
+    color: 'w' moves upward (+1 row), 'b' moves downward (-1 row)
+    """
+    my_set = set(me)
+    opp_set = set(opp)
+
+    moves = generate_moves(my_set, opp_set, color)
+    if not moves:
+        # Should not happen in normal Breakthrough, but always return something legal-looking if possible.
+        # We try a conservative scan.
+        for r, c in me:
+            dr = 1 if color == 'w' else -1
+            nr = r + dr
+            if 0 <= nr < BOARD_N:
+                for nc in (c, c - 1, c + 1):
+                    if 0 <= nc < BOARD_N and (nr, nc) not in my_set:
+                        if nc == c:
+                            if (nr, nc) not in opp_set:
+                                return ((r, c), (nr, nc))
+                        else:
+                            return ((r, c), (nr, nc))
+        # Absolute emergency fallback
+        if me:
+            r, c = me[0]
+            nr = max(0, min(7, r + (1 if color == 'w' else -1)))
+            nc = c
+            return ((r, c), (nr, nc))
+        return ((0, 0), (0, 0))
+
+    # Immediate winning move
+    goal_row = 7 if color == 'w' else 0
+    for mv in order_moves(moves, my_set, opp_set, color):
+        (_, _), (tr, tc) = mv
+        if tr == goal_row:
+            return mv
+        if (tr, tc) in opp_set and len(opp_set) == 1:
+            return mv
+
+    # Iterative deepening under a small fixed depth budget.
+    # Chosen to be robust under 1 second for modest branching factor.
+    best_move = order_moves(moves, my_set, opp_set, color)[0]
+    max_depth = choose_depth(len(moves), len(me) + len(opp))
+
+    ordered_root = order_moves(moves, my_set, opp_set, color)
+
+    for depth in range(1, max_depth + 1):
+        best_score = -INF
+        alpha = -INF
+        beta = INF
+        current_best = ordered_root[0]
+
+        for mv in ordered_root:
+            n_me, n_opp = apply_move(my_set, opp_set, mv)
+            score = -negamax(
+                n_opp, n_me, opponent(color),
+                depth - 1, -beta, -alpha
+            )
+            if score > best_score:
+                best_score = score
+                current_best = mv
+            if score > alpha:
+                alpha = score
+
+        best_move = current_best
+        # Reorder root moves by shallow results on next iteration effect
+        ordered_root = [best_move] + [m for m in ordered_root if m != best_move]
+
+    return best_move
+
+
+def choose_depth(num_moves: int, total_pieces: int) -> int:
+    # Adaptive depth tuned for speed and strength
+    if total_pieces <= 8:
+        return 5
+    if num_moves <= 10:
+        return 4
+    if num_moves <= 18:
+        return 4
+    return 3
+
+
+def opponent(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < BOARD_N and 0 <= c < BOARD_N
+
+
+def generate_moves(me: set[Tuple[int, int]], opp: set[Tuple[int, int]], color: str) -> List[Move]:
+    dr = 1 if color == 'w' else -1
+    moves: List[Move] = []
+    # More advanced pieces first can help move ordering and tactical play
+    pieces = sorted(me, key=lambda x: x[0], reverse=(color == 'w'))
+    occupied_me = me
+    occupied_opp = opp
+
+    for r, c in pieces:
+        nr = r + dr
+        if not (0 <= nr < BOARD_N):
+            continue
+
+        # forward
+        if (nr, c) not in occupied_me and (nr, c) not in occupied_opp:
+            moves.append(((r, c), (nr, c)))
+
+        # diagonals, empty move or capture
+        nc = c - 1
+        if 0 <= nc < BOARD_N and (nr, nc) not in occupied_me:
+            moves.append(((r, c), (nr, nc)))
+
+        nc = c + 1
+        if 0 <= nc < BOARD_N and (nr, nc) not in occupied_me:
+            moves.append(((r, c), (nr, nc)))
+
+    # Remove illegal diagonal-forward-onto-own-piece duplicates already excluded;
+    # all remaining are legal under provided rules.
+    # Potential duplicates are impossible, but keep stable behavior.
+    return moves
+
+
+def apply_move(me: set[Tuple[int, int]], opp: set[Tuple[int, int]], mv: Move) -> Tuple[set[Tuple[int, int]], set[Tuple[int, int]]]:
+    (fr, fc), (tr, tc) = mv
+    n_me = set(me)
+    n_opp = set(opp)
+    n_me.remove((fr, fc))
+    n_me.add((tr, tc))
+    if (tr, tc) in n_opp:
+        n_opp.remove((tr, tc))
+    return n_me, n_opp
+
+
+def terminal_value(me: set[Tuple[int, int]], opp: set[Tuple[int, int]], color: str) -> int | None:
+    goal_row = 7 if color == 'w' else 0
+    opp_goal = 0 if color == 'w' else 7
+
+    # Current side to move has already won
+    for r, c in me:
+        if r == goal_row:
+            return 900_000_000
+    if not opp:
+        return 900_000_000
+
+    # Opponent has already won
+    for r, c in opp:
+        if r == opp_goal:
+            return -900_000_000
+    if not me:
+        return -900_000_000
+
+    return None
+
+
+def negamax(me: set[Tuple[int, int]], opp: set[Tuple[int, int]], color: str,
+            depth: int, alpha: int, beta: int) -> int:
+    tv = terminal_value(me, opp, color)
+    if tv is not None:
+        return tv
+
+    moves = generate_moves(me, opp, color)
+    if not moves:
+        # Should be rare; treat as bad if no move
+        return -800_000_000
+
+    if depth == 0:
+        return evaluate(me, opp, color)
+
+    ordered = order_moves(moves, me, opp, color)
+
+    best = -INF
+    for mv in ordered:
+        n_me, n_opp = apply_move(me, opp, mv)
+
+        # Fast win check after move
+        (_, _), (tr, tc) = mv
+        if tr == (7 if color == 'w' else 0):
+            score = 850_000_000
+        elif not n_opp:
+            score = 850_000_000
+        else:
+            score = -negamax(n_opp, n_me, opponent(color), depth - 1, -beta, -alpha)
+
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best
+
+
+def order_moves(moves: List[Move], me: set[Tuple[int, int]], opp: set[Tuple[int, int]], color: str) -> List[Move]:
+    goal_row = 7 if color == 'w' else 0
+    dr_sign = 1 if color == 'w' else -1
+
+    def key(mv: Move):
+        (fr, fc), (tr, tc) = mv
+        capture = 1 if (tr, tc) in opp else 0
+        win = 1 if tr == goal_row else 0
+        advancement = (tr * dr_sign)
+        central = -abs(tc - 3.5)
+
+        # Safety estimate: avoid landing where opponent can capture immediately
+        safe = 0 if is_square_capturable_by_opp_after_move(me, opp, mv, color) else 1
+
+        # Threat estimate: after move, can this piece win soon / create pressure
+        near_goal = tr if color == 'w' else (7 - tr)
+
+        return (win, capture, safe, advancement, near_goal, central)
+
+    return sorted(moves, key=key, reverse=True)
+
+
+def is_square_capturable_by_opp_after_move(me: set[Tuple[int, int]], opp: set[Tuple[int, int]], mv: Move, color: str) -> bool:
+    n_me, n_opp = apply_move(me, opp, mv)
+    (_, _), (tr, tc) = mv
+    ocolor = opponent(color)
+    odr = 1 if ocolor == 'w' else -1
+
+    # Opponent from row r can move to tr, so r = tr - odr
+    sr = tr - odr
+    if not (0 <= sr < BOARD_N):
+        return False
+
+    for sc in (tc - 1, tc + 1):
+        if 0 <= sc < BOARD_N and (sr, sc) in n_opp:
+            # Opponent can move diagonally onto (tr,tc) if not occupied by own piece, which it isn't.
+            return True
+    return False
+
+
+def evaluate(me: set[Tuple[int, int]], opp: set[Tuple[int, int]], color: str) -> int:
+    my_goal = 7 if color == 'w' else 0
+    opp_goal = 0 if color == 'w' else 7
+
+    # Immediate/near terminal patterns
+    for r, c in me:
+        if r == my_goal:
+            return 900_000_000
+    if not opp:
+        return 900_000_000
+    for r, c in opp:
+        if r == opp_goal:
+            return -900_000_000
+    if not me:
+        return -900_000_000
+
+    score = 0
+
+    # Material
+    score += 1300 * (len(me) - len(opp))
+
+    my_moves = generate_moves(me, opp, color)
+    opp_moves = generate_moves(opp, me, opponent(color))
+    score += 15 * (len(my_moves) - len(opp_moves))
+
+    # Piece-wise evaluation
+    my_attack_map = attack_map(me, color)
+    opp_attack_map = attack_map(opp, opponent(color))
+
+    for r, c in me:
+        progress = r if color == 'w' else (7 - r)
+        dist = 7 - progress
+        central = 3 - abs(c - 3.5)
+        defended = 1 if (r, c) in my_attack_map else 0
+        attacked = 1 if (r, c) in opp_attack_map else 0
+
+        score += 140 * progress
+        score += 18 * central
+        score += 40 * defended
+        score -= 75 * attacked
+        score -= 25 * dist
+
+        # Passed-lane style bonus: fewer enemy blockers ahead in same/adjacent files
+        blockers = count_blockers_ahead(r, c, opp, color)
+        score += 90 * max(0, 3 - blockers)
+
+        # Strong bonus for advanced safe runners
+        if progress >= 5:
+            if not attacked:
+                score += 220
+            if clear_path_to_goal(r, c, me, opp, color):
+                score += 260
+
+    for r, c in opp:
+        progress = (7 - r) if color == 'w' else r
+        dist = 7 - progress
+        central = 3 - abs(c - 3.5)
+        defended = 1 if (r, c) in opp_attack_map else 0
+        attacked = 1 if (r, c) in my_attack_map else 0
+
+        score -= 140 * progress
+        score -= 18 * central
+        score -= 40 * defended
+        score += 75 * attacked
+        score += 25 * dist
+
+        blockers = count_blockers_ahead_opp_perspective(r, c, me, color)
+        score -= 90 * max(0, 3 - blockers)
+
+        if progress >= 5:
+            if not attacked:
+                score -= 220
+            if clear_path_to_goal_for_opp(r, c, me, opp, color):
+                score -= 260
+
+    # Tactical opportunities: direct winning threats next move
+    my_immediate = immediate_win_threats(me, opp, color)
+    opp_immediate = immediate_win_threats(opp, me, opponent(color))
+    score += 500 * my_immediate
+    score -= 500 * opp_immediate
+
+    return int(score)
+
+
+def attack_map(pieces: set[Tuple[int, int]], color: str) -> set[Tuple[int, int]]:
+    dr = 1 if color == 'w' else -1
+    res = set()
+    for r, c in pieces:
+        nr = r + dr
+        if 0 <= nr < BOARD_N:
+            if c - 1 >= 0:
+                res.add((nr, c - 1))
+            if c + 1 < BOARD_N:
+                res.add((nr, c + 1))
+    return res
+
+
+def count_blockers_ahead(r: int, c: int, opp: set[Tuple[int, int]], color: str) -> int:
+    cnt = 0
+    if color == 'w':
+        rows = range(r + 1, BOARD_N)
+    else:
+        rows = range(r - 1, -1, -1)
+    for rr in rows:
+        for cc in (c - 1, c, c + 1):
+            if 0 <= cc < BOARD_N and (rr, cc) in opp:
+                cnt += 1
+    return cnt
+
+
+def count_blockers_ahead_opp_perspective(r: int, c: int, me: set[Tuple[int, int]], my_color: str) -> int:
+    # Opponent moves opposite to my_color
+    opp_color = opponent(my_color)
+    cnt = 0
+    if opp_color == 'w':
+        rows = range(r + 1, BOARD_N)
+    else:
+        rows = range(r - 1, -1, -1)
+    for rr in rows:
+        for cc in (c - 1, c, c + 1):
+            if 0 <= cc < BOARD_N and (rr, cc) in me:
+                cnt += 1
+    return cnt
+
+
+def clear_path_to_goal(r: int, c: int, me: set[Tuple[int, int]], opp: set[Tuple[int, int]], color: str) -> bool:
+    # Checks whether there exists at least a simple lane in same/adjacent columns without enemy occupancy
+    # ignoring some tactical details; heuristic only.
+    if color == 'w':
+        rows = range(r + 1, BOARD_N)
+    else:
+        rows = range(r - 1, -1, -1)
+    for rr in rows:
+        ok = False
+        for cc in (c - 1, c, c + 1):
+            if 0 <= cc < BOARD_N and (rr, cc) not in opp and (rr, cc) not in me:
+                ok = True
+                break
+        if not ok:
+            return False
+    return True
+
+
+def clear_path_to_goal_for_opp(r: int, c: int, me: set[Tuple[int, int]], opp: set[Tuple[int, int]], my_color: str) -> bool:
+    opp_color = opponent(my_color)
+    if opp_color == 'w':
+        rows = range(r + 1, BOARD_N)
+    else:
+        rows = range(r - 1, -1, -1)
+    for rr in rows:
+        ok = False
+        for cc in (c - 1, c, c + 1):
+            if 0 <= cc < BOARD_N and (rr, cc) not in me and (rr, cc) not in opp:
+                ok = True
+                break
+        if not ok:
+            return False
+    return True
+
+
+def immediate_win_threats(me: set[Tuple[int, int]], opp: set[Tuple[int, int]], color: str) -> int:
+    goal_row = 7 if color == 'w' else 0
+    dr = 1 if color == 'w' else -1
+    cnt = 0
+    for r, c in me:
+        nr = r + dr
+        if nr != goal_row:
+            continue
+        # Any legal step into goal row counts
+        if (nr, c) not in me and (nr, c) not in opp:
+            cnt += 1
+        if c - 1 >= 0 and (nr, c - 1) not in me:
+            cnt += 1
+        if c + 1 < BOARD_N and (nr, c + 1) not in me:
+            cnt += 1
+    return cnt
+
+
+if __name__ == "__main__":
+    # Minimal sanity check examples
+    me = [(1, 0), (1, 1)]
+    opp = [(6, 6), (6, 7)]
+    print(policy(me, opp, 'w'))
+</code>

@@ -1,0 +1,189 @@
+
+import time
+
+# Precompute all 49 winning lines in 3x3x3 tic-tac-toe
+LINES = []
+# Rows parallel to x-axis (fixed y, z)
+for y in range(3):
+    for z in range(3):
+        LINES.append([(0, y, z), (1, y, z), (2, y, z)])
+# Rows parallel to y-axis (fixed x, z)
+for x in range(3):
+    for z in range(3):
+        LINES.append([(x, 0, z), (x, 1, z), (x, 2, z)])
+# Rows parallel to z-axis (fixed x, y)
+for x in range(3):
+    for y in range(3):
+        LINES.append([(x, y, 0), (x, y, 1), (x, y, 2)])
+# Face diagonals on xy-planes (fixed z)
+for z in range(3):
+    LINES.append([(0, 0, z), (1, 1, z), (2, 2, z)])
+    LINES.append([(0, 2, z), (1, 1, z), (2, 0, z)])
+# Face diagonals on xz-planes (fixed y)
+for y in range(3):
+    LINES.append([(0, y, 0), (1, y, 1), (2, y, 2)])
+    LINES.append([(0, y, 2), (1, y, 1), (2, y, 0)])
+# Face diagonals on yz-planes (fixed x)
+for x in range(3):
+    LINES.append([(x, 0, 0), (x, 1, 1), (x, 2, 2)])
+    LINES.append([(x, 0, 2), (x, 1, 1), (x, 2, 0)])
+# Space diagonals
+LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+LINES.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+
+def get_winner(board):
+    """Check if there's a winner. Returns 1, -1, or 0."""
+    for line in LINES:
+        s = board[line[0][0]][line[0][1]][line[0][2]] + \
+            board[line[1][0]][line[1][1]][line[1][2]] + \
+            board[line[2][0]][line[2][1]][line[2][2]]
+        if s == 3:
+            return 1
+        elif s == -3:
+            return -1
+    return 0
+
+def evaluate(board):
+    """Heuristic evaluation from player 1's perspective."""
+    score = 0
+    for line in LINES:
+        v0 = board[line[0][0]][line[0][1]][line[0][2]]
+        v1 = board[line[1][0]][line[1][1]][line[1][2]]
+        v2 = board[line[2][0]][line[2][1]][line[2][2]]
+        vals = [v0, v1, v2]
+        
+        if -1 not in vals:  # Line controlled by player or empty
+            count = v0 + v1 + v2  # Number of 1s (since 0s contribute nothing)
+            if count == 2:
+                score += 10
+            elif count == 1:
+                score += 1
+        elif 1 not in vals:  # Line controlled by opponent or empty
+            count = -(v0 + v1 + v2)  # Number of -1s
+            if count == 2:
+                score -= 10
+            elif count == 1:
+                score -= 1
+    return score
+
+def get_empty(board):
+    """Return list of empty cell coordinates."""
+    empties = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    empties.append((i, j, k))
+    return empties
+
+def negamax(board, depth, alpha, beta, color, start_time):
+    """
+    Negamax with alpha-beta pruning.
+    color: 1 for current player (maximizer), -1 for opponent
+    Returns score from current player's perspective.
+    """
+    # Time cutoff - return static evaluation
+    if time.time() - start_time > 0.95:
+        return color * evaluate(board)
+    
+    # Terminal check
+    winner = get_winner(board)
+    if winner != 0:
+        return 10000 if winner == color else -10000
+    
+    empties = get_empty(board)
+    if not empties or depth == 0:
+        return color * evaluate(board)
+    
+    max_eval = -float('inf')
+    
+    # Move ordering: center first, then others
+    center = (1, 1, 1)
+    if center in empties:
+        ordered = [center] + [e for e in empties if e != center]
+    else:
+        ordered = empties
+    
+    for move in ordered:
+        i, j, k = move
+        board[i][j][k] = color
+        eval_score = -negamax(board, depth - 1, -beta, -alpha, -color, start_time)
+        board[i][j][k] = 0
+        
+        max_eval = max(max_eval, eval_score)
+        alpha = max(alpha, eval_score)
+        if alpha >= beta:
+            break
+    
+    return max_eval
+
+def policy(board):
+    start_time = time.time()
+    
+    # Check for immediate winning move
+    for line in LINES:
+        v0 = board[line[0][0]][line[0][1]][line[0][2]]
+        v1 = board[line[1][0]][line[1][1]][line[1][2]]
+        v2 = board[line[2][0]][line[2][1]][line[2][2]]
+        vals = [v0, v1, v2]
+        if vals.count(1) == 2 and vals.count(0) == 1:
+            idx = vals.index(0)
+            return line[idx]
+    
+    # Check for immediate blocking move (opponent win)
+    for line in LINES:
+        v0 = board[line[0][0]][line[0][1]][line[0][2]]
+        v1 = board[line[1][0]][line[1][1]][line[1][2]]
+        v2 = board[line[2][0]][line[2][1]][line[2][2]]
+        vals = [v0, v1, v2]
+        if vals.count(-1) == 2 and vals.count(0) == 1:
+            idx = vals.index(0)
+            return line[idx]
+    
+    empties = get_empty(board)
+    if not empties:
+        return (0, 0, 0)  # Should not happen in valid game
+    
+    if len(empties) == 1:
+        return empties[0]
+    
+    # Iterative deepening
+    best_move = empties[0]
+    depth = 1
+    max_depth = 6
+    
+    while depth <= max_depth:
+        if time.time() - start_time > 0.9:
+            break
+        
+        current_best = None
+        current_best_score = -float('inf')
+        
+        # Prioritize center for move ordering
+        if (1, 1, 1) in empties:
+            ordered = [(1, 1, 1)] + [e for e in empties if e != (1, 1, 1)]
+        else:
+            ordered = empties
+        
+        for move in ordered:
+            i, j, k = move
+            board[i][j][k] = 1
+            score = -negamax(board, depth - 1, -float('inf'), float('inf'), -1, start_time)
+            board[i][j][k] = 0
+            
+            if score > current_best_score:
+                current_best_score = score
+                current_best = move
+                
+                # If winning move found, return immediately
+                if score >= 9000:
+                    return move
+        
+        if current_best is not None:
+            best_move = current_best
+        
+        depth += 1
+    
+    return best_move

@@ -1,0 +1,81 @@
+
+import numpy as np
+
+# Static board evaluation weights for Othello
+WEIGHTS = np.array([
+    [100, -20,  10,   5,   5,  10, -20, 100],
+    [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+    [ 10,  -2,  -1,  -1,  -1,  -1,  -2,  10],
+    [  5,  -2,  -1,  -1,  -1,  -1,  -2,   5],
+    [  5,  -2,  -1,  -1,  -1,  -1,  -2,   5],
+    [ 10,  -2,  -1,  -1,  -1,  -1,  -2,  10],
+    [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+    [100, -20,  10,   5,   5,  10, -20, 100]
+])
+
+# Directions for checking flips: 8 neighbors
+DIRECTIONS = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+
+def get_flips(board, r, c, player):
+    """Get list of positions that would be flipped if player places at (r,c). Returns None if illegal."""
+    opponent = -player
+    flips = []
+    for dr, dc in DIRECTIONS:
+        r_temp = r + dr
+        c_temp = c + dc
+        temp_flips = []
+        while 0 <= r_temp < 8 and 0 <= c_temp < 8:
+            if board[r_temp][c_temp] == opponent:
+                temp_flips.append((r_temp, c_temp))
+                r_temp += dr
+                c_temp += dc
+            elif board[r_temp][c_temp] == player:
+                flips.extend(temp_flips)
+                break
+            else:
+                break
+    return flips if flips else None
+
+def evaluate_board(board):
+    """Evaluate board using static weights."""
+    return np.sum(WEIGHTS * board)
+
+def policy(you, opponent):
+    """Return the next move as a string, or 'pass' if no legal moves."""
+    # Combine boards: 1 for me, -1 for opponent, 0 for empty
+    board = np.zeros((8, 8), dtype=int)
+    board[you == 1] = 1
+    board[opponent == 1] = -1
+    
+    # Find all legal moves for me (player=1)
+    legal_moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == 0:
+                flips = get_flips(board, r, c, 1)
+                if flips is not None:
+                    legal_moves.append((r, c))
+    
+    if not legal_moves:
+        return "pass"
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for r, c in legal_moves:
+        # Simulate move
+        new_board = board.copy()
+        new_board[r][c] = 1
+        flips = get_flips(board, r, c, 1)
+        for flip_r, flip_c in flips:
+            new_board[flip_r][ flip_c] = 1
+        
+        score = evaluate_board(new_board)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    # Convert to algebraic notation
+    r, c = best_move
+    move_str = chr(ord('a') + c) + str(r + 1)
+    return move_str

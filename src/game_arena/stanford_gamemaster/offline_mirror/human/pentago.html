@@ -1,0 +1,693 @@
+<html>
+
+<!--=======================================================================-->
+
+<head>
+  <title>Human</title>
+  <script type='text/javascript' src='../assets/epilog.js'></script>
+  <script type='text/javascript'>
+//==============================================================================
+// Game parameters
+//==============================================================================
+
+var manager = 'manager';
+var player = 'human';
+
+function doplayer ()
+ {player = read(prompt("What is your player's identifier?"));
+  document.getElementById('player').innerHTML = player;
+  return true}
+
+//==============================================================================
+// human.js
+//==============================================================================
+
+indexing = false;
+dataindexing = false;
+ruleindexing = true;
+
+var game = 'buttonsandlights';
+var role = 'robot';
+var startclock = 10;
+var playclock = 10;
+
+var library = [];
+var roles = [];
+var state = [];
+var statelog = [];
+var movelog = [];
+var messageid = "0";
+
+function initialize ()
+ {//document.addEventListener('keydown',handlekey);
+  window.addEventListener("storage",handlestorage,false); console.log('listening');
+  definerules(library,readdata(document.getElementById('library').textContent));
+  roles = findroles(library);
+  state = findinits(library);
+  statelog = [state];
+  movelog = [];
+  movenum = 0;
+  showstate(state);
+  showactions(state);
+  showhistory(movelog,state);
+  return true}
+
+//==============================================================================
+
+function showstate (state)
+ {var stateholder = document.getElementById('stateholder');
+  var n = stateholder.childNodes.length;
+  for (var i=0; i<n; i++) {stateholder.removeChild(stateholder.childNodes[0])};
+  stateholder.appendChild(rendersituation(state));
+  return true}
+
+function rendersituation (state)
+ {return renderstate(state)}
+
+function renderstate (state)	
+ {var widget = document.createElement('textarea');
+  widget.setAttribute('rows','12');
+  widget.setAttribute('cols','40');
+  widget.setAttribute('style','font-family:courier');
+  widget.setAttribute('disabled',true);
+  widget.value = grindem(state);
+  return widget}
+
+//==============================================================================
+
+function showactions (state)
+ {var actionholder = document.getElementById('actionholder');
+  var n = actionholder.childNodes.length;
+  for (var i=0; i<n; i++) {actionholder.removeChild(actionholder.childNodes[0])};
+  actionholder.appendChild(renderactions(state));
+  return true}
+
+function renderactions (state)
+ {var widget = document.createElement('select');
+  var option = document.createElement('option');
+  option.value = 'error';
+  option.text = '';
+  widget.add(option);
+  var actions = findlegals(state,library).sort();
+  for (var i=0; i<actions.length; i++)
+      {var option = document.createElement('option');
+       var value = grind(actions[i]);
+       option.value = value;
+       option.text = value;
+       widget.add(option)}
+  if (findterminalp(state,library)) {widget.disabled = true}
+     else {widget.disabled = false};
+  widget.setAttribute('onchange','perform(read(this.value))');
+  return widget}
+
+//==============================================================================
+
+function showhistory (moves,state)
+ {var widget = document.getElementById('history');
+  var n = widget.childNodes.length;
+  for (var i=0; i<n; i++) {widget.removeChild(widget.childNodes[0])};
+  widget.appendChild(renderhistory(moves,state));
+  return true}
+
+function renderhistory (moves,state)
+ {var widget = document.createElement('table');
+  widget.setAttribute('cellspacing',0);
+  widget.setAttribute('cellpadding',3);
+  widget.setAttribute('border',1);
+  var row = widget.insertRow(0);
+  var cell = row.insertCell(0);
+  cell.innerHTML = 'Step';
+  cell.setAttribute('width','120');
+  cell.setAttribute('align','center');
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#dddddd');
+  for (var j=0; j<roles.length; j++)
+      {cell = row.insertCell(j+1);
+       cell.innerHTML = roles[j];
+       cell.setAttribute('width','120');
+       cell.setAttribute('align','center');
+       cell.setAttribute('style','font-weight:bold');
+       cell.setAttribute('bgcolor','#dddddd')};
+
+  for (var i=0; i<movenum; i++)
+      {row = widget.insertRow(i+1);
+       cell = row.insertCell(0);
+       cell.setAttribute('align','center');
+       cell.setAttribute('bgcolor','#dddddd');
+       cell.innerHTML = i+1;
+       for (var j=0; j<roles.length; j++)
+           {cell = row.insertCell(j+1);
+            cell.setAttribute('width','120');
+            cell.setAttribute('align','center');
+            if (findcontrol(statelog[i],library)===roles[j])
+               {cell.innerHTML = grind(moves[i])}}};
+
+  row = widget.insertRow(widget.rows.length);
+  cell = row.insertCell(0);
+  cell.innerHTML = 'Score';
+  cell.setAttribute('style','font-weight:bold');
+  cell.setAttribute('bgcolor','#dddddd');
+  cell.setAttribute('align','center');
+  for (var i=0; i<roles.length; i++)
+      {cell = row.insertCell(i+1);
+       cell.setAttribute('align','center');
+       cell.setAttribute('bgcolor','#dddddd');
+       cell.innerHTML = findreward(roles[i],state,library)};
+  return widget}
+
+//==============================================================================
+
+function perform (action)
+ {if (action==='error') {return false};
+  //action performed only if in control; could let manager handle for now
+  var response = grind(seq('message',messageid,player,manager,action));
+  console.log(response);
+  send(response);
+  //endclock(timekeeper);
+  return true}
+
+function copy (obj)
+ {return obj.slice(0)}
+
+//==============================================================================
+
+function handlestorage (ev)
+ {//console.log(ev);
+  console.log(ev.newValue);
+  if (ev.key!==player) {return false};
+  //var transcript = document.getElementById('transcript');
+  //transcript.value = transcript.value + ev.newValue + "\n";
+  var envelope = read(ev.newValue);
+  messageid = envelope[1]
+  var sender = envelope[2]
+  var receiver = envelope[3]
+  var message = envelope[4]
+  if (sender!==manager) {return false};
+  if (receiver!==player) {return false};
+  console.log("Manager: " + grind(message));
+  var answer = ggpeval(message);
+  if (!answer) {console.log("Player: no response"); return false};
+  var response = grind(seq('message',messageid,player,manager,answer));
+  send(response);
+  return true}
+
+function send (str)
+ {//var transcript = document.getElementById('transcript');
+  //transcript.value = transcript.value + str + "\n";
+  localStorage.manager = str;
+  return true}
+
+//==============================================================================
+
+function ggpeval (msg)
+ {if (symbolp(msg)) {return false};
+  if (msg[0]==='ping') {return ping()};
+  if (msg[0]==='start') {return start(msg[1],msg[2],msg[3],msg[4])};
+  if (msg[0]==='play') {return play(msg[1])};
+  if (msg[0]==='stop') {return stop(msg[1])};
+  if (msg[0]==='abort') {return abort()};
+  return false}
+
+//==============================================================================
+
+function ping ()
+ {return 'ready'}
+
+function start (r,rs,sc,pc)
+ {role = r;
+  //library = definemorerules([],rs.slice(1));
+  //roles = findroles(library);
+  //state = findinits(library);
+  startclock = numberize(sc);
+  playclock = numberize(pc);
+  //timekeeper = beginclock(startclock);
+  return 'ready'}
+
+function play (move)
+ {if (findcontrol(state,library)!==role) {return false};
+  if (move===nil) {return false};
+  statelog = statelog.slice(0,movenum+1);
+  movelog = movelog.slice(0,movenum);
+  movelog.push(move);
+  state = simulate(move,state,library)
+  statelog.push(state);
+  movenum++;
+  showstate(state);
+  showactions(state);
+  showhistory(movelog,state);
+  //endclock(timekeeper);
+  //timekeeper = beginclock(playclock);  return false}
+
+function stop (move)
+ {if (move!=='nil') {state = simulate(move,state,library)};
+  movelog = movelog.slice(0,movenum);
+  movelog.push(move);
+  movenum++;
+  showstate(state);
+  showactions(state);
+  showhistory(movelog,state);
+  //endclock(timekeeper);
+  return false}
+
+function abort ()
+ {//endclock(timekeeper);
+  return false}
+
+//------------------------------------------------------------------------------
+
+function simulate (move,state,rules)
+ {var deltas = compexpand(move,state,rules);
+  var additions = [];
+  var deletions = [];
+  for (var i=0; i<deltas.length; i++)
+      {if (symbolp(deltas[i])) {additions.push(deltas[i]); continue};
+       if (deltas[i][0]==='not') {deletions.push(deltas[i][1]); continue};
+       additions.push(deltas[i])};
+  var newstate = [];
+  for (i = 0; i<state.length; i++)
+      {if (find(state[i],additions)) {continue};
+       if (find(state[i],deletions)) {continue};
+       newstate.push(state[i])};
+  return newstate.concat(additions)}
+
+//==============================================================================
+// Timer//==============================================================================
+
+function beginclock (n)
+ {if (n===Infinity) {return false};
+  document.getElementById('timer').value = n;
+  return setInterval(updateclock,1000)}
+
+function updateclock ()
+ {var timer = document.getElementById('timer');
+  var time = timer.value - 1;
+  timer.value = time;
+  if (time<=0) {endclock()};
+  return true}
+
+function endclock ()
+ {clearclock();
+  return true}
+
+function clearclock ()
+ {document.getElementById('timer').value = '';
+  //clearInterval(timekeeper);
+  return true}
+
+//==============================================================================
+// Basics
+//==============================================================================
+
+function findroles (rules)
+ {return compfinds('R',seq('role','R'),seq(),rules)}
+
+function findbases (rules)
+ {return compfinds('P',seq('base','P'),seq(),rules)}
+
+function findactions (rules)
+ {return compfinds('A',seq('action','A'),seq(),rules)}
+
+function findinits (rules)
+ {return compfinds('P',seq('init','P'),seq(),rules)}
+
+function findcontrol (facts,rules)
+ {return compfindx('X',seq('control','X'),facts,rules)}
+
+function findlegalp (move,facts,rules)
+ {return compfindp(seq('legal',move),facts,rules)}
+
+function findlegalx (facts,rules)
+ {return compfindx('X',seq('legal','X'),facts,rules)}
+
+function findlegals (facts,rules)
+ {return compfinds('X',seq('legal','X'),facts,rules)}
+
+function findreward (role,facts,rules)
+ {var value = compfindx('R',seq('goal',role,'R'),facts,rules);
+  if (value) {return value};
+  return 0}
+
+function findterminalp (facts,rules)
+ {return compfindp('terminal',facts,rules)}
+
+//==============================================================================
+// End of Script
+//==============================================================================
+  </script>
+  <script type='text/javascript'>
+//==============================================================================
+// pentago
+//==============================================================================
+
+function renderstate (state)
+ {var role = compfindx('R',seq('control','R'),state,library);
+  var table = document.createElement('table');
+  table.setAttribute('border','0');
+  var row = table.insertRow(table.rows.length);
+  var cell = row.insertCell(0);
+  var board = renderboard(state);
+  cell.appendChild(board);
+  row = table.insertRow(table.rows.length);
+  var cell = row.insertCell(0);
+  cell.setAttribute('align','center');
+  cell.setAttribute('style','font-size:20px');
+  if (compfindp('terminal',state,library))
+     {cell.innerHTML = 'Game over'}
+     else {var phase = compfindx('X',seq('phase','X'),state,library)
+           cell.innerHTML = 'Control:  ' + role + '&nbsp;&nbsp;&nbsp;&nbsp;Phase: ' + phase};
+  return table}
+
+function renderboard (state)
+ {var table = document.createElement('table');
+  table.setAttribute('cellspacing',0);
+  table.setAttribute('cellpadding',0);
+  var row = table.insertRow(0);
+  var cell = row.insertCell(0);
+  cell.appendChild(makequadrant(1,state));
+  cell = row.insertCell(1);
+  cell.appendChild(makequadrant(2,state));
+  row = table.insertRow(1);
+  cell = row.insertCell(0);
+  cell.appendChild(makequadrant(4,state));
+  cell = row.insertCell(1);
+  cell.appendChild(makequadrant(3,state));
+  return table}
+
+function makequadrant (quadrant,state)
+ {var table = document.createElement('table');
+  table.setAttribute('cellspacing','0');
+  table.setAttribute('border','4');
+  makerow(table,quadrant,0,state);
+  makerow(table,quadrant,1,state);
+  makerow(table,quadrant,2,state);
+  return table}
+
+function makerow (table,quadrant,rownum,state)
+ {var row = table.insertRow(rownum);
+  makecell(row,quadrant,rownum,0,state);
+  makecell(row,quadrant,rownum,1,state);
+  makecell(row,quadrant,rownum,2,state);
+  return row}
+
+function makecell (row,quadrant,rownum,colnum,state)
+ {var cell = row.insertCell(colnum);
+  cell.setAttribute('width','50');
+  cell.setAttribute('height','50');
+  cell.setAttribute('align','center');
+  cell.setAttribute('valign','center');
+  cell.setAttribute('style','background-color:#cccccc');
+  quadrant = quadrant.toString();
+  rownum = (rownum+1).toString();
+  colnum = (colnum+1).toString();
+  cell.innerHTML = getimage(quadrant,rownum,colnum,state);
+  return cell}
+
+function getimage (quadrant,row,col,state)
+ {var owner = compfindx('C',seq('cellholds',quadrant,row,col,'C'),state,library);
+  if (owner==='red')
+     {return '<img src="../library/pentago/red.png" width="40" height="40"/>'};
+  if (owner==='black')
+     {return '<img src="../library/pentago/black.png" width="40" height="40"/>'};
+  return '&nbsp;'}
+
+//==============================================================================
+//==============================================================================
+//==============================================================================
+  </script>
+  <style>
+  </style>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#aabbbb' onload='initialize()'>  <center>    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr>
+        <td>
+
+<!--=======================================================================-->
+
+<center>
+  <table width='640' cellpadding='0'>
+    <tr>
+      <td width='180' align='center' valign='center'>
+        <a href='../index.html'><img width='130' src='../assets/ggp.jpg'/></a>
+      </td>
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Gamemaster</span><br/>
+      </td>
+      <td width='180' align='center' style='color:#000066;font-size:18px'>
+        <i>General<br/>Game<br/>Playing</i>
+      </td>
+    </tr>
+  </table>
+</center>
+<!--=======================================================================-->
+
+<br/>
+<table width='640' cellpadding='8' cellspacing='0' bgcolor='#f4f8f8' border='1'>  <tr height='40'>
+    <td align='center'>
+<table style='color:#000066;font-size:18px'>
+  <tr>
+    <td>
+Protocol: localstorage<br/>
+Strategy: human<br/>
+Identifier: <span id='player'>human</span> <img src="../assets/pencil.gif" height='12' style="cursor:pointer" onclick='doplayer()'/>
+    </td>
+    <td width='20'>&nbsp;</td>
+    <td>
+Game: pentago <img src="../assets/pencil.gif" onclick='dogame()'/><br/>
+Startclock: <br/>
+Playclock:     </td>
+  </tr>
+</table>
+    </td>
+  </tr></table>
+<br/>
+
+<!--=======================================================================-->
+
+<center>
+  <br/>
+  <div id='stateholder'></div>
+  <br/>
+  <br/>
+  <div id='actionholder'></div>
+  <br/>
+  <br/>
+  <div id='history'></div>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+
+<!--=======================================================================-->
+
+<textarea id='library' type='text/hrf' style='display:none'>
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% pentago
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% metadata
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+role(red)
+role(black)
+
+base(cellholds(Q,M,N,Role)) :- quadrant(Q) & index(M) & index(N) & role(Role)
+base(phase(place))
+base(phase(rotate))
+base(control(Player)) :- role(Player)
+
+action(place(Q,M,N)) :- role(Player) & quadrant(Q) & index(M) & index(N)
+action(rotate(Q,Dir)) :- role(Player) & quadrant(Q) & direction(Dir)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% init
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+init(phase(place))
+init(control(red))
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% legal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+legal(place(Q,M,N)) :- phase(place) & cellempty(Q,M,N)
+legal(rotate(Q,Dir)) :- phase(rotate) & quadrant(Q) & direction(Dir)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% operations
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+place(Q,M,N) :: control(Role) ==> cellholds(Q,M,N,Role)
+
+rotate(Q,Dir) ::
+  cellholds(Q,M1,N1,Role) & rotation(Dir,M1,N1,M2,N2)
+  ==> ~cellholds(Q,M1,N1,Role) & cellholds(Q,M2,N2,Role)
+
+place(Q,M,N) :: ~phase(place) & phase(rotate)
+rotate(Q,Dir) :: ~phase(rotate) & phase(place)
+
+rotate(Q,Dir) :: control(red) ==> ~control(red) & control(black)
+rotate(Q,Dir) :: control(black) ==> ~control(black) & control(red)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% goal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+goal(red,100) :- line(red) & ~line(black)
+goal(red,50) :- ~line(red) & ~line(black) & ~boardopen
+goal(red,50) :- line(red) & line(black)
+goal(red,0) :- line(black) & ~line(red)
+goal(red,0) :- ~line(red) & ~line(black) & boardopen
+
+goal(black,100) :- line(black) & ~line(red)
+goal(black,50) :- ~line(red) & ~line(black) & ~boardopen
+goal(black,50) :- line(red) & line(black)
+goal(black,0) :- line(red) & ~line(black)
+goal(black,0) :- ~line(red) & ~line(black) & boardopen
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% terminal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+terminal :- line(red)
+terminal :- line(black)
+terminal :- ~boardopen
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Views
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+line(Player) :- row(Player)
+line(Player) :- col(Player)
+line(Player) :- diag(Player)
+
+row(Player) :-
+  cellholds(Q1,M1,N1,Player) &
+  globalindex(Q1,M1,N1,Mg,N1g) &
+  succ(N1g,N2g) &
+  globalindex(Q2,M2,N2,Mg,N2g) &
+  cellholds(Q2,M2,N2,Player) &
+  succ(N2g,N3g) &
+  globalindex(Q3,M3,N3,Mg,N3g) &
+  cellholds(Q3,M3,N3,Player) &
+  succ(N3g,N4g) &
+  globalindex(Q4,M4,N4,Mg,N4g) &
+  cellholds(Q4,M4,N4,Player) &
+  succ(N4g,N5g) &
+  globalindex(Q5,M5,N5,Mg,N5g) &
+  cellholds(Q5,M5,N5,Player)
+
+col(Player) :-
+  cellholds(Q1,M1,N1,Player) &
+  globalindex(Q1,M1,N1,M1g,Ng) &
+  succ(M1g,M2g) &
+  globalindex(Q2,M2,N2,M2g,Ng) &
+  cellholds(Q2,M2,N2,Player) &
+  succ(M2g,M3g) &
+  globalindex(Q3,M3,N3,M3g,Ng) &
+  cellholds(Q3,M3,N3,Player) &
+  succ(M3g,M4g) &
+  globalindex(Q4,M4,N4,M4g,Ng) &
+  cellholds(Q4,M4,N4,Player) &
+  succ(M4g,M5g) &
+  globalindex(Q5,M5,N5,M5g,Ng) &
+  cellholds(Q5,M5,N5,Player)
+
+diag(Player) :-
+  cellholds(Q1,M1,N1,Player) &
+  globalindex(Q1,M1,N1,M1g,N1g) &
+  succ(M1g,M2g) & succ(N1g,N2g) &
+  globalindex(Q2,M2,N2,M2g,N2g) &
+  cellholds(Q2,M2,N2,Player) &
+  succ(M2g,M3g) & succ(N2g,N3g) &
+  globalindex(Q3,M3,N3,M3g,N3g) &
+  cellholds(Q3,M3,N3,Player) &
+  succ(M3g,M4g) & succ(N3g,N4g) &
+  globalindex(Q4,M4,N4,M4g,N4g) &
+  cellholds(Q4,M4,N4,Player) &
+  succ(M4g,M5g) & succ(N4g,N5g) &
+  globalindex(Q5,M5,N5,M5g,N5g) &
+  cellholds(Q5,M5,N5,Player)
+
+diag(Player) :-
+  cellholds(Q1,M1,N1,Player) &
+  globalindex(Q1,M1,N1,M1g,N5g) &
+  succ(M1g,M2g) & succ(N4g,N5g) &
+  globalindex(Q2,M2,N2,M2g,N4g) &
+  cellholds(Q2,M2,N2,Player) &
+  succ(M2g,M3g) & succ(N3g,N4g) &
+  globalindex(Q3,M3,N3,M3g,N3g) &
+  cellholds(Q3,M3,N3,Player) &
+  succ(M3g,M4g) & succ(N2g,N3g) &
+  globalindex(Q4,M4,N4,M4g,N2g) &
+  cellholds(Q4,M4,N4,Player) &
+  succ(M4g,M5g) & succ(N1g,N2g) &
+  globalindex(Q5,M5,N5,M5g,N1g) &
+  cellholds(Q5,M5,N5,Player)
+
+globalindex(1,M,N,M,N) :- index(M) & index(N)
+globalindex(2,M,N,M,Ng) :- add(3,N,Ng) & index(M)
+globalindex(3,M,N,Mg,Ng) :- add(3,M,Mg) & add(3,N,Ng)
+globalindex(4,M,N,Mg,N) :- add(3,M,Mg) & index(N)
+
+rotation(clockwise,M1,N1,M2,N2) :- horizontalflip(N1,M1,M2,N2)
+rotation(counterclockwise,M1,N1,M2,N2) :- verticalflip(N1,M1,M2,N2)
+
+verticalflip(1,N,3,N) :- index(N)
+verticalflip(2,N,2,N) :- index(N)
+verticalflip(3,N,1,N) :- index(N)
+
+horizontalflip(M,1,M,3) :- index(M)
+horizontalflip(M,2,M,2) :- index(M)
+horizontalflip(M,3,M,1) :- index(M)
+
+boardopen :- cellempty(Q,M,N)
+cellempty(Q,M,N) :- quadrant(Q) & index(M) & index(N) & ~cellmarked(Q,M,N)
+cellmarked(Q,M,N) :- cellholds(Q,M,N,Role)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Facts
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+quadrant(1)
+quadrant(2)
+quadrant(3)
+quadrant(4)
+
+index(1)
+index(2)
+index(3)
+
+direction(clockwise)
+direction(counterclockwise)
+
+succ(1,2)
+succ(2,3)
+succ(3,4)
+succ(4,5)
+succ(5,6)
+
+add(3,1,4)
+add(3,2,5)
+add(3,3,6)
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+</textarea>
+
+<!--=======================================================================-->
+
+<textarea id='lambda' type='text/hdf' style='display:none'></textarea>
+
+<!--=======================================================================-->
+
+</html>

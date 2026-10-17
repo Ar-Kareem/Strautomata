@@ -1,0 +1,558 @@
+To design a competitive policy for this simplified Blackjack game, I analyzed the game mechanics and the optimal strategy for the target score.
+
+### Analysis
+1.  **Game Mechanics**:
+    -   The game uses a single suit of 13 cards.
+    -   The target $T$ is between 10 and 30.
+    -   Deck composition is known: one of each rank from A, 2... K.
+    -   Aces are dynamic: 11 if it doesn't bust the hand, otherwise 1.
+    -   This implies an Ace is effectively worth 11 unless the current sum is already $\ge T$, in which case it is 1. However, since we only decide to hit or stay based on the current state (sum of held cards), we can assume that if we hit and receive an Ace, it will contribute 11 points if the new sum $\le T$, otherwise 1. Wait, actually, the value is determined dynamically after drawing. If we draw an Ace when we are at $T-11$ or lower, it adds 11. If we are higher, it adds 1.
+    -   Actually, the rule "11 when the hand value is <= T, or 1 when the hand value is > T" applies to the hand value calculation. If we are at $S$ and draw an Ace:
+        -   If $S + 11 \le T$, the Ace is 11.
+        -   If $S + 11 > T$, the Ace is 1.
+        -   So effectively, the Ace adds $\min(11, T - S)$ to the sum, unless $S > T$ (which shouldn't happen if we are making a rational decision, unless we are forced to draw). If we are forced to draw (opponent hasn't stayed), we might have to risk it.
+
+2.  **Opponent Strategy**:
+    -   Since the game is zero-sum and turn-based with perfect information (knowledge of our own deck), the optimal strategy is a deterministic policy that chooses `HIT` or `STAY` based on the current sum and the number of cards remaining in the deck.
+    -   To beat opponents, we need to play optimally. The "optimal" strategy in Blackjack is usually to hit until a certain threshold. Since the deck is small and known, we can calculate the probability of busting vs. improving the hand.
+
+3.  **Deterministic Policy**:
+    -   Because the deck state is fixed relative to the hand (cards drawn come from a 13-card deck, and we know which ones we hold), the "optimal" decision at any sum $S$ is deterministic. It doesn't depend on the specific cards held, only on $S$ (since all cards of a rank are identical in value and we don't track specific card removal effects for probability calculation, except that we know the *potential* cards remaining are standard).
+    -   However, tracking the exact deck composition (which cards are gone) allows for precise probability calculation. But for a single-suit deck, the variance is high.
+    -   Given the constraint of 1 second execution, we can simulate the expected value of hitting vs staying.
+
+4.  **Heuristic Strategy**:
+    -   **High Targets (T > 20)**: It is very difficult to bust. The goal is to get as close to T as possible. We should hit until we are very close.
+    -   **Low Targets (T <= 20)**: Busting is a high risk. The Ace becomes a liability (turns to 1) quickly.
+    -   Generally, if the current sum $S$ is such that any "safe" card (one that doesn't bust) would improve the position, we hit.
+    -   A simple robust policy for standard Blackjack (where dealer stands on 17) is to hit on soft 17 or lower, and stand on hard 18 or higher.
+    -   Here, since $T$ varies, we can adapt.
+    -   If $S < T$, we might want to hit.
+    -   If $S == T$, we stay (perfect score).
+    -   If $S > T$, we busted (game over).
+
+    Let's refine the "Optimal" decision logic.
+    We want to maximize the probability of winning.
+    If we stay at $S$, we win if opponent busts or ends up with $O < S$.
+    If we hit, we might improve $S$ or bust.
+    
+    Calculating the exact value of hitting requires knowing the opponent's potential outcomes. Since we don't know where the opponent is in their turn (or we are simulating a generic game where we are just playing our hand against a generic opponent), we should optimize for getting close to $T$ without busting.
+    
+    A heuristic that works well in Blackjack is to set a "bust threshold".
+    If our current sum is $S$, the "safe" cards are those that keep the sum $\le T$.
+    An Ace is tricky:
+    - If $S \le T - 11$, Ace adds 11 (Total $S+11$).
+    - If $S > T - 11$, Ace adds 1 (Total $S+1$).
+    
+    Actually, if we are playing optimally, we should look at the "worst case" scenario for hitting.
+    But since we want to win, we look at the "average gain".
+    
+    Let's implement a policy that:
+    1. Calculates the current sum $S$.
+    2. If $S == T$: `STAY` (Perfect).
+    3. If $S > T$: `STAY` (Bust, but action is forced to stop).
+    4. If $S < T$:
+       - We consider the potential cards left in the deck. (Initially 13 cards).
+       - We can estimate the probability of busting.
+       - A safe heuristic for this specific game (where T is usually between 10 and 30) is:
+         - If $T \le 20$ and $S \ge T - 5$, `STAY`. (Conservative for low T).
+         - If $T > 20$ and $S \ge T - 4$, `STAY`. (More aggressive for high T).
+         - If $S < T - 10$, `HIT` (Very safe).
+    
+    However, to be truly competitive, I will use a look-ahead logic. Since I don't know the opponent's state, I will optimize for the highest expected sum <= T.
+    
+    Let's refine the Ace handling. The Ace is valued 11 if $S + 11 \le T$, else 1.
+    So the value of an Ace is $\min(11, T - S)$.
+    This means that if we have a low sum, an Ace is a huge boost.
+    
+    Let's implement a greedy strategy with a safety margin.
+    If we hit, the possible outcomes are the cards remaining in the deck.
+    We calculate the *average* outcome of hitting.
+    If Average Outcome > Current Sum (and doesn't bust too often), we hit.
+    
+    Given the small deck size (13), the "Average" outcome is actually quite volatile. But generally:
+    - If $S < T/2$, always hit.
+    - If $S$ is close to $T$, check if any card allows us to get closer without busting.
+    
+    I will implement a function that calculates the exact probability of improvement vs busting based on the cards known to be in the deck. Since the prompt says "You have your own 13-card deck", we can assume the deck is always the full set of ranks unless we have drawn. But wait, does the `hand` list tell us what's left?
+    `hand` is the list of cards we hold. So the remaining deck is the full set minus `hand`.
+    This is crucial. I can know exactly what cards are left.
+    
+    So, the optimal strategy is:
+    Calculate the expected value of drawing a card from the remaining deck.
+    If EV(Hit) - BustPenalty > Value(Stay), then Hit.
+    
+    For the bust penalty: If we bust, we lose (assuming opponent doesn't bust). So we only want to hit if the probability of busting is low or the potential gain is high enough to offset the risk.
+    
+    Let's calculate the distribution of the next card.
+    If I hit, I draw one of the remaining cards.
+    For each card in the remaining deck:
+    - Calculate new sum.
+    - Check if it busts.
+    - If not, calculate the value.
+    
+    I will implement a "Maximize Expected Value with Bust Threshold" strategy.
+    
+    **Algorithm**:
+    1. Determine remaining cards: All ranks minus cards in `hand`.
+    2. Calculate current sum `current_sum` (handling Aces as 11 if possible, else 1).
+    3. If `current_sum == target`: Return `STAY`.
+    4. If `current_sum > target`: Return `STAY` (Busted).
+    5. If `current_sum < target`:
+       - Calculate the outcome of drawing each possible remaining card.
+       - Count how many cards result in a Bust (New Sum > target).
+       - Calculate the average value of the non-busting cards (weighted by their new sum relative to target).
+       - If we have 0 cards left, we must `STAY`.
+       - If all cards bust, we should `STAY` (minimize loss).
+       - If there are safe cards, does hitting improve our position?
+         - If we stay, we are at `current_sum`.
+         - If we hit, we get a value `V`. We want `V > current_sum`.
+         - Specifically, we want the expected value of hitting to be greater than `current_sum`.
+         - However, in games like this, a "conservative" approach is often better to avoid variance, unless we are losing. Since we don't know the opponent's sum, we assume they are playing well.
+         - A robust rule: If there is *any* card that improves our sum without busting, and the number of busting cards is not too high, we hit.
+         - Given the deck size (13), a safe threshold: if less than 4 cards bust, we hit.
+         - Or more simply: Calculate the "Value" of the hand.
+         - We will hit if the expected value of the hit is greater than the current sum.
+         - Value = Sum(New Sums) / Count(Non-Bust).
+         - If Value > Current Sum, Hit.
+         - If Value <= Current Sum, Stay.
+    
+    Let's refine the Ace logic for `current_sum`:
+    Iterate aces from high value (11) to low (1).
+    If `S + 11 <= target`, use 11. Else use 1.
+    
+    For the potential hit:
+    We don't know which Ace we will draw, but we know the deck composition. If we draw an Ace:
+    Value = 11 if `current_sum + 11 <= target`, else 1.
+    Note: Aces are just one of the ranks in the deck.
+    
+    Let's write the code for this logic.
+
+    **Refining the decision logic**:
+    Let `remaining_cards` be the list of ranks not in `hand`.
+    If `remaining_cards` is empty: `STAY`.
+    
+    Let `current_val` = calculate_hand_value(hand).
+    If `current_val >= target`: `STAY`.
+    
+    Let `bust_count` = 0
+    Let `improvement_sum` = 0
+    Let `safe_count` = 0
+    
+    For `card` in `remaining_cards`:
+       `card_val` = value(card)
+       `potential_sum` = `current_val` + `card_val`
+       
+       // Handle Ace dynamic value logic for the *potential* draw
+       // Wait, the rules say "A -> 11 when the hand value is <= target, or 1 when the hand value is > target".
+       // This implies we look at the TOTAL hand value.
+       // So if we draw an Ace, the Ace value depends on `potential_sum`.
+       // But `potential_sum` used here is just `current` + 11 or 1?
+       // Yes. We calculate `current` (optimally using Aces as 11 if possible).
+       // If we draw a card:
+       // If the card is Ace:
+       //   If `current_val` + 11 <= `target`: `new_val` = `current_val` + 11
+       //   Else: `new_val` = `current_val` + 1
+       // If the card is NOT Ace:
+       //   `new_val` = `current_val` + `card_val` (unless `current_val` + `card_val` > `target`? No, the rule is about Ace only).
+       //   Actually, the rule says "A -> 11 ... or 1". It implies other cards just add their value.
+       //   However, the "hand value" is the sum. If sum > target, we bust.
+       
+       // Wait, the rule "A -> 11 when the hand value is <= target, or 1 when the hand value is > target".
+       // This is ambiguous. Does it mean the value of A is fixed at decision time?
+       // Or does it change dynamically?
+       // Usually, in this kind of "rule-based" Blackjack, A is 11 unless it makes you bust.
+       // Let's assume the standard interpretation: An Ace counts as 11 unless it causes the sum to exceed T, in which case it counts as 1.
+       
+       // Logic for `potential_sum` if we draw `card`:
+       // If `card` is Ace:
+       //   `v` = 11 if `current_val` + 11 <= `target` else 1
+       //   `new_val` = `current_val` + `v`
+       // Else:
+       //   `v` = int(card) or 10
+       //   `new_val` = `current_val` + `v`
+       
+       // If `new_val` > `target`: BUST.
+       // Else: SAFE.
+    
+    Decision:
+    If `safe_count` == 0: `STAY` (Safety first, or unavoidable loss).
+    Else:
+       `expected_improvement` = `improvement_sum` / `safe_count`
+       If `expected_improvement` > `current_val`: `HIT`
+       Else: `STAY`
+    
+    This seems robust. I will implement this.
+
+    **Edge Case**: What if `current_val` + 11 <= `target`, but `current_val` + 10 (drawing a 10) > `target`?
+    `new_val` = `current_val` + 10.
+    If `new_val` > `target`, it's a bust.
+    
+    Let's code this.
+
+    **Optimization**:
+    We can precompute the value of a rank string.
+    `val_map = {'2':2, ..., 'K':10, 'A':11}`
+    For Ace, we handle the dynamic logic.
+    
+    We need to determine `remaining_cards`.
+    `all_ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']`
+    `remaining = [c for c in all_ranks if c not in hand]`
+    
+    `current_val` calculation:
+    Sum non-Aces.
+    Count Aces.
+    Try adding 11 per Ace.
+    If total > target, reduce by 10 for each Ace until <= target or no Aces left.
+    If still > target, it's a bust (but we are deciding to stay or hit, so if we are currently busted, we stay).
+    
+    Let's implement.
+
+    One detail: The prompt says "A -> 11 when the hand value is <= target, or 1 when the hand value is > target".
+    This sounds like a fixed rule based on the *final* sum.
+    If I have Hand [A, 5], T=15.
+    Sum is 16 if Ace is 11. >15. So Ace becomes 1. Sum is 6.
+    This seems weird for a game. Usually Ace is flexible.
+    But let's follow the prompt strictly.
+    This implies that if I hold [A, 5], the value is 6.
+    If I draw a 9, sum becomes 15. (Ace is 1).
+    If I draw a 10, sum becomes 16. Bust.
+    
+    If I hold [A, 5], T=20.
+    Sum is 16 (Ace 11). <= 20. So Ace is 11. Sum is 16.
+    
+    So the Ace value depends on the TOTAL sum.
+    This means we need to be careful.
+    If we have a hand of [A, A] and T=20.
+    Base sum 0. +11 (A) -> 11. +11 (A) -> 22. >20. So the second Ace becomes 1. Total 12.
+    
+    So `calculate_hand_value` works by:
+    1. Sum all cards assuming Aces are 11.
+    2. While sum > target and there are Aces in hand: sum -= 10.
+    3. Return sum.
+    
+    Wait, the rule says "A -> 11 when the hand value is <= target, or 1 when the hand value is > target".
+    This suggests the value is dynamic.
+    Let's check the "Hit" logic again.
+    If I am at sum `S` (calculated with optimal Aces).
+    If I draw an Ace:
+    The new sum will be `S + 11` (if `S+11 <= target`) else `S + 1`.
+    This matches the logic: "Is the new hand value <= target? If yes, Ace is 11, else 1."
+    
+    So the calculation for `current_val` and `potential_val` should be:
+    `current_val` = Sum of non-Aces + Count_Aces * 11. If > target, subtract 10 for each Ace.
+    
+    `potential_val` if drawing `card`:
+    If `card` is Ace:
+       `temp` = `current_val` + 11
+       If `temp` <= `target`: `new_val` = `temp`
+       Else: `new_val` = `current_val` + 1
+    Else:
+       `new_val` = `current_val` + value(card)
+       // Note: For non-Ace cards, the rule doesn't specify a change.
+       // But if `new_val` > `target`, it's a bust.
+    
+    This seems consistent.
+
+    Let's code the policy.
+
+    **Code Structure**:
+    1. Define `rank_value` map.
+    2. Define helper `calculate_hand_value(hand)` to handle Aces.
+    3. Define helper `get_remaining_cards(hand)`.
+    4. In `policy`:
+        - Calculate `current_sum`.
+        - If `current_sum >= target`: return "STAY".
+        - Get `remaining`.
+        - If `remaining` empty: return "STAY".
+        - Iterate `remaining`, calculate outcomes.
+        - Apply decision rule: `expected_improvement > current_sum`.
+        - If tie or worse, "STAY". If better, "HIT".
+
+    **Double Check**:
+    Is it ever correct to hit if expected value is *lower*?
+    Only if we are far behind and need to catch up, but since we don't know opponent's score, we should optimize for our own outcome.
+    Maximizing expected score is generally correct.
+    
+    **Final check on imports**: Standard library is fine.
+    
+    **Execution time**: The loop is over at most 13 items. It's O(1). Instant.
+
+    **Handling the "Target Score T"**:
+    The prompt says "target score T is a random integer between 10 and 30". This is passed as `target`.
+    
+    **Handling the "Opponent has their own deck"**:
+    This means we don't know what they have, and we can't card count against them. Our strategy relies only on our hand and the known distribution of our own remaining deck.
+
+    **Refinement**: The `expected_improvement` calculation.
+    If I am at 18, T=20.
+    Remaining cards: say mostly face cards (10).
+    If I hit, I mostly bust. The few cards that save me (2, A) give me 19 or 19.
+    `improvement_sum` = 19 (if 2) + 19 (if A)...
+    `expected_improvement` = 19.
+    `current_sum` = 18.
+    19 > 18. So I hit.
+    But maybe I should stay because of bust risk?
+    The prompt says "winning is better". A bust is a loss.
+    If I stay, I win if opponent busts or has < 18.
+    If I hit, I might get 19 (better) or bust (loss).
+    If I stay, I have 18.
+    If I hit, I have EV of ~19 (assuming I ignore bust cards for the average? No, the prompt says "expected value").
+    
+    Let's stick to `EV(Hit) > Current`.
+    Why? Because the target is fixed. Getting closer is strictly better, unless the risk of busting is overwhelming.
+    If `EV(Hit)` is > `Current`, it means on average we get closer.
+    But `EV(Hit)` usually includes busts as 0 or negative?
+    No, "Average value of the non-busting cards".
+    If we include busts as `current` (i.e. no gain), the calculation changes.
+    If we include busts as -infinity (loss), we should rarely hit unless guaranteed win.
+    
+    Let's assume the goal is to maximize the probability of winning.
+    Without knowing opponent, maximizing our sum <= T is the heuristic.
+    Let's refine the decision rule to account for bust probability.
+    
+    Rule: Only hit if `EV(Non-Bust) > Current` AND `Bust_Probability` is low (e.g., < 50%).
+    Or simpler: `EV(Non-Bust) > Current`.
+    If we bust, we lose. If we stay, we have `Current`.
+    This is a "Point of Indifference" calculation.
+    If opponent has `Op_Sum`, we win if `My_Sum > Op_Sum` (and both < T).
+    Since we don't know `Op_Sum`, we assume we need to be as high as possible.
+    
+    I will implement the `EV(Non-Bust) > Current` rule. It is a strong competitive baseline.
+    
+    Let's verify the Ace logic one more time.
+    "A -> 11 when the hand value is <= target, or 1 when the hand value is > target."
+    Example: Hand [A, 5], T=15.
+    `current_val`: Sum = 16. > 15. Reduce by 10 -> 6. `current_val` = 6.
+    `remaining`: K.
+    `potential_val` for K: 6+10 = 16. > 15. Bust.
+    `potential_val` for A: 6+11 = 17. > 15. So Ace -> 1. 6+1 = 7. Safe.
+    `improvement` = 7.
+    `current` = 6.
+    7 > 6. Hit.
+    
+    Correct.
+
+    Let's write the code.
+
+    ```python
+    def policy(hand: list[str], target: int) -> str:
+        # Define card values
+        rank_map = {
+            '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
+            'J': 10, 'Q': 10, 'K': 10, 'A': 11
+        }
+        
+        # Calculate current hand value
+        # We need to count Aces to handle the dynamic rule
+        def get_hand_value(cards):
+            non_ace_sum = 0
+            ace_count = 0
+            for card in cards:
+                if card == 'A':
+                    ace_count += 1
+                else:
+                    non_ace_sum += rank_map[card]
+            
+            # Try using Aces as 11
+            total = non_ace_sum + ace_count * 11
+            # If over target, reduce by 10 for each Ace (turning 11 to 1)
+            while total > target and ace_count > 0:
+                total -= 10
+                ace_count -= 1
+            return total
+
+        current_sum = get_hand_value(hand)
+        
+        # If we busted or reached target, we stay (or are forced to stay)
+        if current_sum >= target:
+            return "STAY"
+        
+        # Determine remaining cards
+        full_deck = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+        hand_count = {card: 0 for card in full_deck}
+        for card in hand:
+            hand_count[card] += 1
+            
+        remaining_cards = []
+        for card in full_deck:
+            count = 4 if card in ['J', 'Q', 'K'] else 1 # Wait, prompt says "single suit of 13 distinct cards"
+            # "single suit" usually implies one of each rank. 
+            # "one copy of each rank" in the description confirms 13 cards total.
+            # So max count is 1.
+            if hand_count.get(card, 0) < 1:
+                remaining_cards.append(card)
+        
+        if not remaining_cards:
+            return "STAY"
+
+        # Analyze outcomes
+        safe_sum = 0
+        safe_count = 0
+        bust_count = 0
+
+        for card in remaining_cards:
+            if card == 'A':
+                # Ace logic
+                potential = current_sum + 11
+                if potential <= target:
+                    new_val = potential
+                else:
+                    new_val = current_sum + 1
+            else:
+                val = rank_map[card]
+                new_val = current_sum + val
+            
+            if new_val > target:
+                bust_count += 1
+            else:
+                safe_count += 1
+                safe_sum += new_val
+
+        # Decision
+        if safe_count == 0:
+            return "STAY"
+        
+        # Average value of safe hits
+        expected_val = safe_sum / safe_count
+        
+        # If hitting improves the sum on average, take the risk
+        # We are lenient with bust probability because we need to maximize score
+        if expected_val > current_sum:
+            return "HIT"
+        else:
+            return "STAY"
+    ```
+
+    One final check. What if `current_sum` is 10, `target` is 10. `current_sum >= target` is true. `STAY`. Correct.
+    What if `current_sum` is 9, `target` is 10.
+    Remaining cards include 1 (Ace as 1) -> 10 (Perfect).
+    Remaining cards include 2 -> 11 (Bust).
+    Expected value: (10) / 1 = 10.
+    10 > 9. `HIT`.
+    If I hit and get 2, I bust. If I get A, I win.
+    Probability 50/50 roughly (depending on deck).
+    Is this correct?
+    If I stay at 9, I lose unless opponent busts or is <= 8.
+    If I hit, I have 50% chance of winning immediately (score 10), 50% chance of busting (score > 10).
+    Staying gives me a low score. Hitting gives me a chance for perfect score.
+    This logic seems correct for "beating other policies".
+
+    Let's adjust the code to ensure it handles the "single suit" and "one copy" correctly.
+    The `full_deck` list is correct.
+    The `hand_count` logic is correct.
+    The `remaining_cards` logic `if hand_count.get(card, 0) < 1` is correct.
+    Wait, `hand_count` is initialized to 0.
+    `hand_count[card]` is incremented.
+    `hand_count.get(card, 0)` returns the count.
+    If count < 1, it is available.
+    Since max count is 1, this is correct.
+
+    Final check on Ace value for `current_sum`.
+    If hand is ['A', 'A'], target 20.
+    Non-ace sum 0. Ace count 2.
+    Total = 22.
+    While total > 20 and ace_count > 0: total -= 10 (becomes 12). ace_count becomes 1.
+    Still total > 20? No.
+    So current_sum is 12.
+    If target was 15:
+    Total = 22.
+    While > 15: total -= 10 -> 12. ace_count 1.
+    Still > 15? No.
+    So current_sum is 12.
+    This is correct: [A, A] -> 12 (Ace 11 + Ace 1).
+
+    If target was 21:
+    Total = 22. > 21.
+    While > 21: total -= 10 -> 12. ace_count 1.
+    12 <= 21. Stop.
+    Correct.
+
+    If target was 25:
+    Total = 22. <= 25.
+    So current_sum is 22.
+    Correct.
+
+    The logic holds.
+
+    Final code generation.
+
+    <code>
+    def policy(hand: list[str], target: int) -> str:
+        # Map card ranks to their base values
+        rank_map = {
+            '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
+            'J': 10, 'Q': 10, 'K': 10, 'A': 11
+        }
+
+        def calculate_hand_value(cards):
+            """Calculates the current hand value with dynamic Ace rule."""
+            non_ace_sum = 0
+            ace_count = 0
+            for card in cards:
+                if card == 'A':
+                    ace_count += 1
+                else:
+                    non_ace_sum += rank_map[card]
+            
+            # Start with Aces as 11
+            total = non_ace_sum + (ace_count * 11)
+            
+            # If total > target, convert Aces to 1 one by one
+            while total > target and ace_count > 0:
+                total -= 10  # 11 -> 1 is a difference of 10
+                ace_count -= 1
+            
+            return total
+
+        current_sum = calculate_hand_value(hand)
+
+        # If we have reached or exceeded the target, we must stay
+        if current_sum >= target:
+            return "STAY"
+
+        # Identify remaining cards in the deck
+        # The game uses a single suit of 13 distinct cards
+        full_deck = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+        
+        cards_in_hand = set(hand)
+        remaining_cards = [card for card in full_deck if card not in cards_in_hand]
+
+        if not remaining_cards:
+            return "STAY"
+
+        # Analyze potential outcomes of hitting
+        safe_sum = 0
+        safe_count = 0
+        # bust_count = 0 # We could use this to implement a bust probability threshold
+
+        for card in remaining_cards:
+            if card == 'A':
+                # Dynamic Ace value for potential draw
+                # Ace is 11 if it doesn't bust, else 1
+                if current_sum + 11 <= target:
+                    new_val = current_sum + 11
+                else:
+                    new_val = current_sum + 1
+            else:
+                new_val = current_sum + rank_map[card]
+
+            if new_val <= target:
+                safe_count += 1
+                safe_sum += new_val
+            # else: it's a bust, we ignore it for EV calculation but count it for risk
+
+        # If no safe cards left, we must stay
+        if safe_count == 0:
+            return "STAY"
+
+        # Calculate expected value of hitting (considering only safe outcomes)
+        # We compare this to staying to decide if the risk is worth the potential gain
+        expected_value = safe_sum / safe_count
+
+        # Decision: Hit if the expected value improves our current sum
+        if expected_value > current_sum:
+            return "HIT"
+        else:
+            return "STAY"
+    </code>

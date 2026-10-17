@@ -1,0 +1,334 @@
+The strategy for this policy is to implement a minimax algorithm with alpha-beta pruning to search for the best move. The evaluation function considers material count (kings are worth more than men), positional advancement (men closer to promotion are valued higher), and central control. The search depth is limited to ensure execution stays within the time constraints. The policy strictly adheres to the rule that captures are mandatory; if capture moves are detected, the search is restricted exclusively to those moves.
+
+<code>
+import random
+import time
+
+# Constants
+BOARD_SIZE = 8
+DEPTH_LIMIT = 6
+
+# Piece values for evaluation
+MAN_VAL = 100
+KING_VAL = 175
+ADVANCE_VAL = 5
+CENTER_VAL = 3
+EDGE_PENALTY = 2
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Main policy function to determine the next move.
+    """
+    start_time = time.time()
+    
+    # Internal representation:
+    # 1 = My Man, 2 = My King
+    # -1 = Opp Man, -2 = Opp King
+    # 0 = Empty
+    board = [0] * 64
+    
+    my_dir = 1 if color == 'w' else -1
+    
+    # Populate board
+    for r, c in my_men:
+        board[r * 8 + c] = 1
+    for r, c in my_kings:
+        board[r * 8 + c] = 2
+    for r, c in opp_men:
+        board[r * 8 + c] = -1
+    for r, c in opp_kings:
+        board[r * 8 + c] = -2
+
+    # Generate all possible moves
+    all_moves = get_moves(board, 1, 2, -1, -2, my_dir)
+    
+    if not all_moves:
+        # No valid moves, return something (though game should be over)
+        return ((0,0),(0,0))
+
+    # Check for mandatory captures
+    capture_moves = [m for m in all_moves if m[2] is not None]
+    
+    if capture_moves:
+        moves_to_consider = capture_moves
+    else:
+        moves_to_consider = all_moves
+
+    # If only one move, return immediately
+    if len(moves_to_consider) == 1:
+        return (moves_to_consider[0][0], moves_to_consider[0][1])
+
+    # Iterative Deepening Search
+    best_move = moves_to_consider[0]
+    
+    # We limit depth to ensure < 1s execution.
+    # Depth 5-6 is usually safe for Python in 1s on an 8x8 board.
+    # We run a full minimax with alpha-beta pruning.
+    
+    top_score = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Order moves to improve alpha-beta pruning
+    # Heuristic: captures first, then forward moves
+    def move_sort_key(m):
+        score = 0
+        if m[2]: score += 100 # Captures
+        # Moves towards center or promotion
+        to_r, to_c = m[1]
+        score += to_r * my_dir # Advancement
+        return -score
+
+    sorted_moves = sorted(moves_to_consider, key=move_sort_key)
+
+    for move in sorted_moves:
+        # Check time
+        if time.time() - start_time > 0.8:
+            break
+            
+        new_board = apply_move(board, move, 1, 2)
+        
+        # Check for multi-jump continuation
+        if move[2] is not None:
+            # If it was a capture, check if more captures available
+            # The `apply_move` handles the single step.
+            # We need to check the new board for further captures from the landing pos.
+            # We handle this by recursing with 'is_maximizing=True' if turn continues.
+            turn_continues = False
+            piece_val = new_board[move[1][0]*8 + move[1][1]]
+            if piece_val != 0:
+                # Check specifically for continuation
+                further_captures = get_capture_moves(new_board, move[1], piece_val, -1, -2)
+                if further_captures:
+                    turn_continues = True
+            
+            if turn_continues:
+                score = minimax(new_board, DEPTH_LIMIT - 1, alpha, beta, True, my_dir, start_time, move[1])
+            else:
+                score = minimax(new_board, DEPTH_LIMIT - 1, alpha, beta, False, my_dir, start_time, None)
+        else:
+            score = minimax(new_board, DEPTH_LIMIT - 1, alpha, beta, False, my_dir, start_time, None)
+        
+        if score > top_score:
+            top_score = score
+            best_move = move
+        
+        alpha = max(alpha, score)
+
+    return (best_move[0], best_move[1])
+
+def minimax(board, depth, alpha, beta, is_maximizing, my_dir, start_time, multi_jump_pos):
+    if time.time() - start_time > 0.9:
+        return evaluate(board, my_dir) # Time safety
+
+    my_vals = (1, 2) if is_maximizing else (-1, -2)
+    opp_vals = (-1, -2) if is_maximizing else (1, 2)
+    move_dir = my_dir if is_maximizing else -my_dir
+
+    # Generate moves
+    if multi_jump_pos:
+        # We are in the middle of a multi-jump sequence
+        # We must continue capture if possible.
+        piece_val = board[multi_jump_pos[0]*8 + multi_jump_pos[1]]
+        moves = get_capture_moves(board, multi_jump_pos, piece_val, opp_vals[0], opp_vals[1])
+        if not moves:
+            return evaluate(board, my_dir) # Should not happen if logic is correct
+    else:
+        moves = get_moves(board, my_vals[0], my_vals[1], opp_vals[0], opp_vals[1], move_dir)
+        # Mandatory capture logic
+        captures = [m for m in moves if m[2] is not None]
+        if captures:
+            moves = captures
+
+    if depth == 0 or not moves:
+        return evaluate(board, my_dir)
+
+    if is_maximizing:
+        max_eval = -float('inf')
+        for move in moves:
+            new_board = apply_move(board, move, my_vals[0], my_vals[1])
+            
+            turn_continues = False
+            if move[2] is not None:
+                piece_val = new_board[move[1][0]*8 + move[1][1]]
+                if piece_val != 0:
+                    further_captures = get_capture_moves(new_board, move[1], piece_val, opp_vals[0], opp_vals[1])
+                    if further_captures:
+                        turn_continues = True
+
+            if turn_continues:
+                eval_val = minimax(new_board, depth - 1, alpha, beta, True, my_dir, start_time, move[1])
+            else:
+                eval_val = minimax(new_board, depth - 1, alpha, beta, False, my_dir, start_time, None)
+            
+            max_eval = max(max_eval, eval_val)
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            # For opponent, values are negative for application
+            # apply_move uses absolute values for promotion logic?
+            # We just pass the identities.
+            new_board = apply_move(board, move, my_vals[0], my_vals[1])
+            
+            turn_continues = False
+            if move[2] is not None:
+                piece_val = new_board[move[1][0]*8 + move[1][1]]
+                if piece_val != 0:
+                    # Opponent continues capturing my values
+                    further_captures = get_capture_moves(new_board, move[1], piece_val, opp_vals[0], opp_vals[1])
+                    if further_captures:
+                        turn_continues = True
+            
+            if turn_continues:
+                eval_val = minimax(new_board, depth - 1, alpha, beta, False, my_dir, start_time, move[1])
+            else:
+                eval_val = minimax(new_board, depth - 1, alpha, beta, True, my_dir, start_time, None)
+            
+            min_eval = min(min_eval, eval_val)
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def get_moves(board, man_val, king_val, opp_man_val, opp_king_val, move_dir):
+    moves = []
+    capture_moves = []
+    
+    for i in range(64):
+        piece = board[i]
+        if piece == man_val or piece == king_val:
+            r, c = divmod(i, 8)
+            
+            is_king = (piece == king_val)
+            dirs = [1, -1] # col directions
+            
+            # Men move forward, Kings both
+            row_dirs = [move_dir] if not is_king else [move_dir, -move_dir]
+            
+            for dr in row_dirs:
+                for dc in dirs:
+                    nr, nc = r + dr, c + dc
+                    
+                    # Simple move
+                    if 0 <= nr < 8 and 0 <= nc < 8:
+                        dest_idx = nr * 8 + nc
+                        if board[dest_idx] == 0:
+                            moves.append(((r, c), (nr, nc), None))
+                        
+                        # Capture
+                        elif board[dest_idx] == opp_man_val or board[dest_idx] == opp_king_val:
+                            jr, jc = nr + dr, nc + dc
+                            if 0 <= jr < 8 and 0 <= jc < 8:
+                                jump_idx = jr * 8 + jc
+                                if board[jump_idx] == 0:
+                                    capture_moves.append(((r, c), (jr, jc), (nr, nc)))
+    
+    # Mandatory capture: if captures exist, we MUST take them.
+    # The search logic handles this, but get_moves should return all possibilities
+    # for the search to prune correctly, or we can enforce here.
+    # Let's return all and let the caller handle mandatory logic.
+    # Actually returning all is safer for the logic flow.
+    return moves + capture_moves
+
+def get_capture_moves(board, pos, piece_val, opp_man_val, opp_king_val):
+    # Helper to get captures from a specific position (for multi-jumps)
+    r, c = pos
+    captures = []
+    
+    is_king = (abs(piece_val) == 2) # Check abs value
+    # Determine move direction based on piece ownership (sign)
+    # Actually, in get_capture_moves context, we are called inside the turn of the piece.
+    # We need to know direction.
+    # Since we only use this inside the recursion, we know whose turn it is.
+    # Let's just brute force all 4 directions if king, else forward/backward logic?
+    # No, men only move forward to capture? 
+    # American Checkers: Men capture forward ONLY.
+    # Kings capture forward and backward.
+    
+    move_dir = 1 if piece_val > 0 else -1 # Assuming sign indicates player
+    
+    row_dirs = [move_dir] if not is_king else [move_dir, -move_dir]
+    dirs = [1, -1]
+    
+    for dr in row_dirs:
+        for dc in dirs:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                dest_val = board[nr * 8 + nc]
+                if dest_val == opp_man_val or dest_val == opp_king_val:
+                    jr, jc = nr + dr, nc + dc
+                    if 0 <= jr < 8 and 0 <= jc < 8:
+                        jump_idx = jr * 8 + jc
+                        if board[jump_idx] == 0:
+                            captures.append(((r, c), (jr, jc), (nr, nc)))
+    return captures
+
+def apply_move(board, move, man_val, king_val):
+    # move = ((r1, c1), (r2, c2), (cap_r, cap_c) or None)
+    (r1, c1), (r2, c2), cap = move
+    
+    new_board = list(board)
+    idx1 = r1 * 8 + c1
+    idx2 = r2 * 8 + c2
+    
+    piece = new_board[idx1]
+    new_board[idx1] = 0
+    
+    # Handle capture
+    if cap:
+        cap_idx = cap[0] * 8 + cap[1]
+        new_board[cap_idx] = 0
+    
+    # Handle promotion
+    # White (positive) promotes at row 7. Black (negative) promotes at row 0.
+    promotes = False
+    if piece == man_val:
+        if (man_val > 0 and r2 == 7) or (man_val < 0 and r2 == 0):
+            piece = king_val
+    
+    new_board[idx2] = piece
+    return new_board
+
+def evaluate(board, my_dir):
+    score = 0
+    
+    # My direction determines if I am positive or negative
+    # In policy, we set my pieces to positive (1, 2).
+    # So we just sum positive and subtract negative.
+    
+    for i, piece in enumerate(board):
+        if piece == 0:
+            continue
+        
+        r, c = divmod(i, 8)
+        val = 0
+        
+        if abs(piece) == 2:
+            val = KING_VAL
+        else:
+            val = MAN_VAL
+            # Advancement bonus
+            if piece > 0: # My piece
+                val += r * ADVANCE_VAL # Higher row is better for White (positive)
+            else: # Opp piece
+                val += (7 - r) * ADVANCE_VAL # Lower row is better for Black (negative)
+        
+        # Positional bonus
+        # Center control (cols 2-5, rows 2-5)
+        if 2 <= c <= 5 and 2 <= r <= 5:
+            val += CENTER_VAL
+        
+        if piece < 0:
+            val = -val
+            
+        score += val
+        
+    # If we are Black (my_dir = -1), our pieces are positive in board representation,
+    # but we initialized them as positive.
+    # So score is always calculated relative to "positive pieces = my pieces".
+    return score
+</code>

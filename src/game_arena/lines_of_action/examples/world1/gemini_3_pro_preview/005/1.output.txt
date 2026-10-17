@@ -1,0 +1,318 @@
+The strategy for this policy uses an **Iterative Deepening Alpha-Beta Search** to select the best move within the 1-second time limit. The core of the bot determines the quality of a board state based on **Connectivity**, **Concentration**, and **Centralization**.
+
+1.  **Search Algorithm**: The bot explores the game tree using Alpha-Beta pruning to find the optimal move sequences. Iterative deepening ensures that the bot always has a valid move ready if the time limit cuts off the search. It attempts to search as deep as possible (typically depth 3 or 4) within the constraints.
+2.  **Evaluation Function (Heuristics)**:
+    *   **Win Detection**: The highest priority is given to states where the bot's pieces are fully connected (Win) or the opponent's are disconnected (to perform blocking).
+    *   **Concentration (Inertia)**: Since the goal is connectivity, the bot calculates the "Moment of Inertia" (sum of squared distances from the Center of Mass) for both players. It seeks to minimize its own inertia (grouping pieces together) and maximize the opponent's inertia (scattering them).
+    *   **Centralization**: A small bonus is awarded for keeping the Center of Mass near the center of the board, which usually improves mobility and blocking potential.
+3.  **Move Ordering**: Moves that result in captures are prioritized during move generation to maximize Alpha-Beta pruning efficiency.
+
+<code>
+import time
+import math
+
+# Direction vectors for 8-way movement
+DIRECTIONS = [
+    (-1, 0), (1, 0), (0, -1), (0, 1),   # N, S, W, E
+    (-1, -1), (-1, 1), (1, -1), (1, 1)  # NW, NE, SW, SE
+]
+
+def policy(board) -> str:
+    """
+    Determines the next move for the Lines of Action game.
+    """
+    bot = LOABot()
+    return bot.get_best_move(board)
+
+class LOABot:
+    def __init__(self):
+        self.player = 1
+        self.time_limit = 0.92  # Seconds, leaving a buffer strictly below 1.0s
+        self.start_time = 0
+        self.nodes_visited = 0
+        self.timed_out = False
+
+    def get_best_move(self, board_input):
+        self.start_time = time.time()
+        
+        # Ensure working with a mutable list of lists
+        if hasattr(board_input, 'tolist'):
+            grid = board_input.tolist()
+        else:
+            # Handles tuples or other iterables
+            grid = [list(row) for row in board_input]
+
+        # 1. Generate all legal moves
+        legal_moves = self.generate_moves(grid, self.player)
+        
+        # Fallback if no moves exist (should be rare/game over usually)
+        if not legal_moves:
+            return "0,0:0,0"
+
+        best_move = legal_moves[0]
+        
+        # 2. Iterative Deepening Search
+        depth = 1
+        max_depth = 5 # Handling depth 4-5 is usually the limit for Python in 1s
+        
+        try:
+            while depth <= max_depth:
+                self.timed_out = False
+                
+                # Alpha-Beta Search
+                # We start with a wide window.
+                score, move = self.minimax(grid, depth, -float('inf'), float('inf'), True)
+                
+                # If we timed out during the search, the result is unreliable;
+                # satisfy with the previous depth's best move.
+                if self.timed_out:
+                    break
+                
+                if move:
+                    best_move = move
+                    
+                # If we found a winning line (extremely high score), we don't need to search deeper
+                if score > 50000:
+                    break
+                
+                depth += 1
+                
+        except TimeoutError:
+            pass
+            
+        return self.format_move(best_move)
+
+    def minimax(self, board, depth, alpha, beta, maximizing):
+        # Periodic time check
+        if self.nodes_visited & 127 == 0:
+            if time.time() - self.start_time > self.time_limit:
+                self.timed_out = True
+                return 0, None
+
+        # Check connectivity (Win/Loss conditions)
+        # We assume the API calls us when the game is not strictly over,
+        # but in the tree, we must detect terminal states.
+        # Check opponent first: if we are maximizing, it's our turn, meaning
+        # opponent just moved. If they connected, they won.
+        op_conn, _ = self.is_connected(board, -self.player)
+        if op_conn:
+            return -100000 - depth, None # Opponent won
+            
+        my_conn, _ = self.is_connected(board, self.player)
+        if my_conn:
+            return 100000 + depth, None # We won
+
+        if depth == 0:
+            return self.evaluate(board), None
+
+        current_player = self.player if maximizing else -self.player
+        moves = self.generate_moves(board, current_player)
+        
+        if not moves:
+            # No legal moves implies a loss for the mover in typical LOA rules,
+            # or simply a bad state.
+            return (-100000 if maximizing else 100000), None
+
+        # Move Ordering: Prioritize captures (landing on enemy piece)
+        # This speeds up AB pruning significantly.
+        def score_move_ordering(m):
+            r_tgt, c_tgt = m[1]
+            return 1 if board[r_tgt][c_tgt] == -current_player else 0
+        
+        moves.sort(key=score_move_ordering, reverse=True)
+
+        best_op = moves[0]
+        
+        if maximizing:
+            max_eval = -float('inf')
+            for m in moves:
+                # Apply move
+                (r1, c1), (r2, c2) = m
+                captured = board[r2][c2]
+                board[r2][c2] = board[r1][c1]
+                board[r1][c1] = 0
+                
+                self.nodes_visited += 1
+                eval_val, _ = self.minimax(board, depth - 1, alpha, beta, False)
+                
+                # Undo move
+                board[r1][c1] = board[r2][c2]
+                board[r2][c2] = captured
+                
+                if self.timed_out:
+                    return 0, None
+
+                if eval_val > max_eval:
+                    max_eval = eval_val
+                    best_op = m
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval, best_op
+        else:
+            min_eval = float('inf')
+            for m in moves:
+                # Apply move
+                (r1, c1), (r2, c2) = m
+                captured = board[r2][c2]
+                board[r2][c2] = board[r1][c1]
+                board[r1][c1] = 0
+                
+                self.nodes_visited += 1
+                eval_val, _ = self.minimax(board, depth - 1, alpha, beta, True)
+                
+                # Undo move
+                board[r1][c1] = board[r2][c2]
+                board[r2][c2] = captured
+
+                if self.timed_out:
+                    return 0, None
+
+                if eval_val < min_eval:
+                    min_eval = eval_val
+                    best_op = m
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval, best_op
+
+    def evaluate(self, board):
+        # Calculate heuristic based on Concentration (Moment of Inertia)
+        # We want to minimize our Inertia and maximize opponent's.
+        
+        def get_stats(player):
+            pcs = []
+            for r in range(8):
+                for c in range(8):
+                    if board[r][c] == player:
+                        pcs.append((r, c))
+            
+            if not pcs: return 0
+            
+            # Center of Mass
+            n = len(pcs)
+            avg_r = sum(p[0] for p in pcs) / n
+            avg_c = sum(p[1] for p in pcs) / n
+            
+            # Sum of squared distances from CoM
+            inertia = 0
+            for r, c in pcs:
+                inertia += (r - avg_r)**2 + (c - avg_c)**2
+            
+            # Centralization: Penalty for CoM being far from center (3.5, 3.5)
+            center_dist = (avg_r - 3.5)**2 + (avg_c - 3.5)**2
+            
+            # Weighted score: Inertia is bad (high spread), Distance from board center is bad
+            return inertia + (center_dist * 2.0)
+
+        my_score = get_stats(self.player)
+        op_score = get_stats(-self.player)
+        
+        # Lower score is better for the owner of the pieces.
+        # We want to minimize my_score and maximize op_score.
+        return op_score - my_score
+
+    def is_connected(self, board, player):
+        """
+        Returns (bool, pieces_list) indicating if all pieces of `player` are connected.
+        """
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] == player:
+                    pieces.append((r,c))
+        
+        if len(pieces) <= 1:
+            return True, pieces
+
+        # BFS for connectivity
+        start = pieces[0]
+        visited = {start}
+        queue = [start]
+        count = 0
+        
+        while queue:
+            r, c = queue.pop(0)
+            count += 1
+            
+            # Check 8 neighbors
+            for dr, dc in DIRECTIONS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    if board[nr][nc] == player and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+        
+        return count == len(pieces), pieces
+
+    def count_line(self, board, r, c, dr, dc):
+        """
+        Counts total pieces on the line of movement defined by (r, c) and direction (dr, dc).
+        """
+        count = 1 # The piece itself
+        
+        # Forward
+        curr_r, curr_c = r + dr, c + dc
+        while 0 <= curr_r < 8 and 0 <= curr_c < 8:
+            if board[curr_r][curr_c] != 0:
+                count += 1
+            curr_r += dr
+            curr_c += dc
+            
+        # Backward
+        curr_r, curr_c = r - dr, c - dc
+        while 0 <= curr_r < 8 and 0 <= curr_c < 8:
+            if board[curr_r][curr_c] != 0:
+                count += 1
+            curr_r -= dr
+            curr_c -= dc
+            
+        return count
+
+    def generate_moves(self, board, player):
+        moves = []
+        # Find all pieces of current player
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] == player:
+                    pieces.append((r, c))
+                    
+        for r, c in pieces:
+            for dr, dc in DIRECTIONS:
+                # 1. Count pieces in line
+                steps = self.count_line(board, r, c, dr, dc)
+                if steps == 0: continue # Should not happen
+                
+                # 2. Determine target
+                tr = r + steps * dr
+                tc = c + steps * dc
+                
+                # Check Bounds
+                if not (0 <= tr < 8 and 0 <= tc < 8):
+                    continue
+                
+                # Check Destination
+                target_val = board[tr][tc]
+                if target_val == player:
+                    continue # Cannot land on self
+                    
+                # Check Path (Blocking by Enemy)
+                # Iterating from r+dr, c+dc up to but not including target
+                blocked = False
+                for k in range(1, steps):
+                    ir = r + k * dr
+                    ic = c + k * dc
+                    if board[ir][ic] == -player:
+                        blocked = True
+                        break
+                if blocked:
+                    continue
+                
+                moves.append(((r, c), (tr, tc)))
+        return moves
+
+    def format_move(self, move):
+        (r1, c1), (r2, c2) = move
+        return f"{r1},{c1}:{r2},{c2}"
+</code>

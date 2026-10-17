@@ -1,0 +1,104 @@
+ The strategy is to greedily advance pieces toward the target zone (rows 6-8 for red, rows 1-3 for blue) while prioritizing jumps (which move 2 squares) over single advances. The policy calculates the shortest wrap-around distance for each piece to the nearest target row, then selects the move that maximizes progress toward the target. Moves that remove a piece from the target zone are heavily penalized, while moves that land in the target zone are rewarded. Jumps are preferred over advances when both offer similar progress, as they are more efficient.
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Map files to 0-3 and back
+    file_to_idx = {'a': 0, 'b': 1, 'c': 2, 'd': 3}
+    idx_to_file = {0: 'a', 1: 'b', 2: 'c', 3: 'd'}
+    
+    # Distance to target rows (0-indexed)
+    # Red targets: rows 6,7,8 (indices 5,6,7), moves up (increasing index)
+    # Blue targets: rows 1,2,3 (indices 0,1,2), moves down (decreasing index)
+    def dist_red(r_idx: int) -> int:
+        # Minimum steps moving up (+1 mod 8) to reach 5, 6, or 7
+        return min((5 - r_idx) % 8, (6 - r_idx) % 8, (7 - r_idx) % 8)
+    
+    def dist_blue(r_idx: int) -> int:
+        # Minimum steps moving down (-1 mod 8) to reach 0, 1, or 2
+        return min((r_idx - 0) % 8, (r_idx - 1) % 8, (r_idx - 2) % 8)
+    
+    # Parse board state
+    board = {}  # (f_idx, r_idx) -> content ('red', 'blue', or 'b')
+    my_pieces = []  # list of (f_idx, r_idx)
+    
+    for prop in state:
+        if prop[0] == 'cell' and len(prop) == 4:
+            f_str, r_str, content = prop[1], prop[2], prop[3]
+            f = file_to_idx[f_str]
+            r = int(r_str) - 1  # convert to 0-indexed
+            board[(f, r)] = content
+            if content == role:
+                my_pieces.append((f, r))
+    
+    if not my_pieces:
+        # Fallback, should not happen in valid game
+        return "move(a,1,b,2)"
+    
+    is_red = (role == 'red')
+    dist_func = dist_red if is_red else dist_blue
+    directions = [(-1, 1), (1, 1)] if is_red else [(-1, -1), (1, -1)]  # (file_delta, rank_delta)
+    
+    candidates = []  # list of (score, move_string)
+    
+    for f, r in my_pieces:
+        curr_dist = dist_func(r)
+        in_target = (curr_dist == 0)
+        
+        for df, dr in directions:
+            # Calculate adjacent cell (potential single move or jump middle)
+            nf = (f + df) % 4
+            nr = (r + dr) % 8
+            
+            # Check single advance
+            if board.get((nf, nr)) == 'b':
+                new_dist = dist_func(nr)
+                lands_in_target = (new_dist == 0)
+                
+                # Scoring
+                score = 0
+                if in_target and not lands_in_target:
+                    score = -1000  # Strongly discourage leaving target
+                else:
+                    score = (curr_dist - new_dist) * 10  # Progress reward
+                    if lands_in_target:
+                        score += 100  # Bonus for entering target
+                    score -= curr_dist  # Tiebreaker: prefer moving far pieces
+                
+                move_str = f"move({idx_to_file[f]},{r+1},{idx_to_file[nf]},{nr+1})"
+                candidates.append((score, move_str))
+            
+            # Check jump (must jump over own piece)
+            if board.get((nf, nr)) == role:
+                jf = (f + 2 * df) % 4
+                jr = (r + 2 * dr) % 8
+                
+                if board.get((jf, jr)) == 'b':
+                    new_dist = dist_func(jr)
+                    lands_in_target = (new_dist == 0)
+                    
+                    score = 5  # Base bonus for jump efficiency
+                    if in_target and not lands_in_target:
+                        score = -1000
+                    else:
+                        score += (curr_dist - new_dist) * 10
+                        if lands_in_target:
+                            score += 100
+                        score -= curr_dist
+                    
+                    move_str = f"jump({idx_to_file[f]},{r+1},{idx_to_file[nf]},{nr+1},{idx_to_file[jf]},{jr+1})"
+                    candidates.append((score, move_str))
+    
+    if not candidates:
+        # No legal moves found (shouldn't happen), return a dummy that's likely invalid
+        # but we try to find any empty adjacent cell as last resort
+        for f, r in my_pieces:
+            for df, dr in directions:
+                nf, nr = (f + df) % 4, (r + dr) % 8
+                if board.get((nf, nr)) == 'b':
+                    return f"move({idx_to_file[f]},{r+1},{idx_to_file[nf]},{nr+1})"
+        return "move(a,1,b,2)"
+    
+    # Sort by score descending
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+</code>

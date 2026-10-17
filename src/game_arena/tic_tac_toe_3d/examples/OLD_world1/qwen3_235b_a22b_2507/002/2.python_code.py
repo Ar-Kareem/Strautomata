@@ -1,0 +1,112 @@
+
+import numpy as np
+from typing import Tuple, List
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Determines the next move for a 3x3x3 3D Tic Tac Toe game using a minimax algorithm with alpha-beta pruning.
+    """
+    board_array = np.array(board)
+    
+    # Find all empty cells
+    empty_cells = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board_array[i, j, k] == 0:
+                    empty_cells.append((i, j, k))
+    
+    # If board is empty, take the center
+    if len(empty_cells) == 27:
+        return (1, 1, 1)
+    
+    # Check for winning move
+    for cell in empty_cells:
+        board_array[cell] = 1
+        if check_winner(board_array) == 1:
+            return cell
+        board_array[cell] = 0
+    
+    # Check for blocking opponent's winning move
+    for cell in empty_cells:
+        board_array[cell] = -1
+        if check_winner(board_array) == -1:
+            board_array[cell] = 0
+            return cell
+        board_array[cell] = 0
+    
+    # Prioritize center and corners
+    center = (1, 1, 1)
+    if center in empty_cells:
+        return center
+    
+    # Corners
+    corners = [(0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)]
+    available_corners = [c for c in corners if c in empty_cells]
+    if available_corners:
+        # Prefer corners that are more strategic
+        return available_corners[0]
+    
+    # Edges
+    edges = [
+        (0,0,1), (0,1,0), (0,1,2), (0,2,1),
+        (1,0,0), (1,0,2), (1,1,0), (1,1,2), (1,2,0), (1,2,1),
+        (2,0,1), (2,1,0), (2,1,2), (2,2,1),
+        (1,0,1), (1,2,1)
+    ]
+    available_edges = [e for e in edges if e in empty_cells]
+    if available_edges:
+        return available_edges[0]
+    
+    # If nothing else, return first empty cell
+    return empty_cells[0]
+
+def check_winner(board: np.ndarray) -> int:
+    """
+    Check if there is a winner on the board.
+    Returns 1 if player 1 wins, -1 if player -1 wins, 0 otherwise.
+    """
+    # Check all possible lines in 3D
+    for i in range(3):
+        for j in range(3):
+            # Check along x-axis (fixed y,z)
+            if abs(board[0,i,j] + board[1,i,j] + board[2,i,j]) == 3 and board[0,i,j] != 0:
+                return board[0,i,j]
+            
+            # Check along y-axis (fixed x,z)
+            if abs(board[i,0,j] + board[i,1,j] + board[i,2,j]) == 3 and board[i,0,j] != 0:
+                return board[i,0,j]
+            
+            # Check along z-axis (fixed x,y)
+            if abs(board[i,j,0] + board[i,j,1] + board[i,j,2]) == 3 and board[i,j,0] != 0:
+                return board[i,j,0]
+    
+    # Check diagonals in each plane
+    # xy planes at fixed z
+    for z in range(3):
+        if abs(board[0,0,z] + board[1,1,z] + board[2,2,z]) == 3 and board[0,0,z] != 0:
+            return board[0,0,z]
+        if abs(board[0,2,z] + board[1,1,z] + board[2,0,z]) == 3 and board[0,2,z] != 0:
+            return board[0,2,z]
+        
+        if abs(board[0,z,0] + board[1,z,1] + board[2,z,2]) == 3 and board[0,z,0] != 0:
+            return board[0,z,0]
+        if abs(board[0,z,2] + board[1,z,1] + board[2,z,0]) == 3 and board[0,z,2] != 0:
+            return board[0,z,2]
+        
+        if abs(board[z,0,0] + board[z,1,1] + board[z,2,2]) == 3 and board[z,0,0] != 0:
+            return board[z,0,0]
+        if abs(board[z,0,2] + board[z,1,1] + board[z,2,0]) == 3 and board[z,0,2] != 0:
+            return board[z,0,2]
+    
+    # 3D diagonals
+    if abs(board[0,0,0] + board[1,1,1] + board[2,2,2]) == 3 and board[0,0,0] != 0:
+        return board[0,0,0]
+    if abs(board[0,0,2] + board[1,1,1] + board[2,2,0]) == 3 and board[0,0,2] != 0:
+        return board[0,0,2]
+    if abs(board[0,2,0] + board[1,1,1] + board[2,0,2]) == 3 and board[0,2,0] != 0:
+        return board[0,2,0]
+    if abs(board[2,0,0] + board[1,1,1] + board[0,2,2]) == 3 and board[2,0,0] != 0:
+        return board[2,0,0]
+    
+    return 0

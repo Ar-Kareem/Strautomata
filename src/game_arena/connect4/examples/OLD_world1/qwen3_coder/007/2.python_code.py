@@ -1,0 +1,233 @@
+
+import numpy as np
+import random
+from collections import deque
+
+def policy(board: list[list[int]]) -> int:
+    # Convert to numpy array for easier manipulation
+    board = np.array(board)
+    
+    # Constants
+    ROWS, COLS = 6, 7
+    EMPTY = 0
+    PLAYER = 1
+    OPPONENT = -1
+    WIN_LENGTH = 4
+    
+    # Check if a move leads to immediate win
+    def check_win(board, player, col):
+        # Make the move
+        row = get_next_row(board, col)
+        if row == -1:
+            return False
+        board[row][col] = player
+        
+        # Check for win
+        win = is_winning_move(board, player, row, col)
+        
+        # Undo the move
+        board[row][col] = EMPTY
+        return win
+    
+    # Get the next available row in a column
+    def get_next_row(board, col):
+        for row in range(ROWS - 1, -1, -1):
+            if board[row][col] == EMPTY:
+                return row
+        return -1  # Column is full
+    
+    # Check if the last move was a winning move
+    def is_winning_move(board, player, row, col):
+        # Check horizontal
+        count = 1
+        # Count right
+        for c in range(col + 1, min(COLS, col + WIN_LENGTH)):
+            if board[row][c] == player:
+                count += 1
+            else:
+                break
+        # Count left
+        for c in range(col - 1, max(-1, col - WIN_LENGTH), -1):
+            if board[row][c] == player:
+                count += 1
+            else:
+                break
+        if count >= WIN_LENGTH:
+            return True
+            
+        # Check vertical
+        count = 1
+        # Count down (no need to count up since this is the topmost disc in column)
+        for r in range(row + 1, min(ROWS, row + WIN_LENGTH)):
+            if board[r][col] == player:
+                count += 1
+            else:
+                break
+        if count >= WIN_LENGTH:
+            return True
+            
+        # Check diagonal (top-left to bottom-right)
+        count = 1
+        # Count down-right
+        r, c = row + 1, col + 1
+        while r < ROWS and c < COLS and board[r][c] == player:
+            count += 1
+            r += 1
+            c += 1
+        # Count up-left
+        r, c = row - 1, col - 1
+        while r >= 0 and c >= 0 and board[r][c] == player:
+            count += 1
+            r -= 1
+            c -= 1
+        if count >= WIN_LENGTH:
+            return True
+            
+        # Check diagonal (top-right to bottom-left)
+        count = 1
+        # Count down-left
+        r, c = row + 1, col - 1
+        while r < ROWS and c >= 0 and board[r][c] == player:
+            count += 1
+            r += 1
+            c -= 1
+        # Count up-right
+        r, c = row - 1, col + 1
+        while r >= 0 and c < COLS and board[r][c] == player:
+            count += 1
+            r -= 1
+            c += 1
+        if count >= WIN_LENGTH:
+            return True
+            
+        return False
+    
+    # Evaluate a board position
+    def evaluate_board(board):
+        score = 0
+        
+        # Score center column preference
+        center_col = COLS // 2
+        center_count = np.count_nonzero(board[:, center_col] == PLAYER)
+        score += center_count * 3
+        
+        # Score horizontal positions
+        for r in range(ROWS):
+            row_array = [int(i) for i in list(board[r, :])]
+            for c in range(COLS - 3):
+                window = row_array[c:c + WIN_LENGTH]
+                score += evaluate_window(window)
+                
+        # Score vertical positions
+        for c in range(COLS):
+            col_array = [int(i) for i in list(board[:, c])]
+            for r in range(ROWS - 3):
+                window = col_array[r:r + WIN_LENGTH]
+                score += evaluate_window(window)
+                
+        # Score positive diagonal positions
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [board[r + i][c + i] for i in range(WIN_LENGTH)]
+                score += evaluate_window(window)
+                
+        # Score negative diagonal positions
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [board[r + 3 - i][c + i] for i in range(WIN_LENGTH)]
+                score += evaluate_window(window)
+                
+        return score
+    
+    # Evaluate a window of 4 positions
+    def evaluate_window(window):
+        score = 0
+        player_count = window.count(PLAYER)
+        opponent_count = window.count(OPPONENT)
+        empty_count = window.count(EMPTY)
+        
+        if player_count == 4:
+            score += 1000
+        elif player_count == 3 and empty_count == 1:
+            score += 100
+        elif player_count == 2 and empty_count == 2:
+            score += 10
+        elif opponent_count == 4:
+            score -= 1000
+        elif opponent_count == 3 and empty_count == 1:
+            score -= 100
+        elif opponent_count == 2 and empty_count == 2:
+            score -= 10
+            
+        return score
+    
+    # Minimax with alpha-beta pruning
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        valid_locations = [col for col in range(COLS) if get_next_row(board, col) != -1]
+        is_terminal = len(valid_locations) == 0 or check_win(board, PLAYER, 0) or check_win(board, OPPONENT, 0)
+        
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if check_win(board, PLAYER, 0):
+                    return (None, 10000000000000)
+                elif check_win(board, OPPONENT, 0):
+                    return (None, -10000000000000)
+                else:  # Game over, no more valid moves
+                    return (None, 0)
+            else:  # Depth is zero
+                return (None, evaluate_board(board))
+        
+        if maximizing_player:
+            value = -np.inf
+            column = random.choice(valid_locations)
+            for col in valid_locations:
+                row = get_next_row(board, col)
+                if row != -1:
+                    board_copy = board.copy()
+                    board_copy[row][col] = PLAYER
+                    new_score = minimax(board_copy, depth - 1, alpha, beta, False)[1]
+                    if new_score > value:
+                        value = new_score
+                        column = col
+                    alpha = max(alpha, value)
+                    if alpha >= beta:
+                        break
+            return column, value
+        else:  # Minimizing player
+            value = np.inf
+            column = random.choice(valid_locations)
+            for col in valid_locations:
+                row = get_next_row(board, col)
+                if row != -1:
+                    board_copy = board.copy()
+                    board_copy[row][col] = OPPONENT
+                    new_score = minimax(board_copy, depth - 1, alpha, beta, True)[1]
+                    if new_score < value:
+                        value = new_score
+                        column = col
+                    beta = min(beta, value)
+                    if alpha >= beta:
+                        break
+            return column, value
+    
+    # Get valid columns
+    valid_columns = [col for col in range(COLS) if get_next_row(board, col) != -1]
+    
+    # If there's a winning move, take it
+    for col in valid_columns:
+        if check_win(board, PLAYER, col):
+            return col
+            
+    # If opponent has a winning move, block it
+    for col in valid_columns:
+        if check_win(board, OPPONENT, col):
+            return col
+    
+    # Use minimax for more advanced strategy
+    if len(valid_columns) > 0:
+        col, minimax_score = minimax(board, 4, -np.inf, np.inf, True)
+        if col is not None and col in valid_columns:
+            return col
+    
+    # Fallback: choose a random valid column
+    return random.choice(valid_columns) if valid_columns else 0

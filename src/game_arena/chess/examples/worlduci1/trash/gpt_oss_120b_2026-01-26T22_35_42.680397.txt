@@ -1,0 +1,114 @@
+**Strategy Overview**
+
+The policy builds a full chess position from the `pieces` dictionary using the `python‑chess` library.  
+All legal moves are generated, then each move is scored with a very fast static
+evaluation:
+
+1. **Check‑mate** – if a move immediately mates the opponent it is taken.  
+2. **Capture value** – moves that capture a piece are favoured, weighted by the
+   standard piece values (Q 9, R 5, B/N 3, P 1).  
+3. **Material balance** – after a non‑capturing move the resulting material
+   balance (my pieces – opponent pieces) is computed; the move with the highest
+   balance is selected.  
+4. **Tie‑breaker** – if several moves have the same score the first one
+   (deterministic ordering from `python‑chess`) is returned.
+
+The algorithm guarantees that the returned UCI string is a legal move because it
+uses `board.legal_moves`.  The evaluation is lightweight, runs well under the 1 s
+limit, and is strong enough to win against naïve or purely random policies.  
+
+```python
+<code>
+import chess
+import copy
+
+# piece values for static evaluation
+PIECE_VALUES = {
+    chess.PAWN:   1,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK:   5,
+    chess.QUEEN:  9,
+    chess.KING:   0
+}
+
+def _build_board(pieces: dict[str, str], to_play: str) -> chess.Board:
+    """Create a python‑chess Board from the supplied dictionary."""
+    board = chess.Board(None)          # start with an empty board
+    board.clear_board()
+
+    # map our piece codes to python‑chess Piece objects
+    for sq, code in pieces.items():
+        color = chess.WHITE if code[0] == 'w' else chess.BLACK
+        ptype_char = code[1]
+        ptype = {
+            'K': chess.KING,
+            'Q': chess.QUEEN,
+            'R': chess.ROOK,
+            'B': chess.BISHOP,
+            'N': chess.KNIGHT,
+            'P': chess.PAWN
+        }[ptype_char]
+        piece = chess.Piece(ptype, color)
+        board.set_piece_at(chess.parse_square(sq), piece)
+
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+    board.castling_rights = chess.BB_EMPTY  # castle rights are irrelevant for move legality
+    board.clear_stack()
+    return board
+
+
+def _material_score(board: chess.Board, color: bool) -> int:
+    """Return total material for the given colour."""
+    score = 0
+    for piece_type in PIECE_VALUES:
+        score += len(board.pieces(piece_type, color)) * PIECE_VALUES[piece_type]
+    return score
+
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Choose a move for the side given by ``to_play``.
+    Returns a UCI move string that is guaranteed to be legal.
+    """
+    board = _build_board(pieces, to_play)
+    my_color = board.turn
+
+    legal_moves = list(board.legal_moves)
+    if not legal_moves:
+        # No legal move – stalemate or checkmate (should never be called in this case)
+        return ""
+
+    best_move = None
+    best_score = -10**9   # very low initial value
+
+    for move in legal_moves:
+        # 1. check for immediate checkmate
+        board_push = board.copy()
+        board_push.push(move)
+        if board_push.is_checkmate():
+            return move.uci()
+
+        # 2. capture value heuristic
+        capture_score = 0
+        if board.is_capture(move):
+            captured_piece = board.piece_at(move.to_square)
+            if captured_piece:
+                capture_score = PIECE_VALUES[captured_piece.piece_type]
+
+        # 3. material balance after the move
+        my_material = _material_score(board_push, my_color)
+        opp_material = _material_score(board_push, not my_color)
+        balance = my_material - opp_material
+
+        # Combine the scores: capture value is a quick boost, then overall balance
+        total_score = capture_score * 10 + balance
+
+        if total_score > best_score:
+            best_score = total_score
+            best_move = move
+
+    # Fallback – should always have a move
+    return best_move.uci()
+</code>
+```

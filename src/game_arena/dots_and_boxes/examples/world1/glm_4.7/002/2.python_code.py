@@ -1,0 +1,215 @@
+
+import numpy as np
+from collections import deque
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Constants for grid dimensions
+    BOX_ROWS, BOX_COLS = 4, 4
+    DOT_ROWS, DOT_COLS = 5, 5
+
+    # Helper to get number of drawn sides for a box at (r, c)
+    def get_sides(r, c):
+        count = 0
+        # Top
+        if horizontal[r, c] != 0: count += 1
+        # Bottom
+        if horizontal[r+1, c] != 0: count += 1
+        # Left
+        if vertical[r, c] != 0: count += 1
+        # Right
+        if vertical[r, c+1] != 0: count += 1
+        return count
+
+    # Gather all legal moves
+    legal_moves = []
+    
+    # Horizontal edges: (row, col) -> connects (row, col) to (row, col+1)
+    # Valid range: row 0..4, col 0..3
+    for r in range(DOT_ROWS):
+        for c in range(BOX_COLS):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+                
+    # Vertical edges: (row, col) -> connects (row, col) to (row+1, col)
+    # Valid range: row 0..3, col 0..4
+    for r in range(BOX_ROWS):
+        for c in range(DOT_COLS):
+            if vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+
+    # If no legal moves, game is over (should not happen per prompt constraints)
+    if not legal_moves:
+        return "0,0,H" 
+
+    # --- Phase 1: Look for Captures ---
+    capture_candidates = []
+    for r, c, d in legal_moves:
+        completed = 0
+        if d == 'H':
+            # Box above
+            if r > 0:
+                if get_sides(r-1, c) == 3: completed += 1
+            # Box below
+            if r < BOX_ROWS:
+                if get_sides(r, c) == 3: completed += 1
+        else: # 'V'
+            # Box left
+            if c > 0:
+                if get_sides(r, c-1) == 3: completed += 1
+            # Box right
+            if c < BOX_COLS:
+                if get_sides(r, c) == 3: completed += 1
+        
+        if completed > 0:
+            capture_candidates.append((r, c, d, completed))
+
+    if capture_candidates:
+        # Sort by number of boxes completed (descending)
+        capture_candidates.sort(key=lambda x: x[3], reverse=True)
+        best = capture_candidates[0]
+        return f"{best[0]},{best[1]},{best[2]}"
+
+    # --- Phase 2: Look for Safe Moves ---
+    # Safe move: Does not create a 3-sided box (neighbors != 2)
+    safe_candidates = []
+    for r, c, d in legal_moves:
+        is_safe = True
+        if d == 'H':
+            if r > 0:
+                if get_sides(r-1, c) == 2: is_safe = False
+            if r < BOX_ROWS:
+                if get_sides(r, c) == 2: is_safe = False
+        else: # 'V'
+            if c > 0:
+                if get_sides(r, c-1) == 2: is_safe = False
+            if c < BOX_COLS:
+                if get_sides(r, c) == 2: is_safe = False
+        
+        if is_safe:
+            safe_candidates.append((r, c, d))
+
+    if safe_candidates:
+        # Heuristic: Prefer moves that "harden" boxes (1 side -> 2 sides)
+        # Score = count of 1->2 transitions
+        def score_safe_move(r, c, d):
+            score = 0
+            if d == 'H':
+                if r > 0:
+                    if get_sides(r-1, c) == 1: score += 1
+                if r < BOX_ROWS:
+                    if get_sides(r, c) == 1: score += 1
+            else: # 'V'
+                if c > 0:
+                    if get_sides(r, c-1) == 1: score += 1
+                if c < BOX_COLS:
+                    if get_sides(r, c) == 1: score += 1
+            return score
+
+        safe_candidates.sort(key=lambda m: score_safe_move(*m), reverse=True)
+        best = safe_candidates[0]
+        return f"{best[0]},{best[1]},{best[2]}"
+
+    # --- Phase 3: Chain Strategy (Giveaway) ---
+    # All remaining moves are unsafe (create 3-sided boxes).
+    # Identify regions (chains/loops) of 2-sided boxes.
+    
+    region_map = np.zeros((BOX_ROWS, BOX_COLS), dtype=int)
+    # Mark full boxes (sides == 4) as -1
+    for r in range(BOX_ROWS):
+        for c in range(BOX_COLS):
+            if get_sides(r, c) == 4:
+                region_map[r, c] = -1
+    
+    regions = {} # id -> {'coords': [], 'type': 'loop'|'chain', 'size': 0}
+    curr_id = 1
+    
+    for r in range(BOX_ROWS):
+        for c in range(BOX_COLS):
+            if region_map[r, c] == 0 and get_sides(r, c) == 2:
+                # BFS
+                q = deque([(r, c)])
+                region_map[r, c] = curr_id
+                coords = [(r, c)]
+                while q:
+                    cr, cc = q.popleft()
+                    # Check 4 neighbors
+                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < BOX_ROWS and 0 <= nc < BOX_COLS:
+                            if region_map[nr, nc] == 0:
+                                if get_sides(nr, nc) == 2:
+                                    region_map[nr, nc] = curr_id
+                                    q.append((nr, nc))
+                                    coords.append((nr, nc))
+                
+                # Determine type
+                size = len(coords)
+                r_type = 'chain'
+                if size == 1:
+                    r_type = 'chain'
+                else:
+                    # Count ends
+                    ends = 0
+                    for br, bc in coords:
+                        adj = 0
+                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            nr, nc = br + dr, bc + dc
+                            if 0 <= nr < BOX_ROWS and 0 <= nc < BOX_COLS:
+                                if region_map[nr, nc] == curr_id:
+                                    adj += 1
+                        if adj == 1:
+                            ends += 1
+                    
+                    if ends == 0:
+                        r_type = 'loop'
+                    elif ends == 2:
+                        r_type = 'chain'
+                    else:
+                        # Branching, treat as chain
+                        r_type = 'chain'
+                
+                regions[curr_id] = {'type': r_type, 'size': size}
+                curr_id += 1
+                
+    # Select move based on regions
+    # Priority 1: Open a loop (good for us)
+    # Priority 2: Open the shortest chain (minimize loss)
+    
+    best_move = None
+    
+    # Check for any loop region
+    has_loop = any(d['type'] == 'loop' for d in regions.values())
+    
+    move_score = []
+    
+    for r, c, d in legal_moves:
+        # Find associated region
+        rid = None
+        if d == 'H':
+            if r > 0: rid = region_map[r-1, c]
+            else: rid = region_map[r, c]
+        else:
+            if c > 0: rid = region_map[r, c-1]
+            else: rid = region_map[r, c]
+            
+        if rid > 0:
+            r_data = regions[rid]
+            score = 0
+            if r_data['type'] == 'loop':
+                # Very high priority
+                score = 100000 
+            else:
+                # Chain: smaller is better (negative score)
+                score = -r_data['size']
+            
+            move_score.append((score, r, c, d))
+            
+    if move_score:
+        move_score.sort(key=lambda x: x[0], reverse=True)
+        best_move = move_score[0]
+    
+    if best_move:
+        return f"{best_move[1]},{best_move[2]},{best_move[3]}"
+    
+    # Fallback (should not be reached)
+    return f"{legal_moves[0][0]},{legal_moves[0][1]},{legal_moves[0][2]}"

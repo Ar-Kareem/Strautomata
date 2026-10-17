@@ -1,0 +1,181 @@
+The strategy for this policy is to use **Minimax search with Alpha-Beta pruning** and **Iterative Deepening**. The algorithm simulates future moves up to a certain depth (limited by the 1-second time constraint) to select the move that maximizes the eventual score difference (my store minus opponent's store), accounting for seeds remaining on the board.
+
+Key features of this implementation:
+1.  **Iterative Deepening**: Starts searching at depth 1 and increases depth until time runs out, ensuring the best move found within the time limit is returned.
+2.  **Alpha-Beta Pruning**: Optimizes the search by cutting off branches that cannot possibly affect the final decision, allowing for deeper searches.
+3.  **Heuristic Evaluation**: Uses a weighted score combining the difference in stores and the difference in seeds on the board. This helps the AI prioritize capturing seeds and maintaining playable moves.
+4.  **Move Ordering**: Prioritizes moves with more seeds during search to increase the likelihood of alpha-beta cutoffs, improving efficiency.
+5.  **Time Management**: A global time check ensures the search stops as soon as the time limit is approached to avoid disqualification.
+
+<code>
+import time
+import math
+
+# Constants for the search algorithm
+STORE_WEIGHT = 1.0
+SIDE_WEIGHT = 0.5
+TIME_LIMIT = 0.95  # seconds (slightly less than 1.0 for safety)
+
+# Global variable to track start time
+_start_time = 0
+
+def evaluate(you: list[int], opponent: list[int]) -> float:
+    """
+    Heuristic evaluation of the board state.
+    Returns a score where higher is better for 'you'.
+    """
+    # Difference in stores is the primary goal
+    score = (you[6] - opponent[6]) * STORE_WEIGHT
+    # Difference in seeds on the side (potential to capture/move)
+    score += (sum(you[:6]) - sum(opponent[:6])) * SIDE_WEIGHT
+    return score
+
+def apply_move(you: list[int], opponent: list[int], move_idx: int):
+    """
+    Simulates a move for the player represented by 'you'.
+    Returns (new_you, new_opponent, extra_turn).
+    """
+    # Deep copy to mutate state
+    ny = list(you)
+    no = list(opponent)
+    
+    seeds = ny[move_idx]
+    ny[move_idx] = 0
+    
+    # Map indices to a circular board 0-12
+    # 0-5: your houses, 6: your store, 7-12: opponent houses
+    # We skip opponent store (index 13 conceptually) by wrapping 12->0
+    pos = move_idx
+    
+    while seeds > 0:
+        pos = (pos + 1) % 13
+        
+        if 0 <= pos <= 5:
+            ny[pos] += 1
+        elif pos == 6:
+            ny[6] += 1
+        elif 7 <= pos <= 12:
+            no[pos - 7] += 1
+        seeds -= 1
+        
+    extra_turn = False
+    
+    # Check if last seed landed in store (Extra Turn)
+    if pos == 6:
+        extra_turn = True
+    elif 0 <= pos <= 5:
+        # Check Capture
+        # Condition: Land in empty house (count becomes 1) AND opposite house has seeds
+        if ny[pos] == 1 and no[5 - pos] > 0:
+            ny[6] += 1 + no[5 - pos]
+            ny[pos] = 0
+            no[5 - pos] = 0
+            
+    # Check Game Over (one side empty)
+    y_sum = sum(ny[:6])
+    o_sum = sum(no[:6])
+    
+    if y_sum == 0:
+        no[6] += o_sum
+        for i in range(6): no[i] = 0
+    elif o_sum == 0:
+        ny[6] += y_sum
+        for i in range(6): ny[i] = 0
+        
+    return ny, no, extra_turn
+
+def search(you: list[int], opponent: list[int], depth: int, alpha: float, beta: float, is_maximizing: bool) -> float:
+    """
+    Minimax search with Alpha-Beta pruning.
+    """
+    # Check for timeout
+    if time.time() - _start_time > TIME_LIMIT:
+        raise TimeoutError
+        
+    # Terminal state check
+    y_sum = sum(you[:6])
+    o_sum = sum(opponent[:6])
+    if y_sum == 0 or o_sum == 0:
+        return evaluate(you, opponent)
+    
+    if depth == 0:
+        return evaluate(you, opponent)
+        
+    if is_maximizing:
+        max_eval = -float('inf')
+        moves = [i for i in range(6) if you[i] > 0]
+        
+        # Move ordering: try moves with more seeds first
+        moves.sort(key=lambda i: you[i], reverse=True)
+        
+        for i in moves:
+            ny, no, extra = apply_move(you, opponent, i)
+            # If extra turn, we remain the maximizer
+            eval_val = search(ny, no, depth - 1, alpha, beta, extra)
+            
+            max_eval = max(max_eval, eval_val)
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        moves = [i for i in range(6) if opponent[i] > 0]
+        
+        moves.sort(key=lambda i: opponent[i], reverse=True)
+        
+        for i in moves:
+            # Simulate opponent move. 
+            # apply_move treats first arg as active player.
+            # Returns (new_opponent, new_you, extra)
+            ny, no, extra = apply_move(opponent, you, i)
+            
+            # If extra turn, opponent remains minimizer.
+            # Otherwise, turn switches to maximizer.
+            next_max = not extra
+            eval_val = search(no, ny, depth - 1, alpha, beta, next_max)
+            
+            min_eval = min(min_eval, eval_val)
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    global _start_time
+    _start_time = time.time()
+    
+    valid_moves = [i for i in range(6) if you[i] > 0]
+    
+    # If only one move, return immediately
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+        
+    best_move = valid_moves[0]
+    
+    try:
+        # Iterative deepening
+        for depth in range(1, 50):
+            alpha = -float('inf')
+            beta = float('inf')
+            
+            # Sort moves to try promising ones first
+            sorted_moves = sorted(valid_moves, key=lambda i: -you[i])
+            
+            for i in sorted_moves:
+                ny, no, extra = apply_move(you, opponent, i)
+                eval_val = search(ny, no, depth - 1, alpha, beta, extra)
+                
+                if eval_val > alpha:
+                    alpha = eval_val
+                    best_move = i
+                    
+                # Root node pruning not strictly necessary, but good practice
+                # if alpha >= beta: break 
+                    
+    except TimeoutError:
+        # Time's up, return best move found so far
+        pass
+        
+    return best_move
+</code>

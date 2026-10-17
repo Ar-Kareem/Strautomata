@@ -1,0 +1,317 @@
+
+from typing import List, Tuple
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Move:
+    me_set = set(me)
+    opp_set = set(opp)
+
+    legal = generate_moves(me_set, opp_set, color)
+    if not legal:
+        # Should not happen in valid Breakthrough states, but keep a safe fallback.
+        # Return something deterministic if ever called on a terminal/invalid state.
+        p = me[0]
+        d = 1 if color == 'w' else -1
+        nr = max(0, min(7, p[0] + d))
+        nc = p[1]
+        return (p, (nr, nc))
+
+    # Immediate winning move.
+    for mv in legal:
+        _, to_sq = mv
+        if reaches_goal(to_sq[0], color):
+            return mv
+
+    # Score all moves with a shallow minimax and tactical heuristics.
+    best_move = legal[0]
+    best_score = -10**18
+
+    # Stable deterministic ordering preference.
+    legal_sorted = sorted(legal, key=move_sort_key(color))
+
+    for mv in legal_sorted:
+        my2, opp2 = apply_move(me_set, opp_set, mv)
+
+        # If opponent has no pieces left, immediate win.
+        if not opp2:
+            return mv
+
+        # If move already wins by promotion.
+        if any(reaches_goal(r, color) for r, _ in my2):
+            return mv
+
+        opp_color = 'b' if color == 'w' else 'w'
+        opp_moves = generate_moves(opp2, my2, opp_color)
+
+        # If opponent can immediately win after this move, heavily penalize.
+        opp_immediate_win = False
+        for omv in opp_moves:
+            _, oto = omv
+            if reaches_goal(oto[0], opp_color):
+                opp_immediate_win = True
+                break
+
+        if opp_immediate_win:
+            score = -10**15
+        else:
+            if not opp_moves:
+                score = 10**14
+            else:
+                # Opponent chooses best reply for themselves => minimize our evaluation.
+                worst_reply_score = 10**18
+                opp_moves_sorted = sorted(opp_moves, key=move_sort_key(opp_color))
+                # Full scan is still cheap on 8x8, but keep it simple and robust.
+                for omv in opp_moves_sorted:
+                    opp3, my3 = apply_move(opp2, my2, omv)
+                    if not opp3:
+                        # Opponent somehow lost all pieces before move; great for us.
+                        reply_score = 10**14
+                    elif any(reaches_goal(r, opp_color) for r, _ in opp3):
+                        reply_score = -10**14
+                    else:
+                        reply_score = evaluate_position(my3, opp3, color)
+                    if reply_score < worst_reply_score:
+                        worst_reply_score = reply_score
+                score = worst_reply_score
+
+            # Add a small immediate-move bias so current tactical gains matter too.
+            score += evaluate_position(my2, opp2, color) * 0.15
+
+        # Tiny deterministic tie-break from move features.
+        score += immediate_move_bonus(me_set, opp_set, mv, color) * 1e-3
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    return best_move
+
+
+def generate_moves(me_set, opp_set, color: str) -> List[Move]:
+    moves = []
+    d = 1 if color == 'w' else -1
+    occupied = me_set | opp_set
+
+    # Forward-most first tends to help tie-breaking and tactical urgency.
+    pieces = sorted(me_set, key=lambda p: advancement(p[0], color), reverse=True)
+
+    for r, c in pieces:
+        nr = r + d
+        if not (0 <= nr < 8):
+            continue
+
+        # Straight forward only if empty.
+        if (nr, c) not in occupied:
+            moves.append(((r, c), (nr, c)))
+
+        # Diagonal left/right: move if empty OR capture if occupied by opp.
+        nc = c - 1
+        if 0 <= nc < 8 and (nr, nc) not in me_set:
+            moves.append(((r, c), (nr, nc)))
+
+        nc = c + 1
+        if 0 <= nc < 8 and (nr, nc) not in me_set:
+            moves.append(((r, c), (nr, nc)))
+
+    return moves
+
+
+def apply_move(me_set, opp_set, mv: Move):
+    (fr, fc), (tr, tc) = mv
+    new_me = set(me_set)
+    new_opp = set(opp_set)
+    new_me.remove((fr, fc))
+    new_me.add((tr, tc))
+    if (tr, tc) in new_opp:
+        new_opp.remove((tr, tc))
+    return new_me, new_opp
+
+
+def reaches_goal(row: int, color: str) -> bool:
+    return row == 7 if color == 'w' else row == 0
+
+
+def advancement(row: int, color: str) -> int:
+    return row if color == 'w' else 7 - row
+
+
+def evaluate_position(me_set, opp_set, my_color: str) -> float:
+    opp_color = 'b' if my_color == 'w' else 'w'
+
+    if not opp_set:
+        return 10**12
+    if not me_set:
+        return -10**12
+
+    # Promotion already present.
+    if any(reaches_goal(r, my_color) for r, _ in me_set):
+        return 10**11
+    if any(reaches_goal(r, opp_color) for r, _ in opp_set):
+        return -10**11
+
+    score = 0.0
+
+    # Material.
+    score += 120.0 * (len(me_set) - len(opp_set))
+
+    # Advancement and promotion threats.
+    my_adv = [advancement(r, my_color) for r, _ in me_set]
+    opp_adv = [advancement(r, opp_color) for r, _ in opp_set]
+
+    score += 18.0 * sum(my_adv)
+    score -= 20.0 * sum(opp_adv)
+
+    score += 45.0 * max(my_adv)
+    score -= 55.0 * max(opp_adv)
+
+    # Strong endgame urgency for pieces near goal.
+    for r, c in me_set:
+        a = advancement(r, my_color)
+        if a >= 5:
+            score += (a - 4) ** 2 * 35.0
+        if is_passed(r, c, me_set, opp_set, my_color):
+            score += 40.0 + 10.0 * a
+
+    for r, c in opp_set:
+        a = advancement(r, opp_color)
+        if a >= 5:
+            score -= (a - 4) ** 2 * 42.0
+        if is_passed(r, c, opp_set, me_set, opp_color):
+            score -= 45.0 + 12.0 * a
+
+    # Centrality.
+    for r, c in me_set:
+        score += central_bonus(c) * 6.0
+    for r, c in opp_set:
+        score -= central_bonus(c) * 6.5
+
+    # Support / structure / vulnerability.
+    my_attack_map = attack_map(me_set, my_color)
+    opp_attack_map = attack_map(opp_set, opp_color)
+
+    for r, c in me_set:
+        if (r, c) in my_attack_map:
+            score += 10.0
+        if (r, c) in opp_attack_map:
+            score -= 16.0
+        if (r, c) in my_attack_map and (r, c) in opp_attack_map:
+            score -= 3.0
+
+    for r, c in opp_set:
+        if (r, c) in opp_attack_map:
+            score -= 9.0
+        if (r, c) in my_attack_map:
+            score += 14.0
+
+    # Mobility.
+    my_moves = generate_moves(me_set, opp_set, my_color)
+    opp_moves = generate_moves(opp_set, me_set, opp_color)
+    score += 2.2 * len(my_moves)
+    score -= 2.5 * len(opp_moves)
+
+    # Immediate winning threats next move.
+    my_wins_next = count_immediate_wins(me_set, opp_set, my_color)
+    opp_wins_next = count_immediate_wins(opp_set, me_set, opp_color)
+    score += 140.0 * my_wins_next
+    score -= 170.0 * opp_wins_next
+
+    # Capture opportunities.
+    score += 8.0 * count_captures(me_set, opp_set, my_color)
+    score -= 9.0 * count_captures(opp_set, me_set, opp_color)
+
+    return score
+
+
+def attack_map(pieces, color: str):
+    d = 1 if color == 'w' else -1
+    attacks = set()
+    for r, c in pieces:
+        nr = r + d
+        if 0 <= nr < 8:
+            if c - 1 >= 0:
+                attacks.add((nr, c - 1))
+            if c + 1 < 8:
+                attacks.add((nr, c + 1))
+    return attacks
+
+
+def is_passed(r: int, c: int, me_set, opp_set, color: str) -> bool:
+    # Simple passed-pawn style test:
+    # no enemy piece exists ahead on same/adjacent files.
+    if color == 'w':
+        for orow, ocol in opp_set:
+            if orow > r and abs(ocol - c) <= 1:
+                return False
+    else:
+        for orow, ocol in opp_set:
+            if orow < r and abs(ocol - c) <= 1:
+                return False
+    return True
+
+
+def central_bonus(c: int) -> float:
+    return 3.5 - abs(c - 3.5)
+
+
+def count_immediate_wins(me_set, opp_set, color: str) -> int:
+    cnt = 0
+    for mv in generate_moves(me_set, opp_set, color):
+        _, (tr, tc) = mv
+        if reaches_goal(tr, color):
+            cnt += 1
+    return cnt
+
+
+def count_captures(me_set, opp_set, color: str) -> int:
+    cnt = 0
+    d = 1 if color == 'w' else -1
+    for r, c in me_set:
+        nr = r + d
+        if 0 <= nr < 8:
+            if c - 1 >= 0 and (nr, c - 1) in opp_set:
+                cnt += 1
+            if c + 1 < 8 and (nr, c + 1) in opp_set:
+                cnt += 1
+    return cnt
+
+
+def immediate_move_bonus(me_set, opp_set, mv: Move, color: str) -> float:
+    (fr, fc), (tr, tc) = mv
+    bonus = 0.0
+
+    # Prefer captures slightly.
+    if (tr, tc) in opp_set:
+        bonus += 50.0
+
+    # Prefer advancement.
+    bonus += 8.0 * advancement(tr, color)
+
+    # Prefer centralizing.
+    bonus += 2.0 * central_bonus(tc)
+
+    # Prefer supported destination.
+    new_me, new_opp = apply_move(me_set, opp_set, mv)
+    my_att = attack_map(new_me, color)
+    opp_color = 'b' if color == 'w' else 'w'
+    opp_att = attack_map(new_opp, opp_color)
+
+    if (tr, tc) in my_att:
+        bonus += 6.0
+    if (tr, tc) in opp_att:
+        bonus -= 10.0
+
+    return bonus
+
+
+def move_sort_key(color: str):
+    def key(mv: Move):
+        (fr, fc), (tr, tc) = mv
+        # Stable deterministic ordering:
+        # winning row progress first, then captures-ish by diagonal preference, then center.
+        adv = advancement(tr, color)
+        diag = 1 if tc != fc else 0
+        center = -abs(tc - 3.5)
+        return (-adv, -diag, center, fr, fc, tr, tc)
+    return key

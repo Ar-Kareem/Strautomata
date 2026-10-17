@@ -1,0 +1,366 @@
+The game is Clobber on a 5x6 board. I need to implement a policy that selects a move to maximize my chances of winning. Since I don't know the opponent's policy, I will use a Minimax strategy with alpha-beta pruning to search for the best move. Given the board size and 1-second time limit, I can implement a recursive search with iterative deepening and a transposition table (Zobrist hashing) to efficiently evaluate positions.
+
+The evaluation function will prioritize:
+1.  Winning/Losing immediately.
+2.  Leaving the opponent with no moves (a "Clobber" win).
+3.  Maximizing the number of my available moves (Mobility).
+4.  Minimizing the number of the opponent's available moves (Opponent Mobility).
+5.  Piece count difference (Material).
+6.  Board control (centralization).
+
+Here is the complete Python code.
+
+```python
+import sys
+import time
+import random
+
+# Constants for the board dimensions
+ROWS = 5
+COLS = 6
+SIZE = ROWS * COLS
+INF = 1000000
+
+# Precompute Zobrist random numbers for transposition table
+# We need a random number for each piece placement (my piece vs opponent piece)
+# Since pieces are simply present or not, we can use a single hash per cell for "occupancy",
+# but we need to distinguish between "My Piece" and "Opponent Piece" for state hashing.
+# Actually, in Clobber, the turn matters, but the board state itself (positions) is what we hash.
+# We need 2 bits per cell (00: empty, 01: mine, 10: opp). 
+# Or simpler: Use separate arrays for 'My' and 'Opp'.
+# Zobrist Hash: 64-bit integer.
+random.seed(42) # Deterministic seed for reproducibility
+MY_HASH = [random.getrandbits(64) for _ in range(SIZE)]
+OPP_HASH = [random.getrandbits(64) for _ in range(SIZE)]
+
+class Solver:
+    def __init__(self, you, opponent):
+        self.you_flat = [item for sublist in you for item in sublist]
+        self.opp_flat = [item for sublist in opponent for item in sublist]
+        self.start_time = time.time()
+        self.time_limit = 0.9  # Seconds
+        
+        # Transposition Table: {hash: (depth, score, flag, best_move)}
+        # flag: 0: Exact, 1: Lower bound (Alpha), 2: Upper bound (Beta)
+        self.tt = {}
+        
+        # Neighbors cache for fast move generation
+        self.neighbors = self._precompute_neighbors()
+
+    def _precompute_neighbors(self):
+        neighbors = {}
+        for r in range(ROWS):
+            for c in range(COLS):
+                idx = r * COLS + c
+                n_list = []
+                # Up
+                if r > 0: n_list.append(((r-1)*COLS + c, 'U', -COLS))
+                # Down
+                if r < ROWS - 1: n_list.append(((r+1)*COLS + c, 'D', COLS))
+                # Left
+                if c > 0: n_list.append((r*COLS + (c-1), 'L', -1))
+                # Right
+                if c < COLS - 1: n_list.append((r*COLS + (c+1), 'R', 1))
+                neighbors[idx] = n_list
+        return neighbors
+
+    def get_hash(self, my_board, op_board):
+        h = 0
+        for i in range(SIZE):
+            if my_board[i]: h ^= MY_HASH[i]
+            elif op_board[i]: h ^= OPP_HASH[i]
+        return h
+
+    def evaluate(self, my_board, op_board, my_mobility, opp_mobility):
+        # 1. Material
+        my_count = sum(my_board)
+        opp_count = sum(op_board)
+        material = (my_count - opp_count) * 10
+        
+        # 2. Mobility
+        mobility = (my_mobility - opp_mobility) * 5
+        
+        # 3. Center Control / Frontier
+        # Prefer keeping pieces in the center where they have more options
+        score_pos = 0
+        for i in range(SIZE):
+            if my_board[i]:
+                r, c = divmod(i, COLS)
+                # Give small bonus for center (2,3 is ideal in 5x6)
+                if 1 <= r <= 3 and 1 <= c <= 4: score_pos += 1
+        return material + mobility + score_pos
+
+    def get_moves(self, my_board, op_board):
+        moves = []
+        for i in range(SIZE):
+            if my_board[i]:
+                for n_idx, d, diff in self.neighbors[i]:
+                    if op_board[n_idx]:
+                        moves.append((i, n_idx, d, diff))
+        return moves
+
+    def solve(self, depth, alpha, beta, my_turn=True, current_hash=0):
+        # Check time
+        if time.time() - self.start_time > self.time_limit:
+            raise TimeoutError()
+
+        # Switch boards based on turn
+        # If my_turn is True: my_board = self.you_flat, opp_board = self.opp_flat
+        # If my_turn is False: my_board = self.opp_flat, opp_board = self.you_flat
+        # To avoid copying lists constantly, we pass active/passive references
+        
+        if my_turn:
+            active_board = self.you_flat
+            passive_board = self.opp_flat
+        else:
+            active_board = self.opp_flat
+            passive_board = self.you_flat
+
+        # Transposition Table Lookup
+        # Note: Hash must reflect the specific boards passed.
+        # Since we reuse self.you_flat and self.opp_flat but modify them in place,
+        # we must compute the hash based on the actual state of active/passive.
+        # However, Zobrist hashing assumes we track changes. 
+        # To keep it simple and safe within 1s, we'll do a simpler TT check or skip TT for deep recursion
+        # to save hashing overhead, or compute hash only at root.
+        # Actually, computing hash at every node is expensive.
+        # Let's use a simpler approach: only TT at root or iterative deepening.
+        # But for speed, let's compute hash incrementally.
+        # Given the prompt "1 second on 3GHz CPU", let's stick to Alpha-Beta with Move Ordering.
+        # We will skip TT to avoid complexity of managing incremental hashes across recursive calls
+        # and focus on deep search with good heuristics.
+
+        # Check for terminal state (no moves for active player)
+        # We need to generate moves to check this. 
+        # Optimization: Generate moves, check if empty.
+        
+        potential_moves = []
+        for i in range(SIZE):
+            if active_board[i]:
+                for n_idx, d, diff in self.neighbors[i]:
+                    if passive_board[n_idx]:
+                        potential_moves.append((i, n_idx, d, diff))
+        
+        if not potential_moves:
+            # Active player has no moves -> Active player loses.
+            # So if my_turn is True (I am active), I lose. Return -INF.
+            # If my_turn is False (Opponent is active), Opponent loses. I win. Return +INF.
+            # But we must see if the game ends immediately.
+            # If I have no moves, I lose. 
+            # If Opponent has no moves, I win.
+            score = -INF if my_turn else INF
+            # Add depth bonus to prefer winning faster or losing slower
+            return score + (depth if my_turn else -depth)
+
+        if depth == 0:
+            # Evaluate
+            # Calculate mobilities for evaluation
+            # My mobility (active if my_turn)
+            my_mob = len(potential_moves) if my_turn else 0
+            # Opponent mobility
+            opp_mob = 0
+            if not my_turn:
+                # Opponent is active, so potential_moves is opponent's moves
+                opp_mob = len(potential_moves)
+            
+            # To get opponent's mobility when I am active, I have to generate their moves
+            # This is expensive. We'll approximate or skip if depth=0.
+            # Actually, at depth=0, we just need a static eval.
+            # Let's use the actual mobility of the active player vs the passive player.
+            # Wait, evaluation should be from My perspective.
+            
+            # My perspective:
+            if my_turn:
+                # I just moved. Now it's evaluation.
+                # My mobility = generated moves
+                my_mobility = len(potential_moves)
+                # Check opponent mobility
+                opp_moves = 0
+                for i in range(SIZE):
+                    if passive_board[i]:
+                        for n_idx, _, _ in self.neighbors[i]:
+                            if active_board[n_idx]: # active board is now my board (post move)
+                                opp_moves += 1
+                                break # optimization: just need to know if > 0 often
+                opp_mobility = opp_moves
+            else:
+                # Opponent just moved.
+                opp_mobility = len(potential_moves)
+                my_mobility = 0
+                for i in range(SIZE):
+                    if passive_board[i]: # My board (passive)
+                        for n_idx, _, _ in self.neighbors[i]:
+                            if active_board[n_idx]: # Opp board
+                                my_mobility += 1
+                                break
+            
+            return self.evaluate(active_board, passive_board, my_mobility, opp_mobility)
+
+        # Move Ordering
+        # 1. Captures that threaten the opponent king? No king.
+        # 2. Moves that limit opponent options.
+        # Simple ordering: sort by number of opponent pieces in neighbors of destination?
+        # Or just random to avoid bad ordering. 
+        # Let's try to order by: moves that capture a piece that can capture me back (bad)
+        # vs moves that capture a piece that cannot capture back (good).
+        
+        ordered_moves = []
+        for m in potential_moves:
+            # m: (src, dest, dir, diff)
+            # Check if the captured piece (at dest) could have captured me (at src)
+            # This means: did the opponent piece at dest have a neighbor at src?
+            # src is m[0], dest is m[1].
+            # We know src is adjacent to dest.
+            # So the opponent piece at dest definitely had src as a neighbor.
+            # So it could capture me if I move there? 
+            # Wait, if I move to dest, I remove the opponent piece.
+            # So it's safe.
+            # But if I move to dest, will the opponent capture me next?
+            # That depends on the neighbors of dest.
+            # If dest is surrounded by many opponent pieces (after I capture), that's bad.
+            # But we can't know that easily without making the move.
+            
+            # Let's use a simple heuristic: prioritize moves that are "central" or capture "central" pieces.
+            score = 0
+            dest = m[1]
+            dr, dc = divmod(dest, COLS)
+            if 1 <= dr <= 3 and 1 <= dc <= 4: score += 2
+            ordered_moves.append((score, m))
+        
+        ordered_moves.sort(key=lambda x: x[0], reverse=True)
+        
+        best_score = -INF
+        best_move = None # Doesn't matter here, only at root
+        
+        for _, move in ordered_moves:
+            src, dest, d, diff = move
+            
+            # Make Move
+            active_board[src] = 0
+            active_board[dest] = 1
+            passive_board[dest] = 0
+            
+            # Recursive Call
+            # Current hash update? Skipped for simplicity.
+            child_score = self.solve(depth-1, -beta, -alpha, not my_turn, current_hash)
+            
+            # Undo Move
+            passive_board[dest] = 1
+            active_board[dest] = 0
+            active_board[src] = 1
+            
+            # Alpha-Beta Pruning
+            if my_turn:
+                # Maximizing player
+                if child_score > best_score:
+                    best_score = child_score
+                if best_score > alpha:
+                    alpha = best_score
+            else:
+                # Minimizing player (Opponent)
+                # child_score is from their perspective? No, solve returns score for ME.
+                # My solve function returns evaluation from My's perspective.
+                # If my_turn=False, I am evaluating Opponent's move.
+                # Opponent wants to Minimize my score.
+                if child_score < best_score:
+                    best_score = child_score
+                if best_score < beta:
+                    beta = best_score
+            
+            if alpha >= beta:
+                break
+        
+        return best_score
+
+    def find_best_move(self):
+        best_move_str = None
+        
+        # Get all legal moves immediately
+        legal_moves = self.get_moves(self.you_flat, self.opp_flat)
+        
+        # If only one move, take it
+        if len(legal_moves) == 1:
+            m = legal_moves[0]
+            r, c = divmod(m[0], COLS)
+            return f"{r},{c},{m[2]}"
+        
+        # Iterative Deepening
+        max_depth = 1
+        while True:
+            try:
+                current_best_score = -INF
+                current_best_move = None
+                
+                # We need to iterate moves at root to find the best one
+                # We can reuse the move ordering logic here
+                root_moves = []
+                for m in legal_moves:
+                    src, dest, d, diff = m
+                    # Heuristic for root ordering
+                    score = 0
+                    dr, dc = divmod(dest, COLS)
+                    if 1 <= dr <= 3 and 1 <= dc <= 4: score += 2
+                    # Prioritize moves that capture a piece that might be valuable? 
+                    # Capturing a piece with high degree (options) might be good.
+                    # Let's just use center heuristic.
+                    root_moves.append((score, m))
+                root_moves.sort(key=lambda x: x[0], reverse=True)
+                
+                alpha = -INF
+                beta = INF
+                
+                for _, move in root_moves:
+                    src, dest, d, diff = move
+                    
+                    # Make Move (I am moving)
+                    self.you_flat[src] = 0
+                    self.you_flat[dest] = 1
+                    self.opp_flat[dest] = 0
+                    
+                    # Recursive call (Opponent's turn)
+                    val = self.solve(max_depth - 1, alpha, beta, False, 0)
+                    
+                    # Undo Move
+                    self.opp_flat[dest] = 1
+                    self.you_flat[dest] = 0
+                    self.you_flat[src] = 1
+                    
+                    if val > current_best_score:
+                        current_best_score = val
+                        current_best_move = move
+                    
+                    if val > alpha:
+                        alpha = val
+                    
+                    # Pruning at root? Usually alpha is tight.
+                    # If we found a win, we can stop
+                    if current_best_score >= INF - 100:
+                        break
+                
+                if current_best_move:
+                    m = current_best_move
+                    r, c = divmod(m[0], COLS)
+                    best_move_str = f"{r},{c},{m[2]}"
+                
+                max_depth += 1
+                # Check if we should stop deeper search
+                if max_depth > 10: 
+                    break
+                if time.time() - self.start_time > self.time_limit / 2:
+                    break
+                    
+            except TimeoutError:
+                break
+        
+        if best_move_str is None:
+            # Fallback
+            m = legal_moves[0]
+            r, c = divmod(m[0], COLS)
+            return f"{r},{c},{m[2]}"
+            
+        return best_move_str
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    solver = Solver(you, opponent)
+    return solver.find_best_move()
+```

@@ -1,0 +1,269 @@
+# Strategy for Go Policy
+
+My strategy combines several key Go concepts to create a competitive policy:
+
+1(ListNode EarliestOffensiveNeighborResponseNextPoint:int() -> MoveSpacialRegionsPriorityOrder)
+**Early Game (First 20 moves):**
+- Prioritize corner and side moves using a joseki-based approach (traditional corner patterns)
+- Balance between corner enclosures and side extensions
+- Implement a fuseki (opening theory) with preference for 3-4 and 4-4 points
+
+2(ListNode EarlyToMiddleStrategicShiftCallCloseNeighborCheck:int())
+**Middle Game:**
+- Focus on attacking weak opponent groups while strengthening our own
+- Identify cuts and connection points in opponent's stones
+- Prioritize moves that simultaneously attack and expand territory
+- Implement shape awareness (good vs bad shape patterns)
+
+3(ListNode MiddleToEndGameBorderClosingAndCounting:int())
+**End Game:**
+- Count liberties efficiently for tactical exchanges
+- Maximize territory while minimizing opponent's potential
+- Implement basic semeai (capturing race) logic
+
+4(ListNode LibertyCalculationForAnyGroup:int() -> SurviveOrDieAnalysis)
+**Safety Checks:**
+- Always verify move legality (no suicide moves)
+- Check for atari conditions (stones with one liberty left)
+- Implement basic ko rule awareness
+
+The policy uses a probability-based approach that weighs different strategic considerations differently based on game phase, with more randomness early in the game to avoid predictable patterns.
+
+Here's the implementation:
+
+<code>
+import numpy as np
+import random
+from collections import defaultdict
+
+def policy(me, opponent, memory):
+    board_size = 19
+    all_moves = set((i,j) for i in range(1,20) for j in range(1,20))
+    occupied = set(me + opponent)
+    legal_moves = all_moves - occupied
+    
+    # Initialize memory if empty
+    if not memory:
+        memory = {
+            'move_count': 0,
+            'last_move': None,
+            'ko破坏': None,
+            'corner_priority': [(1,1), (1,19), (19,1), (19,19)],
+            'side_priority': [(1,i) for i in range(3,18,3)] + 
+                            [(19,i) for i in range(3,18,3)] + 
+                            [(i,1) for i in range(3,18,3)] + 
+                            [(i,19) for i in range(3,18,3)],
+            'star_points': [(4,4), (4,10), (4,16), 
+                           (10,4), (10,10), (10,16),
+                           (16,4), (16,10), (16,16)]
+        }
+        
+    memory['move_count'] += 1
+    
+    # Combine all stones for board state
+    board = dict()
+    for stone in me:
+        board[stone] = 1
+    for stone in opponent:
+        board[stone] = 2
+    
+    def is_legal(move):
+        if move in occupied or move == (0,0):
+            return False
+            
+        # Ko rule check
+        if memory['ko破坏'] == move:
+            return False
+            
+        # Check for suicide move
+        temp_board = board.copy()
+        temp_board[move] = 1
+        if count_liberties(move, temp_board) == 0:
+            captured = get_captured_stones(move, temp_board, 2)
+            if not captured:
+                return False
+                
+        return True
+    
+    def count_liberties(stone, board_state):
+        color = board_state.get(stone)
+        if not color: return ophagus
+        
+        visited = set()
+        liberties = set()
+        group = set()
+        
+        def dfs(pos):
+            if pos in visited:
+                return
+            visited.add(pos)
+            group.add(pos)
+            for dx, dy in [(0,1), (1,0), (0,-1), (-1,0)]:
+                x, y = pos[0] + dx, pos[1] + dy
+                if 1 <= x <= 19 and 1 <= y <= 19:
+                    if (x,y) not in board_state:
+                        liberties.add((x,y))
+                    elif board_state[(x,y)] == color:
+                        dfs((x,y))
+        
+        dfs(stone)
+        return len(liberties)
+    
+    def get_captured_stones(move, board_state, opponent_color):
+        captured = set()
+        for dx, dy in [(0,1), (1,0), (0,-1), (-1,0)]:
+            x, y = move[0] + dx, move[1] + dy
+            if 1 <= x <= 19 and 1 <= y <= 19:
+                if (x,y) in board_state and board_state[(x,y)] == opponent_color:
+                    if count_liberties((x,y), board_state) == 0:
+                        group = get_group((x,y), board_state)
+                        captured.update(group)
+        return captured
+    
+    def get_group(stone, board_state):
+        color = board_state.get(stone)
+        if not color: return set()
+        
+        visited = set()
+        group = set()
+        
+        def dfs(pos):
+            if pos in visited:
+                return
+            visited.add(pos)
+            group.add(pos)
+            for dx, dy in [(0,1), (1,0), (0,-1), [-1,0]]:
+                x, y = pos[0] + dx, pos[1] + dy
+                if 1 <= x <= 19 and 1 <= y <= 19:
+                    if (x,y) in board_state and board_state[(x,y)] == color:
+                        dfs((x,y))
+        
+        dfs(stone)
+        return group
+    
+    # Opening strategy
+    if memory['move_count'] <= 20:
+        # Try corners first
+        for corner in memory['corner_priority']:
+            if corner in legal_moves:
+                memory['last_move'] = corner
+                return corner, memory
+                
+        # Then try sides
+        for side_move in memory['side_priority']:
+            if side_move in legal_moves:
+                memory['last_move'] = side_move
+                return side_move, memory
+                
+        # Then star points
+        for star_point in memory['star_points']:
+            if star_point in legal_moves:
+                memory['last_move'] = star_point
+                return star_point, memory
+    
+    # Middle game strategy
+    # First look for capturing moves
+    for move in legal_moves:
+        temp_board = board.copy()
+        temp_board[move] = 1
+        captured = get_captured_stones(move, temp_board, 2)
+        if captured and len(captured) >= 1:
+           减肥 memory['ko破坏'] = None if len(captured) > 1 else captured.pop()
+            memory['last_move'] = move
+            return move, memory
+    
+    # Then prevent opponent captures
+    for their_stone in opponent:
+        if count_liberties(their_stone, board) == 1:
+            for dx, dy in [(0,1), (1,0), (0,-1), (-1,0)]:
+                x, y = their_stone[0] + dx, their_stone[1] + dy
+                if (x,y) in legal_moves:
+                    memory['last_move'] = (x,y)
+                    return (x,y), memory
+    
+    # Then look for extending our groups
+    our_groups = []
+    our_stones_considered = set()
+    for stone in me:
+        if stone not in our_stones_considered:
+            group = get_group(stone, board)
+            our_groups.append(group)
+            our_stones_considered.update(group)
+    
+    for group in our_groups:
+        liberties = set()
+        for stone in group:
+            for dx, dy in [(0,1), (1,0), (0,-1), (-1,0)]:
+                x, y = stone[0] + dx, stone[1] + dy
+                if (x,y) not in board and 1 <= x <= 19 and 1 <= y <= 19:
+                    liberties.add((x,y))
+        if liberties:
+            best_move = max(liberties, key=lambda m: count_liberties(m, board))
+            if best_move in legal_moves:
+                memory['last_move'] = best_move
+                return best_move, memory
+    
+    # If all else fails, make a random move near existing stones if possible
+    candidate_moves = []
+    if me:
+        min_row = min(r for r,c in me)
+        max_row = max(r for r,c in me)
+        min_col = min(c for r,c in me)
+        max_col = max(c for r,c in me)
+        
+        padding = 2
+        area_min_row = max(1, min_row - padding)
+        area_max_row = min(19, max_row + padding)
+        area_min_col = max(1, min_col - padding)
+        area_max_col = min(19, max_col + padding)
+        
+        candidate_moves = [(r,c) for r in range(area_min_row, area_max_row+1)
+                            for c in range(area_min_col, area_max_col+1)
+                            if (r,c) in legal_moves]
+    
+    if not candidate_moves:
+        candidate_moves = list(legal_moves)
+    
+    if not candidate_moves:
+        return (0,0), memory
+    
+    # Choose randomly but weighted by importance
+    weights = []
+    for move in candidate_moves:
+        score = random.random() # Baseline randomness
+        
+        # Prefer center early, edges later
+        if memory['move_count'] < 50:
+            center_dist = abs(move[0]-10) + abs(move[1]-10)
+            score += 10/(center_dist+1)
+        
+        # Prefer symmetry
+        if memory['last_move']:
+            sym_move = (20 - memory['last_move'][0], 20 - memory['last_move'][1])
+            if move == sym_move:
+                score += 2
+        
+        weights.append(score)
+    
+    total = sum(weights)
+    if total == 0:
+        selected = random.choice(candidate_moves)
+    else:
+        weights = [w/total for w in weights]
+        selected = np.random.choice(len(candidate_moves), p=weights)
+        selected = candidate_moves[selected]
+    
+    # Final legality check
+    if is_legal(selected):
+        memory['last_move'] = selected
+        return selected, memory
+    else:
+        # Fallback to first legal move found
+        for move in legal_moves:
+            if is_legal(move):
+                memory['last_move'] = move
+                return move, memory
+    
+    # If somehow no legal moves found (shouldn't happen)
+    return (0,0), memory
+</code>

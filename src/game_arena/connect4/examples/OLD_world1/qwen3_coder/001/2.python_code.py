@@ -1,0 +1,213 @@
+
+import random
+from typing import List, Tuple, Optional
+
+def policy(board: List[List[int]]) -> int:
+    """
+    A Connect 4 AI policy using minimax with alpha-beta pruning.
+    """
+    # Constants
+    ROWS = 6
+    COLS = 7
+    WIN_SCORE = 1000000
+    MY_PLAYER = 1
+    OPPONENT = -1
+    
+    def is_valid_move(col: int) -> bool:
+        """Check if a move is valid (column not full)."""
+        return board[0][col] == 0
+    
+    def get_next_open_row(col: int) -> Optional[int]:
+        """Get the next open row in a column."""
+        for r in range(ROWS - 1, -1, -1):
+            if board[r][col] == 0:
+                return r
+        return None
+    
+    def make_move(temp_board: List[List[int]], col: int, player: int) -> bool:
+        """Make a move on the temporary board."""
+        row = get_next_open_row(col)
+        if row is not None:
+            temp_board[row][col] = player
+            return True
+        return False
+    
+    def undo_move(temp_board: List[List[int]], col: int) -> bool:
+        """Undo a move by clearing the topmost disc in column."""
+        for r in range(ROWS):
+            if temp_board[r][col] != 0:
+                temp_board[r][col] = 0
+                return True
+        return False
+    
+    def check_winner(temp_board: List[List[int]], player: int) -> bool:
+        """Check if player has won."""
+        # Check horizontal
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                if all(temp_board[r][c + i] == player for i in range(4)):
+                    return True
+        
+        # Check vertical
+        for r in range(ROWS - 3):
+            for c in range(COLS):
+                if all(temp_board[r + i][c] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (positive slope)
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                if all(temp_board[r + i][c + i] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (negative slope)
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                if all(temp_board[r - i][c + i] == player for i in range(4)):
+                    return True
+        
+        return False
+    
+    def evaluate_window(window: List[int]) -> int:
+        """Evaluate a window of 4 positions."""
+        score = 0
+        my_count = window.count(MY_PLAYER)
+        opp_count = window.count(OPPONENT)
+        empty_count = window.count(0)
+        
+        if my_count == 4:
+            score += 1000
+        elif my_count == 3 and empty_count == 1:
+            score += 100
+        elif my_count == 2 and empty_count == 2:
+            score += 10
+        elif my_count == 1 and empty_count == 3:
+            score += 1
+            
+        if opp_count == 4:
+            score -= 10000
+        elif opp_count == 3 and empty_count == 1:
+            score -= 500
+        elif opp_count == 2 and empty_count == 2:
+            score -= 10
+            
+        return score
+    
+    def score_position(temp_board: List[List[int]]) -> int:
+        """Score the entire board position."""
+        score = 0
+        
+        # Center column preference
+        center_array = [temp_board[r][COLS // 2] for r in range(ROWS)]
+        center_count = center_array.count(MY_PLAYER)
+        score += center_count * 3
+        
+        # Horizontal windows
+        for r in range(ROWS):
+            row_array = temp_board[r]
+            for c in range(COLS - 3):
+                window = row_array[c:c+4]
+                score += evaluate_window(window)
+        
+        # Vertical windows
+        for c in range(COLS):
+            col_array = [temp_board[r][c] for r in range(ROWS)]
+            for r in range(ROWS - 3):
+                window = col_array[r:r+4]
+                score += evaluate_window(window)
+        
+        # Diagonal windows (positive slope)
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [temp_board[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window)
+        
+        # Diagonal windows (negative slope)
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                window = [temp_board[r+3-i][c+i] for i in range(4)]
+                score += evaluate_window(window)
+        
+        return score
+    
+    def is_terminal_node(temp_board: List[List[int]]) -> bool:
+        """Check if the node is terminal (win/lose/draw)."""
+        return (check_winner(temp_board, MY_PLAYER) or 
+                check_winner(temp_board, OPPONENT) or 
+                all(temp_board[0][c] != 0 for c in range(COLS)))
+    
+    def copy_board(original: List[List[int]]) -> List[List[int]]:
+        """Create a deep copy of the board."""
+        return [row[:] for row in original]
+    
+    def minimax(temp_board: List[List[int]], depth: int, alpha: float, beta: float, maximizing_player: bool) -> Tuple[int, int]:
+        """Minimax algorithm with alpha-beta pruning."""
+        valid_locations = [c for c in range(COLS) if is_valid_move(c)]
+        is_terminal = is_terminal_node(temp_board)
+        
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if check_winner(temp_board, MY_PLAYER):
+                    return (None, WIN_SCORE)
+                elif check_winner(temp_board, OPPONENT):
+                    return (None, -WIN_SCORE)
+                else:  # Game over, no more valid moves
+                    return (None, 0)
+            else:  # Depth is zero
+                return (None, score_position(temp_board))
+        
+        if maximizing_player:
+            value = float('-inf')
+            column = random.choice(valid_locations)
+            for col in valid_locations:
+                temp_board_copy = copy_board(temp_board)
+                make_move(temp_board_copy, col, MY_PLAYER)
+                new_score = minimax(temp_board_copy, depth - 1, alpha, beta, False)[1]
+                if new_score > value:
+                    value = new_score
+                    column = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return column, value
+        else:  # Minimizing player
+            value = float('inf')
+            column = random.choice(valid_locations)
+            for col in valid_locations:
+                temp_board_copy = copy_board(temp_board)
+                make_move(temp_board_copy, col, OPPONENT)
+                new_score = minimax(temp_board_copy, depth - 1, alpha, beta, True)[1]
+                if new_score < value:
+                    value = new_score
+                    column = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return column, value
+    
+    # Get valid moves
+    valid_moves = [c for c in range(COLS) if is_valid_move(c)]
+    
+    # If there's an immediate winning move, take it
+    for col in valid_moves:
+        temp_board = copy_board(board)
+        make_move(temp_board, col, MY_PLAYER)
+        if check_winner(temp_board, MY_PLAYER):
+            return col
+    
+    # If opponent can win next move, block them
+    for col in valid_moves:
+        temp_board = copy_board(board)
+        make_move(temp_board, col, OPPONENT)
+        if check_winner(temp_board, OPPONENT):
+            return col
+    
+    # Use minimax for deeper search (limited depth for performance)
+    depth = 5 if len(valid_moves) <= 5 else 4  # Adjust depth based on board state
+    col, _ = minimax(copy_board(board), depth, float('-inf'), float('inf'), True)
+    
+    # Fallback to random valid move if minimax fails
+    if col is None or not is_valid_move(col):
+        return random.choice(valid_moves)
+    
+    return col

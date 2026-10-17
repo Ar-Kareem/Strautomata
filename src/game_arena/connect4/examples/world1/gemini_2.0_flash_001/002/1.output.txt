@@ -1,0 +1,153 @@
+The strategy for this policy is to prioritize winning moves, block opponent's winning moves, and otherwise choose a column with the highest potential score. We will use a minimax search with alpha-beta pruning to a limited depth to evaluate the potential scores of each move. We will define helper functions for checking winning conditions and evaluating the board state.
+
+```python
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Chooses the best column (0-6) for the current player in a Connect 4 game.
+    """
+    board = np.array(board)
+    def is_valid_move(board, col):
+        return board[0][col] == 0
+
+    def get_next_open_row(board, col):
+        for r in range(5, -1, -1):
+            if board[r][col] == 0:
+                return r
+
+    def drop_piece(board, row, col, piece):
+        board[row][col] = piece
+
+    def winning_move(board, piece):
+        # Check horizontal
+        for c in range(4):
+            for r in range(6):
+                if board[r][c] == piece and board[r][c+1] == piece and board[r][c+2] == piece and board[r][c+3] == piece:
+                    return True
+
+        # Check vertical
+        for c in range(7):
+            for r in range(3):
+                if board[r][c] == piece and board[r+1][c] == piece and board[r+2][c] == piece and board[r+3][c] == piece:
+                    return True
+
+        # Check positive diagonal
+        for c in range(4):
+            for r in range(3):
+                if board[r][c] == piece and board[r+1][c+1] == piece and board[r+2][c+2] == piece and board[r+3][c+3] == piece:
+                    return True
+
+        # Check negative diagonal
+        for c in range(4):
+            for r in range(3, 6):
+                if board[r][c] == piece and board[r-1][c+1] == piece and board[r-2][c+2] == piece and board[r-3][c+3] == piece:
+                    return True
+        return False
+
+    def evaluate_window(window, piece):
+        score = 0
+        opp_piece = 1 if piece == -1 else -1
+        if window.count(piece) == 4:
+            score += 100
+        elif window.count(piece) == 3 and window.count(0) == 1:
+            score += 5
+        elif window.count(piece) == 2 and window.count(0) == 2:
+            score += 2
+        if window.count(opp_piece) == 3 and window.count(0) == 1:
+            score -= 4
+
+        return score
+
+    def score_position(board, piece):
+        score = 0
+
+        # Score center column
+        center_array = [int(i) for i in list(board[:, 3])]
+        center_count = center_array.count(piece)
+        score += center_count * 3
+
+        # Score Horizontal
+        for r in range(6):
+            row_array = [int(i) for i in list(board[r,:])]
+            for c in range(4):
+                window = row_array[c:c+4]
+                score += evaluate_window(window, piece)
+
+        # Score Vertical
+        for c in range(7):
+            col_array = [int(i) for i in list(board[:,c])]
+            for r in range(3):
+                window = col_array[r:r+4]
+                score += evaluate_window(window, piece)
+
+        # Score positive sloped diagonal
+        for r in range(3):
+            for c in range(4):
+                window = [board[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        for r in range(3):
+            for c in range(4):
+                window = [board[r+3-i][c+i] for i in range(4)]
+                score += evaluate_window(window, piece)
+
+        return score
+
+    def is_terminal_node(board):
+        return winning_move(board, 1) or winning_move(board, -1) or len(np.where(board == 0)[0]) == 0
+
+    def minimax(board, depth, alpha, beta, maximizingPlayer):
+        valid_locations = [c for c in range(7) if is_valid_move(board, c)]
+        is_terminal = is_terminal_node(board)
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                if winning_move(board, 1):
+                    return (None, 1000000000000)
+                elif winning_move(board, -1):
+                    return (None, -1000000000000)
+                else: # Game is over, no more valid moves
+                    return (None, 0)
+            else: # Depth is zero
+                return (None, score_position(board, 1))
+
+        if maximizingPlayer:
+            value = -np.inf
+            column = np.random.choice(valid_locations)
+            for col in valid_locations:
+                row = get_next_open_row(board.copy(), col)
+                b_copy = board.copy()
+                drop_piece(b_copy, row, col, 1)
+                new_score = minimax(b_copy, depth-1, alpha, beta, False)[1]
+                if new_score > value:
+                    value = new_score
+                    column = col
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return column, value
+
+        else: # Minimizing player
+            value = np.inf
+            column = np.random.choice(valid_locations)
+            for col in valid_locations:
+                row = get_next_open_row(board.copy(), col)
+                b_copy = board.copy()
+                drop_piece(b_copy, row, col, -1)
+                new_score = minimax(b_copy, depth-1, alpha, beta, True)[1]
+                if new_score < value:
+                    value = new_score
+                    column = col
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return column, value
+
+    best_col, minimax_score = minimax(board, 3, -np.inf, np.inf, True)
+
+    if best_col is None:
+        valid_moves = [c for c in range(7) if is_valid_move(board, c)]
+        return np.random.choice(valid_moves)
+    else:
+        return best_col
+```

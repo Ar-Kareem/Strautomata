@@ -1,0 +1,114 @@
+
+import time
+from collections import deque
+
+def policy(board) -> str:
+    start_time = time.time()
+    
+    def count_connected(board, player):
+        visited = set()
+        components = 0
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] == player and (r, c) not in visited:
+                    components += 1
+                    queue = deque([(r, c)])
+                    visited.add((r, c))
+                    while queue:
+                        cr, cc = queue.popleft()
+                        for dr in [-1, 0, 1]:
+                            for dc in [-1, 0, 1]:
+                                if dr == 0 and dc == 0:
+                                    continue
+                                nr, nc = cr + dr, cc + dc
+                                if 0 <= nr < 8 and 0 <= nc < 8:
+                                    if board[nr][nc] == player and (nr, nc) not in visited:
+                                        visited.add((nr, nc))
+                                        queue.append((nr, nc))
+        return components
+
+    def evaluate(new_board):
+        my_components = count_connected(new_board, 1)
+        opp_components = count_connected(new_board, -1)
+        return (8 - my_components) * 10000 + opp_components * 100
+
+    def get_legal_moves(board):
+        directions = [(0,1), (1,1), (1,0), (1,-1), (0,-1), (-1,-1), (-1,0), (-1,1)]
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] != 1:
+                    continue
+                
+                for dr, dc in directions:
+                    line_count = 0
+                    if dr == 0:  # Horizontal
+                        line_count = sum(1 for x in board[r] if x != 0)
+                    elif dc == 0:  # Vertical
+                        line_count = sum(1 for i in range(8) if board[i][c] != 0)
+                    else:  # Diagonal
+                        if dr == dc:  # Top-left to bottom-right
+                            k = r - c
+                            line_count = sum(1 for i in range(8) 
+                                          if 0 <= i - k < 8 and board[i][i - k] != 0)
+                        else:  # Top-right to bottom-left
+                            k = r + c
+                            line_count = sum(1 for i in range(8)
+                                          if 0 <= k - i < 8 and board[i][k - i] != 0)
+
+                    if line_count < 1 or line_count > 7:
+                        continue
+                    
+                    r2 = r + dr * line_count
+                    c2 = c + dc * line_count
+                    if not (0 <= r2 < 8 and 0 <= c2 < 8):
+                        continue
+                    if board[r2][c2] == 1:
+                        continue  # Can't land on own piece
+                    
+                    # Check path
+                    valid = True
+                    for step in range(1, line_count):
+                        check_r = r + dr * step
+                        check_c = c + dc * step
+                        if board[check_r][check_c] == -1:
+                            valid = False
+                            break
+                    if not valid:
+                        continue
+                    
+                    moves.append(f"{r},{c}:{r2},{c2}")
+        return moves
+
+    def apply_move(board, move_str):
+        from_str, to_str = move_str.split(':')
+        r1, c1 = map(int, from_str.split(','))
+        r2, c2 = map(int, to_str.split(','))
+        new_board = [row[:] for row in board]
+        new_board[r1][c1] = 0
+        new_board[r2][c2] = 1  # Captures enemy automatically if present
+        return new_board
+    
+    legal_moves = get_legal_moves(board)
+    if not legal_moves:
+        return "0,0:0,0"  # Should never happen
+    
+    best_score = float('-inf')
+    best_move = legal_moves[0]
+    
+    for move in legal_moves:
+        if time.time() - start_time > 0.8:
+            break
+            
+        new_board = apply_move(board, move)
+        score = evaluate(new_board)
+        
+        # Immediate win check
+        if count_connected(new_board, 1) == 1:
+            return move
+        
+        if score > best_score or (score == best_score and move < best_move):
+            best_score = score
+            best_move = move
+    
+    return best_move

@@ -1,0 +1,194 @@
+
+from typing import List, Optional
+import copy
+
+ROWS = 6
+COLS = 7
+ME = 1
+OPP = -1
+
+def find_row_for_col(board: List[List[int]], col: int) -> int:
+    """Return row index (0..ROWS-1) where a disc would land in column col, or -1 if full."""
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return -1
+
+def drop(board: List[List[int]], col: int, player: int) -> Optional[List[List[int]]]:
+    """Return a new board after dropping player's disc in col, or None if col full."""
+    r = find_row_for_col(board, col)
+    if r == -1:
+        return None
+    newb = [row[:] for row in board]
+    newb[r][col] = player
+    return newb
+
+def check_win(board: List[List[int]], player: int) -> bool:
+    """Check whether player has a connect-4 on the board."""
+    for r in range(ROWS):
+        for c in range(COLS):
+            if board[r][c] != player:
+                continue
+            # directions: right, down, down-right, up-right
+            if c + 3 < COLS:
+                if all(board[r][c + i] == player for i in range(4)):
+                    return True
+            if r + 3 < ROWS:
+                if all(board[r + i][c] == player for i in range(4)):
+                    return True
+            if r + 3 < ROWS and c + 3 < COLS:
+                if all(board[r + i][c + i] == player for i in range(4)):
+                    return True
+            if r - 3 >= 0 and c + 3 < COLS:
+                if all(board[r - i][c + i] == player for i in range(4)):
+                    return True
+    return False
+
+def legal_moves(board: List[List[int]]) -> List[int]:
+    return [c for c in range(COLS) if find_row_for_col(board, c) != -1]
+
+def windows_score(board: List[List[int]]) -> float:
+    """Heuristic evaluation: positive is good for ME, negative good for opponent."""
+    score = 0.0
+    # weights
+    SCORE_4 = 1_000_000
+    SCORE_3 = 100.0
+    SCORE_2 = 10.0
+    OPP_3 = -90.0
+    OPP_2 = -9.0
+
+    # horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            window = [board[r][c + i] for i in range(4)]
+            score += evaluate_window(window, SCORE_4, SCORE_3, SCORE_2, OPP_3, OPP_2)
+
+    # vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            window = [board[r + i][c] for i in range(4)]
+            score += evaluate_window(window, SCORE_4, SCORE_3, SCORE_2, OPP_3, OPP_2)
+
+    # diag down-right
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r + i][c + i] for i in range(4)]
+            score += evaluate_window(window, SCORE_4, SCORE_3, SCORE_2, OPP_3, OPP_2)
+
+    # diag up-right
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r - i][c + i] for i in range(4)]
+            score += evaluate_window(window, SCORE_4, SCORE_3, SCORE_2, OPP_3, OPP_2)
+
+    # center column control (prefer center)
+    center_col = COLS // 2
+    center_count = sum(1 for r in range(ROWS) if board[r][center_col] == ME)
+    score += center_count * 3.0
+
+    return score
+
+def evaluate_window(window, SCORE_4, SCORE_3, SCORE_2, OPP_3, OPP_2) -> float:
+    me_count = window.count(ME)
+    opp_count = window.count(OPP)
+    if me_count > 0 and opp_count > 0:
+        return 0.0
+    if me_count == 4:
+        return SCORE_4
+    if me_count == 3 and opp_count == 0:
+        return SCORE_3
+    if me_count == 2 and opp_count == 0:
+        return SCORE_2
+    if opp_count == 4:
+        return -SCORE_4
+    if opp_count == 3 and me_count == 0:
+        return OPP_3
+    if opp_count == 2 and me_count == 0:
+        return OPP_2
+    return 0.0
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Choose a column to drop in for Connect 4.
+    Strategy:
+    - If can win immediately, play that move.
+    - If opponent has immediate winning move, block it.
+    - Avoid moves that give opponent an immediate win next turn if possible.
+    - Otherwise choose best move by heuristic (center preference and potential windows).
+    """
+    moves = legal_moves(board)
+    if not moves:
+        return 0  # should not happen in valid games
+
+    # 1) Immediate winning move for us
+    for c in moves:
+        newb = drop(board, c, ME)
+        if newb is not None and check_win(newb, ME):
+            return c
+
+    # 2) Opponent immediate winning columns on current board (threats)
+    opp_threats = []
+    for c in moves:
+        newb = drop(board, c, OPP)
+        if newb is not None and check_win(newb, OPP):
+            opp_threats.append(c)
+
+    # If opponent has exactly one immediate threat, block it if possible
+    if len(opp_threats) == 1:
+        block_col = opp_threats[0]
+        if block_col in moves:
+            return block_col
+
+    # 3) Try to avoid moves that give opponent an immediate win next move.
+    safe_moves = []
+    move_badness = {}  # count of opponent winning replies
+    for c in moves:
+        newb = drop(board, c, ME)
+        if newb is None:
+            continue
+        # Count opponent immediate winning replies after this move
+        opp_wins_after = 0
+        opp_moves_after = legal_moves(newb)
+        for oc in opp_moves_after:
+            nb2 = drop(newb, oc, OPP)
+            if nb2 is not None and check_win(nb2, OPP):
+                opp_wins_after += 1
+        move_badness[c] = opp_wins_after
+        if opp_wins_after == 0:
+            safe_moves.append(c)
+
+    # If any safe moves, pick best by heuristic
+    candidate_moves = safe_moves if safe_moves else moves
+
+    best_col = None
+    best_score = -float('inf')
+    # tie-breaker: prefer center columns (smaller distance)
+    for c in candidate_moves:
+        newb = drop(board, c, ME)
+        if newb is None:
+            continue
+        # immediate win was already checked
+        sc = windows_score(newb)
+        # slight penalty for moves that allow opponent immediate wins (if unavoidable)
+        sc -= move_badness.get(c, 0) * 50.0
+        # center preference
+        center_pref = (COLS // 2) - abs(c - (COLS // 2))
+        sc += center_pref * 2.0
+        # break ties by smaller column index closer to center
+        if sc > best_score or (sc == best_score and (best_col is None or abs(c - (COLS // 2)) < abs(best_col - (COLS // 2)))):
+            best_score = sc
+            best_col = c
+
+    if best_col is not None:
+        return best_col
+
+    # fallback
+    # choose non-full center-most column
+    center = COLS // 2
+    order = [center] + [center - i for i in range(1, COLS)] + [center + i for i in range(1, COLS)]
+    for c in order:
+        if 0 <= c < COLS and c in moves:
+            return c
+
+    # final fallback
+    return moves[0]

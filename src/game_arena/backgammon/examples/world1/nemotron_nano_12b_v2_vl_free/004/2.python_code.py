@@ -1,0 +1,58 @@
+
+def policy(state: dict) -> str:
+    my_bar = state['my_bar']
+    dice = sorted(state['dice'], reverse=True)
+    entries = []
+    
+    # Phase 1: Handle checkers on the bar if present
+    if my_bar > 0:
+        valid_entries = []
+        for die in dice:
+            if 0 <= die < 6 and state['opp_pts'][die] <= 1:  # Valid home board entry points (0-5)
+                valid_entries.append(die)
+        
+        # Generate move sequence using valid dice entries
+        if len(valid_entries) > 0:
+            # Start with the highest die to match ORDER requirements
+            move_start = []
+            for die in dice:
+                if die in valid_entries:
+                    move_start.append('B,A' + str(die))
+                    valid_entries.remove(die)
+                if len(move_start) == len(dice):
+                    break  # Use all available dice
+            
+            # Return move string with highest die first
+            return 'H:' + ','.join(move_start) if len(move_start) == len(dice) else 'H:' + move_start[0]
+    
+    # Phase 2: Move checkers from home board to opponent's side (upper points)
+    checkers_positions = [i for i, count in enumerate(state['my_pts']) if count > 0]
+    if len(checkers_positions) > 0:
+        # Try to move towards opponent's home board (higher indices)
+        all_moves = []
+        for pos in checkers_positions:
+            for d in dice:
+                target = pos - d  # Moving towards 0 decreases index
+                if 0 <= target <= 23 and state['opp_pts'][target] <= 1:
+                    all_moves.append((-d, pos, target))  # Negative to sort descending
+        
+        if all_moves:
+            # Select move with highest die (lowest negative value)
+            all_moves.sort()
+            move = all_moves[0]
+            return 'H:A' + str(move[1]) + 'A' + str(move[2]) if len(dice) == 2 else 'H:A' + str(move[1])
+    
+    # Phase 3: Bearing off preparation (if all checkers in home board)
+    if state['opp_off'] == 0:  # Opponent hasn't finished bearing off
+        max_roll = max(state['dice'])
+        move = []
+        # Check if we can move a checker outside home board to reduce contact
+        for pos in reversed(range(5)):  # Checker positions in home board
+            if state['my_pts'][pos] > 0:
+                move = [(pos, pos + max_roll)]  # Move to higher index
+                break
+        if move:
+            return 'H:P,P'  # Placeholder, actual logic requires more checks
+    
+    # Fallback pass (should not happen)
+    return 'H:P,P'

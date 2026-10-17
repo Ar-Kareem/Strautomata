@@ -1,0 +1,206 @@
+# Strategy
+
+The policy implements a heuristic-based Go player with the following key features:
+
+1. **Tactical Analysis**: 
+   - Immediate capture detection (prioritized heavily)
+   - Saving own groups in atari
+   - Putting opponent groups in atari or near-atari
+
+2. **Strategic Positioning**:
+   - Opening theory: prefers star points (hoshi) and corner plays in the early game
+   - Good shape recognition: rewards connections and diagonal extensions
+   - Edge penalties to avoid bad shape early in the game
+   - Center influence for mid-game strategy
+
+3. **Efficiency**:
+   - Candidate move generation focuses on areas near existing stones
+   - Uses numpy for efficient board representation
+   - Flood-fill algorithm for group and liberty calculation
+
+4. **Legal Move Verification**:
+   - Proper suicide rule handling
+   - Only captures are allowed to remove liberties
+   - Always ensures a legal move is returned
+
+5. **Randomness**: Small random factor prevents predictable play patterns
+
+<code>
+import numpy as np
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    SIZE = 19
+    
+    # Convert to 0-indexed
+    my_stones = set((r-1, c-1) for r, c in me)
+    opp_stones = set((r-1, c-1) for r, c in opponent)
+    all_stones = my_stones | opp_stones
+    
+    # Board: 0=empty, 1=me, 2=opponent
+    board = np.zeros((SIZE, SIZE), dtype=int)
+    for r, c in my_stones:
+        board[r, c] = 1
+    for r, c in opp_stones:
+        board[r, c] = 2
+    
+    def on_board(r, c):
+        return 0 <= r < SIZE and 0 <= c < SIZE
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if on_board(nr, nc):
+                yield nr, nc
+    
+    def get_group_info(r, c, board_state):
+        """Return (group_size, liberty_count) for the stone at (r,c)"""
+        color = board_state[r, c]
+        if color == 0:
+            return 0, 0
+        
+        group = set([(r, c)])
+        liberties = set()
+        stack = [(r, c)]
+        
+        while stack:
+            cr, cc = stack.pop()
+            for nr, nc in neighbors(cr, cc):
+                if board_state[nr, nc] == color and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    stack.append((nr, nc))
+                elif board_state[nr, nc] == 0:
+                    liberties.add((nr, nc))
+        
+        return len(group), len(liberties)
+    
+    def is_legal(r, c, color, board_state):
+        if not on_board(r, c) or board_state[r, c] != 0:
+            return False
+        
+        test_board = board_state.copy()
+        test_board[r, c] = color
+        opp = 3 - color
+        
+        # Check if this move captures anything
+        captures = False
+        for nr, nc in neighbors(r, c):
+            if test_board[nr, nc] == opp:
+                _, libs = get_group_info(nr, nc, test_board)
+                if libs == 0:
+                    captures = True
+        
+        # Suicide is only illegal if it doesn't capture
+        if not captures:
+            _, libs = get_group_info(r, c, test_board)
+            if libs == 0:
+                return False
+        
+        return True
+    
+    total_stones = len(my_stones) + len(opp_stones)
+    
+    # Generate candidate moves
+    candidates = set()
+    
+    if total_stones < 10:
+        # Opening: consider star points
+        star_points = [(3, 3), (3, 9), (3, 15), (9, 3), (9, 9), (9, 15), 
+                       (15, 3), (15, 9), (15, 15)]
+        for sr, sc in star_points:
+            if is_legal(sr, sc, 1, board):
+                candidates.add((sr, sc))
+    else:
+        # Consider moves near existing stones
+        for r, c in all_stones:
+            for dr in range(-2, 3):
+                for dc in range(-2, 3):
+                    nr, nc = r + dr, c + dc
+                    if on_board(nr, nc) and board[nr, nc] == 0 and is_legal(nr, nc, 1, board):
+                        candidates.add((nr, nc))
+    
+    # Fallback: all legal moves
+    if not candidates:
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if is_legal(r, c, 1, board):
+                    candidates.add((r, c))
+    
+    if not candidates:
+        return (0, 0)
+    
+    def evaluate(r, c):
+        score = 0.0
+        test_board = board.copy()
+        test_board[r, c] = 1
+        opp = 2
+        
+        # Captures (highest priority)
+        captured = 0
+        for nr, nc in neighbors(r, c):
+            if test_board[nr, nc] == opp:
+                size, libs = get_group_info(nr, nc, test_board)
+                if libs == 0:
+                    captured += size
+        score += captured * 200.0
+        
+        # Save our groups in atari
+        for nr, nc in neighbors(r, c):
+            if board[nr, nc] == 1:
+                _, old_libs = get_group_info(nr, nc, board)
+                _, new_libs = get_group_info(nr, nc, test_board)
+                if old_libs == 1 and new_libs > 1:
+                    score += 100.0
+        
+        # Threaten opponent (atari or near-atari)
+        for nr, nc in neighbors(r, c):
+            if test_board[nr, nc] == opp:
+                size, libs = get_group_info(nr, nc, test_board)
+                if libs == 1:
+                    score += 40.0 * size
+                elif libs == 2:
+                    score += 10.0 * size
+        
+        # Extension bonus
+        my_adjacent = sum(1 for nr, nc in neighbors(r, c) if board[nr, nc] == 1)
+        if my_adjacent >= 1:
+            score += my_adjacent * 2.5
+        
+        # Diagonal connection
+        for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            nr, nc = r + dr, c + dc
+            if on_board(nr, nc) and board[nr, nc] == 1:
+                score += 2.0
+        
+        # Opening theory
+        if total_stones < 30:
+            # Star points
+            star_points = {(3, 3), (3, 9), (3, 15), (9, 3), (9, 9), (9, 15), 
+                          (15, 3), (15, 9), (15, 15)}
+            if (r, c) in star_points:
+                score += 30.0
+            
+            # Corner preference
+            corners = [(3, 3), (3, 15), (15, 3), (15, 15)]
+            min_corner_dist = min(abs(r-cr) + abs(c-cc) for cr, cc in corners)
+            if min_corner_dist <= 4:
+                score += (5 - min_corner_dist) * 3.0
+            
+            # Edge penalty
+            if r == 0 or r == SIZE-1 or c == 0 or c == SIZE-1:
+                score -= 20.0
+            elif r == 1 or r == SIZE-2 or c == 1 or c == SIZE-2:
+                score -= 5.0
+        
+        # Center influence
+        center_dist = abs(r - 9) + abs(c - 9)
+        score += (SIZE - center_dist) * 0.15
+        
+        # Slight randomness
+        score += random.random() * 2.5
+        
+        return score
+    
+    best = max(candidates, key=lambda p: evaluate(p[0], p[1]))
+    return (best[0] + 1, best[1] + 1)
+</code>

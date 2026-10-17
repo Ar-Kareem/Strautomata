@@ -1,0 +1,55 @@
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Create a set of all occupied squares for quick lookup
+    occupied = set(my_men) | set(my_kings) | set(opp_men) | set(opp_kings)
+    
+    # Define direction vectors for each piece type and color
+    directions = {
+        'b': {
+            'men': [(-1, -1), (-1, 1)],
+            'kings': [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        },
+        'w': {
+            'men': [(1, -1), (1, 1)],
+            'kings': [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        }
+    }
+    
+    # Check for captures (mandatory)
+    for piece in my_men + my_kings:
+        r, c = piece
+        piece_type = 'men' if piece in my_men else 'kings'
+        for d in directions[color][piece_type]:
+            dr, dc = d
+            # Calculate landing square for capture
+            lr = r + 2 * dr
+            lc = c + 2 * dc
+            # Check if landing square is on the board
+            if lr < 0 or lr > 7 or lc < 0 or lc > 7:
+                continue
+            landing_sq = (lr, lc)
+            # Check if landing square is occupied
+            if landing_sq in occupied:
+                continue
+            # Check the square in between
+            between_sq = (r + dr, c + dc)
+            if between_sq in opp_men or between_sq in opp_kings:
+                return ((r, c), landing_sq)
+    
+    # Check for regular moves if no captures available
+    for piece in my_men + my_kings:
+        r, c = piece
+        piece_type = 'men' if piece in my_men else 'kings'
+        for d in directions[color][piece_type]:
+            dr, dc = d
+            lr = r + dr
+            lc = c + dc
+            if lr < 0 or lr > 7 or lc < 0 or lc > 7:
+                continue
+            landing_sq = (lr, lc)
+            if landing_sq in occupied:
+                continue
+            return ((r, c), landing_sq)
+    
+    # Fallback: Return a valid move (should not occur in practice)
+    return ((0, 0), (1, 1))

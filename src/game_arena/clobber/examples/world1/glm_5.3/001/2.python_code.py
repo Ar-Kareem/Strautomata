@@ -1,0 +1,345 @@
+
+import time
+from collections import defaultdict
+
+WIN = 1 << 20
+INF = WIN * 8
+
+NCOLS = 6
+NROWS = 5
+NCELLS = NROWS * NCOLS
+FULL = (1 << NCELLS) - 1
+
+# cells from which a left/right move stays on the board
+CAN_L = 0
+CAN_R = 0
+for _i in range(NCELLS):
+    _c = _i % NCOLS
+    if _c >= 1:
+        CAN_L |= 1 << _i
+    if _c <= NCOLS - 2:
+        CAN_R |= 1 << _i
+
+# move encoding: (start << 5) | target
+MVB = [0] * 1024   # bits flipped in mover's occupancy: (1<<s)|(1<<t)
+TVB = [0] * 1024   # bit flipped in other side's occupancy: (1<<t)
+for _mv in range(1024):
+    _s = _mv >> 5
+    _t = _mv & 31
+    if _s < NCELLS and _t < NCELLS and _s != _t:
+        MVB[_mv] = (1 << _s) | (1 << _t)
+        TVB[_mv] = 1 << _t
+
+if hasattr(int, "bit_count"):
+    def _pc(x):
+        return x.bit_count()
+else:
+    _PC15 = [bin(_i).count("1") for _i in range(1 << 15)]
+    def _pc(x):
+        return _PC15[x & 32767] + _PC15[(x >> 15) & 32767]
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _flatten(x, out):
+    try:
+        _it = iter(x)
+    except TypeError:
+        try:
+            out.append(1 if int(x) else 0)
+        except (TypeError, ValueError):
+            out.append(1 if x else 0)
+        return
+    for _e in _it:
+        _flatten(_e, out)
+
+
+def _to_mask(board):
+    flat = []
+    try:
+        _flatten(board, flat)
+    except Exception:
+        return 0
+    mask = 0
+    n = len(flat)
+    if n > NCELLS:
+        n = NCELLS
+    for i in range(n):
+        if flat[i]:
+            mask |= 1 << i
+    return mask
+
+
+def _build_mask(board):
+    # primary: direct [r][c] / [r*6+c] access mirroring you[row, col]
+    mask = 0
+    ok = True
+    try:
+        for r in range(NROWS):
+            for c in range(NCOLS):
+                try:
+                    v = board[r][c]
+                except Exception:
+                    try:
+                        v = board[r * NCOLS + c]
+                    except Exception:
+                        ok = False
+                        v = 0
+                if v:
+                    mask |= 1 << (r * NCOLS + c)
+    except Exception:
+        ok = False
+    if ok:
+        return mask
+    return _to_mask(board)
+
+
+def gen_moves(m, o, CL=CAN_L, CR=CAN_R):
+    """All captures for the side with occupancy m against occupancy o."""
+    res = []
+    b = m & (o << 6)                      # up    (target = i-6)
+    while b:
+        lb = b & -b
+        i = lb.bit_length() - 1
+        res.append((i << 5) | (i - 6))
+        b ^= lb
+    b = m & (o >> 6)                      # down  (target = i+6)
+    while b:
+        lb = b & -b
+        i = lb.bit_length() - 1
+        res.append((i << 5) | (i + 6))
+        b ^= lb
+    b = m & ((o << 1) & CL)               # left  (target = i-1)
+    while b:
+        lb = b & -b
+        i = lb.bit_length() - 1
+        res.append((i << 5) | (i - 1))
+        b ^= lb
+    b = m & ((o >> 1) & CR)               # right (target = i+1)
+    while b:
+        lb = b & -b
+        i = lb.bit_length() - 1
+        res.append((i << 5) | (i + 1))
+        b ^= lb
+    return res
+
+
+def _move_str(mv):
+    s = mv >> 5
+    t = mv & 31
+    r, c = divmod(s, NCOLS)
+    if t == s - 6:
+        d = "U"
+    elif t == s + 6:
+        d = "D"
+    elif t == s + 1:
+        d = "R"
+    else:
+        d = "L"
+    return "%d,%d,%s" % (r, c, d)
+
+
+def _fallback_move(you, opponent):
+    def cell(b, r, c):
+        try:
+            v = b[r][c]
+        except Exception:
+            try:
+                v = b[r * NCOLS + c]
+            except Exception:
+                return 0
+        try:
+            return 1 if int(v) else 0
+        except Exception:
+            return 1 if v else 0
+    for r in range(NROWS):
+        for c in range(NCOLS):
+            if cell(you, r, c):
+                if r > 0 and cell(opponent, r - 1, c):
+                    return "%d,%d,U" % (r, c)
+                if c < NCOLS - 1 and cell(opponent, r, c + 1):
+                    return "%d,%d,R" % (r, c)
+                if r < NROWS - 1 and cell(opponent, r + 1, c):
+                    return "%d,%d,D" % (r, c)
+                if c > 0 and cell(opponent, r, c - 1):
+                    return "%d,%d,L" % (r, c)
+    return "0,0,U"
+
+
+def _search_policy(you, opponent):
+    t0 = time.perf_counter()
+    deadline = t0 + 0.78
+
+    my = _build_mask(you)
+    op = _build_mask(opponent)
+    op &= FULL & ~my
+
+    root_moves = gen_moves(my, op)
+    if not root_moves:
+        return _fallback_move(you, opponent)
+    if len(root_moves) == 1:
+        return _move_str(root_moves[0])
+
+    legal = set(root_moves)
+
+    tt = {}
+    hist = defaultdict(int)
+    nodes = [0]
+
+    pc = _pc
+    perf = time.perf_counter
+    gm = gen_moves
+    mvb = MVB
+    tvb = TVB
+    canl = CAN_L
+    canr = CAN_R
+    win = WIN
+    inf = INF
+    hget = hist.__getitem__
+
+    def negamax(m, o, depth, alpha, beta):
+        # m: occupancy of side to move, o: occupancy of other side
+        nodes[0] += 1
+        if (nodes[0] & 255) == 0 and perf() > deadline:
+            raise _Timeout
+
+        key = (m << 30) | o
+        e = tt.get(key)
+        ttmv = -1
+        if e is not None:
+            ed, esc, ef, emv = e
+            if ed >= depth:
+                if ef == 0:
+                    return esc
+                if ef == 1:
+                    if esc >= beta:
+                        return esc
+                    if esc > alpha:
+                        alpha = esc
+                else:
+                    if esc <= alpha:
+                        return esc
+                    if esc < beta:
+                        beta = esc
+                if alpha >= beta:
+                    return esc
+            ttmv = emv
+
+        if depth <= 0:
+            a = (pc(m & (o << 6)) + pc(m & (o >> 6))
+                 + pc(m & ((o << 1) & canl)) + pc(m & ((o >> 1) & canr)))
+            if a == 0:
+                return -win
+            b = (pc(o & (m << 6)) + pc(o & (m >> 6))
+                 + pc(o & ((m << 1) & canl)) + pc(o & ((m >> 1) & canr)))
+            return a - b
+
+        moves = gm(m, o)
+        if not moves:
+            return -win
+
+        nm = len(moves)
+        nd = depth if nm == 1 else depth - 1   # forced reply: free extension
+
+        if depth >= 2 and nm > 3:
+            moves.sort(key=hget, reverse=True)
+        if ttmv >= 0:
+            try:
+                k = moves.index(ttmv)
+            except ValueError:
+                k = -1
+            if k > 0:
+                moves[0], moves[k] = moves[k], moves[0]
+
+        best = -inf
+        bestmv = moves[0]
+        a = alpha
+        first = True
+        for mv in moves:
+            m2 = m ^ mvb[mv]      # mover's new occupancy
+            o2 = o ^ tvb[mv]      # other side's new occupancy
+            if first:
+                first = False
+                sc = -negamax(o2, m2, nd, -beta, -a)
+            else:
+                sc = -negamax(o2, m2, nd, -a - 1, -a)
+                if a < sc < beta:
+                    sc = -negamax(o2, m2, nd, -beta, -a)
+            if sc > best:
+                best = sc
+                bestmv = mv
+                if sc > a:
+                    a = sc
+                    if a >= beta:
+                        hist[mv] += depth * depth
+                        break
+
+        if best >= beta:
+            fl = 1
+        elif best <= alpha:
+            fl = 2
+        else:
+            fl = 0
+        old = tt.get(key)
+        if old is None or old[0] <= depth:
+            if len(tt) > 500000:
+                tt.clear()
+            tt[key] = (depth, best, fl, bestmv)
+        return best
+
+    def _omob(mv):
+        m2 = my ^ mvb[mv]
+        o2 = op ^ tvb[mv]
+        return (pc(o2 & (m2 << 6)) + pc(o2 & (m2 >> 6))
+                + pc(o2 & ((m2 << 1) & canl)) + pc(o2 & ((m2 >> 1) & canr)))
+
+    order = list(root_moves)
+    order.sort(key=_omob)
+    best_move = order[0]
+
+    try:
+        for depth in range(1, 64):
+            alpha = -inf
+            scored = []
+            first = True
+            for mv in order:
+                m2 = my ^ mvb[mv]
+                o2 = op ^ tvb[mv]
+                if first:
+                    first = False
+                    sc = -negamax(o2, m2, depth - 1, -inf, -alpha)
+                else:
+                    sc = -negamax(o2, m2, depth - 1, -alpha - 1, -alpha)
+                    if sc > alpha:
+                        sc = -negamax(o2, m2, depth - 1, -inf, -alpha)
+                scored.append((sc, mv))
+                if sc > alpha:
+                    alpha = sc
+                    best_move = mv
+            scored.sort(key=lambda z: -z[0])
+            order = [q for _, q in scored]
+            if alpha >= win or alpha <= -win:
+                break
+    except _Timeout:
+        pass
+    except Exception:
+        pass
+
+    if best_move not in legal:
+        best_move = root_moves[0]
+    return _move_str(best_move)
+
+
+def policy(you, opponent):
+    try:
+        mv = _search_policy(you, opponent)
+        if mv:
+            return mv
+    except Exception:
+        pass
+    try:
+        return _fallback_move(you, opponent)
+    except Exception:
+        return "0,0,U"

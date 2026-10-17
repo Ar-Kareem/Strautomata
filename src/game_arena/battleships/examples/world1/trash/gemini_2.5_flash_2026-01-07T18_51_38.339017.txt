@@ -1,0 +1,377 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns the `(row, col)` coordinates for the next shot in a Battleship game.
+
+Here's my plan to approach this:
+
+1.  **Representing the Board and Shot History:**
+    The `board` input already serves as the shot history for misses (`-1`) and hits (`1`). Unknown cells are `0`.
+
+2.  **Strategy Overview:**
+    I'll use a two-phase strategy:
+    *   **Hunt Phase:** When I haven't recently hit a ship or sunk one, I'll try to find a new ship efficiently. A checkered pattern (shooting at every other cell) is a common and effective way to ensure I don't miss any ship regardless of its orientation (for ships of length 2 or more). I'll prioritize cells that are not adjacent to known misses, as a ship cannot be next to a miss.
+    *   **Target/Destroy Phase:** Once I hit a ship (`1`), I'll switch to a targeting mode to sink it quickly. This involves shooting adjacent cells. If I have multiple hits that are not yet sunk, I will prioritize extending the known ship segment.
+
+3.  **Detailed Implementation - Hunt Phase:**
+    *   Iterate through the board.
+    *   Prioritize cells that haven't been shot yet (`board[r][c] == 0`).
+    *   To implement the checkered pattern, I'll only consider cells where `(r + c) % 2 == 0`. This ensures I don't waste shots if a ship is only one cell wide.
+    *   Additionally, to be smarter, I'll avoid shooting next to known misses. If a cell `(r, c)` has an adjacent cell that's a `-1`, it's less likely to contain a ship. This is not strictly necessary for correctness but can speed up the hunt.
+    *   If no hit has been made, fall back to a simple `(r+c)%2 == 0` pattern.
+
+4.  **Detailed Implementation - Target/Destroy Phase:**
+    *   **Identifying Active Hits:** Find all cells on the board with a `1`. These are potential ship locations.
+    *   **Grouping Hits into Ship Segments:** If I have multiple hits, I need to understand if they belong to the same ship and its orientation.
+        *   If there's only one `1`, I'll shoot in an adjacent direction (e.g., up, down, left, right). A good heuristic might be to try horizontal first, then vertical.
+        *   If there are two or more `1`s that are adjacent, I can infer the ship's orientation (horizontal or vertical).
+            *   If horizontal: Try to extend left, then right.
+            *   If vertical: Try to extend up, then down.
+    *   **Choosing the Next Shot for a Segment:**
+        *   For each detected ship segment (a contiguous line of `1`s):
+            *   Look at the ends of the segment.
+            *   Prioritize shooting at an unshot cell `0` *adjacent* to an end of the segment.
+            *   If both ends are blocked or out of bounds, this segment might be a sunk ship part or isolated, but we should continue shooting around it if it's not fully sunk.
+    *   **Handling Multiple Ship Segments:** If there are multiple active hit segments, which one to prioritize?
+        *   A simple approach: pick the *longest* active segment, as sinking a longer segment might clear up more of the board or make it easier to isolate other ships. Or, simply pick the first one found. For now, let's just pick the first detected hit and try to extend it. If that hit has no valid extensions, move to the next.
+
+5.  **Refined Target/Destroy Logic:**
+    *   Find *all* `1`s.
+    *   If there are any `1`s, try to find an adjacent `0` cell.
+    *   Iterate through all `(r_hit, c_hit)` where `board[r_hit][c_hit] == 1`.
+    *   For each hit, check its four neighbors `(nr, nc)`:
+        *   If `(nr, nc)` is an unshot cell (`0`) within bounds, return `(nr, nc)`. This simple strategy will prioritize extending any detected ship segment.
+    *   This simple strategy might be sufficient. If I hit a ship, I just keep shooting *any* adjacent untapped cell. This isn't super smart about guessing orientation, but it's simple and effective enough.
+
+6.  **Refined Hunt Phase (if no active hits and no promising adjacency to an existing hit are found):**
+    *   Iterate through the board.
+    *   For cells `(r, c)` where `board[r][c] == 0`:
+        *   Only consider cells where `(r + c) % 2 == 0` (checkered pattern).
+        *   Ensure that cell `(r, c)` does *not* have any adjacent `-1` cells. This makes the hunt phase more efficient by avoiding impossible ship locations.
+        *   If multiple such cells exist, pick the first one.
+    *   Fallback: If even *that* refined hunt phase fails (e.g., all checkered `(r+c)%2==0` cells are adjacent to misses or already shot at), then just shoot at the first available `0` cell, prioritizing the checkered pattern. If all checkered cells are gone, shoot at any `0`.
+
+7.  **Edge Cases/Helper Functions:**
+    *   `is_valid(r, c)`: Checks if coordinates are within the 10x10 grid.
+    *   `get_neighbors(r, c)`: Returns valid neighboring coordinates.
+
+Let's combine these:
+
+```python
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    rows = len(board)
+    cols = len(board[0])
+
+    # Helper function to check if a coordinate is within bounds
+    def is_valid(r, c):
+        return 0 <= r < rows and 0 <= c < cols
+
+    # --- Phase 2: Target/Destroy (if a ship has been hit) ---
+    # Find all current hits (1s)
+    hits = []
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 1:
+                hits.append((r, c))
+
+    if hits:
+        # Try to extend any hit
+        for r_hit, c_hit in hits:
+            # Check neighbors: right, left, down, up (a sensible order)
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r_hit + dr, c_hit + dc
+                if is_valid(nr, nc) and board[nr][nc] == 0:
+                    return nr, nc
+        # If we reach here, it means all active hits have no unshot adjacent cells.
+        # This could happen if a ship is completely surrounded by water/other ships
+        # already, or if we've found all parts of a ship but haven't sunk it yet.
+        # We need to fall back to hunting if there are no immediate extensions.
+        # This fallback is handled naturally by the hunt phase if this loop doesn't return.
+
+    # --- Phase 1: Hunt (if no active hits or no immediate adjacent shots for hits) ---
+    # Prioritize cells in a checkered pattern that are not next to a miss (-1)
+    eligible_hunt_cells = []
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0:  # Only consider unshot cells
+                # Check for checkered pattern for initial hunt
+                if (r + c) % 2 == 0:
+                    # Check if any neighbor is a miss
+                    is_adjacent_to_miss = False
+                    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        nr, nc = r + dr, c + dc
+                        if is_valid(nr, nc) and board[nr][nc] == -1:
+                            is_adjacent_to_miss = True
+                            break
+                    if not is_adjacent_to_miss:
+                        eligible_hunt_cells.append((r, c))
+
+    if eligible_hunt_cells:
+        # Randomly choose one from the eligible hunt cells for a bit of variation
+        # Or just pick the first one to be deterministic but still follow the pattern
+        return random.choice(eligible_hunt_cells)
+
+    # Fallback: If no checkered cell is available that's not adjacent to a miss
+    # (e.g., highly constrained board or late game), just shoot any unshot cell.
+    # This might happen when a ship is fully surrounded by water or hits,
+    # or the checkered pattern is exhausted.
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0:
+                return r, c
+
+    # Should ideally not happen unless the board is completely full.
+    # But as a failsafe, return a random unshot cell if somehow other loops fail.
+    # This scenario implies all ships are sunk or all cells shot.
+    # For a complete game, this return should only be reached if no '0's exist,
+    # meaning the game is over.
+    # Let's add a robust fallback just in case, though the above `for` loop
+    # should catch all `0`s.
+    available_cells = [(r, c) for r in range(rows) for c in range(cols) if board[r][c] == 0]
+    if available_cells:
+        return random.choice(available_cells)
+
+    # If absolutely nothing is left (game should be over), return (0,0) as a dummy.
+    # This means all cells are either -1 or 1.
+    return 0, 0
+
+```
+
+Let's test the logic flow and potential improvements.
+
+*   The `Target/Destroy` phase currently just finds *any* adjacent `0` to *any* hit. This could be improved. If I have `(1,1)` and `(1,2)` as hits, I know the ship is horizontal. I should prioritize `(1,0)` then `(1,3)`. If I have `(1,1)` as a single hit, I could try `(1,0)` then `(1,1)` then `(0,1)` then `(2,1)`... but a simple `(0,1), (0,-1), (1,0), (-1,0)` search is fine as a first pass, as it will explore all directions.
+
+*   **Improved Target/Destroy Logic (more intelligent):**
+    1.  Group hits that are adjacent to each other.
+    2.  For each group:
+        *   If the group has 1 hit: explore all 4 directions.
+        *   If the group has 2+ hits and is linear (horizontal or vertical): extend along that line.
+    3.  Prioritize groups that are still active (i.e. have unshot cells to extend into).
+
+    This adds complexity. Given the 1-second time limit, and the game being 10x10, a simpler heuristic might be better for performance and robustness across different board states. The current "just find any adjacent 0 to any 1" is a greedy approach.
+
+    Let's stick with the simpler `Target/Destroy` for now, it's pretty good: if there's a 1, it will attempt to extend it in common directions (right, left, down, up). This will eventually sink the ship.
+
+*   **Hunt Phase refinement:**
+    The `eligible_hunt_cells` part is good. It avoids known misses and uses a checkered pattern. The random choice adds a small element of non-determinism which might be useful in multi-round scenarios, but isn't strictly necessary for a single game. Picking the first one found is also fine. I'll keep `random.choice` for a bit of flavor.
+
+*   **Final Check:**
+    *   Does it always return `(r, c)` where `board[r][c] == 0`? Yes, all paths check for `board[nr][nc] == 0` or `board[r][c] == 0`. The final fallback also guarantees this.
+    *   Does it handle an empty `board` (all `0`s) correctly? Yes, it will go straight to the hunt phase and pick a checkered cell.
+    *   Does it handle a board full of hits and misses (game over)? The last fallback will pick `(0,0)` if no `0` is found, which correctly signals game end or an error condition.
+
+Let's review the order of operations:
+1.  **Target/Destroy:** Finds all hits `(1)`. For each hit, it checks its neighbors `(right, left, down, up)` for an unshot cell `(0)`. If found, it returns that cell. This means extending an existing ship is always prioritized.
+2.  **Hunt:** If no immediate extension from a hit is possible (either because all neighbors are already shot, or there were no hits to begin with), it switches to hunting.
+    *   It tries to find unshot cells `(0)` that are part of a checkered pattern `(r+c)%2==0`.
+    *   Crucially, it *also* ensures these cells are *not* adjacent to a miss `(-1)`. This is a smart optimization to avoid shooting in impossible areas.
+    *   If such cells are found, it picks one randomly.
+3.  **General Fallback:** If even the smart hunt phase fails (e.g., all checkered cells that are not adjacent to misses have been shot, or the board is highly constrained), it falls back to simply finding *any* unshot cell `(0)` on the board, iterating row by row. This ensures a shot is always made as long as `0`s exist.
+4.  **Game Over Fallback:** If *no* `0`s are found anywhere (meaning the game is theoretically over), it returns `(0,0)` as a failsafe.
+
+This looks like a robust and reasonably intelligent strategy for a Battleship AI.
+The use of `random.choice` might be slightly less performant than picking the first element, but for a 10x10 grid, the difference is negligible and adds a tiny bit of non-determinism to the strategy which can be good.
+
+One final optimization for the hunt phase: Instead of `random.choice(eligible_hunt_cells)`, just picking the first one `eligible_hunt_cells[0]` would be slightly faster and deterministic. There's no strong reason to have randomness here for a single-game policy. I will use the deterministic `eligible_hunt_cells[0]` then.
+
+```python
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    rows = len(board)
+    cols = len(board[0])
+
+    # Helper function to check if a coordinate is within bounds
+    def is_valid(r, c):
+        return 0 <= r < rows and 0 <= c < cols
+
+    # --- Phase 2: Target/Destroy (if a ship has been hit but not yet sunk) ---
+    # Find all current hits (1s)
+    hits = []
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 1:
+                hits.append((r, c))
+
+    if hits:
+        # Prioritize extending an existing hit segment
+        # Try a specific order around each hit: right, left, down, up
+        # This simple extension strategy will eventually sink the ship.
+        for r_hit, c_hit in hits:
+            # Directions to check: (dr, dc)
+            # Prioritize along existing line if possible, but this simple order is robust.
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]: # Right, Left, Down, Up
+                nr, nc = r_hit + dr, c_hit + dc
+                if is_valid(nr, nc) and board[nr][nc] == 0:
+                    return nr, nc
+        # If we reach here, it means all visible hits are 'blocked'
+        # (surrounded by misses or other hits), or their extensions
+        # are out of bounds. This could happen if a ship is sunk,
+        # or if it's partly sunk and surrounded. In this case,
+        # we fall back to the hunt phase.
+
+    # --- Phase 1: Hunt (if no immediate extensions from hits, or no hits yet) ---
+    # We use a checkered pattern (e.g., (r+c)%2 == 0) to ensure we hit all possible
+    # ship orientations efficiently for ships of length 2 or more.
+    # Additionally, we avoid locations adjacent to known misses to be smarter.
+    
+    # Collect eligible hunt cells: unshot (0), part of checkered pattern, and NOT adjacent to a miss (-1)
+    eligible_hunt_cells = []
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0:  # Must be an unshot cell
+                if (r + c) % 2 == 0: # Checkered pattern
+                    is_adjacent_to_miss = False
+                    # Check its 4 direct neighbors
+                    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        nr, nc = r + dr, c + dc
+                        if is_valid(nr, nc) and board[nr][nc] == -1:
+                            is_adjacent_to_miss = True
+                            break
+                    if not is_adjacent_to_miss:
+                        eligible_hunt_cells.append((r, c))
+
+    if eligible_hunt_cells:
+        # For determinism and simplicity, pick the first eligible cell found.
+        # A random choice could be used if non-determinism is desired.
+        return eligible_hunt_cells[0]
+
+    # --- Fallback: If 'smart' hunt cells are exhausted or too constrained ---
+    # This might happen late in the game if ships are in tricky spots,
+    # or all checkered cells are gone. Just pick any remaining unshot cell (0).
+    # Prioritize checkered pattern first, then the other pattern, but still looking for any 0.
+    
+    # First, try any remaining unshot checkered cell (could be adjacent to miss now)
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0 and (r + c) % 2 == 0:
+                return r, c
+    
+    # Then, try any remaining unshot non-checkered cell
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0:
+                return r, c
+
+    # --- Emergency Fallback: Should not be reached in a normal game ---
+    # This means all cells are either -1 (miss) or 1 (hit/sunk).
+    # The game should be over. Return (0, 0) as a dummy.
+    return 0, 0
+```
+
+The refined fallback handles the case where `eligible_hunt_cells` is empty (e.g., all `(r+c)%2==0` cells are either hit/missed or adjacent to a miss). It first tries *any* `(r+c)%2==0` cell that is still `0`, relaxing the "not adjacent to miss" constraint. If *those* are also all gone, it tries *any* `0` cell regardless of its `(r+c)%2` value. This covers all `0` cells in a systematic way. This looks solid.<thinking>
+The user wants a Python function `policy(board)` that determines the next target cell `(row, col)` for a Battleship-like game on a 10x10 grid. The `board` represents my current knowledge: `0` for unknown, `-1` for a miss, and `1` for a hit.
+
+My strategy will be composed of two main phases:
+
+1.  **Target/Destroy Phase:** If I have already hit a ship (`1`), my priority is to sink that ship. I will try to extend any existing hit by shooting at an adjacent unknown cell (`0`). This is crucial for efficiently reducing the opponent's forces.
+2.  **Hunt Phase:** If there are no current hits, or if all hits are surrounded by already-shot cells (meaning I can't immediately extend an existing ship segment), I switch to hunting for new ships.
+
+Here's a breakdown of the detailed logic for each phase:
+
+**Helper Function:**
+*   `is_valid(r, c)`: A simple utility to check if given coordinates `(r, c)` are within the 10x10 grid boundaries.
+
+**Target/Destroy Phase Logic:**
+1.  **Find all hits:** Iterate through the `board` and collect all coordinates `(r, c)` where `board[r][c] == 1`.
+2.  **Attempt to extend:** If there are any hits:
+    *   For each hit `(r_hit, c_hit)`, check its four direct neighbors (right, left, down, up).
+    *   If a neighbor `(nr, nc)` is valid (within bounds) and is an unshot cell (`board[nr][nc] == 0`), immediately return `(nr, nc)` as the next shot. This prioritizes quickly sinking ships once found.
+
+**Hunt Phase Logic (Primary):**
+1.  This phase is activated if the Target/Destroy phase doesn't find an immediate extension (either no hits exist, or all hits are already surrounded).
+2.  **Checkered Pattern:** To efficiently locate ships (especially those of length 2 or more, which require hitting at least one square no matter their orientation), I'll use a checkered pattern. I'll prioritize cells where `(r + c) % 2 == 0`.
+3.  **Avoid known misses:** To be smarter, I'll filter these checkered cells further. I will *only* consider a cell `(r, c)` if it is an unshot cell (`board[r][c] == 0`) and *none* of its direct neighbors are a miss (`-1`). This avoids shooting in areas where a ship cannot possibly be located, speeding up the hunt.
+4.  **Select target:** Collect all such "eligible hunt cells" into a list. If the list is not empty, I'll pick the first cell from this list. This makes the policy deterministic.
+
+**Fallback Hunt Logic (Secondary):**
+1.  If the primary hunt phase (checkered pattern, not adjacent to miss) yields no eligible cells (e.g., the board is very constrained, or all such optimal cells are already shot), I need a fallback.
+2.  **Any checkered cell:** First, I'll relax the "not adjacent to miss" constraint and simply look for *any* unshot cell `(r, c)` where `(r + c) % 2 == 0`. This ensures the checkered pattern continues even if it means shooting next to a known miss.
+3.  **Any unshot cell:** If even that fails (all checkered cells are gone), I'll look for *any* unshot cell `(r, c)` where `board[r][c] == 0`, regardless of its position in the checkered pattern. This guarantees a shot as long as there are unknown cells on the board.
+
+**Emergency Fallback:**
+1.  If all cells on the board are either `-1` (miss) or `1` (hit/sunk), it means the game should be over. In this unlikely scenario, I'll return `(0, 0)` as a dummy value as the `policy` function must return coordinates.
+
+This multi-stage approach balances aggression (sinking known ships) with efficiency (hunting for new ships systematically and smartly avoiding impossible locations).
+
+```python
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    rows = len(board)
+    cols = len(board[0])
+
+    # Helper function to check if a coordinate is within bounds
+    def is_valid(r, c):
+        return 0 <= r < rows and 0 <= c < cols
+
+    # --- Phase 2: Target/Destroy (if a ship has been hit but not yet sunk) ---
+    # Find all current hits (1s)
+    hits = []
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 1:
+                hits.append((r, c))
+
+    if hits:
+        # Prioritize extending an existing hit segment
+        # Iterate through hits and try to shoot at an adjacent unshot cell (0)
+        # Check directions in a fixed order (Right, Left, Down, Up)
+        for r_hit, c_hit in hits:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r_hit + dr, c_hit + dc
+                if is_valid(nr, nc) and board[nr][nc] == 0:
+                    return nr, nc
+        # If we reach here, it means all active hits are 'blocked'
+        # (surrounded by misses or other hits), or their extensions
+        # are out of bounds. This could imply a ship is sunk, or we need
+        # to re-evaluate with the hunt phase.
+
+    # --- Phase 1: Hunt (if no immediate extensions from hits, or no hits yet) ---
+    # Employ a checkered pattern strategy (e.g., (r+c)%2 == 0) to efficiently
+    # locate ships, as this guarantees hitting any ship of length 2 or more.
+    # Additionally, avoid cells adjacent to a known miss (-1) for smarter hunting.
+    
+    # Collect eligible hunt cells: unshot (0), part of the checkered pattern,
+    # AND NOT adjacent to any known miss (-1).
+    eligible_hunt_cells = []
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0:  # Must be an unshot cell
+                if (r + c) % 2 == 0: # Part of the checkered pattern
+                    is_adjacent_to_miss = False
+                    # Check its 4 direct neighbors
+                    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        nr, nc = r + dr, c + dc
+                        if is_valid(nr, nc) and board[nr][nc] == -1:
+                            is_adjacent_to_miss = True
+                            break
+                    if not is_adjacent_to_miss:
+                        eligible_hunt_cells.append((r, c))
+
+    if eligible_hunt_cells:
+        # Return the first eligible cell found for deterministic behavior.
+        return eligible_hunt_cells[0]
+
+    # --- Fallback Hunt: If 'smart' hunt cells are exhausted or too constrained ---
+    # This might happen late in the game if ships are in tricky spots, or if
+    # all optimal checkered cells (not adjacent to miss) have been shot.
+    # First, try any remaining unshot checkered cell, even if it's adjacent to a miss.
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0 and (r + c) % 2 == 0:
+                return r, c
+    
+    # Then, if all checkered cells are gone, try any remaining unshot cell (0),
+    # regardless of its position in the checkered pattern.
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0:
+                return r, c
+
+    # --- Emergency Fallback: Should ideally not be reached ---
+    # This scenario implies all cells are either -1 (miss) or 1 (hit/sunk),
+    # meaning the game should already be over. Return (0, 0) as a dummy.
+    return 0, 0
+
+```

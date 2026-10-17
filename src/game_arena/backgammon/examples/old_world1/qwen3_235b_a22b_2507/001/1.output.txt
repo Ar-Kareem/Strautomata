@@ -1,0 +1,311 @@
+The logic for this policy is to create a smart, competitive Backgammon agent that adheres strictly to the legal move constraints while maximizing strategic value. The policy will:
+
+1. **Handle checkers on the bar first** – If the player has checkers on the bar, they must be moved first. We'll use the dice to re-enter from the bar if possible.
+
+2. **Prioritize using both dice when possible** – According to the rules, if both dice can be used, both must be. We'll prefer moves that use both dice over just one.
+
+3. **Apply correct move order (`H` or `L`)** – We must indicate whether the higher or lower die is used first. We'll evaluate the best move sequence and choose the order that matches the actual movement.
+
+4. **Maximize safe movement and progress** – We'll use heuristics to:
+   - Avoid leaving blots (single checkers vulnerable to hit) unless necessary.
+   - Prioritize advancing back checkers.
+   - Prefer making points (two or more checkers on a point) for board control.
+   - Prefer hitting opponent blots when safe.
+   - Prioritize bearing off when in the endgame.
+
+5. **Bearing off logic** – Only allowed when all checkers are in home board. We’ll use optimal bearing off: bear off if possible; otherwise, move within the home board using farthest-back checker.
+
+6. **Fallback to legal pass** – If no legal moves are available, return `H:P,P` (order doesn't matter for pass).
+
+We’ll use a greedy heuristic with some lookahead for immediate gains. The policy is deterministic and fast, relying on direct evaluation of move options using standard game logic.
+
+We'll define helper functions within `policy` to:
+- Check if a move from a point with a given die is legal.
+- Compute target point.
+- Evaluate move quality.
+
+Given the 1-second time limit, we avoid deep search and use efficient list comprehensions and prioritized move generation.
+
+<code>
+import numpy as np
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    dice = state['dice']
+    my_off = state['my_off']
+    
+    # Determine home board: last 6 points (18-23) for player, but absolute indices are given.
+    # We assume the player moves from low to high indices (0->23). Home board = points 18 to 23.
+    HOME_START = 18
+    HOME_END = 23
+
+    # Check if all checkers are in home board (for bearing off)
+    def all_in_home():
+        for i in range(HOME_START):
+            if my_pts[i] > 0:
+                return False
+        return True
+
+    # Compute target point from source with die value.
+    # Direction: from lower to higher indices (0->23)
+    def target_point(src, die):
+        if src == 'B':
+            # Re-entering from bar: use die-1 as offset from start of board
+            return die - 1
+        else:
+            return src + die
+
+    # Check if a target point is safe to move to (0 or 1 opponent checkers)
+    def is_legal_target(tgt):
+        if tgt < 0 or tgt > 23:
+            return False  # Off board; only allowed via bear off
+        return opp_pts[tgt] <= 1
+
+    # Check if we can bear off directly
+    def can_bear_off(die):
+        # Check if we can remove from point (die away from end)
+        pip = HOME_END + 1 - die  # pip position to bear off from
+        if pip >= HOME_START and my_pts[pip] > 0:
+            return True
+        # Else, bear off from farthest back if no checker on pip
+        max_point = -1
+        for i in range(HOME_START, HOME_END + 1):
+            if my_pts[i] > 0:
+                max_point = max(max_point, i)
+        if max_point == -1:
+            return False  # no checkers in home
+        # Can bear off if die would carry beyond or to end, or if no checker on exact pip
+        return (HOME_END - max_point + 1) <= die
+
+    # Generate all legal moves from bar
+    def moves_from_bar():
+        moves = []
+        for die in dice:
+            tgt = target_point('B', die)
+            if 0 <= tgt <= 23 and is_legal_target(tgt):
+                moves.append(('B', die))
+        return moves
+
+    # Generate legal moves from board points
+    def moves_from_board():
+        moves = []
+        for pt in range(24):
+            if my_pts[pt] == 0:
+                continue
+            for die in dice:
+                tgt = target_point(pt, die)
+                if tgt > 23:  # bear off?
+                    if all_in_home() and can_bear_off(die):
+                        moves.append((pt, die))
+                elif tgt <= 23 and is_legal_target(tgt):
+                    moves.append((pt, die))
+        return moves
+
+    # Check if a move hits
+    def move_hits(src, die):
+        tgt = target_point(src, die)
+        if tgt < 0 or tgt > 23:
+            return False
+        return opp_pts[tgt] == 1
+
+    # Evaluate move safety and value
+    def evaluate_move(src, die):
+        tgt = target_point(src, die)
+        score = 0
+        if tgt > 23:  # bear off
+            score += 100
+            # Prefer bearing off from back
+            if src < HOME_END:
+                score += (HOME_END - src)  # more for farther back
+        else:
+            # Hitting is good
+            if move_hits(src, die):
+                score += 10
+            # Making a point (after move, we'll have >=2)
+            future_my = my_pts[tgt] + 1
+            if future_my >= 2:
+                score += 5
+            # Avoid leaving blot at src if we're moving only one checker
+            if my_pts[src] == 1:
+                score -= 3  # leaving a blot
+        # Advancing back checkers is good
+        if src < 6:  # back checkers
+            score += (5 - src)  # more for further back
+        return score
+
+    # Try all move combinations
+    def get_best_move():
+        # Sort dice
+        if len(dice) == 0:
+            return "H:P,P"
+        dice_sorted = sorted(dice, reverse=True)
+        high_die, low_die = dice_sorted[0], dice_sorted[-1]
+        two_dice = len(dice) == 2 and dice[0] != dice[1]
+        double = len(dice) == 2 and dice[0] == dice[1]
+
+        # Case 1: Checkers on bar
+        if my_bar > 0:
+            bar_moves = moves_from_bar()
+            if not bar_moves:
+                return "H:P,P"  # no legal moves
+            # Prefer moves that hit
+            best_move = max(bar_moves, key=lambda m: (move_hits('B', m[1]), -m[1]))
+            first_die = best_move[1]
+            order = 'H' if first_die == high_die or not two_dice else 'L'
+            # Now try to play second die
+            # Simulate first move
+            temp_my_pts = my_pts[:]
+            temp_my_bar = my_bar - 1
+            tgt1 = target_point('B', first_die)
+            if tgt1 <= 23:
+                temp_my_pts[tgt1] += 1
+            remaining_die = low_die if first_die == high_die else high_die
+            # Generate second move
+            second_moves = []
+            # After bar move, if still on bar, we must re-enter
+            if temp_my_bar > 0:
+                t = target_point('B', remaining_die)
+                if 0 <= t <= 23 and opp_pts[t] <= 1:
+                    return f"{order}:B,B"
+            # Otherwise, move from board
+            for pt in range(24):
+                if temp_my_pts[pt] == 0:
+                    continue
+                t = pt + remaining_die
+                if t > 23:
+                    if all_in_home() and can_bear_off(remaining_die):
+                        second_moves.append(pt)
+                elif t <= 23 and opp_pts[t] <= 1:
+                    second_moves.append(pt)
+            if second_moves:
+                # Pick best second move
+                second_move = max(second_moves, key=lambda pt: evaluate_move(pt, remaining_die))
+                return f"{order}:B,A{second_move}"
+            else:
+                # Only one move possible
+                return f"{order}:B,P"
+
+        # Case 2: No checkers on bar
+        all_moves = moves_from_board()
+        if not all_moves:
+            return "H:P,P"
+
+        best_action = None
+        best_score = -1
+
+        # Try using high die first
+        for move1 in all_moves:
+            src1, die1 = move1
+            if die1 != high_die and two_dice:
+                continue  # must use high die first if different
+            score1 = evaluate_move(src1, die1)
+            # Simulate move1
+            temp_my_pts = my_pts[:]
+            temp_my_pts[src1] -= 1
+            tgt1 = src1 + die1
+            if tgt1 <= 23:
+                temp_my_pts[tgt1] += 1
+            # Second move with remaining die
+            remaining_die = low_die
+            if not two_dice:  # double, so same die
+                remaining_die = die1
+            second_moves = []
+            for pt in range(24):
+                if temp_my_pts[pt] == 0:
+                    continue
+                t = pt + remaining_die
+                if t > 23:
+                    if all_in_home() and can_bear_off(remaining_die):
+                        second_moves.append(pt)
+                elif t <= 23 and opp_pts[t] <= 1:
+                    second_moves.append(pt)
+            if second_moves:
+                # Pick best second move
+                second_move = max(second_moves, key=lambda pt: evaluate_move(pt, remaining_die))
+                total_score = score1 + evaluate_move(second_move, remaining_die)
+                order = 'H'
+                action = f"{order}:A{src1},A{second_move}"
+                if total_score > best_score:
+                    best_score = total_score
+                    best_action = action
+            else:
+                # Only one move with high die
+                if not two_dice or len([m for m in all_moves if m[1] == low_die]) == 0:
+                    total_score = score1
+                    order = 'H'
+                    action = f"{order}:A{src1},P"
+                    if total_score > best_score:
+                        best_score = total_score
+                        best_action = action
+
+        # Try using low die first (only if dice are different)
+        if two_dice:
+            for move1 in all_moves:
+                src1, die1 = move1
+                if die1 != low_die:
+                    continue
+                score1 = evaluate_move(src1, die1)
+                # Simulate move1
+                temp_my_pts = my_pts[:]
+                temp_my_pts[src1] -= 1
+                tgt1 = src1 + die1
+                if tgt1 <= 23:
+                    temp_my_pts[tgt1] += 1
+                # Second move with remaining die (high_die)
+                second_moves = []
+                for pt in range(24):
+                    if temp_my_pts[pt] == 0:
+                        continue
+                    t = pt + high_die
+                    if t > 23:
+                        if all_in_home() and can_bear_off(high_die):
+                            second_moves.append(pt)
+                    elif t <= 23 and opp_pts[t] <= 1:
+                        second_moves.append(pt)
+                if second_moves:
+                    second_move = max(second_moves, key=lambda pt: evaluate_move(pt, high_die))
+                    total_score = score1 + evaluate_move(second_move, high_die)
+                    order = 'L'
+                    action = f"{order}:A{src1},A{second_move}"
+                    if total_score > best_score:
+                        best_score = total_score
+                        best_action = action
+                else:
+                    # Only one move with low die
+                    # But we must use high die if possible? So this is only safe if no move with high die exists
+                    high_moves = [m for m in all_moves if m[1] == high_die]
+                    if not high_moves:
+                        total_score = score1
+                        order = 'L'
+                        action = f"{order}:A{src1},P"
+                        if total_score > best_score:
+                            best_score = total_score
+                            best_action = action
+
+        if best_action is not None:
+            return best_action
+
+        # Fallback: use highest die possible
+        # Find moves with high die
+        high_moves = [m for m in all_moves if m[1] == high_die]
+        if high_moves:
+            best_move = max(high_moves, key=lambda m: evaluate_move(m[0], m[1]))
+            return f"H:A{best_move[0]},P"
+        elif two_dice:
+            low_moves = [m for m in all_moves if m[1] == low_die]
+            if low_moves:
+                best_move = max(low_moves, key=lambda m: evaluate_move(m[0], m[1]))
+                return f"L:A{best_move[0]},P"
+        else:
+            return "H:P,P"
+
+    # Special case: no dice rolled?
+    if len(dice) == 0:
+        return "H:P,P"
+
+    # Main logic
+    action = get_best_move()
+    return action
+</code>

@@ -1,0 +1,162 @@
+
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """
+    Othello policy combining positional play, mobility, and game-phase awareness
+    """
+    
+    def get_legal_moves(player, opp):
+        """Find all legal moves for the current player"""
+        moves = []
+        for r in range(8):
+            for c in range(8):
+                if player[r][c] == 0 and opp[r][c] == 0:
+                    if is_legal_move(r, c, player, opp):
+                        moves.append((r, c))
+        return moves
+    
+    def is_legal_move(r, c, player, opp):
+        """Check if a move is legal and would flip any discs"""
+        if player[r][c] == 1 or opp[r][c] == 1:
+            return False
+        
+        directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+        
+        for dr, dc in directions:
+            if would_flip_in_direction(r, c, dr, dc, player, opp):
+                return True
+        return False
+    
+    def would_flip_in_direction(r, c, dr, dc, player, opp):
+        """Check if placing at (r,c) would flip discs in direction (dr,dc)"""
+        nr, nc = r + dr, c + dc
+        found_opp = False
+        
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            if opp[nr][nc] == 1:
+                found_opp = True
+            elif player[nr][nc] == 1:
+                return found_opp
+            else:
+                return False
+            nr += dr
+            nc += dc
+        return False
+    
+    def count_flips(r, c, player, opp):
+        """Count total discs that would be flipped"""
+        directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+        total = 0
+        for dr, dc in directions:
+            total += count_flips_in_direction(r, c, dr, dc, player, opp)
+        return total
+    
+    def count_flips_in_direction(r, c, dr, dc, player, opp):
+        """Count flips in a specific direction"""
+        nr, nc = r + dr, c + dc
+        count = 0
+        
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            if opp[nr][nc] == 1:
+                count += 1
+            elif player[nr][nc] == 1:
+                return count
+            else:
+                return 0
+            nr += dr
+            nc += dc
+        return 0
+    
+    def evaluate_position(r, c, player, opp, move_num):
+        """Evaluate the quality of a move"""
+        # Positional weights - corners are best, X-squares (diagonal to corner) are worst
+        position_weights = np.array([
+            [100, -25,  10,   5,   5,  10, -25, 100],
+            [-25, -25,   2,   2,   2,   2, -25, -25],
+            [ 10,   2,   5,   3,   3,   5,   2,  10],
+            [  5,   2,   3,   1,   1,   3,   2,   5],
+            [  5,   2,   3,   1,   1,   3,   2,   5],
+            [ 10,   2,   5,   3,   3,   5,   2,  10],
+            [-25, -25,   2,   2,   2,   2, -25, -25],
+            [100, -25,  10,   5,   5,  10, -25, 100]
+        ])
+        
+        # Adjust X-square penalty if corner is already taken
+        corners = [(0,0), (0,7), (7,0), (7,7)]
+        x_squares = [((0,1), (0,0)), ((1,0), (0,0)), ((1,1), (0,0)),
+                     ((0,6), (0,7)), ((1,7), (0,7)), ((1,6), (0,7)),
+                     ((6,0), (7,0)), ((7,1), (7,0)), ((6,1), (7,0)),
+                     ((6,7), (7,7)), ((7,6), (7,7)), ((6,6), (7,7))]
+        
+        for (xr, xc), (cr, cc) in x_squares:
+            if (r, c) == (xr, xc) and player[cr][cc] == 1:
+                position_weights[r][c] = 5  # Not so bad if we own the corner
+        
+        score = position_weights[r][c]
+        
+        # Mobility: count opponent moves after our move
+        temp_player = player.copy()
+        temp_opp = opp.copy()
+        temp_player[r][c] = 1
+        
+        # Simulate flips
+        directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            to_flip = []
+            while 0 <= nr < 8 and 0 <= nc < 8:
+                if temp_opp[nr][nc] == 1:
+                    to_flip.append((nr, nc))
+                elif temp_player[nr][nc] == 1:
+                    for fr, fc in to_flip:
+                        temp_opp[fr][fc] = 0
+                        temp_player[fr][fc] = 1
+                    break
+                else:
+                    break
+                nr += dr
+                nc += dc
+        
+        opp_mobility = len(get_legal_moves(temp_opp, temp_player))
+        our_mobility = len(get_legal_moves(temp_player, temp_opp))
+        
+        # Game phase adjustments
+        if move_num < 20:  # Early game
+            score += (our_mobility - opp_mobility) * 3
+            score -= count_flips(r, c, player, opp) * 0.5  # Don't flip too many early
+        elif move_num < 50:  # Mid game
+            score += (our_mobility - opp_mobility) * 2
+            disc_diff = np.sum(temp_player) - np.sum(temp_opp)
+            score += disc_diff * 0.5
+        else:  # Late game
+            score -= opp_mobility * 5
+            disc_diff = np.sum(temp_player) - np.sum(temp_opp)
+            score += disc_diff * 3
+        
+        return score
+    
+    # Get legal moves
+    legal_moves = get_legal_moves(you, opponent)
+    
+    if not legal_moves:
+        return "pass"
+    
+    # Calculate move number (game phase)
+    move_num = np.sum(you) + np.sum(opponent) - 4
+    
+    # Evaluate all moves
+    best_move = None
+    best_score = float('-inf')
+    
+    for r, c in legal_moves:
+        score = evaluate_position(r, c, you, opponent, move_num)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    # Convert to algebraic notation
+    col = chr(ord('a') + best_move[1])
+    row = str(best_move[0] + 1)
+    
+    return col + row

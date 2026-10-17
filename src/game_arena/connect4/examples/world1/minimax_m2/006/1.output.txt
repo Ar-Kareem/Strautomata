@@ -1,0 +1,232 @@
+<thinking>
+The task is to write a Python file that defines a Connect 4 targeting policy.  
+The board is a 6×7 grid encoded with `0` for empty, `1` for the current player, and `-1` for the opponent.  
+The function must return a column (0‑6) where the disc can be dropped (i.e., the column is not full).
+
+A reasonable competitive policy can be built with a shallow **minimax** search combined with a fast **heuristic evaluation**:
+
+1. **Move generation** – a column is legal if the top cell is `0`.  
+2. **Immediate win / block** – before searching, check if any legal move creates a four‑in‑a‑row for the current player (winning) or blocks a direct opponent win. This eliminates the need to search deep for forced moves.
+3. **Minimax with α‑β pruning** – depth 4 (≈ 7⁴ ≈ 2400 nodes) is easily fast enough.  
+4. **Heuristic evaluation** – counts all possible four‑cell windows (horizontal, vertical, diagonal).  
+   * For a window that contains only the player’s pieces, give a large positive score based on how many pieces are present (3‑in‑a‑row is far more valuable than 1).  
+   * For a window that contains only opponent pieces, give the symmetric negative score.  
+   * Mixed windows score zero.  
+   * Add a small bias toward the centre column (index 3) because pieces there have more future possibilities.
+5. **Fallback** – if minimax somehow returns an illegal column, fall back to a simple one‑ply evaluation of each legal move.
+
+The implementation is pure Python, uses only the standard library (`copy` and `typing`), and easily fits the 1‑second limit. All helper functions are kept local to the file.
+
+The final code follows.
+</thinking>
+
+<code>
+from typing import List
+import copy
+
+# ----------------------------------------------------------------------
+# Policy for Connect 4 (6 rows x 7 columns)
+# ----------------------------------------------------------------------
+# Board encoding:
+#   0  → empty
+#   1  → current player (us)
+#  -1  → opponent
+# Rows are indexed from top (0) to bottom (5);
+# Columns are indexed from left (0) to right (6).
+
+def policy(board: List[List[int]]) -> int:
+    """Return the column where the current player should drop a disc.
+    The board is a 6x7 list of lists of integers (0, 1, -1).
+    """
+    # ----- constants ----------------------------------------------------
+    PLAYER = 1      # us
+    OPP = -1        # opponent
+    CENTER_COL = 3  # index of the centre column (0‑based)
+
+    # ----- helper functions ---------------------------------------------
+    def get_valid_moves(b: List[List[int]]) -> List[int]:
+        """Columns that are not full (i.e. the top cell of the column is 0)."""
+        moves = []
+        for col in range(7):
+            if b[0][col] == 0:
+                moves.append(col)
+        return moves
+
+    def drop_piece(b: List[List[int]], col: int, piece: int) -> None:
+        """Place `piece` in the lowest empty cell of column `col` (in‑place)."""
+        for row in range(5, -1, -1):   # bottom‑up
+            if b[row][col] == 0:
+                b[row][col] = piece
+                break
+
+    def is_win(b: List[List[int]], piece: int) -> bool:
+        """Check whether `piece` has a line of four (horizontal, vertical, diagonal)."""
+        # Horizontal
+        for r in range(6):
+            for c in range(4):
+                if all(b[r][c + i] == piece for i in range(4)):
+                    return True
+        # Vertical
+        for c in range(7):
+            for r in range(3):
+                if all(b[r + i][c] == piece for i in range(4)):
+                    return True
+        # Diagonal down‑right
+        for r in range(3):
+            for c in range(4):
+                if all(b[r + i][c + i] == piece for i in range(4)):
+                    return True
+        # Diagonal up‑right
+        for r in range(3, 6):
+            for c in range(4):
+                if all(b[r - i][c + i] == piece for i in range(4)):
+                    return True
+        return False
+
+    def eval_window(window: List[int], player: int) -> int:
+        """Heuristic score for a length‑4 window.
+        Returns a large positive value if the window contains only `player` pieces,
+        a large negative value if it contains only opponent pieces,
+        otherwise 0.
+        """
+        opp = -player
+        p = window.count(player)
+        o = window.count(opp)
+        if o == 0:  # all player pieces
+            if p == 4:
+                return 10 ** 5
+            if p == 3:
+                return 10 ** 3
+            if p == 2:
+                return 10 ** 2
+            if p == 1:
+                return 10
+            return 0
+        if p == 0:  # all opponent pieces
+            if o == 4:
+                return -(10 ** 5)
+            if o == 3:
+                return -(10 ** 3)
+            if o == 2:
+                return -(10 ** 2)
+            if o == 1:
+                return -10
+            return 0
+        # mixed window → neutral
+        return 0
+
+    def evaluate(b: List[List[int]], player: int) -> int:
+        """Overall board evaluation from `player`'s perspective."""
+        score = 0
+
+        # Slight preference for centre column pieces
+        centre_col = [b[r][CENTER_COL] for r in range(6)]
+        score += centre_col.count(player) * 3
+
+        # Horizontal windows
+        for r in range(6):
+            for c in range(4):
+                window = [b[r][c + i] for i in range(4)]
+                score += eval_window(window, player)
+
+        # Vertical windows
+        for c in range(7):
+            for r in range(3):
+                window = [b[r + i][c] for i in range(4)]
+                score += eval_window(window, player)
+
+        # Diagonal down‑right windows
+        for r in range(3):
+            for c in range(4):
+                window = [b[r + i][c + i] for i in range(4)]
+                score += eval_window(window, player)
+
+        # Diagonal up‑right windows
+        for r in range(3, 6):
+            for c in range(4):
+                window = [b[r - i][c + i] for i in range(4)]
+                score += eval_window(window, player)
+
+        return score
+
+    def is_terminal(b: List[List[int]]) -> bool:
+        """True if the position is a win for either player or the board is full."""
+        if is_win(b, PLAYER) or is_win(b, OPP):
+            return True
+        return all(b[0][c] != 0 for c in range(7))
+
+    def minimax(b: List[List[int]], depth: int, maximizing: bool,
+                alpha: float, beta: float) -> tuple[int | None, int]:
+        """Minimax with alpha‑beta pruning. Returns (best_column, score)."""
+        moves = get_valid_moves(b)
+        if depth == 0 or is_terminal(b):
+            return (None, evaluate(b, PLAYER))
+
+        if maximizing:
+            best_score = -float('inf')
+            best_col = moves[0]   # moves is guaranteed non‑empty here
+            for col in moves:
+                nb = copy.deepcopy(b)
+                drop_piece(nb, col, PLAYER)
+                _, child_score = minimax(nb, depth - 1, False, alpha, beta)
+                if child_score > best_score:
+                    best_score = child_score
+                    best_col = col
+                alpha = max(alpha, best_score)
+                if alpha >= beta:
+                    break
+            return best_col, best_score
+        else:
+            best_score = float('inf')
+            best_col = moves[0]
+            for col in moves:
+                nb = copy.deepcopy(b)
+                drop_piece(nb, col, OPP)
+                _, child_score = minimax(nb, depth - 1, True, alpha, beta)
+                if child_score < best_score:
+                    best_score = child_score
+                    best_col = col
+                beta = min(beta, best_score)
+                if alpha >= beta:
+                    break
+            return best_col, best_score
+
+    # ----- main decision logic -------------------------------------------
+    legal_moves = get_valid_moves(board)
+
+    # Defensive: board should never be full when called, but guard anyway.
+    if not legal_moves:
+        return 0   # arbitrary return value
+
+    # 1. Immediate winning move
+    for col in legal_moves:
+        nb = copy.deepcopy(board)
+        drop_piece(nb, col, PLAYER)
+        if is_win(nb, PLAYER):
+            return col
+
+    # 2. Block opponent's immediate win
+    for col in legal_moves:
+        nb = copy.deepcopy(board)
+        drop_piece(nb, col, OPP)
+        if is_win(nb, OPP):
+            return col
+
+    # 3. Full search (depth 4) using minimax with alpha‑beta pruning
+    best_col, _ = minimax(board, depth=4, maximizing=True,
+                         alpha=-float('inf'), beta=float('inf'))
+
+    # 4. Fallback in case the search returned an illegal column
+    if best_col is None or best_col not in legal_moves:
+        best_score = -float('inf')
+        best_col = legal_moves[0]
+        for col in legal_moves:
+            nb = copy.deepcopy(board)
+            drop_piece(nb, col, PLAYER)
+            s = evaluate(nb, PLAYER)
+            if s > best_score:
+                best_score = s
+                best_col = col
+
+    return best_col
+</code>

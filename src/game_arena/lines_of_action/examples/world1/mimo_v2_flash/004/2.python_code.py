@@ -1,0 +1,280 @@
+
+import random
+import numpy as np
+
+# ---------------------------------------------------------
+# Helper Functions for Lines of Action Logic
+# ---------------------------------------------------------
+
+def get_directions():
+    """Returns list of (dr, dc) for 8 directions."""
+    return [(-1, -1), (-1, 0), (-1, 1),
+            (0, -1),           (0, 1),
+            (1, -1),  (1, 0),  (1, 1)]
+
+def count_line_pieces(board, r, c, dr, dc):
+    """Counts total pieces (both colors) in a line starting from (r,c)."""
+    count = 0
+    r_cur, c_cur = r + dr, c + dc
+    while 0 <= r_cur < 8 and 0 <= c_cur < 8:
+        if board[r_cur][c_cur] != 0:
+            count += 1
+        r_cur += dr
+        c_cur += dc
+    return count
+
+def is_blocked(board, r, c, dr, dc, steps):
+    """Checks if a path is blocked by enemy pieces."""
+    r_cur, c_cur = r + dr, c + dc
+    for _ in range(steps):
+        if not (0 <= r_cur < 8 and 0 <= c_cur < 8):
+            return True # Out of bounds implies blocked path
+        if board[r_cur][c_cur] == -1: # Enemy piece blocks
+            return True
+        r_cur += dr
+        c_cur += dc
+    return False
+
+def get_legal_moves(board, player):
+    """Generates all legal moves for the player."""
+    moves = []
+    directions = get_directions()
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                for dr, dc in directions:
+                    # Count pieces in the line (excluding current piece)
+                    pieces_in_line = count_line_pieces(board, r, c, dr, dc)
+                    steps = pieces_in_line
+                    
+                    # If 0 pieces in line, standard rules imply no move (or 0 steps)
+                    if steps == 0:
+                        continue
+
+                    # Calculate landing position
+                    end_r, end_c = r + dr * steps, c + dc * steps
+
+                    # Check bounds
+                    if not (0 <= end_r < 8 and 0 <= end_c < 8):
+                        continue
+
+                    # Check blocking
+                    if is_blocked(board, r, c, dr, dc, steps):
+                        continue
+
+                    # Check landing on friendly piece (illegal)
+                    if board[end_r][end_c] == player:
+                        continue
+                    
+                    # Valid move
+                    moves.append(((r, c), (end_r, end_c)))
+    return moves
+
+def get_connectivity(board, player):
+    """Calculates number of connected components (8-way)."""
+    visited = np.zeros((8, 8), dtype=bool)
+    components = 0
+    
+    # Find all pieces of the player
+    pieces = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                pieces.append((r, c))
+    
+    if not pieces:
+        return 0
+    
+    # BFS/DFS to count components
+    for r, c in pieces:
+        if not visited[r, c]:
+            components += 1
+            stack = [(r, c)]
+            visited[r, c] = True
+            while stack:
+                curr_r, curr_c = stack.pop()
+                # Check all 8 neighbors
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0: continue
+                        nr, nc = curr_r + dr, curr_c + dc
+                        if 0 <= nr < 8 and 0 <= nc < 8:
+                            if not visited[nr, nc] and board[nr][nc] == player:
+                                visited[nr, nc] = True
+                                stack.append((nr, nc))
+    return components
+
+# ---------------------------------------------------------
+# Evaluation and Search
+# ---------------------------------------------------------
+
+def evaluate_board(board, player):
+    """Heuristic evaluation function."""
+    my_pieces = np.sum(board == player)
+    opp_pieces = np.sum(board == -player)
+    
+    # Terminal conditions
+    my_components = get_connectivity(board, player)
+    opp_components = get_connectivity(board, -player)
+    
+    if my_components == 1:
+        return 10000 # Win
+    if opp_components == 1:
+        return -10000 # Loss
+        
+    # Connectivity Score: 100 - 10*components. Max 90.
+    # Incentivize reducing components. 
+    conn_score = 100 - (my_components * 10)
+    
+    # Opponent penalty
+    opp_conn_score = 100 - (opp_components * 10)
+    
+    # Centrality Bonus
+    center_bonus = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player:
+                dist = max(abs(r - 3.5), abs(c - 3.5))
+                center_bonus += (3.5 - dist) * 2 # Closer is better
+    
+    # Mobility
+    mobility = len(get_legal_moves(board, player))
+    
+    # Piece Balance (less important than connectivity but good for captures)
+    piece_diff = (my_pieces - opp_pieces) * 5
+    
+    score = (conn_score * 2.0) - (opp_conn_score * 1.5) + center_bonus + (mobility * 0.1) + piece_diff
+    return score
+
+def minimax(board, depth, alpha, beta, maximizing_player, player):
+    """Minimax with Alpha-Beta pruning."""
+    if depth == 0:
+        return evaluate_board(board, player)
+        
+    moves = get_legal_moves(board, player if maximizing_player else -player)
+    
+    # Check for win/loss in leaf nodes if no moves available
+    if not moves:
+        # If no moves, check if we won or lost
+        comps = get_connectivity(board, player)
+        if comps == 1: return 10000
+        comps = get_connectivity(board, -player)
+        if comps == 1: return -10000
+        return evaluate_board(board, player)
+
+    # Heuristic ordering: put captures and connectivity-improving moves first
+    moves.sort(key=lambda m: 1 if board[m[1][0]][m[1][1]] == -player else 0, reverse=True)
+
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in moves:
+            # Apply move
+            fr, fc = move[0]
+            tr, tc = move[1]
+            original_piece = board[tr][tc] # Store for undo (capture)
+            board[tr][tc] = player
+            board[fr][fc] = 0
+            
+            eval_score = minimax(board, depth - 1, alpha, beta, False, player)
+            
+            # Undo move
+            board[fr][fc] = player
+            board[tr][tc] = original_piece
+            
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            fr, fc = move[0]
+            tr, tc = move[1]
+            original_piece = board[tr][tc]
+            board[tr][tc] = -player
+            board[fr][fc] = 0
+            
+            eval_score = minimax(board, depth - 1, alpha, beta, True, player)
+            
+            board[fr][fc] = -player
+            board[tr][tc] = original_piece
+            
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+# ---------------------------------------------------------
+# Main Policy
+# ---------------------------------------------------------
+
+def policy(board):
+    """
+    Main entry point. Returns the best move string.
+    """
+    # Convert to numpy array if not already (safety check)
+    board_np = np.array(board)
+    
+    # Get legal moves
+    legal_moves = get_legal_moves(board_np, 1)
+    
+    if not legal_moves:
+        # Should not happen in a valid game unless won/lost, but must return something
+        return "0,0:0,0" 
+        
+    best_move = None
+    best_value = -float('inf')
+    
+    # Time management: Adjust depth based on complexity (number of pieces)
+    # Fewer pieces = deeper search is safer.
+    # More pieces = tactical complexity increases, shallower search might be better for speed.
+    # Standard depth 2 is safe within 1s for Python.
+    depth = 2 
+    
+    # If early game (less than 10 pieces), try depth 3
+    if np.count_nonzero(board_np) < 20:
+        depth = 3
+
+    # Iterate moves
+    for move in legal_moves:
+        fr, fc = move[0]
+        tr, tc = move[1]
+        
+        # Apply move
+        original_piece = board_np[tr][tc]
+        board_np[tr][tc] = 1
+        board_np[fr][fc] = 0
+        
+        # Evaluate
+        # We look ahead. 
+        # Current player is 1. Next turn is opponent (-1).
+        # We want to maximize our score relative to opponent.
+        
+        # Quick win check
+        if get_connectivity(board_np, 1) == 1:
+            val = 10000
+        else:
+            val = minimax(board_np, depth - 1, -float('inf'), float('inf'), False, 1)
+        
+        # Undo
+        board_np[fr][fc] = 1
+        board_np[tr][tc] = original_piece
+        
+        # Tie-breaking: prefer captures, then center moves
+        tie_breaker = 0
+        if original_piece == -1:
+            tie_breaker = 1.0
+        dist = max(abs(tr - 3.5), abs(tc - 3.5))
+        tie_breaker += (3.5 - dist) * 0.1
+
+        if val + tie_breaker > best_value:
+            best_value = val + tie_breaker
+            best_move = move
+            
+    if best_move is None:
+        # Fallback
+        best_move = legal_moves[0]
+        
+    return f"{best_move[0][0]},{best_move[0][1]}:{best_move[1][0]},{best_move[1][1]}"

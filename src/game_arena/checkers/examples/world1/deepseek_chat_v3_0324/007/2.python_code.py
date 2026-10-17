@@ -1,0 +1,83 @@
+
+import numpy as np
+from collections import deque
+import random
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    all_pieces = my_men + my_kings
+    captures = find_captures(all_pieces, my_kings, opp_men, opp_kings, color)
+    if captures:
+        return select_best_capture(captures, opp_men, opp_kings)
+    return select_best_move(my_men, my_kings, opp_men, opp_kings, color)
+
+def find_captures(pieces, my_kings, opp_men, opp_kings, color):
+    captures = []
+    opponent_pieces = opp_men + opp_kings
+    direction = 1 if color == 'w' else -1
+    for (r, c) in pieces:
+        is_king = (r, c) in my_kings
+        for dr in [-1, 1] if is_king else [direction]:
+            for dc in [-1, 1]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) in opponent_pieces:
+                    jr, jc = nr + dr, nc + dc
+                    if 0 <= jr < 8 and 0 <= jc < 8 and (jr, jc) not in pieces and (jr, jc) not in opponent_pieces:
+                        captures.append(((r, c), (jr, jc)))
+    return captures
+
+def select_best_capture(captures, opp_men, opp_kings):
+    opponent_pieces = opp_men + opp_kings
+    def capture_score(move):
+        (_, _), (jr, jc) = move
+        # Prefer capturing kings or promoting to king
+        score = 0
+        if (jr, jc) in [(0, _) for _ in range(8)] or (jr, jc) in [(7, _) for _ in range(8)]:
+            score += 2
+        if (jr + (jr - move[0][0]), jc + (jc - move[0][1])) in opponent_pieces:
+            score += 1  # Prefer captures that lead to further captures
+        return score
+    
+    scored = [(capture_score(move), move) for move in captures]
+    scored.sort(key=lambda x: -x[0])
+    return scored[0][1]
+
+def select_best_move(my_men, my_kings, opp_men, opp_kings, color):
+    direction = 1 if color == 'w' else -1
+    opponent_pieces = opp_men + opp_kings
+    moves = []
+    for (r, c) in my_men + my_kings:
+        is_king = (r, c) in my_kings
+        for dr in [-1, 1] if is_king else [direction]:
+            for dc in [-1, 1]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in my_men and (nr, nc) not in my_kings and (nr, nc) not in opponent_pieces:
+                    moves.append(((r, c), (nr, nc)))
+    
+    if not moves:
+        return random.choice(list(find_captures(my_men + my_kings, my_kings, opp_men, opp_kings, color)))
+    
+    def move_score(move):
+        (r, c), (nr, nc) = move
+        score = 0
+        # Promote to king if possible
+        if (nr == 0 or nr == 7) and (r, c) in my_men:
+            score += 10
+        # Center control
+        center_dist = abs(nc - 3.5) + abs(nr - 3.5)
+        score += 4 - center_dist
+        # Avoid leaving pieces vulnerable
+        vulnerable = False
+        for dr in [-1, 1]:
+            for dc in [-1, 1]:
+                pr, pc = nr + dr, nc + dc
+                if 0 <= pr < 8 and 0 <= pc < 8 and (pr, pc) in opponent_pieces:
+                    jr, jc = nr - dr, nc - dc
+                    if 0 <= jr < 8 and 0 <= jc < 8 and (jr, jc) not in my_men and (jr, jc) not in my_kings and (jr, jc) not in opponent_pieces:
+                        vulnerable = True
+        if vulnerable:
+            score -= 5
+        return score
+    
+    scored = [(move_score(move), move) for move in moves]
+    scored.sort(key=lambda x: -x[0])
+    return scored[0][1] if scored else random.choice(moves)

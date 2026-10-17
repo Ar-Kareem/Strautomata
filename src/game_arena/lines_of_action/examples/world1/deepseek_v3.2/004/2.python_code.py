@@ -1,0 +1,362 @@
+
+import numpy as np
+import math
+import time
+
+# Transposition table entry
+class TTEntry:
+    __slots__ = ('value', 'depth', 'flag', 'best_move')
+    def __init__(self, value, depth, flag, best_move=None):
+        self.value = value
+        self.depth = depth
+        self.flag = flag  # 'EXACT', 'LOWER', 'UPPER'
+        self.best_move = best_move
+
+class LOA:
+    def __init__(self, board):
+        self.board = np.array(board, dtype=np.int8)
+        self.size = 8
+        self.directions = [
+            (0, 1), (1, 0), (0, -1), (-1, 0),  # horizontal/vertical
+            (1, 1), (1, -1), (-1, 1), (-1, -1)  # diagonals
+        ]
+        self.transposition_table = {}
+        self.nodes_searched = 0
+        self.start_time = time.time()
+        self.time_limit = 0.95  # seconds
+        
+    def count_line_pieces(self, r, c, dr, dc):
+        """Count pieces in the line starting from (r,c) in direction (dr,dc)"""
+        count = 0
+        rr, cc = r, c
+        while 0 <= rr < self.size and 0 <= cc < self.size:
+            if self.board[rr, cc] != 0:
+                count += 1
+            rr += dr
+            cc += dc
+        return count
+    
+    def generate_moves(self):
+        """Generate all legal moves for current player"""
+        moves = []
+        player = 1
+        
+        for r in range(self.size):
+            for c in range(self.size):
+                if self.board[r, c] == player:
+                    # Check all 8 directions
+                    for dr, dc in self.directions:
+                        # Count pieces in this line
+                        count = self.count_line_pieces(r, c, dr, dc)
+                        
+                        # Target position
+                        tr = r + dr * count
+                        tc = c + dc * count
+                        
+                        if 0 <= tr < self.size and 0 <= tc < self.size:
+                            # Check if path is valid (no enemy pieces in between)
+                            valid = True
+                            step = 1
+                            while step < count:
+                                rr = r + dr * step
+                                cc = c + dc * step
+                                if self.board[rr, cc] == -1:
+                                    valid = False
+                                    break
+                                step += 1
+                            
+                            if valid and self.board[tr, tc] != 1:
+                                moves.append((r, c, tr, tc))
+        return moves
+    
+    def make_move(self, move, board=None):
+        """Apply a move to the board"""
+        if board is None:
+            board = self.board.copy()
+        else:
+            board = board.copy()
+            
+        fr, fc, tr, tc = move
+        board[tr, tc] = board[fr, fc]
+        board[fr, fc] = 0
+        return board
+    
+    def evaluate(self, board):
+        """Evaluation function for board state"""
+        score = 0
+        
+        # Material (piece count)
+        my_pieces = np.sum(board == 1)
+        opp_pieces = np.sum(board == -1)
+        score += (my_pieces - opp_pieces) * 100
+        
+        # Connectivity (using BFS to find largest cluster)
+        visited = np.zeros((8, 8), dtype=bool)
+        max_cluster = 0
+        
+        for r in range(8):
+            for c in range(8):
+                if board[r, c] == 1 and not visited[r, c]:
+                    cluster_size = 0
+                    stack = [(r, c)]
+                    visited[r, c] = True
+                    
+                    while stack:
+                        cr, cc = stack.pop()
+                        cluster_size += 1
+                        
+                        for dr, dc in self.directions:
+                            nr, nc = cr + dr, cc + dc
+                            if (0 <= nr < 8 and 0 <= nc < 8 and 
+                                board[nr, nc] == 1 and not visited[nr, nc]):
+                                visited[nr, nc] = True
+                                stack.append((nr, nc))
+                    
+                    max_cluster = max(max_cluster, cluster_size)
+        
+        # Bonus for having pieces in one cluster
+        if my_pieces > 0:
+            connectivity = max_cluster / my_pieces
+            score += connectivity * 200
+        
+        # Center control
+        center_squares = [(3,3), (3,4), (4,3), (4,4)]
+        for r, c in center_squares:
+            if board[r, c] == 1:
+                score += 15
+            elif board[r, c] == -1:
+                score -= 15
+        
+        # Mobility (weighted by remaining time)
+        temp_game = LOA(board.tolist())
+        temp_game.board = board
+        my_moves = len(temp_game.generate_moves())
+        
+        # Switch perspective for opponent moves
+        temp_game.board = -board  # flip to get opponent's perspective
+        opp_moves = len(temp_game.generate_moves())
+        
+        score += (my_moves - opp_moves) * 5
+        
+        return score
+    
+    def is_terminal(self, board):
+        """Check if game is over (all pieces connected for either player)"""
+        # Check for player 1
+        player1_positions = np.argwhere(board == 1)
+        if len(player1_positions) > 0:
+            visited = set()
+            stack = [tuple(player1_positions[0])]
+            
+            while stack:
+                r, c = stack.pop()
+                if (r, c) not in visited:
+                    visited.add((r, c))
+                    for dr, dc in self.directions:
+                        nr, nc = r + dr, c + dc
+                        if (0 <= nr < 8 and 0 <= nc < 8 and 
+                            board[nr, nc] == 1 and (nr, nc) not in visited):
+                            stack.append((nr, nc))
+            
+            if len(visited) == len(player1_positions):
+                return True, 10000  # Player 1 wins
+        
+        # Check for player -1
+        player2_positions = np.argwhere(board == -1)
+        if len(player2_positions) > 0:
+            visited = set()
+            stack = [tuple(player2_positions[0])]
+            
+            while stack:
+                r, c = stack.pop()
+                if (r, c) not in visited:
+                    visited.add((r, c))
+                    for dr, dc in self.directions:
+                        nr, nc = r + dr, c + dc
+                        if (0 <= nr < 8 and 0 <= nc < 8 and 
+                            board[nr, nc] == -1 and (nr, nc) not in visited):
+                            stack.append((nr, nc))
+            
+            if len(visited) == len(player2_positions):
+                return True, -10000  # Player -1 wins
+        
+        return False, 0
+    
+    def quiescence_search(self, board, alpha, beta, depth=0):
+        """Quiescence search to evaluate quiet positions"""
+        stand_pat = self.evaluate(board)
+        
+        if stand_pat >= beta:
+            return beta
+        if alpha < stand_pat:
+            alpha = stand_pat
+        
+        # Generate capture moves only
+        captures = []
+        for r in range(8):
+            for c in range(8):
+                if board[r, c] == 1:
+                    for dr, dc in self.directions:
+                        count = self.count_line_pieces(r, c, dr, dc)
+                        tr, tc = r + dr * count, c + dc * count
+                        if (0 <= tr < 8 and 0 <= tc < 8 and 
+                            board[tr, tc] == -1):
+                            # Check path
+                            valid = True
+                            for step in range(1, count):
+                                rr, cc = r + dr * step, c + dc * step
+                                if board[rr, cc] == -1:
+                                    valid = False
+                                    break
+                            if valid:
+                                captures.append((r, c, tr, tc))
+        
+        # Sort captures by captured piece value (center pieces more valuable)
+        captures.sort(key=lambda m: abs(m[2]-3.5) + abs(m[3]-3.5), reverse=True)
+        
+        for capture in captures:
+            if time.time() - self.start_time > self.time_limit:
+                break
+                
+            new_board = self.make_move(capture, board)
+            score = -self.quiescence_search(-new_board, -beta, -alpha, depth+1)
+            
+            if score >= beta:
+                return beta
+            if score > alpha:
+                alpha = score
+        
+        return alpha
+    
+    def alpha_beta(self, board, depth, alpha, beta, maximizing):
+        """Alpha-beta search with transposition table"""
+        self.nodes_searched += 1
+        
+        # Check time
+        if time.time() - self.start_time > self.time_limit:
+            return 0, None
+        
+        # Check terminal state
+        terminal, terminal_score = self.is_terminal(board)
+        if terminal:
+            return terminal_score, None
+        
+        # Transposition table lookup
+        board_key = board.tobytes()
+        if board_key in self.transposition_table:
+            entry = self.transposition_table[board_key]
+            if entry.depth >= depth:
+                if entry.flag == 'EXACT':
+                    return entry.value, entry.best_move
+                elif entry.flag == 'LOWER' and entry.value >= beta:
+                    return entry.value, entry.best_move
+                elif entry.flag == 'UPPER' and entry.value <= alpha:
+                    return entry.value, entry.best_move
+        
+        # Quiescence search at leaf nodes
+        if depth <= 0:
+            score = self.quiescence_search(board, alpha, beta)
+            return score, None
+        
+        # Generate and sort moves
+        temp_game = LOA(board.tolist())
+        temp_game.board = board
+        moves = temp_game.generate_moves()
+        
+        if not moves:
+            return self.evaluate(board), None
+        
+        # Move ordering: captures first, then by evaluation
+        def move_score(move):
+            fr, fc, tr, tc = move
+            # Capture bonus
+            if board[tr, tc] == -1:
+                return 1000
+            # Center control bonus
+            center_bonus = 100 - (abs(tr-3.5) + abs(tc-3.5)) * 10
+            return center_bonus
+        
+        moves.sort(key=move_score, reverse=maximizing)
+        
+        best_move = moves[0] if moves else None
+        best_value = -math.inf if maximizing else math.inf
+        
+        for move in moves:
+            if time.time() - self.start_time > self.time_limit:
+                break
+                
+            new_board = self.make_move(move, board)
+            value, _ = self.alpha_beta(-new_board, depth-1, -beta, -alpha, not maximizing)
+            value = -value
+            
+            if maximizing:
+                if value > best_value:
+                    best_value = value
+                    best_move = move
+                alpha = max(alpha, best_value)
+            else:
+                if value < best_value:
+                    best_value = value
+                    best_move = move
+                beta = min(beta, best_value)
+            
+            if beta <= alpha:
+                break
+        
+        # Store in transposition table
+        flag = 'EXACT'
+        if best_value <= alpha:
+            flag = 'UPPER'
+        elif best_value >= beta:
+            flag = 'LOWER'
+        
+        self.transposition_table[board_key] = TTEntry(best_value, depth, flag, best_move)
+        
+        return best_value, best_move
+    
+    def get_best_move(self):
+        """Iterative deepening to find best move within time limit"""
+        self.start_time = time.time()
+        self.transposition_table.clear()
+        
+        temp_game = LOA(self.board.tolist())
+        moves = temp_game.generate_moves()
+        
+        if not moves:
+            return None
+        
+        # If only one move, return it immediately
+        if len(moves) == 1:
+            return moves[0]
+        
+        best_move = moves[0]
+        
+        # Iterative deepening
+        for depth in range(1, 10):  # Max depth 10
+            if time.time() - self.start_time > self.time_limit:
+                break
+                
+            try:
+                value, move = self.alpha_beta(self.board, depth, -math.inf, math.inf, True)
+                if move is not None:
+                    best_move = move
+            except:
+                break  # Timeout or other issue
+        
+        return best_move
+
+def policy(board):
+    """Main policy function required by the API"""
+    game = LOA(board)
+    move = game.get_best_move()
+    
+    # Fallback: first legal move if something went wrong
+    if move is None:
+        moves = game.generate_moves()
+        if moves:
+            move = moves[0]
+        else:
+            return "0,0:0,0"  # Should never happen
+    
+    fr, fc, tr, tc = move
+    return f"{fr},{fc}:{tr},{tc}"

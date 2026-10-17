@@ -1,0 +1,218 @@
+The strategy for this policy is to evaluate every possible move by looking ahead up to 4 plies (2 moves for each player), assigning scores based on immediate threats, opportunities, and the overall board state. It prioritizes winning moves, blocks opponent threats, and avoids moves that would give the opponent immediate winning opportunities. The policy uses a minimax algorithm with alpha-beta pruning to efficiently explore the game tree and select the best move.
+
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Main policy function for Connect 4.
+    Uses minimax with alpha-beta pruning to select the best move.
+    """
+    # Convert to numpy array for easier manipulation
+    grid = np.array(board)
+    
+    # Get valid moves (columns that are not full)
+    valid_moves = [col for col in range(7) if grid[0, col] == 0]
+    
+    if not valid_moves:
+        return 0  # Should not happen in valid game
+    
+    # If only one move available, take it
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+    
+    # If center is available, prefer it
+    if 3 in valid_moves:
+        return 3
+        
+    # Use minimax to find best move
+    best_score = float('-inf')
+    best_move = valid_moves[0]
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    for col in valid_moves:
+        # Make the move
+        new_grid = grid.copy()
+        row = get_next_open_row(new_grid, col)
+        new_grid[row, col] = 1  # Current player is 1
+        
+        # Evaluate using minimax
+        score = minimax(new_grid, 3, alpha, beta, False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = col
+            
+        alpha = max(alpha, best_score)
+        
+    return best_move
+
+def get_next_open_row(grid: np.ndarray, col: int) -> int:
+    """Find the next open row in a column."""
+    for row in range(5, -1, -1):
+        if grid[row, col] == 0:
+            return row
+    return -1
+
+def is_valid_move(grid: np.ndarray, col: int) -> bool:
+    """Check if a column is not full."""
+    return grid[0, col] == 0
+
+def check_win(grid: np.ndarray, player: int) -> bool:
+    """Check if the given player has won."""
+    # Check horizontal
+    for row in range(6):
+        for col in range(4):
+            if all(grid[row, col+i] == player for i in range(4)):
+                return True
+                
+    # Check vertical
+    for row in range(3):
+        for col in range(7):
+            if all(grid[row+i, col] == player for i in range(4)):
+                return True
+                
+    # Check diagonal (positive slope)
+    for row in range(3):
+        for col in range(4):
+            if all(grid[row+i, col+i] == player for i in range(4)):
+                return True
+                
+    # Check diagonal (negative slope)
+    for row in range(3, 6):
+        for col in range(4):
+            if all(grid[row-i, col+i] == player for i in range(4)):
+                return True
+                
+    return False
+
+def get_score(grid: np.ndarray, player: int) -> int:
+    """Calculate score for a player's position."""
+    score = 0
+    
+    # Center column preference
+    center_array = list(grid[:, 3])
+    center_count = center_array.count(player)
+    score += center_count * 3
+    
+    # Check for potential winning positions
+    score += evaluate_position(grid, player)
+    
+    return score
+
+def evaluate_position(grid: np.ndarray, player: int) -> int:
+    """Evaluate the board position for a player."""
+    score = 0
+    opponent = -player
+    
+    # Check for 3-in-a-row with empty space (potential win)
+    score += check_potential_wins(grid, player) * 100
+    score -= check_potential_wins(grid, opponent) * 80
+    
+    # Check for 2-in-a-row with empty spaces
+    score += check_twos(grid, player) * 10
+    score -= check_twos(grid, opponent) * 15
+    
+    return score
+
+def check_potential_wins(grid: np.ndarray, player: int) -> int:
+    """Count potential winning positions (3 in a row with empty space)."""
+    count = 0
+    
+    # Check horizontal
+    for row in range(6):
+        for col in range(4):
+            window = list(grid[row, col:col+4])
+            if window.count(player) == 3 and window.count(0) == 1:
+                count += 1
+                
+    # Check vertical
+    for row in range(3):
+        for col in range(7):
+            window = [grid[row+i, col] for i in range(4)]
+            if window.count(player) == 3 and window.count(0) == 1:
+                count += 1
+                
+    # Check positive diagonal
+    for row in range(3):
+        for col in range(4):
+            window = [grid[row+i, col+i] for i in range(4)]
+            if window.count(player) == 3 and window.count(0) == 1:
+                count += 1
+                
+    # Check negative diagonal
+    for row in range(3, 6):
+        for col in range(4):
+            window = [grid[row-i, col+i] for i in range(4)]
+            if window.count(player) == 3 and window.count(0) == 1:
+                count += 1
+                
+    return count
+
+def check_twos(grid: np.ndarray, player: int) -> int:
+    """Count 2-in-a-row positions with empty spaces."""
+    count = 0
+    
+    # Check horizontal
+    for row in range(6):
+        for col in range(5):
+            window = list(grid[row, col:col+3])
+            if window.count(player) == 2 and window.count(0) == 1:
+                count += 1
+                
+    # Check vertical
+    for row in range(4):
+        for col in range(7):
+            window = [grid[row+i, col] for i in range(3)]
+            if window.count(player) == 2 and window.count(0) == 1:
+                count += 1
+                
+    return count
+
+def is_terminal_node(grid: np.ndarray) -> bool:
+    """Check if the game is over or the board is full."""
+    return (check_win(grid, 1) or 
+            check_win(grid, -1) or 
+            len([col for col in range(7) if is_valid_move(grid, col)]) == 0)
+
+def minimax(grid: np.ndarray, depth: int, alpha: float, beta: float, maximizing_player: bool) -> float:
+    """Minimax algorithm with alpha-beta pruning."""
+    valid_moves = [col for col in range(7) if is_valid_move(grid, col)]
+    is_terminal = is_terminal_node(grid)
+    
+    if depth == 0 or is_terminal:
+        if is_terminal:
+            if check_win(grid, 1):  # AI wins
+                return 1000000
+            elif check_win(grid, -1):  # Opponent wins
+                return -1000000
+            else:  # Draw
+                return 0
+        else:
+            return get_score(grid, 1) - get_score(grid, -1)
+    
+    if maximizing_player:
+        value = float('-inf')
+        for col in valid_moves:
+            row = get_next_open_row(grid, col)
+            temp_grid = grid.copy()
+            temp_grid[row, col] = 1
+            value = max(value, minimax(temp_grid, depth - 1, alpha, beta, False))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = float('inf')
+        for col in valid_moves:
+            row = get_next_open_row(grid, col)
+            temp_grid = grid.copy()
+            temp_grid[row, col] = -1
+            value = min(value, minimax(temp_grid, depth - 1, alpha, beta, True))
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+</code>

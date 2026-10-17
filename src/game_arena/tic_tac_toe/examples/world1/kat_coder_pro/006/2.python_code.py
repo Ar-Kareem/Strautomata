@@ -1,0 +1,141 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Smart Tic Tac Toe policy that prioritizes winning, blocking, and strategic positioning.
+    
+    Args:
+        board: 3x3 list of lists where 0=empty, 1=player, -1=opponent
+        
+    Returns:
+        tuple (row, col) of the best move
+    """
+    # Convert to numpy for easier manipulation
+    board_array = np.array(board)
+    
+    # Define priority order for center positions (strategic value)
+    # Center is most valuable, then corners, then edges
+    priority_moves = [
+        (1, 1),  # Center
+        (0, 0), (0, 2), (2, 0), (2, 2),  # Corners
+        (0, 1), (1, 0), (1, 2), (2, 1)   # Edges
+    ]
+    
+    # Check for winning move
+    for i in range(3):
+        for j in range(3):
+            if board_array[i, j] == 0:
+                # Test this move
+                board_array[i, j] = 1
+                if check_win(board_array, 1):
+                    return (i, j)
+                board_array[i, j] = 0
+    
+    # Check for blocking opponent's winning move
+    for i in range(3):
+        for j in range(3):
+            if board_array[i, j] == 0:
+                # Test opponent's move
+                board_array[i, j] = -1
+                if check_win(board_array, -1):
+                    board_array[i, j] = 0
+                    return (i, j)
+                board_array[i, j] = 0
+    
+    # Check for fork creation (two winning opportunities)
+    for i in range(3):
+        for j in range(3):
+            if board_array[i, j] == 0:
+                board_array[i, j] = 1
+                winning_lines = count_winning_lines(board_array, 1)
+                board_array[i, j] = 0
+                if winning_lines >= 2:
+                    return (i, j)
+    
+    # Check for blocking opponent's fork
+    for i in range(3):
+        for j in range(3):
+            if board_array[i, j] == 0:
+                board_array[i, j] = -1
+                opponent_winning_lines = count_winning_lines(board_array, -1)
+                board_array[i, j] = 0
+                if opponent_winning_lines >= 2:
+                    return (i, j)
+    
+    # Take center if available
+    if board_array[1, 1] == 0:
+        return (1, 1)
+    
+    # If opponent has corner, take opposite corner
+    corners = [(0, 0), (0, 2), (2, 0), (2, 2)]
+    for corner in corners:
+        i, j = corner
+        if board_array[i, j] == -1:
+            # Find opposite corner
+            opp_i, opp_j = 2 - i, 2 - j
+            if board_array[opp_i, opp_j] == 0:
+                return (opp_i, opp_j)
+    
+    # Take available corner
+    for corner in corners:
+        i, j = corner
+        if board_array[i, j] == 0:
+            return (i, j)
+    
+    # Take available edge
+    edges = [(0, 1), (1, 0), (1, 2), (2, 1)]
+    for edge in edges:
+        i, j = edge
+        if board_array[i, j] == 0:
+            return (i, j)
+    
+    # Fallback: return first available move
+    for i in range(3):
+        for j in range(3):
+            if board_array[i, j] == 0:
+                return (i, j)
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """Check if the given player has won."""
+    # Check rows
+    for i in range(3):
+        if np.all(board[i, :] == player):
+            return True
+    
+    # Check columns
+    for j in range(3):
+        if np.all(board[:, j] == player):
+            return True
+    
+    # Check diagonals
+    if np.all(np.diag(board) == player):
+        return True
+    if np.all(np.diag(np.fliplr(board)) == player):
+        return True
+    
+    return False
+
+def count_winning_lines(board: np.ndarray, player: int) -> int:
+    """Count how many winning lines the player can complete with one move."""
+    count = 0
+    
+    # Check rows
+    for i in range(3):
+        if np.sum(board[i, :] == player) == 2 and np.sum(board[i, :] == 0) == 1:
+            count += 1
+    
+    # Check columns
+    for j in range(3):
+        if np.sum(board[:, j] == player) == 2 and np.sum(board[:, j] == 0) == 1:
+            count += 1
+    
+    # Check main diagonal
+    if np.sum(np.diag(board) == player) == 2 and np.sum(np.diag(board) == 0) == 1:
+        count += 1
+    
+    # Check anti-diagonal
+    if np.sum(np.diag(np.fliplr(board)) == player) == 2 and np.sum(np.diag(np.fliplr(board)) == 0) == 1:
+        count += 1
+    
+    return count

@@ -1,0 +1,92 @@
+
+import numpy as np
+import random
+
+def is_valid_move(board, from_row, from_col, to_row, to_col):
+    """Checks if a move from (from_row, from_col) to (to_row, to_col) is valid."""
+
+    # Check bounds
+    if not (0 <= from_row < 6 and 0 <= from_col < 6 and 0 <= to_row < 6 and 0 <= to_col < 6):
+        return False
+
+    # Check if 'from' contains our amazon
+    if board[from_row, from_col] != 1:
+        return False
+
+    # Check if 'to' is empty
+    if board[to_row, to_col] != 0:
+        return False
+
+    # Check if move is queen-like (orthogonally or diagonally)
+    if from_row != to_row and from_col != to_col and abs(from_row - to_row) != abs(from_col - to_col):
+        return False
+
+    # Check for obstructions
+    row_dir = 0 if from_row == to_row else (1 if to_row > from_row else -1)
+    col_dir = 0 if from_col == to_col else (1 if to_col > from_col else -1)
+
+    row, col = from_row + row_dir, from_col + col_dir
+    while row != to_row or col != to_col:
+        if board[row, col] != 0:
+            return False
+        row += row_dir
+        col += col_dir
+
+    return True
+
+
+def is_valid_arrow_shot(board, from_row, from_col, to_row, to_col):
+    """Checks if an arrow shot from (from_row, from_col) to (to_row, to_col) is valid."""
+
+    # Check bounds
+    if not (0 <= from_row < 6 and 0 <= from_col < 6 and 0 <= to_row < 6 and 0 <= to_col < 6):
+        return False
+
+    # Check if destination is empty
+    if board[to_row, to_col] != 0:
+        return False
+
+    # Check if shot is queen-like
+    if from_row != to_row and from_col != to_col and abs(from_row - to_row) != abs(from_col - to_col):
+        return False
+
+    # Check for obstructions
+    row_dir = 0 if from_row == to_row else (1 if to_row > from_row else -1)
+    col_dir = 0 if from_col == to_col else (1 if to_col > from_col else -1)
+
+    row, col = from_row + row_dir, from_col + col_dir
+    while row != to_row or col != to_col:
+        if board[row, col] != 0:
+            return False
+        row += row_dir
+        col += col_dir
+
+    return True
+
+
+def policy(board):
+    """
+    Selects a legal move for the Amazons game.
+    """
+
+    my_amazons = np.where(board == 1)
+    my_amazons = list(zip(my_amazons[0], my_amazons[1]))
+
+    while True:
+        from_row, from_col = random.choice(my_amazons)
+
+        # Try to find a valid move
+        for to_row in range(6):
+            for to_col in range(6):
+                if is_valid_move(board, from_row, from_col, to_row, to_col):
+                    # Simulate the move
+                    temp_board = board.copy()
+                    temp_board[from_row, from_col] = 0
+                    temp_board[to_row, to_col] = 1
+
+                    # Try to find a valid arrow shot
+                    for arrow_row in range(6):
+                        for arrow_col in range(6):
+                            if is_valid_arrow_shot(temp_board, to_row, to_col, arrow_row, arrow_col):
+                                move_string = f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"
+                                return move_string

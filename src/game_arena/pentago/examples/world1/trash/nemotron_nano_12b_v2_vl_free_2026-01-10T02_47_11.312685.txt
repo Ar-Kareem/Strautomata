@@ -1,0 +1,125 @@
+To solve this problem, we need to implement a policy function for the game of Pentago. The function must determine the best move for the player, which consists of placing a marble on an empty cell and rotating a quadrant. The goal is to win by forming a line of 5 or more marbles while disrupting the opponent's potential lines of 5.
+
+### Approach
+The approach involves two main steps:
+1. **Identify Winning Moves**: For each possible move (placing a marble on an empty cell and rotating any quadrant), simulate the board state to check if the move results in a win for the player.
+2. **Heuristic Evaluation**: If no immediate win is found, evaluate potential moves using a heuristic based on the number of potential lines where the player can achieve 5-in-a-row. This heuristic considers lines of 5 cells that are not blocked by the opponent's marbles.
+
+### Solution Code
+```python
+def policy(you, opponent):
+    # Precompute all possible lines for heuristic evaluation
+    all_lines = []
+    # Horizontal lines (left to right)
+    for r in range(6):
+        for i in range(2):
+            all_lines.append([(r, c) for c in range(i, i + 5)])
+    # Vertical lines (top to bottom)
+    for c in range(6):
+        for i in range(2):
+            all_lines.append([(r, c) for r in range(i, i + 5)])
+    # Diagonal down-right (top-left to bottom-right)
+    for r in range(0, 2):
+        for c in range(0, 2):
+            all_lines.append([(r + i, c + i) for i in range(5)])
+    # Diagonal down-left (top-right to bottom-left)
+    for r in range(0, 2):
+        for c in range(2, 6):
+            line = []
+            valid = True
+            for i in range(5):
+                if r + i >= 6 or c - i < 0:
+                    valid = False
+                    break
+            if valid:
+                lines = [(r + i, c - i) for i in range(5)]
+                all_lines.append(lines)
+    
+    # Helper function to simulate a move and check for win
+    def simulate_move(r_placed, c_placed, quad, direction):
+        grid = [[0] * 6 for _ in range(6)]
+        for x in range(6):
+            for y in range(6):
+                if you[x][y]:
+                    grid[x][y] = 1
+                elif opponent[x][y]:
+                    grid[x][y] = 2
+                else:
+                    grid[x][y] = 0
+        # Place marble on empty cell
+        grid[r_placed][c_placed] = 1
+        # Rotate the specified quadrant
+        if quad == 0:
+            rows, cols = range(3), range(3)
+        elif quad == 1:
+            rows, cols = range(3), range(3, 6)
+        elif quad == 2:
+            rows, cols = range(3, 6), range(3)
+        else:  # quad == 3
+            rows, cols = range(3, 6), range(3, 6)
+        # Extract quadrant
+        submatrix = [[grid[x][y] for y in cols] for x in rows]
+        # Rotate
+        if direction == 'R':
+            rotated = list(zip(*submatrix[::-1]))
+        else:  # L
+            rotated = list(zip(*submatrix))[::-1]
+        rotated = [list(row) for row in rotated]
+        # Update grid with rotated quadrant
+        for i in range(3):
+            for j in range(3):
+                grid[rows[i]][cols[j]] = rotated[i][j]
+        # Check for win
+        for line in all_lines:
+            cnt = 0
+            for (x, y) in line:
+                if grid[x][y] == 1:
+                    cnt += 1
+                    if cnt >= 5:
+                        return (r_placed + 1, c_placed + 1, quad, direction, True)
+                else:
+                    cnt = 0
+        return (r_placed + 1, c_placed + 1, quad, direction, False)
+    
+    # Generate all possible moves and check for winners
+    empty_cells = [(r, c) for r in range(6) for c in range(6) if you[r][c] == 0 and opponent[r][c] == 0]
+    for (r, c) in empty_cells:
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                move = simulate_move(r, c, quad, direction)
+                if move[4]:  # Found a winning move
+                    return f"{move[0]},{move[1]},{move[2]},{move[3]}"
+    
+    # If no winning move, find move with the highest heuristic score
+    best_score = -1
+    best_move = None
+    for (r, c) in empty_cells:
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                move = simulate_move(r, c, quad, direction)
+                score = 0
+                for line in all_lines:
+                    blocked = any(grid[x][y] == 2 for (x, y) in line)
+                    if not blocked:
+                        cnt = sum(grid[x][y] == 1 for (x, y) in line)
+                        if cnt >= 4:
+                            score += 1
+                if score > best_score:
+                    best_score = score
+                    best_move = (move[0], move[1], move[2], move[3])
+    
+    if best_move:
+        return f"{best_move[0]},{best_move[1]},{best_move[2]},{best_move[3]}"
+    else:
+        # Fallback to first available move if something goes wrong
+        r, c = empty_cells[0]
+        return f"{r+1},{c+1},0,L"
+```
+
+### Explanation
+1. **Line Precomputation**: Precompute all possible lines (horizontal, vertical, and diagonal) of 5 cells in the 6x6 grid.
+2. **Move Simulation**: For each possible move (placing a marble on an empty cell and rotating a quadrant), simulate the game state. This involves placing the marble, rotating the specified quadrant, and checking if this move results in a win.
+3. **Winning Move Check**: If any move results in a win, return it immediately.
+4. **Heuristic Evaluation**: If no immediate winning moves are found, evaluate each move based on the potential to form lines of 4 marbles (which can be extended to 5 in subsequent moves), prioritizing moves that maximize this potential while considering the opponent's potential threats.
+
+This approach ensures that the player always makes a legal move and prioritizes strategies that increase the chances of winning or blocking the opponent effectively.

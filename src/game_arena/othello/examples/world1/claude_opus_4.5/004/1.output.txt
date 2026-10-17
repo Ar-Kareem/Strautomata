@@ -1,0 +1,172 @@
+# Strategy
+
+My strategy implements a minimax algorithm with alpha-beta pruning and iterative deepening to make strong Othello moves within the time constraint. The key components are:
+
+1. **Move Ordering**: Prioritize corner moves (most valuable), then edge moves, while avoiding "X-squares" (diagonal to corners) and "C-squares" (adjacent to corners) early in search to improve alpha-beta pruning efficiency.
+
+2. **Positional Evaluation**: Use a weighted position matrix that heavily favors corners (+100), penalizes squares that give opponent corner access (-25 for X-squares, -10 for C-squares), and moderately values edges (+10).
+
+3. **Mobility**: Factor in the number of legal moves available - having more options is generally advantageous in Othello.
+
+4. **Stability Heuristic**: Corners and pieces that can't be flipped are extremely valuable.
+
+5. **Game Phase Awareness**: In the endgame (few empty squares), switch to maximizing disc count since that determines the winner.
+
+6. **Iterative Deepening**: Start with shallow searches and go deeper until time runs low, ensuring we always have a valid move ready.
+
+7. **Alpha-Beta Pruning**: Significantly reduces the search space, allowing deeper searches within the time limit.
+
+<code>
+import numpy as np
+import time
+
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+POSITION_WEIGHTS = np.array([
+    [100, -25, 10, 5, 5, 10, -25, 100],
+    [-25, -45, 1, 1, 1, 1, -45, -25],
+    [10, 1, 3, 2, 2, 3, 1, 10],
+    [5, 1, 2, 1, 1, 2, 1, 5],
+    [5, 1, 2, 1, 1, 2, 1, 5],
+    [10, 1, 3, 2, 2, 3, 1, 10],
+    [-25, -45, 1, 1, 1, 1, -45, -25],
+    [100, -25, 10, 5, 5, 10, -25, 100]
+])
+
+def get_legal_moves(you, opponent):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] == 0 and opponent[r][c] == 0:
+                if is_valid_move(you, opponent, r, c):
+                    moves.append((r, c))
+    return moves
+
+def is_valid_move(you, opponent, r, c):
+    for dr, dc in DIRECTIONS:
+        if flips_in_direction(you, opponent, r, c, dr, dc):
+            return True
+    return False
+
+def flips_in_direction(you, opponent, r, c, dr, dc):
+    nr, nc = r + dr, c + dc
+    if not (0 <= nr < 8 and 0 <= nc < 8) or opponent[nr][nc] == 0:
+        return False
+    while 0 <= nr < 8 and 0 <= nc < 8:
+        if opponent[nr][nc] == 1:
+            nr, nc = nr + dr, nc + dc
+        elif you[nr][nc] == 1:
+            return True
+        else:
+            return False
+    return False
+
+def make_move(you, opponent, r, c):
+    new_you = you.copy()
+    new_opp = opponent.copy()
+    new_you[r][c] = 1
+    for dr, dc in DIRECTIONS:
+        if flips_in_direction(you, opponent, r, c, dr, dc):
+            nr, nc = r + dr, c + dc
+            while opponent[nr][nc] == 1:
+                new_you[nr][nc] = 1
+                new_opp[nr][nc] = 0
+                nr, nc = nr + dr, nc + dc
+    return new_you, new_opp
+
+def evaluate(you, opponent):
+    empty = 64 - np.sum(you) - np.sum(opponent)
+    if empty < 10:
+        return np.sum(you) - np.sum(opponent)
+    
+    pos_score = np.sum(POSITION_WEIGHTS * you) - np.sum(POSITION_WEIGHTS * opponent)
+    my_moves = len(get_legal_moves(you, opponent))
+    opp_moves = len(get_legal_moves(opponent, you))
+    mobility = (my_moves - opp_moves) * 5
+    
+    return pos_score + mobility
+
+def order_moves(moves, you, opponent):
+    corners = [(0,0), (0,7), (7,0), (7,7)]
+    scored = []
+    for m in moves:
+        if m in corners:
+            score = 1000
+        else:
+            score = POSITION_WEIGHTS[m[0]][m[1]]
+        scored.append((score, m))
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+def minimax(you, opponent, depth, alpha, beta, maximizing, start_time, time_limit):
+    if time.time() - start_time > time_limit:
+        return evaluate(you, opponent), None
+    
+    moves = get_legal_moves(you, opponent)
+    opp_moves = get_legal_moves(opponent, you)
+    
+    if depth == 0 or (not moves and not opp_moves):
+        return evaluate(you, opponent), None
+    
+    if not moves:
+        val, _ = minimax(opponent, you, depth - 1, -beta, -alpha, not maximizing, start_time, time_limit)
+        return -val, None
+    
+    moves = order_moves(moves, you, opponent)
+    best_move = moves[0]
+    
+    if maximizing:
+        max_eval = float('-inf')
+        for move in moves:
+            new_you, new_opp = make_move(you, opponent, move[0], move[1])
+            eval_score, _ = minimax(new_opp, new_you, depth - 1, -beta, -alpha, False, start_time, time_limit)
+            eval_score = -eval_score
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            new_you, new_opp = make_move(you, opponent, move[0], move[1])
+            eval_score, _ = minimax(new_opp, new_you, depth - 1, -beta, -alpha, True, start_time, time_limit)
+            eval_score = -eval_score
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    start_time = time.time()
+    time_limit = 0.85
+    
+    moves = get_legal_moves(you, opponent)
+    if not moves:
+        return "pass"
+    
+    best_move = moves[0]
+    
+    # Prioritize corners immediately
+    corners = [(0,0), (0,7), (7,0), (7,7)]
+    for corner in corners:
+        if corner in moves:
+            return f"{chr(ord('a') + corner[1])}{corner[0] + 1}"
+    
+    # Iterative deepening
+    for depth in range(1, 15):
+        if time.time() - start_time > time_limit:
+            break
+        _, move = minimax(you, opponent, depth, float('-inf'), float('inf'), True, start_time, time_limit)
+        if move is not None:
+            best_move = move
+        if time.time() - start_time > time_limit:
+            break
+    
+    return f"{chr(ord('a') + best_move[1])}{best_move[0] + 1}"
+</code>

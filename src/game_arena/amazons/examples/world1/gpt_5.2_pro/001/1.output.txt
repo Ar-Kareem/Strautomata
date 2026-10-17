@@ -1,0 +1,377 @@
+The strategy for this policy is a time-bounded alpha-beta minimax (iterative deepening) that searches a few plies ahead while strongly favoring (1) moves that immediately leave the opponent with no legal moves (instant win), (2) higher long-term space control using a “queen-move distance” territory evaluation (who can reach each empty square in fewer queen moves), and (3) higher short-term mobility (how many empty squares your amazons can reach in one queen move). To stay fast and reliable, it uses aggressive move ordering and beam-search style trimming (keeps only the top-scoring candidate moves at deeper nodes), and it always falls back to a guaranteed legal move if time runs short.
+
+<code>
+import time
+from collections import deque
+from heapq import nlargest
+from typing import List, Tuple, Optional
+
+import numpy as np
+
+# 6x6 Amazons policy with time-bounded alpha-beta + territory/mobility evaluation.
+
+N = 6
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+# Precompute rays for each square index 0..35: rays[idx] = list of 8 lists, one per direction.
+_RAYS: List[List[List[int]]] = []
+for r in range(N):
+    for c in range(N):
+        rays_for = []
+        for dr, dc in DIRS:
+            ray = []
+            rr, cc = r + dr, c + dc
+            while 0 <= rr < N and 0 <= cc < N:
+                ray.append(rr * N + cc)
+                rr += dr
+                cc += dc
+            rays_for.append(ray)
+        _RAYS.append(rays_for)
+
+
+Move = Tuple[int, int, int]  # (from_idx, to_idx, arrow_idx)
+
+
+def _idx_to_rc(idx: int) -> Tuple[int, int]:
+    return idx // N, idx % N
+
+
+def _move_to_str(m: Move) -> str:
+    fr, fc = _idx_to_rc(m[0])
+    tr, tc = _idx_to_rc(m[1])
+    ar, ac = _idx_to_rc(m[2])
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+
+
+def _any_move(board: List[int], player: int) -> Optional[Move]:
+    """Return any legal move for player, or None."""
+    for fr in range(N * N):
+        if board[fr] != player:
+            continue
+        for ray in _RAYS[fr]:
+            for to in ray:
+                if board[to] != 0:
+                    break
+                # Arrow generation with moved amazon: 'fr' becomes empty, 'to' becomes occupied.
+                for aray in _RAYS[to]:
+                    for ar in aray:
+                        if ar == to:
+                            break
+                        if ar == fr:
+                            return (fr, to, ar)
+                        if board[ar] != 0:
+                            break
+                        return (fr, to, ar)
+    return None
+
+
+def _gen_moves(board: List[int], player: int) -> List[Move]:
+    """Generate all legal moves for player."""
+    moves: List[Move] = []
+    for fr in range(N * N):
+        if board[fr] != player:
+            continue
+        for ray in _RAYS[fr]:
+            for to in ray:
+                if board[to] != 0:
+                    break
+                # Arrow generation after moving fr->to
+                for aray in _RAYS[to]:
+                    for ar in aray:
+                        if ar == to:
+                            break
+                        # occupied-after condition: 'to' occupied; 'fr' empty; others as in board
+                        if ar == fr:
+                            moves.append((fr, to, ar))
+                            continue
+                        if board[ar] != 0:
+                            break
+                        moves.append((fr, to, ar))
+    return moves
+
+
+def _has_any_move(board: List[int], player: int) -> bool:
+    return _any_move(board, player) is not None
+
+
+def _apply_move(board: List[int], move: Move, player: int) -> Tuple[int, int, int, int, int, int]:
+    """Apply move in-place. Returns undo tuple."""
+    fr, to, ar = move
+    pfr, pto, par = board[fr], board[to], board[ar]
+    board[fr] = 0
+    board[to] = player
+    board[ar] = -1
+    return (fr, pfr, to, pto, ar, par)
+
+
+def _undo_move(board: List[int], undo: Tuple[int, int, int, int, int, int]) -> None:
+    fr, pfr, to, pto, ar, par = undo
+    board[fr] = pfr
+    board[to] = pto
+    board[ar] = par
+
+
+def _mobility(board: List[int], player: int) -> int:
+    """Count reachable empty squares in one queen move from all player's amazons."""
+    total = 0
+    for fr in range(N * N):
+        if board[fr] != player:
+            continue
+        for ray in _RAYS[fr]:
+            for sq in ray:
+                if board[sq] != 0:
+                    break
+                total += 1
+    return total
+
+
+def _queen_bfs_dist(board: List[int], sources: List[int]) -> List[int]:
+    """Min #queen-moves to reach each square; unreachable = large."""
+    INF = 10 ** 9
+    dist = [INF] * (N * N)
+    q = deque()
+    for s in sources:
+        dist[s] = 0
+        q.append(s)
+
+    while q:
+        u = q.popleft()
+        du = dist[u]
+        for ray in _RAYS[u]:
+            for v in ray:
+                if board[v] != 0 and v not in sources:
+                    break
+                # can only land on empty squares (or sources themselves for propagation start)
+                if board[v] == 0 and dist[v] > du + 1:
+                    dist[v] = du + 1
+                    q.append(v)
+                # do not pass through any occupied square (sources are occupied, so stop there too)
+                if board[v] != 0:
+                    break
+    return dist
+
+
+def _territory_score(board: List[int]) -> int:
+    """Compare queen-move distances to empty squares: +1 if ours closer, -1 if theirs closer."""
+    ours = [i for i, v in enumerate(board) if v == 1]
+    theirs = [i for i, v in enumerate(board) if v == 2]
+    if not ours and not theirs:
+        return 0
+
+    d1 = _queen_bfs_dist(board, ours) if ours else [10 ** 9] * (N * N)
+    d2 = _queen_bfs_dist(board, theirs) if theirs else [10 ** 9] * (N * N)
+
+    score = 0
+    for i, v in enumerate(board):
+        if v != 0:
+            continue
+        a, b = d1[i], d2[i]
+        if a < b:
+            score += 1
+        elif b < a:
+            score -= 1
+    return score
+
+
+def _evaluate(board: List[int]) -> int:
+    """Static eval from our perspective (player 1)."""
+    # Terminal-ish signals (not full checkmate; search handles actual no-move conditions).
+    mob1 = _mobility(board, 1)
+    mob2 = _mobility(board, 2)
+    terr = _territory_score(board)
+    # Weights tuned for small 6x6: territory matters more than raw mobility.
+    return 6 * terr + 2 * (mob1 - mob2)
+
+
+def _board_key(board: List[int], turn: int) -> bytes:
+    # Map values {-1,0,1,2} to {0,1,2,3} for compact key.
+    # -1->0, 0->1, 1->2, 2->3
+    mapped = bytearray(N * N + 1)
+    mapped[0] = turn
+    for i, v in enumerate(board):
+        mapped[i + 1] = 0 if v == -1 else (1 if v == 0 else (2 if v == 1 else 3))
+    return bytes(mapped)
+
+
+class _Timeout(Exception):
+    pass
+
+
+def policy(board: np.ndarray) -> str:
+    start = time.perf_counter()
+    # Keep a safety margin.
+    deadline = start + 0.95
+
+    b = board.astype(int, copy=False).ravel().tolist()
+
+    # If somehow no move exists, return any formatted string (environment said it shouldn't call us).
+    fallback = _any_move(b, 1)
+    if fallback is None:
+        return "0,0:0,0:0,0"
+
+    # Quick tactical: if any move immediately leaves opponent with no moves, play it.
+    # (Do a fast scan without generating everything.)
+    for _ in range(2):  # tiny loop to allow early break structure
+        found_win = None
+        for fr in range(N * N):
+            if b[fr] != 1:
+                continue
+            for ray in _RAYS[fr]:
+                for to in ray:
+                    if b[to] != 0:
+                        break
+                    for aray in _RAYS[to]:
+                        for ar in aray:
+                            if ar == to:
+                                break
+                            if ar != fr and b[ar] != 0:
+                                break
+                            mv = (fr, to, ar)
+                            undo = _apply_move(b, mv, 1)
+                            opp_has = _has_any_move(b, 2)
+                            _undo_move(b, undo)
+                            if not opp_has:
+                                found_win = mv
+                                break
+                        if found_win:
+                            break
+                    if found_win:
+                        break
+                if found_win:
+                    break
+            if found_win:
+                break
+        if found_win:
+            return _move_to_str(found_win)
+
+    # Move ordering / beam limits
+    ROOT_BEAM = 70
+    INNER_BEAM = 35
+
+    tt = {}  # key -> (depth, value)
+
+    def gen_ordered_moves(board_list: List[int], player: int, beam: int) -> List[Move]:
+        moves = _gen_moves(board_list, player)
+        if not moves:
+            return []
+        # Score each move quickly by resulting mobility (cheap); keep top beam.
+        scored = []
+        for mv in moves:
+            if time.perf_counter() > deadline:
+                raise _Timeout
+            undo = _apply_move(board_list, mv, player)
+            # Quick score from player 1 perspective for ordering:
+            s = (_mobility(board_list, 1) - _mobility(board_list, 2))
+            # Small preference for central arrowing (blocks center tends to be strong on 6x6).
+            ar = mv[2]
+            ar_r, ar_c = ar // N, ar % N
+            s += -((ar_r - 2.5) ** 2 + (ar_c - 2.5) ** 2) * 0.1
+            _undo_move(board_list, undo)
+            scored.append((s, mv))
+        # Beam trim
+        if len(scored) > beam:
+            scored = nlargest(beam, scored, key=lambda x: x[0])
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [mv for _, mv in scored]
+
+    def search(board_list: List[int], turn: int, depth: int, alpha: int, beta: int) -> int:
+        if time.perf_counter() > deadline:
+            raise _Timeout
+
+        key = _board_key(board_list, turn)
+        hit = tt.get(key)
+        if hit is not None:
+            d_hit, v_hit = hit
+            if d_hit >= depth:
+                return v_hit
+
+        # No moves => current player loses.
+        if not _has_any_move(board_list, turn):
+            val = 10_000 if turn == 2 else -10_000  # if opponent to move and stuck => good for us
+            tt[key] = (depth, val)
+            return val
+
+        if depth == 0:
+            val = _evaluate(board_list)
+            tt[key] = (depth, val)
+            return val
+
+        if turn == 1:
+            best = -10**9
+            moves = gen_ordered_moves(board_list, 1, ROOT_BEAM if depth >= 2 else INNER_BEAM)
+            if not moves:
+                best = -10_000
+            else:
+                for mv in moves:
+                    undo = _apply_move(board_list, mv, 1)
+                    v = search(board_list, 2, depth - 1, alpha, beta)
+                    _undo_move(board_list, undo)
+                    if v > best:
+                        best = v
+                    if best > alpha:
+                        alpha = best
+                    if alpha >= beta:
+                        break
+            tt[key] = (depth, best)
+            return best
+        else:
+            best = 10**9
+            moves = gen_ordered_moves(board_list, 2, INNER_BEAM)
+            if not moves:
+                best = 10_000
+            else:
+                for mv in moves:
+                    undo = _apply_move(board_list, mv, 2)
+                    v = search(board_list, 1, depth - 1, alpha, beta)
+                    _undo_move(board_list, undo)
+                    if v < best:
+                        best = v
+                    if best < beta:
+                        beta = best
+                    if alpha >= beta:
+                        break
+            tt[key] = (depth, best)
+            return best
+
+    best_move = fallback
+    best_val = -10**9
+
+    # Iterative deepening: 1,2,3,4... until time.
+    depth = 1
+    try:
+        while depth <= 5:
+            if time.perf_counter() > deadline:
+                break
+            root_moves = gen_ordered_moves(b, 1, ROOT_BEAM)
+            if not root_moves:
+                break
+
+            local_best_move = root_moves[0]
+            local_best_val = -10**9
+            alpha, beta = -10**9, 10**9
+
+            for mv in root_moves:
+                if time.perf_counter() > deadline:
+                    raise _Timeout
+                undo = _apply_move(b, mv, 1)
+                v = search(b, 2, depth - 1, alpha, beta)
+                _undo_move(b, undo)
+                if v > local_best_val:
+                    local_best_val = v
+                    local_best_move = mv
+                if v > alpha:
+                    alpha = v
+
+            # Commit completed depth result
+            best_move = local_best_move
+            best_val = local_best_val
+            depth += 1
+
+    except _Timeout:
+        pass
+
+    # Ensure legality by falling back if something went wrong (shouldn't).
+    # We already have fallback as a guaranteed legal move if any exist.
+    return _move_to_str(best_move)
+</code>

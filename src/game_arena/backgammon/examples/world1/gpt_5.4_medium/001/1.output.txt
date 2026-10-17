@@ -1,0 +1,338 @@
+The strategy for this policy is: first generate every legal move string exactly, so it never gets disqualified; then score the resulting positions with a fast heuristic that prefers bearing off, hitting, escaping the bar, making points, reducing pip count, building a strong home board, and avoiding exposed blots. It switches emphasis between contact play and pure racing based on whether the sides still have contact.
+
+<code>
+def policy(state: dict) -> str:
+    def clone_state(st):
+        return {
+            'my_pts': st['my_pts'][:],
+            'opp_pts': st['opp_pts'][:],
+            'my_bar': st['my_bar'],
+            'opp_bar': st['opp_bar'],
+            'my_off': st['my_off'],
+            'opp_off': st['opp_off'],
+            'dice': st.get('dice', [])[:],
+        }
+
+    def all_in_home(st):
+        return st['my_bar'] == 0 and sum(st['my_pts'][6:]) == 0
+
+    def my_pip(st):
+        return 25 * st['my_bar'] + sum((i + 1) * n for i, n in enumerate(st['my_pts']))
+
+    def opp_pip(st):
+        return 25 * st['opp_bar'] + sum((24 - i) * n for i, n in enumerate(st['opp_pts']))
+
+    def point_weight_my(i):
+        if i <= 5:
+            return 8
+        if i <= 11:
+            return 5
+        if i <= 17:
+            return 4
+        return 6
+
+    def point_weight_opp(i):
+        if i >= 18:
+            return 8
+        if i >= 12:
+            return 5
+        if i >= 6:
+            return 4
+        return 6
+
+    def longest_prime(pts):
+        best = 0
+        cur = 0
+        for n in pts:
+            if n >= 2:
+                cur += 1
+                if cur > best:
+                    best = cur
+            else:
+                cur = 0
+        return best
+
+    def stack_penalty(pts):
+        return sum(max(0, n - 4) for n in pts)
+
+    def contact_exists(st):
+        if st['my_bar'] > 0 or st['opp_bar'] > 0:
+            return True
+        my_high = -1
+        opp_low = 24
+        for i in range(23, -1, -1):
+            if st['my_pts'][i] > 0:
+                my_high = i
+                break
+        for i in range(24):
+            if st['opp_pts'][i] > 0:
+                opp_low = i
+                break
+        return my_high > opp_low
+
+    def my_exposure(st):
+        pen = 0
+        opp = st['opp_pts']
+        for p, n in enumerate(st['my_pts']):
+            if n == 1:
+                threats = 0
+                lo = max(0, p - 6)
+                for q in range(lo, p):
+                    if opp[q] > 0:
+                        threats += 2 if opp[q] >= 2 else 1
+                if st['opp_bar'] > 0 and p <= 5:
+                    threats += 2
+                pen += 1 + threats
+        return pen
+
+    def opp_exposure(st):
+        pen = 0
+        mine = st['my_pts']
+        for p, n in enumerate(st['opp_pts']):
+            if n == 1:
+                threats = 0
+                hi = min(23, p + 6)
+                for q in range(p + 1, hi + 1):
+                    if mine[q] > 0:
+                        threats += 2 if mine[q] >= 2 else 1
+                if st['my_bar'] > 0 and p >= 18:
+                    threats += 2
+                pen += 1 + threats
+        return pen
+
+    def race_wastage_my(st):
+        return sum(max(0, n - 2) * (i + 1) for i, n in enumerate(st['my_pts'][:6]))
+
+    def race_wastage_opp(st):
+        total = 0
+        for i in range(18, 24):
+            n = st['opp_pts'][i]
+            total += max(0, n - 2) * (24 - i)
+        return total
+
+    def evaluate(st, before=None):
+        mp = my_pip(st)
+        op = opp_pip(st)
+        contact = contact_exists(st)
+
+        my_points = sum(point_weight_my(i) for i, n in enumerate(st['my_pts']) if n >= 2)
+        opp_points = sum(point_weight_opp(i) for i, n in enumerate(st['opp_pts']) if n >= 2)
+
+        my_home = sum(1 for i in range(0, 6) if st['my_pts'][i] >= 2)
+        opp_home = sum(1 for i in range(18, 24) if st['opp_pts'][i] >= 2)
+
+        my_anchors = sum(1 for i in range(18, 24) if st['my_pts'][i] >= 2)
+        opp_anchors = sum(1 for i in range(0, 6) if st['opp_pts'][i] >= 2)
+
+        my_prime = longest_prime(st['my_pts'])
+        opp_prime = longest_prime(st['opp_pts'])
+
+        score = 0.0
+        score += 140.0 * (st['my_off'] - st['opp_off'])
+        score += 70.0 * (st['opp_bar'] - st['my_bar'])
+        score += 1.8 * (op - mp)
+        score += 2.2 * (my_points - opp_points)
+
+        if contact:
+            score += 8.0 * (my_home - opp_home)
+            score += 5.0 * (my_anchors - opp_anchors)
+            score += 8.0 * ((my_prime * my_prime) - (opp_prime * opp_prime))
+            score -= 5.5 * my_exposure(st)
+            score += 4.5 * opp_exposure(st)
+            score -= 2.0 * stack_penalty(st['my_pts'])
+            score += 2.0 * stack_penalty(st['opp_pts'])
+            score -= 0.6 * sum(st['my_pts'][18:24])
+            score += 0.6 * sum(st['opp_pts'][0:6])
+            if st['opp_bar'] > 0:
+                score += 6.0 * my_home
+            if st['my_bar'] > 0:
+                score -= 6.0 * opp_home
+        else:
+            score += 3.2 * (op - mp)
+            score -= 2.5 * race_wastage_my(st)
+            score += 2.5 * race_wastage_opp(st)
+            score -= 1.2 * sum(1 for n in st['my_pts'] if n == 1)
+            score += 1.2 * sum(1 for n in st['opp_pts'] if n == 1)
+            score -= 1.5 * stack_penalty(st['my_pts'])
+            score += 1.5 * stack_penalty(st['opp_pts'])
+
+        if before is not None:
+            hits = st['opp_bar'] - before['opp_bar']
+            entered = before['my_bar'] - st['my_bar']
+            borne = st['my_off'] - before['my_off']
+            made = 0
+            covered = 0
+            stripped = 0
+            for i in range(24):
+                b = before['my_pts'][i]
+                a = st['my_pts'][i]
+                if b < 2 and a >= 2:
+                    made += 1
+                if b == 1 and a >= 2:
+                    covered += 1
+                if b >= 2 and a == 1:
+                    stripped += 1
+            score += 24.0 * hits
+            score += 10.0 * entered
+            score += 14.0 * borne
+            score += 7.0 * made
+            score += 4.0 * covered
+            score -= 4.0 * stripped
+
+        return score
+
+    def apply_move(st, src, die):
+        ns = clone_state(st)
+        token = 'B' if src == 'B' else f'A{src}'
+
+        if src == 'B':
+            ns['my_bar'] -= 1
+            dest = 24 - die
+        else:
+            ns['my_pts'][src] -= 1
+            dest = src - die
+
+        if dest >= 0:
+            if ns['opp_pts'][dest] == 1:
+                ns['opp_pts'][dest] = 0
+                ns['opp_bar'] += 1
+            ns['my_pts'][dest] += 1
+        else:
+            ns['my_off'] += 1
+
+        return token, ns
+
+    def legal_single_moves(st, die):
+        moves = []
+
+        if st['my_bar'] > 0:
+            dest = 24 - die
+            if 0 <= dest <= 23 and st['opp_pts'][dest] <= 1:
+                moves.append(apply_move(st, 'B', die))
+            return moves
+
+        home = all_in_home(st)
+
+        for s in range(24):
+            if st['my_pts'][s] <= 0:
+                continue
+            dest = s - die
+            if dest >= 0:
+                if st['opp_pts'][dest] <= 1:
+                    moves.append(apply_move(st, s, die))
+            else:
+                if not home:
+                    continue
+                if die == s + 1:
+                    moves.append(apply_move(st, s, die))
+                elif die > s + 1 and sum(st['my_pts'][s + 1:6]) == 0:
+                    moves.append(apply_move(st, s, die))
+
+        return moves
+
+    def enumerate_for_order(start_state, order_char, dice_seq):
+        out = []
+
+        def rec(cur_state, idx, tokens, used_vals):
+            if idx == len(dice_seq):
+                toks = tokens[:]
+                while len(toks) < 2:
+                    toks.append('P')
+                out.append({
+                    'order': order_char,
+                    'tokens': toks,
+                    'state': cur_state,
+                    'moves': sum(1 for t in toks if t != 'P'),
+                    'used_vals': used_vals[:],
+                })
+                return
+
+            die = dice_seq[idx]
+            moves = legal_single_moves(cur_state, die)
+            if not moves:
+                tokens.append('P')
+                rec(cur_state, idx + 1, tokens, used_vals)
+                tokens.pop()
+                return
+
+            for tok, ns in moves:
+                tokens.append(tok)
+                used_vals.append(die)
+                rec(ns, idx + 1, tokens, used_vals)
+                used_vals.pop()
+                tokens.pop()
+
+        rec(start_state, 0, [], [])
+        return out
+
+    def generate_legal_actions(st):
+        dice = st.get('dice', [])
+        if not dice:
+            return [{
+                'action': 'H:P,P',
+                'state': st,
+                'moves': 0,
+                'used_vals': [],
+            }]
+
+        if len(dice) == 1:
+            seqs = enumerate_for_order(st, 'H', [dice[0]])
+        else:
+            d1, d2 = dice[0], dice[1]
+            if d1 == d2:
+                seqs = enumerate_for_order(st, 'H', [d1, d2])
+            else:
+                hi = max(d1, d2)
+                lo = min(d1, d2)
+                seqs = enumerate_for_order(st, 'H', [hi, lo]) + enumerate_for_order(st, 'L', [lo, hi])
+
+        if not seqs:
+            return [{
+                'action': 'H:P,P',
+                'state': st,
+                'moves': 0,
+                'used_vals': [],
+            }]
+
+        max_moves = max(s['moves'] for s in seqs)
+        seqs = [s for s in seqs if s['moves'] == max_moves]
+
+        if len(dice) == 2 and dice[0] != dice[1] and max_moves == 1:
+            hi = max(dice[0], dice[1])
+            if any(hi in s['used_vals'] for s in seqs):
+                seqs = [s for s in seqs if hi in s['used_vals']]
+
+        dedup = {}
+        for s in seqs:
+            action = f"{s['order']}:{s['tokens'][0]},{s['tokens'][1]}"
+            if action not in dedup:
+                dedup[action] = {
+                    'action': action,
+                    'state': s['state'],
+                    'moves': s['moves'],
+                    'used_vals': s['used_vals'],
+                }
+
+        if not dedup:
+            return [{
+                'action': 'H:P,P',
+                'state': st,
+                'moves': 0,
+                'used_vals': [],
+            }]
+
+        return list(dedup.values())
+
+    candidates = generate_legal_actions(state)
+    best_action = 'H:P,P'
+    best_score = None
+
+    for c in candidates:
+        score = evaluate(c['state'], before=state)
+        action = c['action']
+        if best_score is None or score > best_score or (score == best_score and action < best_action):
+            best_score = score
+            best_action = action
+
+    return best_action
+</code>

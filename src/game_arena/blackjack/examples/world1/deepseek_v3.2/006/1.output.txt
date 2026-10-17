@@ -1,0 +1,668 @@
+<thinking>
+We are tasked with implementing a policy for a simplified Blackjack-like game. The key elements:
+
+1. We have a deck of 13 unique cards: A, 2-10, J, Q, K. Our deck is separate from opponent's deck.
+2. Target T is random between 10 and 30, fixed for the game.
+3. Card values:
+   - 2-10: face value
+   - J, Q, K: 10
+   - A: 11 if hand value <= T, else 1 (this is interesting: the Ace adapts to keep us under target if possible)
+4. We must decide HIT or STAY given current hand and target.
+5. Goal: win by not busting and having sum closer to target than opponent, or opponent busts.
+
+We need to think about optimal strategy. This is like Blackjack but with a fixed target and a special Ace rule. Also, we have full knowledge of our own deck (we know which cards are left? Wait: hand is only our current hand, not the entire deck state. But we can infer which cards we have drawn. However, the function doesn't receive deck state. So we don't know which cards remain? Actually, we have our own 13-card deck, and we draw sequentially from it. But the policy function is called each turn with our current hand. We don't have direct information about which cards are left, but we can keep track because we know we started with a full deck of 13 unique cards. So we can compute which cards we have already drawn from our hand list, and thus which cards remain.
+
+But note: the deck is shuffled? The problem says "you draw the next card from your deck." It doesn't specify the order. It might be that the deck is in a random order, but we don't know the order. However, we know the composition: exactly one of each rank. So we can compute the set of cards that have not been drawn yet. But we don't know the order, so we have to consider probabilities.
+
+We are to write a policy function. We can implement a decision based on expected value or risk. Since the opponent is also playing, we need to model opponent's behavior. However, we are not given opponent's policy. We have to assume opponent is rational? We don't know. But we can try to maximize our chance of winning given uncertainty about opponent's actions and deck ordering.
+
+Simpler approach: we can try to compute the optimal decision by considering the distribution of possible draws from our remaining deck, and estimate the probability of busting, and the expected final sum if we stay. But we also need to consider opponent's outcome. Without knowledge of opponent's hand or deck, we have to assume they are playing optimally? Actually, in many such games, we can just try to maximize our own outcome relative to target, assuming opponent will also try to do well. However, we can't control opponent.
+
+Maybe we can model the game as: we want to get as close as possible to target without busting. That's similar to a classic "optimal stopping" problem. We can compute the expected gain from drawing one more card, and decide if it's beneficial.
+
+Let's formalize:
+- Let current hand value be V.
+- Let remaining cards be set R (cards not in hand). We know |R| = 13 - len(hand).
+- For each card c in R, we know its value v(c) given current hand value? Wait: Ace value depends on total hand value after adding it. So if we draw an Ace, its value will be 11 if V + 11 <= T, else 1. So the value of Ace is conditional on V and T.
+
+We can compute the probability of busting if we draw: bust if V + v(c) > T.
+We can compute expected sum after drawing: sum over cards of (V + v(c)) * 1/|R|, but only for cards that don't bust? Actually if we bust we lose immediately, so we care about the probability of busting vs. the distribution of sums given we don't bust.
+
+But we also have to consider that we can stop after drawing. So we could consider drawing one more card and then deciding whether to stop. This is a dynamic programming problem: we need to compute the optimal action given current state (hand, target) and knowledge of remaining cards.
+
+We can compute the value of being in state (hand) as the probability of winning from that state if we play optimally. But we also need opponent's state? We don't know opponent's hand or deck. However, we can assume opponent is playing from a separate deck and will also play optimally? But we don't have their policy. We could assume they will follow a similar strategy. But maybe we can approximate: we want to have a final sum as close as possible to T without exceeding. So we can aim for a sum that is as high as possible without busting.
+
+Given T is between 10 and 30, and we have cards up to 10, so maximum sum is 11+10+10+... Actually with A=11, we can have 11 + 10 + 10 + ... but we only have one Ace. Maximum sum with all cards: A(11) + K(10) + Q(10) + J(10) + 10 + 9 + ... + 2 = 11 + 10*4? Actually J,Q,K are 10 each, plus 10 itself is 10, so that's 4 cards of 10? Wait: J, Q, K, 10 are four cards each worth 10? But J,Q,K are 10, and 10 is 10, so yes four cards of 10. So max sum = 11 + 10*4 + 9+8+7+6+5+4+3+2 = 11+40+44 = 95? That's huge, but we bust at T which is at most 30, so we will bust long before.
+
+So we need to stop before exceeding T.
+
+We can compute the optimal policy via dynamic programming over the state of our own deck. Since deck size is only 13, state space is manageable: there are 2^13 possible subsets of cards drawn? But order matters? Actually we care about which cards are already drawn, because the remaining cards are those not drawn. The hand is the list of cards we have, so we know exactly which cards are drawn. So the state is the set of cards we have drawn. But the order of drawing doesn't matter for future draws because the remaining cards are equally likely to be drawn next (since we don't know order). So we can treat the remaining deck as uniformly random among permutations of remaining cards.
+
+Thus we can compute the expected value of winning if we HIT from current hand, and compare to STAY. To compute expected value of HIT, we need to know the probability of winning after drawing each possible card, then average.
+
+But to compute probability of winning after drawing a card, we need to know the probability that opponent will beat us given we have that new hand. That depends on opponent's policy and deck. Since we don't know opponent's policy, we can assume they are also playing optimally from their own deck. But we don't know their deck state. However, we can approximate by assuming opponent's final sum is a random variable drawn from their optimal strategy distribution. But that's complex.
+
+Alternatively, we can think of this as a single-player problem: we want to maximize the probability that our final sum is <= T and as close as possible to T, because opponent is independent? Actually, the outcome depends on opponent's sum. We win if:
+- We don't bust AND (opponent busts OR opponent's sum is farther from T than ours).
+Thus we need to consider opponent's distribution.
+
+We can try to estimate opponent's distribution by simulating possible opponent outcomes given their own deck and assuming they follow a similar optimal strategy. But we don't know their deck composition? They have the same deck composition as us, but separate. They also have 13 cards, each rank once. But they may have drawn different cards. We have no information about opponent's hand or draws. So we must assume their deck is in an unknown state. However, we can assume that their deck is symmetric to ours in terms of remaining cards? Not necessarily, because they may have drawn different cards.
+
+Maybe we can assume that opponent is following the same policy as us? That leads to a symmetric game. Then we can compute the Nash equilibrium strategy. But that's complicated.
+
+Given the time constraint and complexity, maybe we can implement a heuristic: aim to get as close as possible to T without busting, and be conservative when close. Since Ace can be 1 or 11, we can use that to our advantage.
+
+Let's design a simple strategy: compute current sum with Ace counted as 11 if it keeps us <= T, else 1. Then if sum < T, consider hitting if the probability of busting is low. We can compute the probability of busting on next draw: count cards in remaining deck that would cause bust. If that probability is high, we stay.
+
+We can also compute expected value of next draw: average of sum + card value (with Ace adjusted). If expected sum is closer to T than current sum, maybe hit.
+
+But we also have to consider that we can stop later.
+
+Maybe we can implement a dynamic programming solution that computes the optimal decision assuming opponent's final sum is uniformly distributed? Or we can compute the probability that we will end up with a sum that is at least some value.
+
+Let's think about the game from a probabilistic perspective. Let S be our final sum if we stop now. Then opponent's final sum O is unknown. We win if O > T (bust) or |O - T| > |S - T| (if both <= T). So we want to maximize probability that |O - T| > |S - T| given O <= T, plus probability O > T.
+
+If we assume opponent's sum O is a random variable with some distribution, we can compute the probability of winning given S. Then we can decide whether to draw another card.
+
+We can approximate opponent's distribution by simulating many possible games for opponent using the same policy? But we don't have opponent's policy. We could assume opponent uses a simple threshold strategy: hit until sum >= some threshold. But we don't know threshold.
+
+Alternatively, we can use a heuristic: we want our final sum to be as high as possible without busting, because opponent will likely also try to get high. So we can aim to get as close to T as possible, but not over. This is like classic Blackjack where you hit until you reach a certain number.
+
+We can compute the optimal stopping point for a single-player game where you want to maximize expected sum given risk of busting. But here we care about beating opponent, not just sum.
+
+Given time, maybe I'll implement a dynamic programming solution that computes the probability of winning from any state given that opponent is playing optimally with the same deck composition and we know nothing about their state. This is like solving a two-player game with incomplete information. We can model opponent's deck as a mirror of ours? But they have their own independent deck. Since we have no information, we can assume their deck is in a random state (random subset drawn). Then we can compute the probability that we win given our state and their random state.
+
+We can precompute for each possible hand (subset of cards) the probability of winning if we stop now, assuming opponent's hand is drawn uniformly from all subsets of their deck? But opponent's deck is also 13 cards, and they draw cards sequentially according to some policy. That's complicated.
+
+Given the constraints (1 second execution time), we can do a Monte Carlo simulation within the policy function? But policy is called many times per game (up to 13 times). We can afford some computation.
+
+Idea: At each decision, we simulate many random continuations of our own deck (random order of remaining cards) and opponent's deck (random order of their 13 cards) assuming opponent follows a reasonable policy (maybe the same as ours). Then we estimate winning probability for HIT and STAY, and choose the one with higher probability.
+
+We can implement a simple opponent policy: opponent will HIT until their sum >= target - 5? Or something. But we can use the same policy for opponent? That would be recursive.
+
+Given we have 1 second, we can do maybe thousands of simulations per call.
+
+Steps for simulation:
+- We have our current hand.
+- We know our remaining cards (set of cards not in hand).
+- We know target T.
+- For STAY: our final sum is current sum (with Ace adjusted).
+- For HIT: we draw one card from remaining (random), then we follow some strategy for subsequent draws? But to evaluate HIT, we need to know what we will do after drawing. We could simulate using the same policy recursively? That might be too heavy.
+
+Alternatively, we can simulate full game for both HIT and STAY decisions by assuming we will follow a predefined strategy after this draw (like hit until sum >= threshold). Then we can compare.
+
+Better: we can use dynamic programming to compute the optimal action for our own game assuming we want to maximize probability of winning against a random opponent. Since opponent's deck is independent, we can treat opponent's final sum as a random variable with a distribution we can precompute.
+
+We can precompute the distribution of opponent's final sum given they play optimally? But we don't know their policy.
+
+Maybe we can assume opponent uses the same policy as we are trying to compute. This is a fixed point problem.
+
+Given the time, I'll implement a heuristic policy:
+
+1. Compute current sum with Ace as 11 if sum + 11 <= T, else 1. But careful: we might have multiple Aces? Actually deck has only one Ace. So at most one Ace.
+
+2. If sum > T, we have busted? Wait, the function is called only when we haven't busted? Actually if we bust, the game ends and we lose, so policy is not called. So we can assume sum <= T.
+
+3. Determine a threshold: if sum <= T - 10, always HIT (safe). If sum >= T, we should STAY (but sum can't be > T). If sum is close to T, we need to consider risk.
+
+We can compute the probability of busting on next draw: count cards in remaining deck that would cause bust. If probability of busting is less than some threshold, HIT.
+
+We also consider that if we have an Ace and sum is close to T, we can count Ace as 1 to avoid bust.
+
+But Ace value is determined after drawing. So if we have an Ace in hand, it's already counted as 11 or 1. When drawing a new card, Ace's value may change? Actually the rule says: "A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T). This applies to the Ace's value in the hand total. So if we have an Ace in hand, its value is determined based on the total hand value. If we draw another card, the total hand value changes, and the Ace's value might need to be re-evaluated. But the rule says "when the hand value is <= T", meaning the total hand value after all cards? It's ambiguous. I think it means for each Ace, its value is 11 if the total hand value (with all Aces counted as 11) is <= T, otherwise 1. But since we have only one Ace, it's simpler: if we have Ace, we can choose its value to be 11 if that keeps total <= T, else 1. So when we compute hand value, we do: if Ace in hand and sum_with_ace_as_11 <= T, then value = sum_with_ace_as_11, else value = sum_with_ace_as_1.
+
+Now, when we consider drawing a new card, we need to compute new total with the new card, and then decide Ace value.
+
+Given the complexity, I'll implement a simulation-based approach:
+
+Define a helper function to simulate one full game given:
+- our initial hand (list)
+- our remaining cards (set)
+- target T
+- our policy for future decisions (which we are defining) -> recursive? That might lead to infinite recursion.
+
+Instead, we can simulate using a simple strategy for both us and opponent. For simulation, we need a strategy for both players. We can use a threshold strategy: hit until sum >= threshold, where threshold is T - 5 or something.
+
+We can optimize threshold by trying different thresholds and picking the one with highest win rate in simulation? But that would be too slow.
+
+Maybe we can compute the expected value of drawing one more card and then stopping. That is, we consider the expected sum after one draw, and if that expected sum is closer to T than current sum, we hit. But we also consider bust probability.
+
+Let's compute:
+Let current sum = S.
+Let R be remaining cards, size n.
+For each card c in R, compute its value v(c) given S and T? Actually when we add card c, the new total S' = S + v(c) where v(c) is its value when considered alone? But Ace value depends on total after adding it. So we need to compute for each card:
+If c is Ace:
+    if S + 11 <= T, then v = 11, else v = 1.
+Else if c is J,Q,K: v=10.
+Else: v = int(c).
+
+Then S' = S + v.
+But if S' > T, we bust.
+If S' <= T, we can choose to stop or continue.
+
+We want to decide whether to HIT or STAY. We can compute the expected value of the game if we HIT and then play optimally thereafter. But that requires solving the full DP.
+
+Given limited time, I'll implement a simpler heuristic: compute the probability of busting on next draw. If it's 0, always HIT if S < T. If it's >0, we consider how close S is to T. If S is very close to T, we should STAY because risk of busting is high. If S is far from T, we can HIT.
+
+Define a risk threshold: if S >= T - 2, stay. Else if S >= T - 5, hit only if probability of busting is low (< 0.3). Else hit.
+
+We also need to account for Ace in hand: if we have Ace, we can count it as 1 to lower sum, but that might not be optimal because Ace as 11 gives higher sum. Actually we always want to be as high as possible without busting, so we should count Ace as 11 as long as it doesn't cause bust. So our current sum S is computed with Ace as 11 if possible.
+
+Now, to compute probability of busting, we need to know remaining cards. We can compute from hand: we have drawn len(hand) cards. The deck has 13 unique cards. So remaining cards = full set minus hand set.
+
+We also need to compute the value of each remaining card when added to S, considering Ace adjustment.
+
+Let's implement:
+
+1. Function card_value(card, current_sum, target):
+   if card == 'A':
+       if current_sum + 11 <= target:
+           return 11
+       else:
+           return 1
+   elif card in ['J','Q','K']:
+       return 10
+   else:
+       return int(card)
+
+But careful: when we compute new sum after adding card, we need to recompute Ace value if Ace is already in hand. Actually, if we already have an Ace in hand, its value might change when we add a new card. For example, hand = ['A','9'], target=20. Current sum: with Ace as 11, sum=20, which is <=20, so sum=20. If we draw a 2, new total would be 22 with Ace as 11, but then >20, so Ace becomes 1, sum=12? Actually hand becomes ['A','9','2']: with Ace as 11, sum=22 >20, so Ace becomes 1, sum=12. So the Ace value changes. So computing card_value independently is not correct.
+
+We need a function to compute total value of a list of cards given target. This is tricky because Ace value depends on total. But since only one Ace, we can try both possibilities: compute sum with Ace as 11, if <= target, that's the sum; else sum with Ace as 1.
+
+Define function hand_value(hand, target):
+    sum_with_ace_as_11 = 0
+    has_ace = False
+    for card in hand:
+        if card == 'A':
+            has_ace = True
+            sum_with_ace_as_11 += 11
+        elif card in ['J','Q','K']:
+            sum_with_ace_as_11 += 10
+        else:
+            sum_with_ace_as_11 += int(card)
+    if has_ace and sum_with_ace_as_11 > target:
+        # recompute with ace as 1
+        sum_with_ace_as_1 = 0
+        for card in hand:
+            if card == 'A':
+                sum_with_ace_as_1 += 1
+            elif card in ['J','Q','K']:
+                sum_with_ace_as_1 += 10
+            else:
+                sum_with_ace_as_1 += int(card)
+        return sum_with_ace_as_1
+    else:
+        return sum_with_ace_as_11
+
+Now, when considering drawing a new card, we can compute new hand value by appending the card to hand and calling hand_value.
+
+We can compute for each remaining card: new_hand = hand + [card], new_sum = hand_value(new_hand, target). If new_sum > target, then bust. Otherwise, we can consider that we might continue or stop.
+
+To decide whether to HIT, we can compute the expected new sum, but we also need to consider that we can stop after drawing. So the value of HIT is not just the expected new sum, but the expected value of the game after drawing. That is complex.
+
+Given time, I'll implement a heuristic based on the probability of busting and distance to target.
+
+Algorithm:
+1. Compute current sum S = hand_value(hand, target).
+2. If S == target: return "STAY" (since we cannot improve).
+3. Determine remaining cards: all_cards = set of 13 cards minus set(hand).
+4. For each card in remaining_cards, compute new_sum if we draw that card. Count number of cards that cause bust (new_sum > target). Let bust_count.
+5. Let safe_count = len(remaining_cards) - bust_count.
+6. If safe_count == 0: then any draw will bust, so STAY.
+7. If bust_count == 0: then no risk, HIT if S < target.
+8. Else, compute average safe sum: average of new_sum for safe cards.
+9. If average safe sum > S and (target - average safe sum) < (target - S): then HIT (because expected sum is closer to target).
+10. Also consider risk: if S is close to target, maybe stay. Let diff = target - S. If diff <= 2, STAY. If diff <= 5, HIT only if bust_count / len(remaining_cards) < 0.3. Else HIT.
+
+This is ad-hoc.
+
+We could also simulate a few random draws to see outcome.
+
+Given the competition nature, maybe we need a more robust solution. Let's think about dynamic programming.
+
+Since deck size is small, we can compute the exact optimal policy for our own draws assuming we want to maximize expected sum subject to not busting, and then compare to opponent's expected sum distribution.
+
+We can precompute the distribution of optimal final sum for a single player given starting hand and remaining deck. This is a Markov decision process where state is (hand_set, current_sum). But current_sum can be derived from hand_set and target via hand_value. Actually hand_value depends on target, so state includes target. Since target is given, we can compute for each subset of cards the hand value.
+
+We want to maximize probability of winning against an opponent whose final sum distribution we can approximate. We can approximate opponent's distribution by assuming they follow the same optimal policy as we compute, but starting from empty hand. Since both decks are independent, we can precompute the distribution of final sum for an optimal player starting with empty hand and target T. Then, given our current hand, we can compute the distribution of our final sum if we follow optimal play (maximize probability of winning against that opponent distribution). This is a well-defined problem.
+
+We can solve via DP over subsets. There are 2^13 = 8192 subsets, which is manageable. For each subset (cards drawn), we can compute the hand value. But the order of drawing matters because we can stop early. Actually, the subset alone doesn't tell us the order; we need to know which cards are drawn, but we also need to know that we stopped after drawing some of them. However, in DP, we can consider that the state is the set of cards drawn so far, and we decide whether to stop or draw another card from remaining. But the value of stopping is the probability of winning if we stop with that hand, given opponent's distribution. The value of drawing is the average over all possible next cards (from remaining) of the value of the new state (with that card added). Then we choose the action with higher value.
+
+Thus we can compute for all subsets the optimal value (probability of winning) and action. We need to compute this for each target T? Since T is given as input, we can compute DP on the fly for each call? But policy is called multiple times per game with same T. We can cache results per T.
+
+We can precompute for all T from 10 to 30? That's 21 values. For each T, we can compute DP over all subsets (8192). That's 21*8192 ~ 172k states, which is fine.
+
+We also need opponent's distribution of final sum when they play optimally. But we are computing optimal policy for us, which also defines opponent's policy if they use same. So we can assume opponent uses the same policy. Then the opponent's distribution of final sum given they start with empty hand is exactly the distribution resulting from following our optimal policy from empty hand. We can compute that distribution by simulating all possible sequences? Since deck order is random, we need to consider all permutations of draws? But our DP assumes that when we decide to draw, we draw a random card from remaining uniformly. So the probability of reaching a particular subset is not uniform; it depends on the policy. We can compute the distribution of final sums by doing a random walk over states according to optimal policy.
+
+We can compute the probability of ending with each possible sum (0 to 95, but limited by T). We can compute this via DP as well: define prob[subset] as probability of reaching that subset? But we need the probability of stopping at that subset. Actually, we can compute the probability that the optimal policy leads to a final sum S. This is a bit more involved.
+
+Given time, maybe we can approximate opponent's final sum as uniform over possible sums? Or we can assume opponent stops at some threshold.
+
+I think a simpler approach is to use the DP to compute the optimal action for us given that opponent's final sum is uniformly distributed between some range. But that might not be accurate.
+
+Given the time constraint, I'll implement the DP approach with the assumption that opponent uses the same policy and we compute the value of each state as the probability of winning against an opponent who starts from empty hand and plays optimally. We need to compute for each state (subset) the probability that we win if we stop now, and the probability if we continue.
+
+Let V(S) be the probability of winning when we are in state S (subset of cards drawn). We have two actions: STOP or DRAW.
+
+If STOP: our final sum is hand_value(S, T). Let s = hand_value(S,T). Then we win if opponent's final sum o satisfies: o > T or (o <= T and |o - T| > |s - T|). We need the probability distribution of opponent's final sum. Let P(o) be probability opponent ends with sum o. Then win probability = sum_{o > T} P(o) + sum_{o <= T, |o-T| > |s-T|} P(o).
+
+If DRAW: we randomly pick a card c from remaining cards R (uniform). If drawing c causes bust (hand_value(S ∪ {c}, T) > T), then we lose immediately (since bust means we lose). So if we draw a bust card, win probability = 0. Otherwise, we go to state S' = S ∪ {c}, and then we will play optimally from there, so win probability = V(S'). Thus expected win probability for DRAW = (1/|R|) * sum_{c in R} [0 if bust else V(S')].
+
+We can compute V(S) recursively: V(S) = max( STOP_win(S), DRAW_win(S) ).
+
+We need to compute P(o), the distribution of opponent's final sum when they play optimally. But opponent is symmetric to us, starting from empty hand. So P(o) is exactly the distribution of our own final sum when we start from empty hand and follow optimal policy. We can compute this distribution by simulating all possible sequences? Since the deck order is random, we can compute the probability of ending in each subset S where we stop, but the policy may randomize? Actually, the policy is deterministic given state, so the path is deterministic given the order of draws. So we can compute the probability of each final sum by considering all permutations of the deck? That's 13! which is huge.
+
+But we can compute the distribution via DP as well: define Q(S) as the probability that, starting from state S, we will eventually stop with sum s (but we need the distribution over sums). Actually, we can compute the probability that we end with a particular sum by doing a Markov chain over states according to optimal actions.
+
+We can compute for each state S, the probability that we stop at S (i.e., we decide to stop at S and not draw further). But we may stop at different states depending on draws. We can compute the probability of reaching each state S and stopping there. This can be done by dynamic programming over subsets in topological order (by size). Let f(S) be probability of reaching state S and stopping there (i.e., optimal action at S is STOP). For empty set, we start with probability 1. Then for each state S where action is DRAW, we transition to larger states. We can compute the probability flow.
+
+But we need to compute V(S) which depends on P(o), which depends on the optimal policy, which we are trying to compute. This is a fixed-point problem. We could iterate: start with an initial guess for P(o) (e.g., uniform), compute optimal policy, then compute new P(o), repeat until convergence. That might converge quickly.
+
+Given time, I'll implement a simpler version: assume opponent's final sum is uniformly distributed between 0 and T? But that's not realistic.
+
+Maybe we can assume opponent will always stop at some threshold like T-5. Then we can compute our win probability if we stop at sum s: if s > T, we lose. If s <= T, we win if opponent busts or their sum is farther. If opponent stops at threshold th, their sum is min(th, something). Actually if opponent uses threshold th, they will hit until sum >= th. Their final sum will be at least th unless they bust. We can approximate opponent's sum as th if they don't bust, else bust.
+
+Given the complexity, I think the DP with assumption that opponent uses same policy is doable if we approximate P(o) by simulating many random games for opponent using the optimal policy we compute. But that requires iterating.
+
+I'll implement a Monte Carlo simulation within the policy call to estimate win probability for HIT and STAY. Since we have 1 second, we can run maybe 10,000 simulations per call.
+
+Simulation procedure for a given decision (HIT or STAY):
+- We simulate many random completions of the game for both players.
+- For each simulation:
+   * Our deck: remaining cards in random order.
+   * Opponent deck: full 13 cards in random order.
+   * We simulate our play: we follow a candidate policy (for testing HIT vs STAY). For the current decision, we force either HIT or STAY, and then for subsequent decisions we follow a predetermined policy (maybe the same heuristic or a threshold policy).
+   * Opponent follows a predetermined policy (maybe threshold policy).
+   * Determine winner.
+- Compute win rate.
+
+We can do this for both HIT and STAY, and choose the one with higher win rate.
+
+But we need to define a policy for subsequent draws. We can use a simple threshold policy: hit until sum >= target - 3. Or we can use the same simulation-based approach recursively? That would be too heavy.
+
+We can precompute a good threshold by experimenting offline. Since target varies, we might need adaptive threshold.
+
+Given the time, I'll implement a heuristic policy that is simple yet reasonable. I'll base it on the classic Blackjack strategy of hitting until 17, but adjusted for target. Since target can be as low as 10, we need to be careful.
+
+I'll set a threshold = min(target, 17) maybe? But if target is 30, threshold 17 is too low. Actually we want to get close to target, so threshold should be target - something.
+
+I'll define: aim = target - 3. Hit until sum >= aim, but also consider bust probability.
+
+Let's implement:
+
+def policy(hand, target):
+    S = hand_value(hand, target)
+    if S >= target:
+        return "STAY"
+    remaining = all_cards - set(hand)
+    # compute bust probability
+    bust_count = 0
+    for card in remaining:
+        new_hand = hand + [card]
+        if hand_value(new_hand, target) > target:
+            bust_count += 1
+    bust_prob = bust_count / len(remaining)
+    
+    # if bust_prob is 0, hit if S < target
+    if bust_prob == 0:
+        return "HIT"
+    # if bust_prob is 1, stay
+    if bust_prob == 1:
+        return "STAY"
+    
+    # if S is close to target, stay
+    diff = target - S
+    if diff <= 2:
+        return "STAY"
+    if diff <= 5:
+        if bust_prob < 0.3:
+            return "HIT"
+        else:
+            return "STAY"
+    # otherwise hit
+    return "HIT"
+
+We need to define all_cards.
+
+Also, we need to handle Ace properly in hand_value.
+
+Let's code hand_value:
+
+def hand_value(hand, target):
+    # treat Ace as 11 if possible, else 1
+    sum_with_ace_as_11 = 0
+    has_ace = False
+    for card in hand:
+        if card == 'A':
+            has_ace = True
+            sum_with_ace_as_11 += 11
+        elif card in ('J','Q','K'):
+            sum_with_ace_as_11 += 10
+        else:
+            sum_with_ace_as_11 += int(card)
+    if has_ace and sum_with_ace_as_11 > target:
+        # recompute with ace as 1
+        sum_with_ace_as_1 = 0
+        for card in hand:
+            if card == 'A':
+                sum_with_ace_as_1 += 1
+            elif card in ('J','Q','K'):
+                sum_with_ace_as_1 += 10
+            else:
+                sum_with_ace_as_1 += int(card)
+        return sum_with_ace_as_1
+    else:
+        return sum_with_ace_as_11
+
+But wait: what if we have multiple Aces? Not possible because only one Ace in deck. So fine.
+
+Now, we also need to consider that if we have Ace and sum_with_ace_as_11 <= target, we use that. But if we draw a new card, the Ace might become 1. That is handled in hand_value for new hand.
+
+Let's test with example: hand=['A','9'], target=20. S = 20. diff=0, so stay.
+
+If hand=['A','8'], target=20. S = 19 (A=11, 8=8). diff=1, stay.
+
+If hand=['A','7'], target=20. S=18, diff=2, stay.
+
+If hand=['A','6'], target=20. S=17, diff=3, diff<=5, bust_prob? remaining cards: all except A,6. Which cards cause bust? Adding any card that makes sum >20. Current sum with Ace as 11 is 17. If we draw 2, new hand ['A','6','2'], sum_with_ace_as_11 = 20, <=20, so sum=20. Not bust. Draw 3: 21 >20, but then Ace becomes 1? Let's compute: new hand ['A','6','3'], sum_with_ace_as_11 = 20, wait 11+6+3=20? Actually 11+6+3=20, so sum=20. Not bust. Draw 4: 11+6+4=21 >20, so Ace becomes 1, sum=1+6+4=11. Not bust. Actually interesting: if we draw a card that would cause sum_with_ace_as_11 > target, we switch Ace to 1, so sum decreases. So bust only occurs if even with Ace as 1, sum > target. For hand ['A','6'], sum_with_ace_as_11=17. Draw 10: new hand ['A','6','10'], sum_with_ace_as_11=27 >20, so Ace becomes 1, sum=1+6+10=17 <=20. So no bust! Actually with Ace, it's hard to bust because Ace can become 1. So bust_prob might be low.
+
+But wait: if we have no Ace, bust is possible.
+
+So we need to compute correctly.
+
+Let's implement hand_value correctly.
+
+Given hand list, we have at most one Ace. Compute sum_with_ace_as_11 if Ace present, else normal sum. If Ace present and sum_with_ace_as_11 <= target, return that. Else if Ace present, return sum_with_ace_as_1 (which is sum_with_ace_as_11 -10). Actually sum_with_ace_as_1 = sum_with_ace_as_11 - 10 because Ace changes from 11 to 1, difference 10.
+
+But careful: if there are multiple non-Ace cards, the sum for non-Ace cards is same. So we can compute total without Ace, then add 11 if Ace and total+11 <= target, else add 1.
+
+Implementation:
+
+def hand_value(hand, target):
+    total = 0
+    ace_count = 0
+    for card in hand:
+        if card == 'A':
+            ace_count += 1
+        elif card in ('J','Q','K'):
+            total += 10
+        else:
+            total += int(card)
+    # we have at most one ace, but handle generally
+    for _ in range(ace_count):
+        if total + 11 <= target:
+            total += 11
+        else:
+            total += 1
+    return total
+
+But this assumes we choose the value for each Ace independently, but since only one Ace, it's fine.
+
+Now, bust if hand_value > target.
+
+Now, in policy, we compute bust_count by checking for each remaining card: new_hand = hand + [card]; if hand_value(new_hand, target) > target: bust_count+=1.
+
+Now, we also need to consider that if we have an Ace in hand, drawing certain cards may cause the Ace to switch from 11 to 1, which might actually lower the sum. So bust is less likely.
+
+Given this, our heuristic might be too conservative.
+
+I think the best approach is to implement the DP with assumption that opponent uses same policy, and compute win probability exactly via recursion with memoization. Since state space is small (2^13 subsets), we can compute V(S) for given T. We need to compute P(o) distribution. But we can compute P(o) by simulating all possible sequences given optimal policy? Actually, we can compute the probability that opponent ends with a particular sum by DP as well. Let's define F(S) as the probability that, starting from state S, the opponent will eventually stop and have final sum hand_value(S', T) where S' is the state they stop at. But we need the distribution over sums, not states.
+
+We can compute the probability that opponent ends with sum s as follows: Define prob_sum[s] = 0 initially. Then we can do a DFS over states according to optimal policy, accumulating probabilities. Since the deck order is random, each draw from state S is equally likely among remaining cards. So we can compute the probability of transitioning from state S to state S' = S ∪ {c} for each c in remaining, with probability 1/|R|. If optimal action at S is STOP, then we add the probability of being at S to prob_sum[hand_value(S,T)]. If DRAW, then we propagate.
+
+We can compute this via dynamic programming over subsets in increasing size. Let prob_state[S] be probability of reaching state S (given we start from empty set and follow optimal policy). Initialize prob_state[empty]=1. For each subset S in increasing size, if optimal_action[S] == STOP, then add prob_state[S] to prob_sum[hand_value(S,T)]. Else, for each card c in remaining(S), let S' = S ∪ {c}, and prob_state[S'] += prob_state[S] / |remaining(S)|.
+
+We can compute this after we have optimal_action for all states. So we need to compute optimal_action and V(S) which depends on prob_sum. This is circular.
+
+We can iterate: start with an initial guess for prob_sum (e.g., uniform over 0..target). Compute optimal_action and V(S) using that prob_sum. Then compute new prob_sum using optimal_action. Repeat until convergence. Since state space small, we can do this within policy call for given T? But policy is called multiple times per game, we can compute once per T and cache.
+
+We have 1 second total, so we can afford to compute for each T once. There are at most 21 possible T values, so we can precompute for all T from 10 to 30 and store the optimal action for each subset. Then in policy, we just look up the action for current hand set and target.
+
+But we need to compute for each T the optimal policy assuming opponent uses same policy. We can use value iteration.
+
+Let's attempt to implement:
+
+We'll have a class that for a given target T:
+- All cards: list of 13 strings.
+- For each subset (represented as bitmask 0..8191), we need to store:
+   * hand_value (computed from cards in subset)
+   * optimal action (initially unknown)
+   * V(S) value (win probability)
+
+We also need prob_sum array size maybe target+1? Actually opponent sum can be up to target (if they don't bust). If they bust, we win. So we need probability of busting. Let's define prob_sum as dict: key = sum (if <= target) or 'bust'. We'll represent bust as target+1.
+
+We'll iterate:
+1. Initialize prob_sum as uniform? Maybe start with prob_sum[bust]=0, and for s in 0..target, prob_sum[s]=1/(target+1). But sums are not equally likely.
+   Alternatively, start with prob_sum such that opponent always stays at 0? Not good.
+
+2. Compute V(S) and optimal_action for all S using current prob_sum.
+   For each S, compute stop_win = probability of winning if stop.
+        s = hand_value(S,T)
+        win = prob_sum[bust] + sum_{o <= target, |o-T| > |s-T|} prob_sum[o]
+   For draw: remaining = all_cards - S
+        if remaining empty: draw_win = 0 (no cards left, must stop? but we should not draw if no cards)
+        else draw_win = (1/|remaining|) * sum_{c in remaining} (0 if hand_value(S∪{c},T) > T else V(S∪{c}))
+   We need V(S∪{c}) which we haven't computed yet. Since we process subsets in increasing size, we can compute V for larger sets first? Actually draw leads to larger set, so we need V for supersets. So we should process subsets in decreasing order of size (from full set down to empty). For full set, remaining empty, so draw is not allowed, V(full) = stop_win.
+
+   So we can iterate over subsets in decreasing order of size (or increasing bitmask). We'll compute V(S) for all S.
+
+3. After computing V and optimal_action for all S, we compute new prob_sum using optimal_action.
+   We start from empty set with probability 1, and propagate according to optimal_action.
+   We'll create array prob_state of size 2^13, initialize prob_state[empty]=1.
+   For each S in increasing order of size, if optimal_action[S] == STOP, then add prob_state[S] to prob_sum[hand_value(S,T)].
+   Else, for each c in remaining, S' = S ∪ {c}, prob_state[S'] += prob_state[S] / |remaining|.
+   Also, if optimal_action[S] == DRAW and remaining is empty? That shouldn't happen because if remaining empty, optimal_action should be STOP.
+
+4. Compare new prob_sum with old, if close, stop; else repeat.
+
+We need to define convergence.
+
+We can do this for each T offline? But we need to produce code that runs in the arena. We can compute on the fly when policy is first called for a given T, and cache. Since T is fixed for the game, we only need to compute once per game. The first call to policy may take some time, but within 1 second.
+
+We'll implement a memoization: store computed optimal_action dict per T.
+
+Let's outline code:
+
+We'll define helper functions: hand_value(subset, target, card_list), but we need to convert subset bitmask to list of cards.
+
+We'll precompute for each subset its hand_value for given T? We can compute on the fly.
+
+We'll also precompute list of remaining cards for each subset.
+
+Given the time, I'll implement the heuristic policy and hope it's good enough. But I think the DP approach is doable and more robust.
+
+I'll try to implement DP.
+
+Let's code.
+
+</thinking>
+<code>
+import random
+from functools import lru_cache
+
+# Precompute all cards
+ALL_CARDS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+CARD_TO_INDEX = {card: i for i, card in enumerate(ALL_CARDS)}
+
+def hand_value(hand, target):
+    """
+    Compute total value of hand given target T.
+    hand is a list of card strings.
+    """
+    total = 0
+    ace_count = 0
+    for card in hand:
+        if card == 'A':
+            ace_count += 1
+        elif card in ('J', 'Q', 'K'):
+            total += 10
+        else:
+            total += int(card)
+    # Process aces: at most one, but handle multiple just in case
+    for _ in range(ace_count):
+        if total + 11 <= target:
+            total += 11
+        else:
+            total += 1
+    return total
+
+def subset_to_cards(mask):
+    """Convert bitmask to list of card strings."""
+    cards = []
+    for i in range(13):
+        if mask & (1 << i):
+            cards.append(ALL_CARDS[i])
+    return cards
+
+def cards_to_subset(cards):
+    """Convert list of cards to bitmask."""
+    mask = 0
+    for card in cards:
+        mask |= 1 << CARD_TO_INDEX[card]
+    return mask
+
+class OptimalPolicy:
+    """Precompute optimal actions for a given target T."""
+    def __init__(self, target):
+        self.target = target
+        self.all_mask = (1 << 13) - 1
+        # Precompute hand value for all subsets
+        self.hand_value_cache = {}
+        for mask in range(self.all_mask + 1):
+            cards = subset_to_cards(mask)
+            self.hand_value_cache[mask] = hand_value(cards, target)
+        
+        # Solve via value iteration
+        self.V = {}  # win probability for each state
+        self.action = {}  # optimal action: 'STAY' or 'HIT'
+        
+        # Opponent distribution (prob_sum) maps sum to probability (sum <= target) and 'bust' key
+        # Initialize opponent distribution as uniform over 0..target (including bust? no bust prob 0)
+        self.opp_dist = {s: 1.0 / (target + 1) for s in range(target + 1)}
+        self.opp_dist['bust'] = 0.0
+        
+        self.converge()
+    
+    def stop_win_prob(self, mask):
+        """Probability of winning if we stop at state mask."""
+        s = self.hand_value_cache[mask]
+        win = self.opp_dist['bust']
+        for o, prob in self.opp_dist.items():
+            if o == 'bust':
+                continue
+            if abs(o - self.target) > abs(s - self.target):
+                win += prob
+        return win
+    
+    def draw_win_prob(self, mask):
+        """Expected win probability if we draw one card from remaining."""
+        remaining_mask = self.all_mask ^ mask
+        if remaining_mask == 0:
+            return 0.0  # no cards left, cannot draw (should not happen if optimal)
+        # count remaining cards and compute average
+        remaining_indices = [i for i in range(13) if remaining_mask & (1 << i)]
+        total = 0.0
+        for i in remaining_indices:
+            new_mask = mask | (1 << i)
+            if self.hand_value_cache[new_mask] > self.target:
+                # bust, lose immediately
+                continue
+            else:
+                total += self.V[new_mask]
+        return total / len(remaining_indices)
+    
+    def compute_opp_dist(self):
+        """Compute opponent's final sum distribution given current optimal policy."""
+        # prob_state[mask] = probability of reaching mask and not having stopped before
+        prob_state = [0.0] * (self.all_mask + 1)
+        prob_state[0] = 1.0  # start with empty hand
+        new_opp_dist = {s: 0.0 for s in range(self.target + 1)}
+        new_opp_dist['bust'] = 0.0
+        
+        # Process masks in increasing order of size (number of bits)
+        masks_by_size = [[] for _ in range(14)]
+        for mask in range(self.all_mask + 1):
+            cnt = bin(mask).count('1')
+            masks_by_size[cnt].append(mask)
+        
+        for size in range(14):
+            for mask in masks_by_size[size]:
+                p = prob_state[mask]
+                if p == 0:
+                    continue
+                if self.action.get(mask, 'HIT') == 'STAY':
+                    # stop at this state
+                    s = self.hand_value_cache[mask]
+                    if s > self.target:
+                        new_opp_dist['bust'] += p
+                    else:
+                        new_opp_dist[s] += p
+                else:
+                    # draw a card
+                    remaining_mask = self.all_mask ^ mask
+                    if remaining_mask == 0:
+                        # no cards left, must stay (should not happen if policy correct)
+                        s = self.hand_value_cache[mask]
+                        if s > self.target:
+                            new_opp_dist['bust'] += p
+                        else:
+                            new_opp_dist[s] += p
+                        continue
+                    remaining_indices = [i for i in range(13) if remaining_mask & (1 << i)]
+                    for i in remaining_indices:
+                        new_mask = mask | (1 << i)
+                        prob_state[new_mask] += p / len(remaining_indices)
+        
+        # Normalize (should sum to 1)
+        total = sum(new_opp_dist.values())
+        if total > 0:
+            for k in new_opp_dist:
+                new_opp_dist[k] /= total
+        return new_opp_dist
+    
+    def converge(self, max_iter=100, tol=1e-6):
+        """Iterate until opponent distribution stabilizes."""
+        for it in range(max_iter):
+            # Compute V and actions for all states given current opp_dist
+            # Process masks in decreasing order of size so that V for supersets is computed first
+            masks_by_size = [[] for _ in range(14)]
+            for mask in range(self.all_mask + 1):
+                cnt = bin(mask).count('1')
+                masks_by_size[cnt].append(mask)
+            
+            for size in range(13, -1, -1):
+                for mask in masks_by_size[size]:
+                    stop_val = self.stop_win_prob(mask)
+                    draw_val = self.draw_win_prob(mask)
+                    if stop_val >= draw_val:
+                        self.V[mask] = stop_val
+                        self.action[mask] = 'STAY'
+                    else:
+                        self.V[mask] = draw_val
+                        self.action[mask] = 'HIT'
+            
+            # Update opponent distribution
+            new_opp_dist = self.compute_opp_dist()
+            # Check change
+            diff = 0.0
+            for k in self.opp_dist:
+                diff += abs(self.opp_dist[k] - new_opp_dist.get(k, 0.0))
+            self.opp_dist = new_opp_dist
+            if diff < tol:
+                break
+
+# Cache optimal policy objects per target
+policy_cache = {}
+
+def policy(hand, target):
+    # Convert hand to bitmask
+    mask = cards_to_subset(hand)
+    
+    # Get or create optimal policy for this target
+    if target not in policy_cache:
+        policy_cache[target] = OptimalPolicy(target)
+    opt = policy_cache[target]
+    
+    # Return optimal action for current state
+    return opt.action.get(mask, 'STAY')
+</code>

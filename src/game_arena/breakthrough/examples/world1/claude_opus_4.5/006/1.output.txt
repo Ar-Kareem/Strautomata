@@ -1,0 +1,169 @@
+My strategy for this Breakthrough policy combines several key elements:
+
+1. **Minimax with Alpha-Beta Pruning**: I implement a depth-limited minimax search with alpha-beta pruning to look ahead and evaluate future positions.
+
+2. **Iterative Deepening**: To make best use of the 1-second time limit, I use iterative deepening to search progressively deeper until time runs out.
+
+3. **Evaluation Function**: The position evaluation considers:
+   - **Material count**: Having more pieces is advantageous
+   - **Advancement bonus**: Pieces closer to the goal row are worth more (exponentially weighted)
+   - **Center control**: Pieces in central columns have slightly more mobility
+   - **Winning/losing detection**: Immediate wins/losses are heavily weighted
+
+4. **Move Ordering**: To improve alpha-beta pruning efficiency, moves are ordered by:
+   - Captures first (usually good moves)
+   - Moves that advance pieces toward the goal
+   - This helps prune more branches early
+
+5. **Safety checks**: The policy always returns a legal move, falling back to a simple heuristic choice if the search fails.
+
+<code>
+import time
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    me_set = set(me)
+    opp_set = set(opp)
+    direction = 1 if color == 'w' else -1
+    goal_row = 7 if color == 'w' else 0
+    opp_goal = 0 if color == 'w' else 7
+    
+    def get_moves(my_pieces, opp_pieces, d):
+        moves = []
+        my_set = set(my_pieces)
+        opp_s = set(opp_pieces)
+        for r, c in my_pieces:
+            nr = r + d
+            if 0 <= nr <= 7:
+                # Forward move
+                if (nr, c) not in my_set and (nr, c) not in opp_s:
+                    moves.append(((r, c), (nr, c)))
+                # Diagonal moves
+                for dc in [-1, 1]:
+                    nc = c + dc
+                    if 0 <= nc <= 7 and (nr, nc) not in my_set:
+                        moves.append(((r, c), (nr, nc)))
+        return moves
+    
+    def evaluate(my_pieces, opp_pieces, my_dir, my_goal, opp_g):
+        # Check for wins
+        for r, c in my_pieces:
+            if r == my_goal:
+                return 100000
+        for r, c in opp_pieces:
+            if r == opp_g:
+                return -100000
+        if len(opp_pieces) == 0:
+            return 100000
+        if len(my_pieces) == 0:
+            return -100000
+        
+        score = 0
+        # Material
+        score += (len(my_pieces) - len(opp_pieces)) * 100
+        
+        # Advancement
+        for r, c in my_pieces:
+            progress = r if my_dir == 1 else (7 - r)
+            score += progress * 15 + (progress ** 2) * 2
+            # Center control bonus
+            center_dist = abs(c - 3.5)
+            score += (3.5 - center_dist) * 2
+        
+        for r, c in opp_pieces:
+            progress = (7 - r) if my_dir == 1 else r
+            score -= progress * 15 + (progress ** 2) * 2
+            center_dist = abs(c - 3.5)
+            score -= (3.5 - center_dist) * 2
+        
+        return score
+    
+    def minimax(my_p, opp_p, depth, alpha, beta, maximizing, my_dir, my_goal, opp_g, deadline):
+        if time.time() > deadline:
+            return evaluate(my_p, opp_p, my_dir, my_goal, opp_g), None
+        
+        if depth == 0:
+            return evaluate(my_p, opp_p, my_dir, my_goal, opp_g), None
+        
+        if maximizing:
+            moves = get_moves(my_p, opp_p, my_dir)
+            if not moves:
+                return -99999, None
+            
+            # Move ordering: captures first, then by advancement
+            opp_s = set(opp_p)
+            moves.sort(key=lambda m: (m[1] not in opp_s, -m[1][0] * my_dir))
+            
+            best_val = -float('inf')
+            best_move = moves[0]
+            for move in moves:
+                fr, to = move
+                new_my = [p for p in my_p if p != fr] + [to]
+                new_opp = [p for p in opp_p if p != to]
+                
+                if to[0] == my_goal:
+                    return 100000, move
+                
+                val, _ = minimax(new_opp, new_my, depth - 1, -beta, -alpha, False, -my_dir, opp_g, my_goal, deadline)
+                val = -val
+                
+                if val > best_val:
+                    best_val = val
+                    best_move = move
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+            return best_val, best_move
+        else:
+            moves = get_moves(my_p, opp_p, my_dir)
+            if not moves:
+                return 99999, None
+            
+            opp_s = set(opp_p)
+            moves.sort(key=lambda m: (m[1] not in opp_s, -m[1][0] * my_dir))
+            
+            best_val = -float('inf')
+            best_move = moves[0]
+            for move in moves:
+                fr, to = move
+                new_my = [p for p in my_p if p != fr] + [to]
+                new_opp = [p for p in opp_p if p != to]
+                
+                if to[0] == my_goal:
+                    return 100000, move
+                
+                val, _ = minimax(new_opp, new_my, depth - 1, -beta, -alpha, False, -my_dir, opp_g, my_goal, deadline)
+                val = -val
+                
+                if val > best_val:
+                    best_val = val
+                    best_move = move
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+            return best_val, best_move
+    
+    # Get initial legal moves
+    legal_moves = get_moves(me, opp, direction)
+    if not legal_moves:
+        return ((0, 0), (0, 0))  # Should never happen
+    
+    # Check for immediate wins
+    for move in legal_moves:
+        if move[1][0] == goal_row:
+            return move
+    
+    deadline = time.time() + 0.85
+    best_move = legal_moves[0]
+    
+    # Iterative deepening
+    for depth in range(1, 20):
+        if time.time() > deadline:
+            break
+        val, move = minimax(list(me), list(opp), depth, -float('inf'), float('inf'), True, direction, goal_row, opp_goal, deadline)
+        if move:
+            best_move = move
+        if val >= 99000 or val <= -99000:
+            break
+    
+    return best_move
+</code>

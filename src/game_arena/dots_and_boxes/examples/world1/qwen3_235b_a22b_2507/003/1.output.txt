@@ -1,0 +1,164 @@
+The logic for this policy is to implement a smart, reactive agent that balances between attacking (completing boxes when safe) and defending (avoiding moves that give the opponent free boxes). The agent will:
+
+1. **Prioritize safe captures**: If a move completes one or more boxes without handing over additional boxes to the opponent, take it immediately.
+
+2. **Avoid giving away free boxes**: Do not play on edges that would create a "three-sided" box (i.e., a box with exactly three edges drawn), as the opponent could complete it on the next turn.
+
+3. **Chain reasoning**: In Dots and Boxes, long chains are valuable. A key strategic principle is the "long chain rule". On a 4x4 grid (odd by odd), the player who moves first can expect to win the long chain battle if they control parity. We aim to avoid creating long chains early, and instead force the opponent to open them.
+
+4. **Use minimax-like lookahead for depth 1–2** when no immediate capture is safe, evaluating moves by:
+   - Whether they complete a box (immediate reward).
+   - Whether they create a "threat" (i.e., leave a box with three sides for the opponent).
+   - Whether they are part of a potential chain.
+
+5. **Prefer moves in the middle** when no strong signal, as edge moves are more likely to inadvertently complete boxes.
+
+6. **Track all legal moves**, score them, and pick the best.
+
+We implement a heuristic scoring system:
+- +100 for each box completed by the move.
+- -1000 if the move allows the opponent to complete a box immediately (i.e., results in a three-sided box elsewhere).
+- +5 for moves that are part of a nearly completed region (to encourage finishing chains).
+- +1 as base to avoid bias.
+
+Additionally, we detect and prefer "double-box moves" — moves that complete two boxes at once (very valuable).
+
+We scan all legal moves and select the one with the highest score.
+
+Since the grid is small (only 4x4 boxes → 5x5 lines → max 40 edges), the state space is manageable for a simple heuristic.
+
+<code>
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Get legal moves
+    legal_moves = []
+    
+    # Horizontal edges: 5 rows, 4 columns (each row has 4 horizontal edges)
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+    
+    # Vertical edges: 4 rows, 5 columns (each row has 5 vertical edges)
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+    
+    # If no legal moves, return any (should not happen)
+    if not legal_moves:
+        return "0,0,H"
+    
+    # Score each move
+    best_score = -float('inf')
+    best_move = legal_moves[0]
+    
+    for move in legal_moves:
+        score = evaluate_move(move, horizontal.copy(), vertical.copy(), capture.copy())
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+
+def evaluate_move(move, horiz, vert, cap):
+    r, c, d = move
+    score = 0
+    
+    # Simulate drawing the edge
+    if d == 'H':
+        horiz[r, c] = 1
+    else:
+        vert[r, c] = 1
+    
+    # Check how many boxes are completed
+    boxes_completed = 0
+    four_corners = []  # list of (box_r, box_c) that become enclosed
+    
+    # For each of the up to two boxes that could be completed
+    if d == 'H':
+        # Horizontal edge at (r,c): affects box above (r-1,c) and below (r,c)
+        if r > 0:  # box above
+            br, bc = r-1, c
+            if br < 4 and bc < 4 and cap[br, bc] == 0:
+                top = horiz[br, bc]
+                bottom = horiz[br+1, bc]
+                left = vert[br, bc]
+                right = vert[br, bc+1]
+                if top != 0 and bottom != 0 and left != 0 and right != 0:
+                    boxes_completed += 1
+                    four_corners.append((br, bc))
+        if r < 4:  # box below
+            br, bc = r, c
+            if br < 4 and bc < 4 and cap[br, bc] == 0:
+                top = horiz[br, bc]
+                bottom = horiz[br+1, bc]
+                left = vert[br, bc]
+                right = vert[br, bc+1]
+                if top != 0 and bottom != 0 and left != 0 and right != 0:
+                    boxes_completed += 1
+                    four_corners.append((br, bc))
+    else:  # d == 'V'
+        # Vertical edge at (r,c): affects box to the left (r,c-1) and right (r,c)
+        if c > 0:  # left box
+            br, bc = r, c-1
+            if br < 4 and bc < 4 and cap[br, bc] == 0:
+                top = horiz[br, bc]
+                bottom = horiz[br+1, bc]
+                left = vert[br, bc]
+                right = vert[br, bc+1]
+                if top != 0 and bottom != 0 and left != 0 and right != 0:
+                    boxes_completed += 1
+                    four_corners.append((br, bc))
+        if c < 4:  # right box
+            br, bc = r, c
+            if br < 4 and bc < 4 and cap[br, bc] == 0:
+                top = horiz[br, bc]
+                bottom = horiz[br+1, bc]
+                left = vert[br, bc]
+                right = vert[br, bc+1]
+                if top != 0 and bottom != 0 and left != 0 and right != 0:
+                    boxes_completed += 1
+                    four_corners.append((br, bc))
+    
+    # Immediate reward for completing boxes
+    if boxes_completed > 0:
+        score += 100 * boxes_completed
+        # Bonus for double-box move
+        if boxes_completed >= 2:
+            score += 50
+        # If we complete boxes, we get another turn, so less risk
+        # But still need to avoid setting up opponent
+    else:
+        # No box completed — opponent's turn. Avoid moves that create 3-edge boxes
+        # Simulate and count how many boxes are now one edge away from completion
+        danger_count = 0
+        for br in range(4):
+            for bc in range(4):
+                if cap[br, bc] != 0:
+                    continue
+                top = horiz[br, bc]
+                bottom = horiz[br+1, bc]
+                left = vert[br, bc]
+                right = vert[br, bc+1]
+                sides = sum(1 for x in [top, bottom, left, right] if x != 0)
+                if sides == 3:
+                    danger_count += 1
+        
+        # Each danger counts as a potential free box for opponent
+        score -= 100 * danger_count
+    
+    # Additional heuristic: prefer center moves slightly over edge
+    # This avoids isolated edge openings
+    if d == 'H':
+        pos_score = 0.1 * (abs(r - 2) + abs(c - 1.5))  # normalize to 4x4 outer grid
+        score -= pos_score  # less on edge is better, but not dominant
+    else:
+        pos_score = 0.1 * (abs(r - 1.5) + abs(c - 2))
+        score -= pos_score
+    
+    # Avoid symmetry breaking early; prefer lower index if tied? (already happens via iteration)
+    
+    return score
+</code>

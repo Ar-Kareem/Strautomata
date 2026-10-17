@@ -1,0 +1,133 @@
+The strategy for this policy is a minimax algorithm with alpha-beta pruning, searching to a fixed depth of 4 moves ahead. It prioritizes immediate wins for the player (returning the winning column if available), blocks immediate opponent wins, and evaluates non-terminal board states using a heuristic that scores all possible 4-cell lines (horizontals, verticals, and main diagonals) based on the number of discs owned (favoring own discs) and open spaces, with exponential weighting (10^n where n is the disc count, ignoring mixed lines). The heuristic sums positive scores for player advantages (no opponent discs) and negative for opponent advantages, aiming for strategic play like preferring center columns indirectly through line connections. This approach balances depth-limited lookahead with execution time constraints, ensuring legal moves in all cases.
+
+<code>
+import copy
+
+ROWS = 6
+COLS = 7
+WIN_SCORE = 10000
+
+def make_move(board, col, player):
+    if board[0][col] != 0:
+        return None
+    new_board = copy.deepcopy(board)
+    for r in range(ROWS - 1, -1, -1):
+        if new_board[r][col] == 0:
+            new_board[r][col] = player
+            return new_board
+    return None
+
+def check_win(board, player):
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            if all(board[r][c + i] == player for i in range(4)):
+                return True
+    # Vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            if all(board[r + i][c] == player for i in range(4)):
+                return True
+    # Diagonal \
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if all(board[r + i][c + i] == player for i in range(4)):
+                return True
+    # Diagonal /
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if all(board[r + i][c + 3 - i] == player for i in range(4)):
+                return True
+    return False
+
+def is_full(board):
+    return all(board[0][c] != 0 for c in range(COLS))
+
+def get_lines(board):
+    lines = []
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            lines.append([board[r][c + i] for i in range(4)])
+    # Vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            lines.append([board[r + i][c] for i in range(4)])
+    # Diagonal \
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            lines.append([board[r + i][c + i] for i in range(4)])
+    # Diagonal /
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            lines.append([board[r + i][c + 3 - i] for i in range(4)])
+    return lines
+
+def heuristic(board):
+    lines = get_lines(board)
+    score = 0
+    for line in lines:
+        m = line.count(1)
+        o = line.count(-1)
+        if o == 0:
+            score += 10 ** m
+        elif m == 0:
+            score -= 10 ** o
+    return score
+
+def evaluate(board):
+    if check_win(board, 1):
+        return WIN_SCORE
+    if check_win(board, -1):
+        return -WIN_SCORE
+    if is_full(board):
+        return 0
+    return heuristic(board)
+
+def minimax(board, depth, alpha, beta, maximizing):
+    if depth == 0 or abs(evaluate(board)) == WIN_SCORE or is_full(board):
+        return evaluate(board)
+    valid_moves = [c for c in range(COLS) if board[0][c] == 0]
+    if maximizing:
+        max_val = -float('inf')
+        for move in valid_moves:
+            new_board = make_move(board, move, 1)
+            if new_board is None:
+                continue
+            val = minimax(new_board, depth - 1, alpha, beta, False)
+            if val > max_val:
+                max_val = val
+            alpha = max(alpha, val)
+            if beta <= alpha:
+                break
+        return max_val
+    else:
+        min_val = float('inf')
+        for move in valid_moves:
+            new_board = make_move(board, move, -1)
+            if new_board is None:
+                continue
+            val = minimax(new_board, depth - 1, alpha, beta, True)
+            if val < min_val:
+                min_val = val
+            beta = min(beta, val)
+            if beta <= alpha:
+                break
+        return min_val
+
+def policy(board):
+    valid_moves = [c for c in range(COLS) if board[0][c] == 0]
+    if not valid_moves:
+        return 0  # Should not happen
+    best_score = -float('inf')
+    best_move = valid_moves[0]
+    for move in valid_moves:
+        new_board = make_move(board, move, 1)
+        if new_board is None:
+            continue
+        score = minimax(new_board, 4, -float('inf'), float('inf'), False)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    return best_move
+</code>

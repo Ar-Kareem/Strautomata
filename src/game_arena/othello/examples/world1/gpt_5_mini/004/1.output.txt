@@ -1,0 +1,243 @@
+Strategy summary:
+- This policy plays Othello (Reversi) using a depth-limited negamax search with alpha-beta pruning and a transposition table.
+- It uses a well-known positional weight matrix (strongly favors corners, punishes corner-adjacent squares), plus mobility and corner heuristics to evaluate positions.
+- Search depth is adaptive: shallow in the early game for speed, deeper in the midgame, and a near-exact search in the endgame (when few empty squares remain).
+- Move ordering is by a quick heuristic to improve alpha-beta effectiveness. The policy always returns a legal move (or "pass" if none exists).
+
+<code>
+import numpy as np
+from typing import List, Tuple, Dict
+
+# Directions for flipping
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),          (0, 1),
+        (1, -1),  (1, 0), (1, 1)]
+
+# Positional weights (classic Othello heuristic)
+WEIGHTS = np.array([
+    [100, -20, 10, 5, 5, 10, -20, 100],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [10, -2, -1, -1, -1, -1, -2, 10],
+    [5,  -2, -1, -1, -1, -1, -2, 5],
+    [5,  -2, -1, -1, -1, -1, -2, 5],
+    [10, -2, -1, -1, -1, -1, -2, 10],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [100, -20, 10, 5, 5, 10, -20, 100]
+], dtype=int)
+
+# Corner positions and their adjacent squares (dangerous to take early)
+CORNERS = [(0, 0), (0, 7), (7, 0), (7, 7)]
+CORNER_ADJ = {
+    (0,0): [(0,1),(1,0),(1,1)],
+    (0,7): [(0,6),(1,7),(1,6)],
+    (7,0): [(6,0),(7,1),(6,1)],
+    (7,7): [(6,7),(7,6),(6,6)]
+}
+
+# Convert board arrays to a tuple key for transposition table
+def board_key(you: np.ndarray, opp: np.ndarray) -> Tuple[bytes, bytes]:
+    # Use bytes representation; small and unique for arrays of 0/1
+    return (you.tobytes(), opp.tobytes())
+
+# Find flips for a single candidate move. Returns list of positions to flip.
+def flips_for_move(you: np.ndarray, opp: np.ndarray, r: int, c: int) -> List[Tuple[int,int]]:
+    if you[r, c] or opp[r, c]:
+        return []
+    flips = []
+    for dr, dc in DIRS:
+        rr = r + dr
+        cc = c + dc
+        temp = []
+        while 0 <= rr < 8 and 0 <= cc < 8 and opp[rr, cc]:
+            temp.append((rr, cc))
+            rr += dr
+            cc += dc
+        if 0 <= rr < 8 and 0 <= cc < 8 and you[rr, cc] and temp:
+            flips.extend(temp)
+    return flips
+
+# Generate all legal moves for the current player; returns list of tuples (r,c,flips)
+def legal_moves_and_flips(you: np.ndarray, opp: np.ndarray) -> List[Tuple[int,int,List[Tuple[int,int]]]]:
+    moves = []
+    # iterate empties
+    empties = np.where((you == 0) & (opp == 0))
+    for r, c in zip(empties[0], empties[1]):
+        f = flips_for_move(you, opp, r, c)
+        if f:
+            moves.append((r, c, f))
+    return moves
+
+# Apply a move (mutates copies) and return new (you, opp) arrays
+def apply_move(you: np.ndarray, opp: np.ndarray, r: int, c: int, flips: List[Tuple[int,int]]):
+    ny = you.copy()
+    no = opp.copy()
+    ny[r, c] = 1
+    for (fr, fc) in flips:
+        ny[fr, fc] = 1
+        no[fr, fc] = 0
+    return ny, no
+
+# Heuristic evaluation of the position from 'you' perspective
+def evaluate(you: np.ndarray, opp: np.ndarray) -> float:
+    # Weighted board score
+    wscore = int((WEIGHTS * (you - opp)).sum())
+
+    # Corner occupancy
+    you_corners = sum(int(you[r,c]) for (r,c) in CORNERS)
+    opp_corners = sum(int(opp[r,c]) for (r,c) in CORNERS)
+    corner_score = 1000 * (you_corners - opp_corners)
+
+    # Corner-adjacent penalty: if corner is empty, occupying the adjacent squares is risky
+    corner_adj_pen = 0
+    for corner, adj_list in CORNER_ADJ.items():
+        cr, cc = corner
+        if (you[cr, cc] == 0) and (opp[cr, cc] == 0):
+            # corner empty, penalize owning adjacent squares
+            for (ar, ac) in adj_list:
+                if you[ar, ac]:
+                    corner_adj_pen -= 150
+                if opp[ar, ac]:
+                    corner_adj_pen += 150
+
+    # Mobility (number of legal moves)
+    m_you = len(legal_moves_and_flips(you, opp))
+    m_opp = len(legal_moves_and_flips(opp, you))
+    if m_you + m_opp != 0:
+        mobility_score = 100 * (m_you - m_opp) / (m_you + m_opp)
+    else:
+        mobility_score = 0
+
+    # Disc difference (useful late game)
+    disc_diff = int(you.sum() - opp.sum())
+    disc_score = 10 * disc_diff
+
+    # Combine with weights
+    score = wscore + corner_score + corner_adj_pen + mobility_score + disc_score
+    return float(score)
+
+# Adaptive search depth
+def choose_depth(empty_count: int) -> int:
+    # Many empties => shallow; few empties => deeper / exact
+    if empty_count <= 8:
+        return empty_count  # search to endgame
+    if empty_count <= 18:
+        return 6
+    if empty_count <= 30:
+        return 5
+    if empty_count <= 44:
+        return 4
+    return 3
+
+# Negamax with alpha-beta and transposition table
+def negamax(you: np.ndarray, opp: np.ndarray, depth: int, alpha: float, beta: float,
+            transposition: Dict[Tuple[bytes, bytes, int], float]) -> float:
+    key = (you.tobytes(), opp.tobytes(), depth)
+    if key in transposition:
+        return transposition[key]
+
+    moves = legal_moves_and_flips(you, opp)
+    if depth == 0 or not moves:
+        # If no moves for current player, try pass (opponent may have moves)
+        if not moves:
+            opp_moves = legal_moves_and_flips(opp, you)
+            if not opp_moves:
+                # Both have no moves -> terminal: final disc difference decisive
+                final = 10000 * int(you.sum() - opp.sum())
+                transposition[key] = float(final)
+                return float(final)
+            # pass: opponent moves with same depth-1 (or same depth? use depth-1 to avoid infinite)
+            val = -negamax(opp, you, depth - 1, -beta, -alpha, transposition)
+            transposition[key] = val
+            return val
+        # depth == 0: evaluate heuristically
+        val = evaluate(you, opp)
+        transposition[key] = val
+        return val
+
+    # Move ordering: sort by heuristic quick eval after applying move (descending)
+    scored_moves = []
+    for (r, c, flips) in moves:
+        ny, no = apply_move(you, opp, r, c, flips)
+        h = evaluate(ny, no)
+        scored_moves.append((h, r, c, flips))
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+
+    best = -1e9
+    for _, r, c, flips in scored_moves:
+        ny, no = apply_move(you, opp, r, c, flips)
+        val = -negamax(no, ny, depth - 1, -beta, -alpha, transposition)
+        if val > best:
+            best = val
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break  # beta cutoff
+
+    transposition[key] = best
+    return best
+
+# Main policy function required by the arena
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Defensive copies
+    you = np.array(you, dtype=np.int8)
+    opp = np.array(opponent, dtype=np.int8)
+
+    moves = legal_moves_and_flips(you, opp)
+    if not moves:
+        return "pass"
+
+    empty_count = 64 - int(you.sum() + opp.sum())
+    depth = choose_depth(empty_count)
+
+    # If few empties, try to search to exact end if depth allows
+    if depth >= empty_count:
+        depth = empty_count
+
+    transposition: Dict[Tuple[bytes, bytes, int], float] = {}
+
+    # Move ordering by a quick heuristic (prefer corners strongly)
+    def move_score_quick(r, c):
+        if (r, c) in CORNERS:
+            return 10000
+        # penalize corner-adjacent
+        for corner, adj_list in CORNER_ADJ.items():
+            if (r, c) in adj_list:
+                return -500
+        return WEIGHTS[r, c]
+
+    moves_sorted = sorted(moves, key=lambda mv: move_score_quick(mv[0], mv[1]), reverse=True)
+
+    best_move = None
+    best_val = -1e9
+    alpha = -1e9
+    beta = 1e9
+
+    for r, c, flips in moves_sorted:
+        ny, no = apply_move(you, opp, r, c, flips)
+        val = -negamax(no, ny, depth - 1, -beta, -alpha, transposition)
+        if val > best_val:
+            best_val = val
+            best_move = (r, c)
+        if val > alpha:
+            alpha = val
+
+    # Return best move as algebraic notation: file a..h maps to c=0..7, rank 1..8 maps to r=0..7
+    if best_move is None:
+        return "pass"
+    r, c = best_move
+    move_str = f"{chr(ord('a') + c)}{r + 1}"
+    return move_str
+
+# If this file is run directly, run a tiny self-test to ensure formatting is correct.
+if __name__ == "__main__":
+    # Starting position example: standard Othello start
+    you = np.zeros((8,8), dtype=int)
+    opp = np.zeros((8,8), dtype=int)
+    # standard initial four
+    # black (you) on d4 (3,3) and e5 (4,4); white (opp) on d5 (4,3) and e4 (3,4)
+    you[3,3] = 1
+    you[4,4] = 1
+    opp[3,4] = 1
+    opp[4,3] = 1
+    print("Policy move for initial position:", policy(you, opp))
+</code>

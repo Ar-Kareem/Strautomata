@@ -1,0 +1,86 @@
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    my_pieces = my_men + my_kings
+    opponent_pieces = set(opp_men + opp_kings)
+    my_piece_set = set(my_pieces)
+    all_occupied = my_piece_set.union(opponent_pieces)
+    
+    # Generate all possible captures
+    captures = []
+    for piece in my_pieces:
+        from_row, from_col = piece
+        is_king = piece in my_kings
+        if is_king:
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            if color == 'b':
+                directions = [(-1, -1), (-1, 1)]
+            else:
+                directions = [(1, -1), (1, 1)]
+        
+        for dr, dc in directions:
+            mid_r, mid_c = from_row + dr, from_col + dc
+            to_r, to_c = from_row + 2*dr, from_col + 2*dc
+            if 0 <= to_r < 8 and 0 <= to_c < 8:
+                if (mid_r, mid_c) in opponent_pieces and (to_r, to_c) not in all_occupied:
+                    captured_is_king = (mid_r, mid_c) in opp_kings
+                    promoted = (not is_king) and (
+                        (color == 'b' and to_r == 0) or (color == 'w' and to_r == 7)
+                    )
+                    captures.append( (piece, (to_r, to_c), captured_is_king, promoted, to_r + to_c) )
+    
+    if captures:
+        # Sort by king capture, promotion, then row advancement
+        captures.sort(key=lambda x: (-x[2], -x[3], -x[4] if color == 'b' else x[4]))
+        return (captures[0][0], captures[0][1])
+    
+    # Generate non-capturing moves
+    moves = []
+    for piece in my_pieces:
+        from_row, from_col = piece
+        is_king = piece in my_kings
+        if is_king:
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            if color == 'b':
+                directions = [(-1, -1), (-1, 1)]
+            else:
+                directions = [(1, -1), (1, 1)]
+        
+        for dr, dc in directions:
+            to_r, to_c = from_row + dr, from_col + dc
+            if 0 <= to_r < 8 and 0 <= to_c < 8 and (to_r, to_c) not in all_occupied:
+                promoted = (not is_king) and (
+                    (color == 'b' and to_r == 0) or (color == 'w' and to_r == 7)
+                )
+                distance = abs(from_row - to_r)
+                safe = True
+                # Check if move exposes piece to immediate capture
+                opp_color = 'w' if color == 'b' else 'b'
+                for opp in opp_men + opp_kings:
+                    opp_r, opp_c = opp
+                    if opp in opp_kings:
+                        opp_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+                    else:
+                        if opp_color == 'b':
+                            opp_dirs = [(-1, -1), (-1, 1)]
+                        else:
+                            opp_dirs = [(1, -1), (1, 1)]
+                    for odr, odc in opp_dirs:
+                        cap_r, cap_c = opp_r + odr, opp_c + odc
+                        if (cap_r, cap_c) == (to_r, to_c):
+                            land_r, land_c = opp_r + 2*odr, opp_c + 2*odc
+                            if 0 <= land_r < 8 and 0 <= land_c < 8 and (land_r, land_c) not in all_occupied:
+                                safe = False
+                                break
+                    if not safe:
+                        break
+                centrality = abs(to_r - 3.5) + abs(to_c - 3.5)
+                moves.append( (piece, (to_r, to_c), promoted, distance, safe, centrality) )
+    
+    if moves:
+        moves.sort(key=lambda x: (-x[2], -x[3], -x[4], x[5]))
+        return (moves[0][0], moves[0][1])
+    
+    # Fallback (shouldn't be reached in valid game states)
+    return (my_men[0], (my_men[0][0] + (-1 if color == 'b' else 1), my_men[0][1]))

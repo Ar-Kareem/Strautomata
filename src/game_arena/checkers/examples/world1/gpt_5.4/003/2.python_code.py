@@ -1,0 +1,492 @@
+
+from __future__ import annotations
+
+import time
+import math
+from dataclasses import dataclass
+
+INF = 10**9
+
+# ------------------------------------------------------------
+# Board / state helpers
+# ------------------------------------------------------------
+
+@dataclass(frozen=True)
+class State:
+    my_men: frozenset
+    my_kings: frozenset
+    opp_men: frozenset
+    opp_kings: frozenset
+    color: str  # side to move: 'b' or 'w'
+
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def playable(r, c):
+    return (r + c) % 2 == 1
+
+
+def forward_dirs(color):
+    # black moves downward to lower row values, white upward to higher row values
+    return [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]
+
+
+def all_dirs():
+    return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+
+def promotion_row(color):
+    return 0 if color == 'b' else 7
+
+
+def occupied_sets(state: State):
+    mine = state.my_men | state.my_kings
+    opp = state.opp_men | state.opp_kings
+    return mine, opp, mine | opp
+
+
+def make_state(my_men, my_kings, opp_men, opp_kings, color):
+    return State(frozenset(my_men), frozenset(my_kings), frozenset(opp_men), frozenset(opp_kings), color)
+
+
+def swap_perspective(state: State) -> State:
+    return State(
+        my_men=state.opp_men,
+        my_kings=state.opp_kings,
+        opp_men=state.my_men,
+        opp_kings=state.my_kings,
+        color='w' if state.color == 'b' else 'b'
+    )
+
+
+# ------------------------------------------------------------
+# Move generation
+# We generate full move sequences for search.
+# Each move is represented as a list of visited squares: [start, ..., end]
+# For non-captures length == 2.
+# For captures it may be longer due to multi-jumps.
+# ------------------------------------------------------------
+
+def piece_dirs(is_king, color):
+    return all_dirs() if is_king else forward_dirs(color)
+
+
+def gen_simple_moves_for_piece(state: State, pos, is_king):
+    _, _, occ = occupied_sets(state)
+    r, c = pos
+    moves = []
+    for dr, dc in piece_dirs(is_king, state.color):
+        nr, nc = r + dr, c + dc
+        if in_bounds(nr, nc) and playable(nr, nc) and (nr, nc) not in occ:
+            moves.append([pos, (nr, nc)])
+    return moves
+
+
+def gen_captures_for_piece(state: State, pos, is_king):
+    # Recursive generation of all multi-jump sequences.
+    results = []
+
+    def dfs(my_men, my_kings, opp_men, opp_kings, cur_pos, cur_is_king, path):
+        found = False
+        mine = my_men | my_kings
+        opp = opp_men | opp_kings
+        occ = mine | opp
+        r, c = cur_pos
+
+        for dr, dc in piece_dirs(cur_is_king, state.color):
+            mr, mc = r + dr, c + dc
+            lr, lc = r + 2 * dr, c + 2 * dc
+            if not (in_bounds(mr, mc) and in_bounds(lr, lc) and playable(lr, lc)):
+                continue
+            if (mr, mc) not in opp:
+                continue
+            if (lr, lc) in occ:
+                continue
+
+            found = True
+
+            n_my_men = set(my_men)
+            n_my_kings = set(my_kings)
+            n_opp_men = set(opp_men)
+            n_opp_kings = set(opp_kings)
+
+            if cur_is_king:
+                n_my_kings.remove(cur_pos)
+            else:
+                n_my_men.remove(cur_pos)
+
+            if (mr, mc) in n_opp_men:
+                n_opp_men.remove((mr, mc))
+            else:
+                n_opp_kings.remove((mr, mc))
+
+            became_king = cur_is_king
+            if cur_is_king:
+                n_my_kings.add((lr, lc))
+            else:
+                if lr == promotion_row(state.color):
+                    became_king = True
+                    n_my_kings.add((lr, lc))
+                else:
+                    n_my_men.add((lr, lc))
+
+            dfs(
+                frozenset(n_my_men),
+                frozenset(n_my_kings),
+                frozenset(n_opp_men),
+                frozenset(n_opp_kings),
+                (lr, lc),
+                became_king,
+                path + [(lr, lc)]
+            )
+
+        if not found and len(path) > 1:
+            results.append(path)
+
+    dfs(state.my_men, state.my_kings, state.opp_men, state.opp_kings, pos, is_king, [pos])
+    return results
+
+
+def generate_legal_moves(state: State):
+    captures = []
+    for p in state.my_men:
+        captures.extend(gen_captures_for_piece(state, p, False))
+    for p in state.my_kings:
+        captures.extend(gen_captures_for_piece(state, p, True))
+    if captures:
+        return captures
+
+    moves = []
+    for p in state.my_men:
+        moves.extend(gen_simple_moves_for_piece(state, p, False))
+    for p in state.my_kings:
+        moves.extend(gen_simple_moves_for_piece(state, p, True))
+    return moves
+
+
+def is_capture_sequence(seq):
+    return len(seq) >= 2 and abs(seq[1][0] - seq[0][0]) == 2
+
+
+def apply_move(state: State, seq):
+    my_men = set(state.my_men)
+    my_kings = set(state.my_kings)
+    opp_men = set(state.opp_men)
+    opp_kings = set(state.opp_kings)
+
+    start = seq[0]
+    piece_is_king = start in my_kings
+
+    if piece_is_king:
+        my_kings.remove(start)
+    else:
+        my_men.remove(start)
+
+    cur = start
+    for nxt in seq[1:]:
+        if abs(nxt[0] - cur[0]) == 2:
+            mr = (cur[0] + nxt[0]) // 2
+            mc = (cur[1] + nxt[1]) // 2
+            if (mr, mc) in opp_men:
+                opp_men.remove((mr, mc))
+            elif (mr, mc) in opp_kings:
+                opp_kings.remove((mr, mc))
+        cur = nxt
+
+    end = seq[-1]
+    if piece_is_king or end[0] == promotion_row(state.color):
+        my_kings.add(end)
+    else:
+        my_men.add(end)
+
+    next_state = State(
+        my_men=frozenset(opp_men),
+        my_kings=frozenset(opp_kings),
+        opp_men=frozenset(my_men),
+        opp_kings=frozenset(my_kings),
+        color='w' if state.color == 'b' else 'b'
+    )
+    return next_state
+
+
+# ------------------------------------------------------------
+# Evaluation
+# ------------------------------------------------------------
+
+def piece_value():
+    return 100, 175  # man, king
+
+
+def advancement_bonus(pos, color):
+    r, c = pos
+    return (7 - r) if color == 'b' else r
+
+
+def center_bonus(pos):
+    r, c = pos
+    # mild preference for central playable squares
+    return 3 - max(abs(r - 3.5), abs(c - 3.5))
+
+
+def edge_penalty(pos):
+    r, c = pos
+    return 1 if c == 0 or c == 7 else 0
+
+
+def is_back_rank_guard(pos, color):
+    r, c = pos
+    return (color == 'b' and r == 7) or (color == 'w' and r == 0)
+
+
+def count_mobility(state: State):
+    moves = generate_legal_moves(state)
+    return len(moves), any(is_capture_sequence(m) for m in moves)
+
+
+def threatened_men_and_kings(state: State):
+    # Approximate threat count: how many of our pieces can be captured immediately.
+    threatened_men = 0
+    threatened_kings = 0
+    my_all = state.my_men | state.my_kings
+    opp_all = state.opp_men | state.opp_kings
+    occ = my_all | opp_all
+
+    for piece in state.my_men:
+        pr, pc = piece
+        threatened = False
+        for opp in state.opp_men:
+            orow, ocol = opp
+            for dr, dc in forward_dirs('w' if state.color == 'b' else 'b'):
+                if (orow + dr, ocol + dc) == piece:
+                    lr, lc = pr + dr, pc + dc
+                    if in_bounds(lr, lc) and playable(lr, lc) and (lr, lc) not in occ:
+                        threatened = True
+                        break
+            if threatened:
+                break
+        if not threatened:
+            for opp in state.opp_kings:
+                orow, ocol = opp
+                for dr, dc in all_dirs():
+                    if (orow + dr, ocol + dc) == piece:
+                        lr, lc = pr + dr, pc + dc
+                        if in_bounds(lr, lc) and playable(lr, lc) and (lr, lc) not in occ:
+                            threatened = True
+                            break
+                if threatened:
+                    break
+        if threatened:
+            threatened_men += 1
+
+    for piece in state.my_kings:
+        pr, pc = piece
+        threatened = False
+        for opp in state.opp_men:
+            orow, ocol = opp
+            for dr, dc in forward_dirs('w' if state.color == 'b' else 'b'):
+                if (orow + dr, ocol + dc) == piece:
+                    lr, lc = pr + dr, pc + dc
+                    if in_bounds(lr, lc) and playable(lr, lc) and (lr, lc) not in occ:
+                        threatened = True
+                        break
+            if threatened:
+                break
+        if not threatened:
+            for opp in state.opp_kings:
+                orow, ocol = opp
+                for dr, dc in all_dirs():
+                    if (orow + dr, ocol + dc) == piece:
+                        lr, lc = pr + dr, pc + dc
+                        if in_bounds(lr, lc) and playable(lr, lc) and (lr, lc) not in occ:
+                            threatened = True
+                            break
+                if threatened:
+                    break
+        if threatened:
+            threatened_kings += 1
+
+    return threatened_men, threatened_kings
+
+
+def evaluate(state: State):
+    # Terminal checks
+    my_moves = generate_legal_moves(state)
+    if not my_moves:
+        return -200000
+    opp_state = swap_perspective(state)
+    opp_moves = generate_legal_moves(opp_state)
+    if not opp_moves:
+        return 200000
+
+    MAN, KING = piece_value()
+
+    score = 0
+
+    # Material
+    score += MAN * len(state.my_men) + KING * len(state.my_kings)
+    score -= MAN * len(state.opp_men) + KING * len(state.opp_kings)
+
+    # Advancement / promotion pressure
+    for p in state.my_men:
+        score += 7 * advancement_bonus(p, state.color)
+        if is_back_rank_guard(p, state.color):
+            score += 6
+        score += 3 * center_bonus(p)
+        score -= 2 * edge_penalty(p)
+
+    opp_color = 'w' if state.color == 'b' else 'b'
+    for p in state.opp_men:
+        score -= 7 * advancement_bonus(p, opp_color)
+        if is_back_rank_guard(p, opp_color):
+            score -= 6
+        score -= 3 * center_bonus(p)
+        score += 2 * edge_penalty(p)
+
+    # Kings like center and mobility
+    for p in state.my_kings:
+        score += 8 * center_bonus(p)
+        score -= 1 * edge_penalty(p)
+    for p in state.opp_kings:
+        score -= 8 * center_bonus(p)
+        score += 1 * edge_penalty(p)
+
+    # Mobility
+    my_mob, my_cap = len(my_moves), any(is_capture_sequence(m) for m in my_moves)
+    opp_mob, opp_cap = count_mobility(opp_state)
+    score += 3 * (my_mob - opp_mob)
+    if my_cap:
+        score += 12
+    if opp_cap:
+        score -= 12
+
+    # Threats
+    tm, tk = threatened_men_and_kings(state)
+    score -= 18 * tm + 28 * tk
+    otm, otk = threatened_men_and_kings(opp_state)
+    score += 18 * otm + 28 * otk
+
+    return int(score)
+
+
+# ------------------------------------------------------------
+# Search
+# ------------------------------------------------------------
+
+class SearchTimeout(Exception):
+    pass
+
+
+def move_order_key(state: State, seq):
+    end = seq[-1]
+    capture = 1 if is_capture_sequence(seq) else 0
+    jumps = len(seq) - 1 if capture else 0
+
+    start = seq[0]
+    was_king = start in state.my_kings
+    promotes = (not was_king) and end[0] == promotion_row(state.color)
+    central = center_bonus(end)
+
+    # Estimate immediate capture gain
+    gain = 0
+    cur = seq[0]
+    for nxt in seq[1:]:
+        if abs(nxt[0] - cur[0]) == 2:
+            mr = (cur[0] + nxt[0]) // 2
+            mc = (cur[1] + nxt[1]) // 2
+            if (mr, mc) in state.opp_kings:
+                gain += 175
+            elif (mr, mc) in state.opp_men:
+                gain += 100
+        cur = nxt
+
+    return (
+        capture,
+        gain,
+        1 if promotes else 0,
+        jumps,
+        central,
+    )
+
+
+def alphabeta(state: State, depth, alpha, beta, start_time, time_limit):
+    if time.time() - start_time > time_limit:
+        raise SearchTimeout
+
+    moves = generate_legal_moves(state)
+    if depth == 0 or not moves:
+        return evaluate(state), None
+
+    moves = sorted(moves, key=lambda m: move_order_key(state, m), reverse=True)
+
+    best_move = moves[0]
+    value = -INF
+
+    for mv in moves:
+        child = apply_move(state, mv)
+        score, _ = alphabeta(child, depth - 1, -beta, -alpha, start_time, time_limit)
+        score = -score
+
+        if score > value:
+            value = score
+            best_move = mv
+        if value > alpha:
+            alpha = value
+        if alpha >= beta:
+            break
+
+    return value, best_move
+
+
+# ------------------------------------------------------------
+# Public policy
+# ------------------------------------------------------------
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    state = make_state(my_men, my_kings, opp_men, opp_kings, color)
+    legal = generate_legal_moves(state)
+
+    # Absolute safety: always return a legal move if anything exists.
+    if not legal:
+        # Should not happen in a valid arena state, but return something harmless-looking.
+        # There is no legal move; fallback to any owned square if possible.
+        if my_men:
+            p = my_men[0]
+            return (p, p)
+        if my_kings:
+            p = my_kings[0]
+            return (p, p)
+        return ((0, 1), (0, 1))
+
+    # Good immediate fallback
+    legal = sorted(legal, key=lambda m: move_order_key(state, m), reverse=True)
+    best = legal[0]
+
+    start_time = time.time()
+    time_limit = 0.92
+
+    # Iterative deepening
+    try:
+        piece_count = len(my_men) + len(my_kings) + len(opp_men) + len(opp_kings)
+        if piece_count >= 18:
+            max_depth = 6
+        elif piece_count >= 10:
+            max_depth = 8
+        else:
+            max_depth = 10
+
+        for depth in range(1, max_depth + 1):
+            score, mv = alphabeta(state, depth, -INF, INF, start_time, time_limit)
+            if mv is not None:
+                best = mv
+            if abs(score) > 150000:
+                break
+    except SearchTimeout:
+        pass
+    except Exception:
+        # Never risk disqualification due to an unexpected bug.
+        pass
+
+    # API expects only the first step of the move.
+    return best[0], best[1]

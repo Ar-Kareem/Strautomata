@@ -1,0 +1,104 @@
+The strategy for this policy is a shortest‑path heuristic using 0‑1 BFS. For every legal empty cell, it evaluates how that move affects (1) my minimum connection cost between my sides and (2) the opponent’s minimum connection cost. It picks the move that minimizes my path, while also considering blocking the opponent—especially when the opponent is close to winning. This gives a fast, smart, and legal move every time.
+
+<code>
+from collections import deque
+import math
+from typing import List, Tuple, Set
+
+N = 11
+
+def neighbors(r: int, c: int):
+    # hex neighbors
+    dirs = [(0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, -1)]
+    for dr, dc in dirs:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < N and 0 <= nc < N:
+            yield nr, nc
+
+def shortest_path(me_set: Set[Tuple[int,int]], opp_set: Set[Tuple[int,int]], color: str) -> float:
+    INF = float('inf')
+    dist = [[INF]*N for _ in range(N)]
+    dq = deque()
+
+    if color == 'b':
+        sources = [(0, c) for c in range(N)]
+        targets = {(N-1, c) for c in range(N)}
+    else:
+        sources = [(r, 0) for r in range(N)]
+        targets = {(r, N-1) for r in range(N)}
+
+    for s in sources:
+        if s in opp_set:
+            continue
+        w = 0 if s in me_set else 1
+        r, c = s
+        if w < dist[r][c]:
+            dist[r][c] = w
+            if w == 0:
+                dq.appendleft(s)
+            else:
+                dq.append(s)
+
+    while dq:
+        r, c = dq.popleft()
+        dcur = dist[r][c]
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_set:
+                continue
+            w = 0 if (nr, nc) in me_set else 1
+            nd = dcur + w
+            if nd < dist[nr][nc]:
+                dist[nr][nc] = nd
+                if w == 0:
+                    dq.appendleft((nr, nc))
+                else:
+                    dq.append((nr, nc))
+
+    best = INF
+    for t in targets:
+        r, c = t
+        if dist[r][c] < best:
+            best = dist[r][c]
+    return best
+
+def policy(me: List[Tuple[int,int]], opp: List[Tuple[int,int]], color: str) -> Tuple[int,int]:
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # list empty cells
+    empties = [(r, c) for r in range(N) for c in range(N) if (r,c) not in me_set and (r,c) not in opp_set]
+    if not empties:
+        return (0, 0)  # should not happen
+
+    # precompute opponent distance now
+    opp_color = 'w' if color == 'b' else 'b'
+    opp_dist_now = shortest_path(opp_set, me_set, opp_color)
+
+    best_move = empties[0]
+    best_score = None
+
+    for cell in empties:
+        r, c = cell
+        new_me = me_set | {cell}
+        new_opp = opp_set | {cell}  # blocked for opponent
+
+        my_dist = shortest_path(new_me, opp_set, color)
+        opp_dist = shortest_path(opp_set, new_me, opp_color)
+
+        # if winning move found, return immediately
+        if my_dist == 0:
+            return cell
+
+        # choose scoring strategy
+        if opp_dist_now <= 2:
+            # urgent defense
+            score = (-opp_dist, my_dist)
+        else:
+            score = (my_dist, -opp_dist)
+
+        if best_score is None or score < best_score:
+            best_score = score
+            best_move = cell
+
+    return best_move
+</code>

@@ -1,0 +1,79 @@
+
+import numpy as np
+from copy import deepcopy
+
+def policy(you, opponent) -> str:
+    you = [list(row) for row in you]
+    opponent = [list(row) for row in opponent]
+    
+    QUADS = [(0,0),(0,3),(3,0),(3,3)]
+    
+    def rotate(board_you, board_opp, q, d):
+        by = [r[:] for r in board_you]
+        bo = [r[:] for r in board_opp]
+        r0,c0 = QUADS[q]
+        for b in [by,bo]:
+            sub = [[b[r0+i][c0+j] for j in range(3)] for i in range(3)]
+            if d == 'L':
+                rot = [[sub[j][2-i] for j in range(3)] for i in range(3)]
+            else:
+                rot = [[sub[2-j][i] for j in range(3)] for i in range(3)]
+            for i in range(3):
+                for j in range(3):
+                    b[r0+i][c0+j] = rot[i][j]
+        return by, bo
+    
+    def check_win(board):
+        for r in range(6):
+            for c in range(6):
+                if board[r][c] == 0: continue
+                for dr,dc in [(0,1),(1,0),(1,1),(1,-1)]:
+                    if 0<=r+4*dr<6 and 0<=c+4*dc<6:
+                        if all(board[r+i*dr][c+i*dc]==1 for i in range(5)):
+                            return True
+        return False
+    
+    def count_lines(board, opp_board):
+        score = 0
+        lines = []
+        for r in range(6):
+            for c in range(6):
+                for dr,dc in [(0,1),(1,0),(1,1),(1,-1)]:
+                    if 0<=r+4*dr<6 and 0<=c+4*dc<6:
+                        cells = [(r+i*dr,c+i*dc) for i in range(5)]
+                        mine = sum(board[x][y] for x,y in cells)
+                        theirs = sum(opp_board[x][y] for x,y in cells)
+                        if theirs == 0 and mine > 0:
+                            score += 10**mine
+                        if mine == 0 and theirs > 0:
+                            score -= 10**theirs * 0.9
+        return score
+    
+    empty = [(r,c) for r in range(6) for c in range(6) if you[r][c]==0 and opponent[r][c]==0]
+    rotations = [(q,d) for q in range(4) for d in ['L','R']]
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for r,c in empty:
+        you[r][c] = 1
+        for q,d in rotations:
+            by, bo = rotate(you, opponent, q, d)
+            my_win = check_win(by)
+            op_win = check_win(bo)
+            if my_win and not op_win:
+                you[r][c] = 0
+                return f"{r+1},{c+1},{q},{d}"
+            if my_win and op_win:
+                sc = 50000  # draw better than loss
+            elif op_win:
+                sc = -100000
+            else:
+                sc = count_lines(by, bo)
+            if sc > best_score:
+                best_score = sc
+                best_move = (r,c,q,d)
+        you[r][c] = 0
+    
+    r,c,q,d = best_move
+    return f"{r+1},{c+1},{q},{d}"

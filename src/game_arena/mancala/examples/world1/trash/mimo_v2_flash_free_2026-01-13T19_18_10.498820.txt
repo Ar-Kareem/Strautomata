@@ -1,0 +1,256 @@
+I'll develop a strategy for the Kalah game by implementing a minimax algorithm with alpha-beta pruning and a heuristic evaluation function.
+
+**Strategic Approach:**
+1. **Minimax with Alpha-Beta Pruning**: This will allow me to explore the game tree efficiently within the 1-second time limit, looking several moves ahead.
+2. **Heuristic Evaluation**: The evaluation function will consider:
+   - Current score difference (store counts)
+   - Seed advantage in movable positions
+   - Control of capture opportunities
+   - Extra move potential (landing in your store)
+3. **Move Ordering**: Prioritize moves that lead to captures or extra moves to improve alpha-beta pruning efficiency.
+
+The heuristic will favor positions where:
+- You have significantly more seeds in your store
+- You control houses that can capture opponent seeds
+- You have moves that grant extra turns
+- Opponent has limited or no moves
+
+<code>
+```python
+import sys
+from typing import Tuple
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Kalah AI policy using minimax with alpha-beta pruning and heuristic evaluation.
+    """
+    
+    def is_terminal(state: Tuple[list[int], list[int]]) -> bool:
+        """Check if the game is in a terminal state."""
+        y, o = state
+        return sum(y[:6]) == 0 or sum(o[:6]) == 0
+    
+    def terminal_utility(state: Tuple[list[int], list[int]]) -> int:
+        """Calculate utility for terminal state."""
+        y, o = state
+        y_score = y[6] + sum(y[:6])
+        o_score = o[6] + sum(o[:6])
+        return y_score - o_score
+    
+    def evaluate(state: Tuple[list[int], list[int]]) -> int:
+        """Heuristic evaluation function."""
+        if is_terminal(state):
+            return terminal_utility(state)
+        
+        you_state, opp_state = state
+        
+        # Basic score difference
+        score_diff = you_state[6] - opp_state[6]
+        
+        # Seeds remaining on your side vs opponent's side
+        your_seeds = sum(you_state[:6])
+        opp_seeds = sum(opp_state[:6])
+        seed_diff = your_seeds - opp_seeds
+        
+        # Extra move potential (if your store is reachable)
+        extra_move_bonus = 0
+        for i in range(6):
+            if you_state[i] > 0:
+                stones = you_state[i]
+                final_pos = (i + stones) % 13
+                if final_pos == 6:  # Lands in your store
+                    extra_move_bonus += 2
+        
+        # Capture potential (if last seed lands in empty house with opponent seeds opposite)
+        capture_bonus = 0
+        for i in range(6):
+            if you_state[i] > 0 and you_state[i] == 1 and opp_state[5-i] > 0:
+                capture_bonus += 5
+        
+        # Control advantage (ability to make multiple moves)
+        move_control = 0
+        for i in range(6):
+            if you_state[i] > 0:
+                stones = you_state[i]
+                final_pos = (i + stones) % 13
+                if final_pos < 6 and you_state[final_pos] == 0 and opp_state[5-final_pos] > 0:
+                    move_control += 3
+        
+        # Combined heuristic with weighted components
+        total_eval = (
+            score_diff * 100 +
+            seed_diff * 30 +
+            extra_move_bonus * 5 +
+            capture_bonus * 8 +
+            move_control * 2
+        )
+        
+        return total_eval
+    
+    def apply_move(state: Tuple[list[int], list[int]], move: int, player: int) -> Tuple[list[int], list[int], bool, int]:
+        """Apply a move and return new state, whether it's an extra move, and any capture score."""
+        if player == 0:  # current player
+            you_state = state[0][:]  # current player (you)
+            opp_state = state[1][:]  # opponent
+        else:
+            you_state = state[1][:]  # current player (opponent)
+            opp_state = state[0][:]  # opponent (you)
+        
+        # Remove seeds from chosen house
+        seeds = you_state[move]
+        if seeds == 0:
+            raise ValueError(f"Invalid move: house {move} is empty")
+        
+        you_state[move] = 0
+        pos = move
+        
+        # Sow seeds
+        while seeds > 0:
+            pos += 1
+            # Skip opponent's store
+            if pos == 13:  # would be opponent's store (index 6 on opponent side)
+                pos += 1
+            if pos >= 13:
+                pos = 0
+            
+            if pos < 6:
+                you_state[pos] += 1
+            elif pos == 6:
+                you_state[6] += 1  # your store
+            else:  # pos > 6, sow on opponent's side (skip their store)
+                if pos != 13:
+                    opp_state[pos - 7] += 1
+            
+            seeds -= 1
+        
+        # Check for extra move
+        extra_move = False
+        if pos == 6:
+            extra_move = True
+        
+        # Check for capture
+        capture_score = 0
+        if 0 <= pos < 6 and you_state[pos] == 1 and opp_state[5 - pos] > 0:
+            capture_score = you_state[pos] + opp_state[5 - pos]
+            you_state[6] += capture_score
+            you_state[pos] = 0
+            opp_state[5 - pos] = 0
+        
+        # Return state in original orientation
+        if player == 0:
+            return (you_state, opp_state), extra_move, capture_score
+        else:
+            return (opp_state, you_state), extra_move, capture_score
+    
+    def minimax(state: Tuple[list[int], list[int]], depth: int, alpha: float, beta: float, 
+                maximizing: bool, player_just_moved: int, extra_move_chain: int = 0) -> Tuple[int, float]:
+        """
+        Minimax with alpha-beta pruning.
+        player_just_moved: 0 if you just moved, 1 if opponent just moved
+        """
+        if depth == 0 or is_terminal(state):
+            return -1, evaluate(state)
+        
+        if maximizing:
+            # Player 0 is maximizing (you)
+            max_eval = float('-inf')
+            best_move = -1
+            
+            # Try all legal moves
+            moves = [i for i in range(6) if state[0][i] > 0]
+            
+            # Move ordering: prioritize captures and extra moves
+            def move_score(move):
+                s = state[0][move]
+                pos = (move + s) % 13
+                score = 0
+                if pos == 6:
+                    score += 100
+                if 0 <= pos < 6 and state[0][pos] == 0 and s == 1 and state[1][5-pos] > 0:
+                    score += 50
+                return score
+            
+            moves.sort(key=move_score, reverse=True)
+            
+            for move in moves:
+                new_state, extra_move, _ = apply_move(state, move, 0)
+                
+                # If extra move, continue with same player at reduced depth
+                if extra_move and extra_move_chain < 2:  # Limit chain to prevent infinite recursion
+                    _, eval_score = minimax(new_state, depth - 1, alpha, beta, True, 0, extra_move_chain + 1)
+                else:
+                    _, eval_score = minimax(new_state, depth - 1, alpha, beta, False, 0, 0)
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return best_move, max_eval
+        
+        else:
+            # Player 1 is minimizing (opponent)
+            min_eval = float('inf')
+            best_move = -1
+            
+            moves = [i for i in range(6) if state[1][i] > 0]
+            
+            # Move ordering for opponent too
+            def move_score(move):
+                s = state[1][move]
+                pos = (move + s) % 13
+                score = 0
+                if pos == 6:
+                    score += 100
+                if 0 <= pos < 6 and state[1][pos] == 0 and s == 1 and state[0][5-pos] > 0:
+                    score += 50
+                return score
+            
+            moves.sort(key=move_score, reverse=True)
+            
+            for move in moves:
+                new_state, extra_move, _ = apply_move(state, move, 1)
+                
+                if extra_move and extra_move_chain < 2:
+                    _, eval_score = minimax(new_state, depth - 1, alpha, beta, False, 1, extra_move_chain + 1)
+                else:
+                    _, eval_score = minimax(new_state, depth - 1, alpha, beta, True, 1, 0)
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return best_move, min_eval
+    
+    # Main decision logic
+    initial_state = (you, opponent)
+    
+    # Adaptive depth based on remaining seeds (for time management)
+    total_seeds = sum(you[:6]) + sum(opponent[:6])
+    
+    if total_seeds > 30:
+        depth = 4
+    elif total_seeds > 15:
+        depth = 5
+    else:
+        depth = 6
+    
+    # Get best move using minimax
+    best_move, _ = minimax(initial_state, depth, float('-inf'), float('inf'), True, 1)
+    
+    # Fallback: if no move found, return first legal move
+    if best_move == -1 or best_move is None:
+        for i in range(6):
+            if you[i] > 0:
+                return i
+    
+    return best_move
+```
+</code>

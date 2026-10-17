@@ -1,0 +1,554 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns the best move for a 4x4 Tic Tac Toe game. I need to implement a strategy.
+
+Here's my thought process for developing the Tic Tac Toe AI:
+
+1.  **Understand the Game:**
+    *   4x4 grid.
+    *   Win condition: 4 in a row (horizontal, vertical, diagonal).
+    *   Players: '1' (me), '-1' (opponent), '0' (empty).
+
+2.  **Core Strategy - Minimax with Alpha-Beta Pruning:**
+    *   This is the standard approach for perfect information games like Tic Tac Toe.
+    *   **Minimax:** The AI tries to maximize its score, assuming the opponent will always try to minimize the AI's score.
+    *   **Alpha-Beta Pruning:** Optimizes minimax by cutting off branches of the search tree that are guaranteed not to lead to a better solution.
+
+3.  **Evaluation Function (`evaluate_board`):**
+    *   This function needs to assess the "goodness" of a given board state.
+    *   **Terminal States:**
+        *   Win for AI (4 in a row for '1'): Return a very high positive score (e.g., `1000`).
+        *   Win for Opponent (4 in a row for '-1'): Return a very high negative score (e.g., `-1000`).
+        *   Draw (board full, no winner): Return `0`.
+    *   **Non-Terminal States (Heuristics):**
+        *   This is crucial for performance. The deeper I search, the less I rely on heuristics, but a 4x4 board still benefits from good heuristics.
+        *   **Idea 1: Counting potential lines.** For each player, count how many lines (rows, columns, diagonals) they have open for 3-in-a-row, 2-in-a-row, etc., without being blocked by the opponent.
+        *   **Idea 2: Prioritize center.** The center squares (1,1), (1,2), (2,1), (2,2) are generally more valuable as they participate in more winning lines.
+        *   **Idea 3: Threat detection.** Count how many lines a player has 3-in-a-row and can win on the next move if not blocked. This should be weighted heavily.
+        *   **Weighted sums:** Assign scores to different configurations:
+            *   3 in a row + 1 empty: very good for that player.
+            *   2 in a row + 2 empty: decent.
+            *   1 in a row + 3 empty: mild.
+            *   Block an opponent's 3-in-a-row: extremely important.
+
+    *   **Let's refine `evaluate_board`:**
+        *   Check for immediate wins/losses (4-in-a-row).
+        *   Otherwise, iterate through all possible lines (rows, columns, diagonals).
+        *   For each line, count pieces for player 1, pieces for player -1, and empty squares.
+        *   Assign scores based on these counts:
+            *   `(3_p1, 0_p_minus1, 1_empty)`: Huge positive score (AI is about to win).
+            *   `(0_p1, 3_p_minus1, 1_empty)`: Huge negative score (Opponent is about to win).
+            *   `3_p1_in_a_line_elsewhere`: Positive score
+            *   `3_p_minus1_in_a_line_elsewhere`: Negative score
+            *   `2_p1_in_a_line_elsewhere`: Smaller positive score
+            *   `2_p_minus1_in_a_line_elsewhere`: Smaller negative score
+
+        *   **Refinement on scores:** Instead of just summing these, we should consider *how many* such threats/opportunities exist.
+        *   **Centrality:** Give a slight bonus for owning center squares.
+
+4.  **Minimax Implementation (`minimax` function):**
+    *   `minimax(board, depth, is_maximizing_player, alpha, beta)`
+    *   **Base Cases:**
+        *   If `depth == MAX_DEPTH` (or time limit reached), return `evaluate_board(board)`.
+        *   If `evaluate_board` returns a win/loss/draw score, return that score.
+    *   **Recursive Step:**
+        *   Get all `possible_moves` (empty cells).
+        *   If `is_maximizing_player` (AI):
+            *   `max_eval = -infinity`
+            *   For each `move` in `possible_moves`:
+                *   Make move on a `new_board`.
+                *   `eval = minimax(new_board, depth + 1, False, alpha, beta)`
+                *   `max_eval = max(max_eval, eval)`
+                *   `alpha = max(alpha, eval)`
+                *   If `beta <= alpha`, `break` (prune).
+            *   Return `max_eval`.
+        *   If `is_minimizing_player` (Opponent):
+            *   `min_eval = infinity`
+            *   For each `move` in `possible_moves`:
+                *   Make move on a `new_board`.
+                *   `eval = minimax(new_board, depth + 1, True, alpha, beta)`
+                *   `min_eval = min(min_eval, eval)`
+                *   `beta = min(beta, eval)`
+                *   If `beta <= alpha`, `break` (prune).
+            *   Return `min_eval`.
+
+5.  **Main `policy` Function:**
+    *   Initialize `best_move = None`, `best_value = -infinity`.
+    *   Iterate through all empty cells on the current `board`.
+    *   For each empty cell `(r, c)`:
+        *   Make the move for the AI (`1`) on a temporary board.
+        *   Call `minimax(temp_board, 0, False, -infinity, infinity)` (depth 0, now it's opponent's turn).
+        *   If the returned `value` is greater than `best_value`:
+            *   `best_value = value`
+            *   `best_move = (r, c)`
+    *   Return `best_move`.
+
+6.  **Constants and Helper Functions:**
+    *   `BOARD_SIZE = 4`
+    *   `ME = 1`, `OPPONENT = -1`, `EMPTY = 0`
+    *   Winning scores: `WIN_SCORE = 100000`, `LOSE_SCORE = -100000`
+    *   `MAX_DEPTH`: Need to determine a reasonable depth. For 4x4, the search space is larger than 3x3. A depth of 4-6 might be feasible within 1 second, especially with alpha-beta. Maybe 7 or 8 if the board isn't too full. Let's start with 6 and adjust if needed.
+    *   Helper to check `is_draw(board)` and `check_win(board, player)`.
+
+7.  **Detailed `evaluate_board` Implementation Plan:**
+    *   Initialize `score = 0`.
+    *   `lines_to_check`: Generate all 4-square lines (rows, columns, diagonals).
+    *   For each `line` in `lines_to_check`:
+        *   Count `my_pieces`, `opp_pieces`, `empty_pieces` in that `line`.
+        *   **Immediate Win/Loss:**
+            *   If `my_pieces == 4`: `return WIN_SCORE`
+            *   If `opp_pieces == 4`: `return LOSE_SCORE`
+        *   **Threats/Opportunities (Heuristics):**
+            *   If `my_pieces == 3` and `empty_pieces == 1`: `score += 100` (potential win for me)
+            *   If `opp_pieces == 3` and `empty_pieces == 1`: `score -= 100` (potential win for opponent - block immediately!)
+            *   If `my_pieces == 2` and `empty_pieces == 2`: `score += 10`
+            *   If `opp_pieces == 2` and `empty_pieces == 2`: `score -= 10`
+            *   If `my_pieces == 1` and `empty_pieces == 3`: `score += 1`
+            *   If `opp_pieces == 1` and `empty_pieces == 3`: `score -= 1`
+    *   **Center squares bonus:**
+        *   `center_cells = [(1,1), (1,2), (2,1), (2,2)]`
+        *   For `(r, c)` in `center_cells`:
+            *   If `board[r][c] == ME`: `score += 5`
+            *   If `board[r][c] == OPPONENT`: `score -= 5`
+    *   Check for draw if no winner, return `0`. (This should be handled by the minmax base case, if no empty spots and no win/loss, it's a draw)
+
+8.  **Refinement for MAX_DEPTH:**
+    *   A full 4x4 board has 16 cells.
+    *   The game ends when 16 moves are made, or earlier if a win occurs.
+    *   The initial board has 0-1 moves.
+    *   The average branch factor is about 8-10 for a relatively empty board.
+    *   `10^6` operations is a rough target for 1 second.
+    *   `10^4` search nodes (very rough estimate).
+    *   `branching_factor^depth`
+    *   `8^4 = 4096`
+    *   `8^5 = 32768`
+    *   `8^6 = 262144`
+    *   A depth of 6-7 seems plausible with alpha-beta pruning. Let's target `MAX_DEPTH = 6` initially for safety and speed.
+
+9.  **Board Copying:** Crucial to make a *deep copy* of the board when making a move in minimax to avoid modifying the original board state of the parent call. `[row[:] for row in board]` is a good way for list of lists.
+
+10. **Generating Lines for Check_Win / Evaluate:**
+    *   **Rows:** `[[(r, c) for c in range(4)] for r in range(4)]`
+    *   **Columns:** `[[(r, c) for r in range(4)] for c in range(4)]`
+    *   **Main Diagonal:** `[(i, i) for i in range(4)]`
+    *   **Anti-Diagonal:** `[(i, 3-i) for i in range(4)]`
+
+11. **Edge Cases/Initial Moves:**
+    *   If the board is empty, I should probably pick a center square. My current minimax will find this implicitly, but it's good to keep in mind.
+
+Let's start coding.
+
+```python
+import math
+import copy
+
+# Global constants for readability
+BOARD_SIZE = 4
+ME = 1
+OPPONENT = -1
+EMPTY = 0
+
+# Score values for evaluation function
+WIN_SCORE = 1000000  # High score for winning
+LOSE_SCORE = -1000000 # Low score for losing
+THREE_IN_A_ROW_OPP = -10000 # Opponent has 3 in a row, needs block
+THREE_IN_A_ROW_ME = 1000 # I have 3 in a row, potential win
+TWO_IN_A_ROW_OPP = -100 # Opponent has 2 in a row
+TWO_IN_A_ROW_ME = 100 # I have 2 in a row
+CENTER_BONUS = 50 # Bonus for owning a center square
+
+# Max depth for minimax search.
+# 6 seems like a good balance for 4x4 within 1 second.
+# Deeper search implies more time, shallower less optimal moves.
+MAX_DEPTH = 6
+
+# Pre-calculate all 4-cell lines on the board for efficiency
+ALL_LINES = []
+# Rows
+for r in range(BOARD_SIZE):
+    ALL_LINES.append([(r, c) for c in range(BOARD_SIZE)])
+# Columns
+for c in range(BOARD_SIZE):
+    ALL_LINES.append([(r, c) for r in range(BOARD_SIZE)])
+# Main diagonal
+ALL_LINES.append([(i, i) for i in range(BOARD_SIZE)])
+# Anti-diagonal
+ALL_LINES.append([(i, BOARD_SIZE - 1 - i) for i in range(BOARD_SIZE)])
+
+
+def check_for_winner(board):
+    """
+    Checks if there's a winner on the given board.
+    Returns ME if I win, OPPONENT if opponent wins, 0 if no winner yet.
+    """
+    for line in ALL_LINES:
+        current_sum = 0
+        for r, c in line:
+            current_sum += board[r][c]
+        if current_sum == BOARD_SIZE * ME:
+            return ME
+        if current_sum == BOARD_SIZE * OPPONENT:
+            return OPPONENT
+    return EMPTY
+
+def get_possible_moves(board):
+    """
+    Returns a list of all empty cells (r, c) as possible moves.
+    """
+    moves = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == EMPTY:
+                moves.append((r, c))
+    return moves
+
+def evaluate_board(board):
+    """
+    Evaluates the current state of the board.
+    Positive score means good for ME, negative is good for OPPONENT.
+    """
+    winner = check_for_winner(board)
+    if winner == ME:
+        return WIN_SCORE
+    if winner == OPPONENT:
+        return LOSE_SCORE
+
+    score = 0
+
+    # Heuristics based on lines
+    for line in ALL_LINES:
+        my_pieces = 0
+        opp_pieces = 0
+        empty_pieces = 0
+
+        for r, c in line:
+            if board[r][c] == ME:
+                my_pieces += 1
+            elif board[r][c] == OPPONENT:
+                opp_pieces += 1
+            else:
+                empty_pieces += 1
+
+        # Evaluate based on patterns in the line
+        if my_pieces == 3 and empty_pieces == 1:
+            score += THREE_IN_A_ROW_ME # My potential win
+        elif opp_pieces == 3 and empty_pieces == 1:
+            score += THREE_IN_A_ROW_OPP # Opponent potential win (critical block)
+        elif my_pieces == 2 and empty_pieces == 2:
+            score += TWO_IN_A_ROW_ME
+        elif opp_pieces == 2 and empty_pieces == 2:
+            score += TWO_IN_A_ROW_OPP
+
+    # Center square bonus
+    center_cells = [(1,1), (1,2), (2,1), (2,2)]
+    for r, c in center_cells:
+        if board[r][c] == ME:
+            score += CENTER_BONUS
+        elif board[r][c] == OPPONENT:
+            score -= CENTER_BONUS
+
+    return score
+
+def minimax(board, depth, is_maximizing_player, alpha, beta):
+    """
+    Minimax algorithm with Alpha-Beta Pruning.
+    """
+    # Check for terminal states or max depth
+    winner = check_for_winner(board)
+    if winner == ME:
+        return WIN_SCORE - depth # Subtract depth to prefer faster wins
+    if winner == OPPONENT:
+        return LOSE_SCORE + depth # Add depth to prefer slower losses
+
+    possible_moves = get_possible_moves(board)
+    if not possible_moves: # Draw
+        return 0
+
+    if depth == MAX_DEPTH:
+        return evaluate_board(board)
+
+    if is_maximizing_player: # AI's turn
+        max_eval = -math.inf
+        for r, c in possible_moves:
+            new_board = [row[:] for row in board] # Deep copy
+            new_board[r][c] = ME
+            eval = minimax(new_board, depth + 1, False, alpha, beta)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break # Alpha-beta pruning
+        return max_eval
+    else: # Opponent's turn
+        min_eval = math.inf
+        for r, c in possible_moves:
+            new_board = [row[:] for row in board] # Deep copy
+            new_board[r][c] = OPPONENT
+            eval = minimax(new_board, depth + 1, True, alpha, beta)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break # Alpha-beta pruning
+        return min_eval
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    The main policy function to determine the best move for the AI.
+    """
+    best_move = None
+    best_value = -math.inf
+    
+    available_moves = get_possible_moves(board)
+
+    # Handle initial move (if board is empty, pick a center)
+    if len(available_moves) == BOARD_SIZE * BOARD_SIZE: # Board is completely empty
+        # Pick one of the central 2x2 squares
+        center_options = [(1,1), (1,2), (2,1), (2,2)]
+        # Simple heuristic: pick the first one
+        return center_options[0] 
+    
+    # If it's the very first move for ME (only one piece on board)
+    # This optimization can save processing time on the first few moves which are critical.
+    # Count pieces on board
+    my_pieces_count = sum(row.count(ME) for row in board)
+    opp_pieces_count = sum(row.count(OPPONENT) for row in board)
+
+    if my_pieces_count == 0 and opp_pieces_count == 1:
+        # Opponent made the first move. Prioritize center block or a good corner.
+        # This is a good place for specific opening book if we needed more advanced logic.
+        # For now, minimax will handle it, but a fixed opening might be faster.
+        # Let's let minimax handle it for generalizability.
+        pass # Minimax will take over
+
+    for r, c in available_moves:
+        new_board = [row[:] for row in board] # Deep copy
+        new_board[r][c] = ME # Make the move for AI
+
+        # Call minimax for the opponent's turn (false)
+        move_value = minimax(new_board, 0, False, -math.inf, math.inf)
+
+        if move_value > best_value:
+            best_value = move_value
+            best_move = (r, c)
+            
+    # If for some reason no best_move is found (shouldn't happen if available_moves is not empty)
+    # just return the first available move.
+    if best_move is None and available_moves:
+        return available_moves[0]
+
+    return best_move
+
+```
+Testing the constants and logic.
+- `WIN_SCORE` and `LOSE_SCORE` are high enough to be definitive.
+- `THREE_IN_A_ROW` values are also high to prioritize winning/blocking.
+- `TWO_IN_A_ROW` and `CENTER_BONUS` are lower, forming secondary heuristics.
+- `MAX_DEPTH = 6` should be okay. If it's too slow, I might need to reduce it or optimize `evaluate_board` further.
+- The `depth` adjustment in `WIN_SCORE/LOSE_SCORE` ensures the AI tries to win as quickly as possible and prolong the game if losing (if that's the best option).
+- I've included an explicit check for empty board to put a piece in the center, as this is a common strategy and avoids an expensive minimax call for the very first move.
+- I've also added a fallback for `best_move is None`, though it should theoretically never be reached if `available_moves` is not empty.
+
+Consider the case where the board is empty:
+- `policy` calls `get_possible_moves` -> returns all 16 cells.
+- `len(available_moves) == BOARD_SIZE * BOARD_SIZE` is true.
+- `return center_options[0]` (1,1). This is a good, fast first move.
+
+Consider the case where opponent just made their first move at (0,0):
+- `my_pieces_count = 0`, `opp_pieces_count = 1`.
+- It will go into the minimax loop `for r,c in available_moves`.
+- It will try placing `ME` in each available cell and call `minimax`.
+- `minimax` will likely prioritize blocking or taking another center, which is good.
+
+Final checks:
+- All required imports (`math`, `copy`).
+- Function signature matches `policy(board: list[list[int]]) -> tuple[int, int]:`.
+- Return format `(row, col)`.
+- Global constants are fine for this environment.
+- Deep copying `new_board = [row[:] for row in board]` is correct.
+
+Looks good.
+</thinking>
+<code>
+import math
+import copy
+
+# Global constants for readability
+BOARD_SIZE = 4
+ME = 1
+OPPONENT = -1
+EMPTY = 0
+
+# Score values for evaluation function
+WIN_SCORE = 1000000  # High score for winning
+LOSE_SCORE = -1000000 # Low score for losing
+THREE_IN_A_ROW_OPP = -10000 # Opponent has 3 in a row, needs block
+THREE_IN_A_ROW_ME = 10000 # I have 3 in a row, potential win
+TWO_IN_A_ROW_OPP = -100 # Opponent has 2 in a row
+TWO_IN_A_ROW_ME = 100 # I have 2 in a row
+CENTER_BONUS = 50 # Bonus for owning a center square
+
+# Max depth for minimax search.
+# 6 seems like a good balance for 4x4 within typical 1-second timeout.
+# Deeper search implies more time, shallower less optimal moves.
+MAX_DEPTH = 6
+
+# Pre-calculate all 4-cell lines on the board for efficiency
+ALL_LINES = []
+# Rows
+for r in range(BOARD_SIZE):
+    ALL_LINES.append([(r, c) for c in range(BOARD_SIZE)])
+# Columns
+for c in range(BOARD_SIZE):
+    ALL_LINES.append([(r, c) for r in range(BOARD_SIZE)])
+# Main diagonal
+ALL_LINES.append([(i, i) for i in range(BOARD_SIZE)])
+# Anti-diagonal
+ALL_LINES.append([(i, BOARD_SIZE - 1 - i) for i in range(BOARD_SIZE)])
+
+
+def check_for_winner(board: list[list[int]]) -> int:
+    """
+    Checks if there's a winner on the given board.
+    Returns ME if I win, OPPONENT if opponent wins, 0 if no winner yet.
+    """
+    for line in ALL_LINES:
+        current_sum = 0
+        for r, c in line:
+            current_sum += board[r][c]
+        if current_sum == BOARD_SIZE * ME:
+            return ME
+        if current_sum == BOARD_SIZE * OPPONENT:
+            return OPPONENT
+    return EMPTY
+
+def get_possible_moves(board: list[list[int]]) -> list[tuple[int, int]]:
+    """
+    Returns a list of all empty cells (r, c) as possible moves.
+    """
+    moves = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == EMPTY:
+                moves.append((r, c))
+    return moves
+
+def evaluate_board(board: list[list[int]]) -> int:
+    """
+    Evaluates the current state of the board.
+    Positive score means good for ME, negative is good for OPPONENT.
+    """
+    winner = check_for_winner(board)
+    if winner == ME:
+        return WIN_SCORE
+    if winner == OPPONENT:
+        return LOSE_SCORE
+
+    score = 0
+
+    # Heuristics based on lines
+    for line in ALL_LINES:
+        my_pieces = 0
+        opp_pieces = 0
+        empty_pieces = 0
+
+        for r, c in line:
+            if board[r][c] == ME:
+                my_pieces += 1
+            elif board[r][c] == OPPONENT:
+                opp_pieces += 1
+            else:
+                empty_pieces += 1
+
+        # Evaluate based on patterns in the line
+        if my_pieces == 3 and empty_pieces == 1:
+            score += THREE_IN_A_ROW_ME # My potential win (high priority)
+        elif opp_pieces == 3 and empty_pieces == 1:
+            score += THREE_IN_A_ROW_OPP # Opponent potential win (critical block)
+        elif my_pieces == 2 and empty_pieces == 2:
+            score += TWO_IN_A_ROW_ME
+        elif opp_pieces == 2 and empty_pieces == 2:
+            score += TWO_IN_A_ROW_OPP
+
+    # Center square bonus
+    center_cells = [(1,1), (1,2), (2,1), (2,2)]
+    for r, c in center_cells:
+        if board[r][c] == ME:
+            score += CENTER_BONUS
+        elif board[r][c] == OPPONENT:
+            score -= CENTER_BONUS
+
+    return score
+
+
+def minimax(board: list[list[int]], depth: int, is_maximizing_player: bool, alpha: float, beta: float) -> int:
+    """
+    Minimax algorithm with Alpha-Beta Pruning.
+    """
+    # Check for terminal states or max depth
+    winner = check_for_winner(board)
+    if winner == ME:
+        return WIN_SCORE - depth # Subtract depth to prefer faster wins
+    if winner == OPPONENT:
+        return LOSE_SCORE + depth # Add depth to prefer slower losses
+
+    possible_moves = get_possible_moves(board)
+    if not possible_moves: # Draw
+        return 0
+
+    if depth == MAX_DEPTH:
+        return evaluate_board(board)
+
+    if is_maximizing_player: # AI's turn
+        max_eval = -math.inf
+        for r, c in possible_moves:
+            new_board = [row[:] for row in board] # Deep copy
+            new_board[r][c] = ME
+            eval = minimax(new_board, depth + 1, False, alpha, beta)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break # Alpha-beta pruning
+        return max_eval
+    else: # Opponent's turn
+        min_eval = math.inf
+        for r, c in possible_moves:
+            new_board = [row[:] for row in board] # Deep copy
+            new_board[r][c] = OPPONENT
+            eval = minimax(new_board, depth + 1, True, alpha, beta)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break # Alpha-beta pruning
+        return min_eval
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    The main policy function to determine the best move for the AI.
+    """
+    best_move = None
+    best_value = -math.inf
+    
+    available_moves = get_possible_moves(board)
+
+    # Optimization for the very first move: take a center square directly
+    if len(available_moves) == BOARD_SIZE * BOARD_SIZE: # Board is completely empty
+        # Pick one of the central 2x2 squares
+        return (1,1) # Example, could be any of (1,1), (1,2), (2,1), (2,2)
+
+    for r, c in available_moves:
+        new_board = [row[:] for row in board] # Deep copy
+        new_board[r][c] = ME # Make the potential move for AI
+
+        # Call minimax for the opponent's turn (False for is_maximizing_player)
+        move_value = minimax(new_board, 0, False, -math.inf, math.inf)
+
+        if move_value > best_value:
+            best_value = move_value
+            best_move = (r, c)
+            
+    # Fallback: if no best_move is found (should only happen if available_moves is empty,
+    # but check for robustness)
+    if best_move is None and available_moves:
+        return available_moves[0] # Return the first available move
+
+    return best_move
+</code>

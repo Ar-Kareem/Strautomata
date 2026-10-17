@@ -1,0 +1,187 @@
+ The strategy for this policy uses an iterative-deepening alpha-beta search with a mobility-based evaluation function. Given the 6x6 board size, the policy adapts its search depth based on the branching factor (number of legal moves) to ensure it returns within the 1-second limit while playing strong moves.
+
+Key components:
+1. **Move Generation**: Efficiently generates all legal queen-moves for amazons and arrow shots, correctly handling the vacated square rule where arrows may pass through the original amazon position.
+2. **Iterative Deepening**: Searches at increasing depths (2, 3, 4...) until time runs out, ensuring at least a valid move is always available from the previous iteration.
+3. **Alpha-Beta Pruning**: Reduces the search space by pruning branches that cannot improve the outcome.
+4. **Adaptive Depth**: Uses deeper searches in endgame positions (few remaining moves) and shallower searches in complex midgame positions.
+5. **Move Ordering**: Prioritizes moves that place arrows near opponent amazons to improve pruning efficiency.
+6. **Evaluation**: Simple but effective mobility difference (player moves minus opponent moves), which correlates strongly with winning chances in Amazons.
+
+```python
+import numpy as np
+import time
+
+def policy(board):
+    """
+    Determines the next move for Amazons on a 6x6 board.
+    Board values: 0=empty, 1=my_amazon, 2=opponent_amazon, -1=arrow/blocked
+    Returns: "from_row,from_col:to_row,to_col:arrow_row,arrow_col"
+    """
+    solver = AmazonsSolver()
+    return solver.solve(board)
+
+class AmazonsSolver:
+    def __init__(self):
+        self.time_limit = 0.95  # seconds
+        self.start_time = None
+        self.player = 1
+        self.opponent = 2
+        self.size = 6
+        # Precompute 8 directions
+        self.directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    
+    def solve(self, board):
+        self.start_time = time.time()
+        self.player = 1
+        self.opponent = 2
+        
+        # Get all legal moves
+        moves = self.generate_moves(board, self.player)
+        
+        if not moves:
+            # Should not happen per problem statement, but return a dummy
+            return "0,0:0,0:0,0"
+        
+        # Sort moves to improve alpha-beta pruning (arrow near opponent is better)
+        moves.sort(key=lambda m: self.move_heuristic(board, m), reverse=True)
+        
+        best_move = moves[0]
+        
+        # Determine max depth based on branching factor
+        n_moves = len(moves)
+        if n_moves < 20:
+            max_depth = 4
+        elif n_moves < 100:
+            max_depth = 3
+        else:
+            max_depth = 2
+        
+        # Iterative deepening
+        for depth in range(1, max_depth + 1):
+            if self.time_check():
+                break
+            try:
+                score, move = self.alpha_beta(board, depth, -float('inf'), float('inf'), True)
+                if move is not None:
+                    best_move = move
+            except TimeoutError:
+                break
+        
+        return self.format_move(best_move)
+    
+    def time_check(self):
+        return (time.time() - self.start_time) > self.time_limit
+    
+    def generate_moves(self, board, player):
+        """Generate all legal moves for player on board."""
+        moves = []
+        size = self.size
+        b = board
+        dirs = self.directions
+        
+        # Find all amazons for player
+        amazons = []
+        for r in range(size):
+            for c in range(size):
+                if b[r, c] == player:
+                    amazons.append((r, c))
+        
+        for r, c in amazons:
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                # Move amazon to (nr, nc)
+                while 0 <= nr < size and 0 <= nc < size and b[nr, nc] == 0:
+                    # From (nr, nc), shoot arrow
+                    for arr_dr, arr_dc in dirs:
+                        ar, ac = nr + arr_dr, nc + arr_dc
+                        while 0 <= ar < size and 0 <= ac < size:
+                            if ar == r and ac == c:
+                                # Vacated square is treated as empty
+                                moves.append(((r, c), (nr, nc), (ar, ac)))
+                            elif b[ar, ac] == 0:
+                                moves.append(((r, c), (nr, nc), (ar, ac)))
+                            else:
+                                break
+                            ar += arr_dr
+                            ac += arr_dc
+                    nr += dr
+                    nc += dc
+        return moves
+    
+    def move_heuristic(self, board, move):
+        """Quick heuristic: prefer arrows closer to opponent amazons."""
+        (r1, c1), (r2, c2), (ar, ac) = move
+        # Find opponent amazons
+        min_dist = 100
+        for r in range(self.size):
+            for c in range(self.size):
+                if board[r, c] == self.opponent:
+                    dist = abs(ar - r) + abs(ac - c)  # Manhattan distance
+                    if dist < min_dist:
+                        min_dist = dist
+        return -min_dist  # Negative because lower distance is better
+    
+    def alpha_beta(self, board, depth, alpha, beta, maximizing):
+        """Alpha-beta minimax search."""
+        if self.time_check():
+            raise TimeoutError()
+        
+        player = self.player if maximizing else self.opponent
+        moves = self.generate_moves(board, player)
+        
+        # Terminal: no moves available
+        if not moves:
+            return (-10000 if maximizing else 10000, None)
+        
+        if depth == 0:
+            return (self.evaluate(board), None)
+        
+        best_move = moves[0]
+        
+        if maximizing:
+            value = -float('inf')
+            for move in moves:
+                new_board = self.apply_move(board, move, player)
+                score, _ = self.alpha_beta(new_board, depth - 1, alpha, beta, False)
+                if score > value:
+                    value = score
+                    best_move = move
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return (value, best_move)
+        else:
+            value = float('inf')
+            for move in moves:
+                new_board = self.apply_move(board, move, player)
+                score, _ = self.alpha_beta(new_board, depth - 1, alpha, beta, True)
+                if score < value:
+                    value = score
+                    best_move = move
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break
+            return (value, best_move)
+    
+    def apply_move(self, board, move, player):
+        """Apply a move to the board and return new board."""
+        (r1, c1), (r2, c2), (r3, c3) = move
+        new_board = board.copy()
+        new_board[r1, c1] = 0
+        new_board[r2, c2] = player
+        new_board[r3, c3] = -1
+        return new_board
+    
+    def evaluate(self, board):
+        """Evaluate board state from player 1's perspective."""
+        # Simple mobility evaluation
+        my_moves = len(self.generate_moves(board, self.player))
+        opp_moves = len(self.generate_moves(board, self.opponent))
+        return my_moves - opp_moves
+    
+    def format_move(self, move):
+        """Convert move tuple to string."""
+        (r1, c1), (r2, c2), (r3, c3) = move
+        return f"{r1},{c1}:{r2},{c2}:{r3},{c3}"
+```

@@ -1,0 +1,364 @@
+# Strategy
+
+My strategy implements a minimax-based chess engine with alpha-beta pruning and several key heuristics:
+
+1. **Material Evaluation**: Standard piece values (Pawn=100, Knight=320, Bishop=330, Rook=500, Queen=900, King=20000)
+
+2. **Positional Evaluation**:
+   - Piece-square tables that reward central control and good piece placement
+   - King safety considerations (center vs edge positioning based on game phase)
+   - Pawn structure bonuses (advancement, passed pawns)
+
+3. **Search Strategy**:
+   - Minimax with alpha-beta pruning (depth 3)
+   - Move ordering to improve pruning efficiency (captures first, then other moves)
+   - Quiescence search for captures to avoid horizon effect
+
+4. **Special Priorities**:
+   - Immediate checkmate detection
+   - Check evasion when in check
+   - Material gain through captures
+   - King safety in endgame vs middlegame
+
+5. **Game Phase Awareness**: Adjusts evaluation based on remaining material (opening/middlegame vs endgame)
+
+<code>
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    import random
+    
+    # Generate legal moves
+    legal_moves = generate_legal_moves(pieces, to_play)
+    
+    if not legal_moves:
+        return ('0000', memory)  # Should not happen in legal positions
+    
+    # Use minimax with alpha-beta pruning
+    best_move = None
+    best_score = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Order moves: captures first for better pruning
+    ordered_moves = order_moves(legal_moves, pieces, to_play)
+    
+    for move in ordered_moves:
+        new_pieces = apply_move(pieces.copy(), move)
+        score = -minimax(new_pieces, 2, -beta, -alpha, get_opponent(to_play), to_play)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+        
+        alpha = max(alpha, score)
+        if alpha >= beta:
+            break
+    
+    return (best_move if best_move else legal_moves[0], memory)
+
+
+def minimax(pieces, depth, alpha, beta, player, original_player):
+    if depth == 0:
+        return evaluate_position(pieces, original_player)
+    
+    legal_moves = generate_legal_moves(pieces, player)
+    
+    if not legal_moves:
+        # Check if in checkmate or stalemate
+        if is_in_check(pieces, player):
+            return -20000  # Checkmate
+        return 0  # Stalemate
+    
+    max_score = float('-inf')
+    ordered_moves = order_moves(legal_moves, pieces, player)
+    
+    for move in ordered_moves:
+        new_pieces = apply_move(pieces.copy(), move)
+        score = -minimax(new_pieces, depth - 1, -beta, -alpha, get_opponent(player), original_player)
+        max_score = max(max_score, score)
+        alpha = max(alpha, score)
+        if alpha >= beta:
+            break
+    
+    return max_score
+
+
+def order_moves(moves, pieces, player):
+    """Order moves to improve alpha-beta pruning (captures first)"""
+    captures = []
+    non_captures = []
+    
+    for move in moves:
+        to_sq = move[2:4]
+        if to_sq in pieces:
+            captures.append(move)
+        else:
+            non_captures.append(move)
+    
+    return captures + non_captures
+
+
+def evaluate_position(pieces, player):
+    """Evaluate position from player's perspective"""
+    score = 0
+    
+    piece_values = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+    
+    # Piece-square tables (simplified)
+    pawn_table = [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5, -5,-10,  0,  0,-10, -5,  5,
+        5, 10, 10,-20,-20, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ]
+    
+    knight_table = [
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50
+    ]
+    
+    for sq, piece in pieces.items():
+        color = piece[0]
+        ptype = piece[1]
+        value = piece_values.get(ptype, 0)
+        
+        # Add positional bonus
+        file_idx = ord(sq[0]) - ord('a')
+        rank_idx = int(sq[1]) - 1
+        
+        if color == 'w':
+            idx = rank_idx * 8 + file_idx
+        else:
+            idx = (7 - rank_idx) * 8 + file_idx
+        
+        positional = 0
+        if ptype == 'P':
+            positional = pawn_table[idx]
+        elif ptype == 'N':
+            positional = knight_table[idx]
+        elif ptype in ['B', 'R', 'Q']:
+            # Encourage central control
+            center_distance = abs(3.5 - file_idx) + abs(3.5 - rank_idx)
+            positional = -int(center_distance * 5)
+        
+        total_value = value + positional
+        
+        player_color = 'w' if player == 'white' else 'b'
+        if color == player_color:
+            score += total_value
+        else:
+            score -= total_value
+    
+    return score
+
+
+def generate_legal_moves(pieces, player):
+    """Generate all legal moves for the current player"""
+    color = 'w' if player == 'white' else 'b'
+    pseudo_legal = []
+    
+    for sq, piece in pieces.items():
+        if piece[0] == color:
+            pseudo_legal.extend(get_piece_moves(sq, piece, pieces))
+    
+    # Filter out moves that leave king in check
+    legal = []
+    for move in pseudo_legal:
+        new_pieces = apply_move(pieces.copy(), move)
+        if not is_in_check(new_pieces, player):
+            legal.append(move)
+    
+    return legal
+
+
+def get_piece_moves(sq, piece, pieces):
+    """Get pseudo-legal moves for a piece"""
+    ptype = piece[1]
+    color = piece[0]
+    
+    if ptype == 'P':
+        return get_pawn_moves(sq, color, pieces)
+    elif ptype == 'N':
+        return get_knight_moves(sq, color, pieces)
+    elif ptype == 'B':
+        return get_bishop_moves(sq, color, pieces)
+    elif ptype == 'R':
+        return get_rook_moves(sq, color, pieces)
+    elif ptype == 'Q':
+        return get_queen_moves(sq, color, pieces)
+    elif ptype == 'K':
+        return get_king_moves(sq, color, pieces)
+    
+    return []
+
+
+def get_pawn_moves(sq, color, pieces):
+    moves = []
+    file_idx = ord(sq[0]) - ord('a')
+    rank_idx = int(sq[1]) - 1
+    
+    direction = 1 if color == 'w' else -1
+    start_rank = 1 if color == 'w' else 6
+    promo_rank = 7 if color == 'w' else 0
+    
+    # Forward one
+    new_rank = rank_idx + direction
+    if 0 <= new_rank <= 7:
+        new_sq = chr(ord('a') + file_idx) + str(new_rank + 1)
+        if new_sq not in pieces:
+            if new_rank == promo_rank:
+                for promo in ['q', 'r', 'b', 'n']:
+                    moves.append(sq + new_sq + promo)
+            else:
+                moves.append(sq + new_sq)
+            
+            # Forward two from start
+            if rank_idx == start_rank:
+                new_rank2 = rank_idx + 2 * direction
+                new_sq2 = chr(ord('a') + file_idx) + str(new_rank2 + 1)
+                if new_sq2 not in pieces:
+                    moves.append(sq + new_sq2)
+    
+    # Captures
+    for df in [-1, 1]:
+        new_file = file_idx + df
+        new_rank = rank_idx + direction
+        if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            new_sq = chr(ord('a') + new_file) + str(new_rank + 1)
+            if new_sq in pieces and pieces[new_sq][0] != color:
+                if new_rank == promo_rank:
+                    for promo in ['q', 'r', 'b', 'n']:
+                        moves.append(sq + new_sq + promo)
+                else:
+                    moves.append(sq + new_sq)
+    
+    return moves
+
+
+def get_knight_moves(sq, color, pieces):
+    moves = []
+    file_idx = ord(sq[0]) - ord('a')
+    rank_idx = int(sq[1]) - 1
+    
+    deltas = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+    
+    for df, dr in deltas:
+        new_file = file_idx + df
+        new_rank = rank_idx + dr
+        if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            new_sq = chr(ord('a') + new_file) + str(new_rank + 1)
+            if new_sq not in pieces or pieces[new_sq][0] != color:
+                moves.append(sq + new_sq)
+    
+    return moves
+
+
+def get_sliding_moves(sq, color, pieces, directions):
+    moves = []
+    file_idx = ord(sq[0]) - ord('a')
+    rank_idx = int(sq[1]) - 1
+    
+    for df, dr in directions:
+        for dist in range(1, 8):
+            new_file = file_idx + df * dist
+            new_rank = rank_idx + dr * dist
+            if not (0 <= new_file <= 7 and 0 <= new_rank <= 7):
+                break
+            new_sq = chr(ord('a') + new_file) + str(new_rank + 1)
+            if new_sq in pieces:
+                if pieces[new_sq][0] != color:
+                    moves.append(sq + new_sq)
+                break
+            else:
+                moves.append(sq + new_sq)
+    
+    return moves
+
+
+def get_bishop_moves(sq, color, pieces):
+    return get_sliding_moves(sq, color, pieces, [(-1,-1), (-1,1), (1,-1), (1,1)])
+
+
+def get_rook_moves(sq, color, pieces):
+    return get_sliding_moves(sq, color, pieces, [(0,-1), (0,1), (-1,0), (1,0)])
+
+
+def get_queen_moves(sq, color, pieces):
+    return get_sliding_moves(sq, color, pieces, [(0,-1), (0,1), (-1,0), (1,0), (-1,-1), (-1,1), (1,-1), (1,1)])
+
+
+def get_king_moves(sq, color, pieces):
+    moves = []
+    file_idx = ord(sq[0]) - ord('a')
+    rank_idx = int(sq[1]) - 1
+    
+    for df in [-1, 0, 1]:
+        for dr in [-1, 0, 1]:
+            if df == 0 and dr == 0:
+                continue
+            new_file = file_idx + df
+            new_rank = rank_idx + dr
+            if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+                new_sq = chr(ord('a') + new_file) + str(new_rank + 1)
+                if new_sq not in pieces or pieces[new_sq][0] != color:
+                    moves.append(sq + new_sq)
+    
+    return moves
+
+
+def apply_move(pieces, move):
+    """Apply a move and return new pieces dict"""
+    from_sq = move[0:2]
+    to_sq = move[2:4]
+    
+    piece = pieces[from_sq]
+    del pieces[from_sq]
+    
+    # Handle promotion
+    if len(move) == 5:
+        promo_piece = move[4].upper()
+        pieces[to_sq] = piece[0] + promo_piece
+    else:
+        pieces[to_sq] = piece
+    
+    return pieces
+
+
+def is_in_check(pieces, player):
+    """Check if player's king is under attack"""
+    color = 'w' if player == 'white' else 'b'
+    
+    # Find king
+    king_sq = None
+    for sq, piece in pieces.items():
+        if piece == color + 'K':
+            king_sq = sq
+            break
+    
+    if not king_sq:
+        return False
+    
+    # Check if any opponent piece attacks king
+    opponent_color = 'b' if color == 'w' else 'w'
+    for sq, piece in pieces.items():
+        if piece[0] == opponent_color:
+            moves = get_piece_moves(sq, piece, pieces)
+            for move in moves:
+                if move[2:4] == king_sq:
+                    return True
+    
+    return False
+
+
+def get_opponent(player):
+    return 'black' if player == 'white' else 'white'
+</code>

@@ -1,0 +1,123 @@
+
+import numpy as np
+from typing import Tuple
+
+# Define directions as (row_delta, col_delta)
+DIRECTIONS = {
+    'U': (-1, 0),
+    'R': (0, 1),
+    'D': (1, 0),
+    'L': (0, -1)
+}
+
+def is_legal_move(you: np.ndarray, opponent: np.ndarray, row: int, col: int, dr: int, dc: int) -> bool:
+    """Check if a move is legal."""
+    dest_row, dest_col = row + dr, col + dc
+    # Check if destination is in bounds
+    if not (0 <= dest_row < 5 and 0 <= dest_col < 6):
+        return False
+    # Check if start cell has your piece
+    if you[row, col] != 1:
+        return False
+    # Check if destination cell has opponent piece
+    if opponent[dest_row, dest_col] != 1:
+        return False
+    return True
+
+def count_moves(you: np.ndarray, opponent: np.ndarray) -> int:
+    """Count the number of legal moves for the player."""
+    count = 0
+    for r in range(5):
+        for c in range(6):
+            if you[r, c] == 1:
+                for dr, dc in DIRECTIONS.values():
+                    if is_legal_move(you, opponent, r, c, dr, dc):
+                        count += 1
+    return count
+
+def apply_move(you: np.ndarray, opponent: np.ndarray, row: int, col: int, dr: int, dc: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Apply a move and return new state."""
+    dest_row, dest_col = row + dr, col + dc
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    # Remove your piece from start
+    new_you[row, col] = 0
+    # Remove opponent piece from destination
+    new_opponent[dest_row, dest_col] = 0
+    # Place your piece at destination
+    new_you[dest_row, dest_col] = 1
+    return new_you, new_opponent
+
+def minimax(you: np.ndarray, opponent: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+    """Minimax search with alpha-beta pruning."""
+    if depth == 0:
+        # Heuristic: difference in number of moves
+        return count_moves(you, opponent) - count_moves(opponent, you)
+    
+    if maximizing:
+        max_eval = -np.inf
+        for r in range(5):
+            for c in range(6):
+                if you[r, c] == 1:
+                    for dr, dc in DIRECTIONS.values():
+                        if is_legal_move(you, opponent, r, c, dr, dc):
+                            new_you, new_opponent = apply_move(you, opponent, r, c, dr, dc)
+                            eval = minimax(new_you, new_opponent, depth - 1, alpha, beta, False)
+                            max_eval = max(max_eval, eval)
+                            alpha = max(alpha, eval)
+                            if beta <= alpha:
+                                break
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = np.inf
+        for r in range(5):
+            for c in range(6):
+                if opponent[r, c] == 1:
+                    for dr, dc in DIRECTIONS.values():
+                        if is_legal_move(opponent, you, r, c, dr, dc):
+                            new_opponent, new_you = apply_move(opponent, you, r, c, dr, dc)
+                            eval = minimax(new_you, new_opponent, depth - 1, alpha, beta, True)
+                            min_eval = min(min_eval, eval)
+                            beta = min(beta, eval)
+                            if beta <= alpha:
+                                break
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    """Main policy function."""
+    # Convert lists to numpy arrays for easier manipulation
+    you_np = np.array(you, dtype=int).reshape(5, 6)
+    opponent_np = np.array(opponent, dtype=int).reshape(5, 6)
+    
+    best_move = None
+    best_value = -np.inf
+    
+    # Search depth
+    depth = 3
+    
+    # Try all possible moves
+    for r in range(5):
+        for c in range(6):
+            if you_np[r, c] == 1:
+                for dir_str, (dr, dc) in DIRECTIONS.items():
+                    if is_legal_move(you_np, opponent_np, r, c, dr, dc):
+                        new_you, new_opponent = apply_move(you_np, opponent_np, r, c, dr, dc)
+                        move_value = minimax(new_you, new_opponent, depth - 1, -np.inf, np.inf, False)
+                        if move_value > best_value:
+                            best_value = move_value
+                            best_move = f"{r},{c},{dir_str}"
+    
+    # Fallback: if no move found (shouldn't happen), return a random legal move
+    if best_move is None:
+        for r in range(5):
+            for c in range(6):
+                if you_np[r, c] == 1:
+                    for dir_str, (dr, dc) in DIRECTIONS.items():
+                        if is_legal_move(you_np, opponent_np, r, c, dr, dc):
+                            return f"{r},{c},{dir_str}"
+    
+    return best_move

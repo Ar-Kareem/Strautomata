@@ -1,0 +1,334 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    """
+    Advanced Go AI policy for 19x19 board.
+    
+    Strategy:
+    1. Prioritize captures of opponent stones
+    2. Defend our stones in atari
+    3. Expand territory and influence
+    4. Create good shape and connectivity
+    5. Consider edge/corner efficiency
+    """
+    import random
+    import math
+    
+    # Board dimensions
+    BOARD_SIZE = 19
+    
+    # Create board representation: 0=empty, 1=me, 2=opponent
+    board = [[0] * (BOARD_SIZE + 1) for _ in range(BOARD_SIZE + 1)]  # 1-indexed
+    
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opponent:
+        board[r][c] = 2
+    
+    def get_adjacent(r, c):
+        """Get adjacent positions"""
+        adj = []
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                adj.append((nr, nc))
+        return adj
+    
+    def count_liberties(r, c, color, visited):
+        """Count liberties of a group using flood fill"""
+        if (r, c) in visited:
+            return 0
+        if board[r][c] != color:
+            return 0
+        
+        visited.add((r, c))
+        liberties = 0
+        adj_positions = get_adjacent(r, c)
+        
+        for nr, nc in adj_positions:
+            if board[nr][nc] == 0:
+                liberties += 1
+            else:
+                liberties += count_liberties(nr, nc, color, visited)
+        
+        return liberties
+    
+    def get_group_liberties(r, c, color):
+        """Get total liberties for a group"""
+        visited = set()
+        return count_liberties(r, c, color, visited)
+    
+    def find_atari_groups(color):
+        """Find groups of given color with only 1 liberty"""
+        atari_groups = []
+        checked = set()
+        
+        for r in range(1, BOARD_SIZE + 1):
+            for c in range(1, BOARD_SIZE + 1):
+                if board[r][c] == color and (r, c) not in checked:
+                    visited = set()
+                    liberties = count_liberties(r, c, color, visited)
+                    if liberties == 1:
+                        # Get all stones in this group
+                        group = set()
+                        stack = [(r, c)]
+                        while stack:
+                            cr, cc = stack.pop()
+                            if (cr, cc) in group or board[cr][cc] != color:
+                                continue
+                            group.add((cr, cc))
+                            for nr, nc in get_adjacent(cr, cc):
+                                if board[nr][nc] == color and (nr, nc) not in group:
+                                    stack.append((nr, nc))
+                        atari_groups.append(group)
+                        checked.update(group)
+                    else:
+                        checked.update(visited)
+        
+        return atari_groups
+    
+    def get_empty_regions():
+        """Identify connected empty regions using flood fill"""
+        regions = []
+        visited = set()
+        
+        for r in range(1, BOARD_SIZE + 1):
+            for c in range(1, BOARD_SIZE + 1):
+                if board[r][c] == 0 and (r, c) not in visited:
+                    region = set()
+                    stack = [(r, c)]
+                    while stack:
+                        cr, cc = stack.pop()
+                        if (cr, cc) in visited or board[cr][cc] != 0:
+                            continue
+                        visited.add((cr, cc))
+                        region.add((cr, cc))
+                        for nr, nc in get_adjacent(cr, cc):
+                            if board[nr][nc] == 0 and (nr, nc) not in visited:
+                                stack.append((nr, nc))
+                    regions.append(region)
+        
+        return regions
+    
+    def would_capture(r, c, color):
+        """Check if playing at (r,c) would capture opponent stones"""
+        opponent_color = 2 if color == 1 else 1
+        original_board = board[r][c]
+        board[r][c] = color
+        
+        captures = []
+        for nr, nc in get_adjacent(r, c):
+            if board[nr][nc] == opponent_color:
+                if get_group_liberties(nr, nc, opponent_color) == 0:
+                    # Capture this group
+                    group = set()
+                    stack = [(nr, nc)]
+                    while stack:
+                        cr, cc = stack.pop()
+                        if (cr, cc) in group or board[cr][cc] != opponent_color:
+                            continue
+                        group.add((cr, cc))
+                        for adj_r, adj_c in get_adjacent(cr, cc):
+                            if board[adj_r][adj_c] == opponent_color and (adj_r, adj_c) not in group:
+                                stack.append((adj_r, adj_c))
+                    captures.append(group)
+        
+        board[r][c] = original_board
+        return captures
+    
+    def is_suicide(r, c, color):
+        """Check if playing at (r,c) would be a suicide move"""
+        if board[r][c] != 0:
+            return True
+        
+        original_board = board[r][c]
+        board[r][c] = color
+        
+        # Check if any adjacent opponent groups have 0 liberties (would be captured)
+        opponent_color = 2 if color == 1 else 1
+        for nr, nc in get_adjacent(r, c):
+            if board[nr][nc] == opponent_color:
+                if get_group_liberties(nr, nc, opponent_color) == 0:
+                    board[r][c] = original_board
+                    return False  # This move captures, so it's not suicide
+        
+        # Check if our own group has liberties
+        our_liberties = get_group_liberties(r, c, color)
+        board[r][c] = original_board
+        
+        return our_liberties == 0
+    
+    def evaluate_territory_potential(r, c):
+        """Evaluate how much this move contributes to territory"""
+        score = 0
+        for region in get_empty_regions():
+            if (r, c) in region:
+                # Size of empty region
+                score += min(len(region), 20)  # Cap at 20
+                break
+        return score
+    
+    def evaluate_influence(r, c):
+        """Evaluate influence over opponent stones"""
+        score = 0
+        for r2 in range(max(1, r-3), min(BOARD_SIZE, r+4)):
+            for c2 in range(max(1, c-3), min(BOARD_SIZE, c+4)):
+                dist = abs(r2 - r) + abs(c2 - c)
+                if dist > 0 and dist <= 3:
+                    if board[r2][c2] == 2:  # opponent
+                        # Check if opponent group is weak
+                        libs = get_group_liberties(r2, c2, 2)
+                        if libs <= 2:
+                            score += (4 - dist) * (3 - libs)
+        return score
+    
+    def evaluate_shape_bonus(r, c):
+        """Evaluate shape quality of the move"""
+        score = 0
+        my_color = 1
+        adjacent_empty = 0
+        adjacent_my = 0
+        diagonal_empty = 0
+        
+        for nr, nc in get_adjacent(r, c):
+            if board[nr][nc] == 0:
+                adjacent_empty += 1
+            elif board[nr][nc] == my_color:
+                adjacent_my += 1
+        
+        # Diagonal positions
+        for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                if board[nr][nc] == 0:
+                    diagonal_empty += 1
+        
+        # Good shape: connect to own stones, not too exposed
+        score += adjacent_my * 3
+        score -= max(0, adjacent_empty - 4)  # Penalize isolated stones
+        score -= diagonal_empty  # Penalize missing diagonal connections
+        
+        return score
+    
+    def edge_corner_bonus(r, c):
+        """Bonus for efficient edge/corner usage"""
+        bonus = 0
+        if r == 1 or r == BOARD_SIZE:
+            bonus += 5
+        if c == 1 or c == BOARD_SIZE:
+            bonus += 5
+        
+        # Corner bonus (even more efficient)
+        corner_count = 0
+        if r <= 3:
+            corner_count += 1
+        if r >= BOARD_SIZE - 2:
+            corner_count += 1
+        if c <= 3:
+            corner_count += 1
+        if c >= BOARD_SIZE - 2:
+            corner_count += 1
+        
+        if corner_count >= 2:
+            bonus += 10
+        
+        return bonus
+    
+    def get_all_legal_moves():
+        """Generate all legal moves"""
+        legal_moves = []
+        occupied = set(me + opponent)
+        
+        for r in range(1, BOARD_SIZE + 1):
+            for c in range(1, BOARD_SIZE + 1):
+                if (r, c) not in occupied:
+                    if not is_suicide(r, c, 1):
+                        legal_moves.append((r, c))
+        
+        return legal_moves
+    
+    # Main decision logic
+    legal_moves = get_all_legal_moves()
+    
+    if not legal_moves:
+        # No legal moves, must pass
+        return (0, 0), memory
+    
+    # Priority 1: Check for captures (moves that capture opponent stones)
+    capture_moves = []
+    for r, c in legal_moves:
+        captures = would_capture(r, c, 1)
+        if captures:
+            total_captured = sum(len(group) for group in captures)
+            capture_moves.append(((r, c), total_captured))
+    
+    if capture_moves:
+        # Sort by number of captures, take best
+        capture_moves.sort(key=lambda x: -x[1])
+        best_move = capture_moves[0][0]
+        return best_move, memory
+    
+    # Priority 2: Check for self-defense (moves that save our stones in atari)
+    our_atari_groups = find_atari_groups(1)
+    defense_moves = []
+    
+    for atari_group in our_atari_groups:
+        for stone_r, stone_c in atari_group:
+            for adj_r, adj_c in get_adjacent(stone_r, stone_c):
+                if board[adj_r][adj_c] == 0:
+                    # Check if playing here saves the group
+                    board[adj_r][adj_c] = 1
+                    new_liberties = get_group_liberties(stone_r, stone_c, 1)
+                    board[adj_r][adj_c] = 0
+                    
+                    if new_liberties > 1:  # At least 2 liberties after move
+                        # Evaluate this defense move
+                        score = (100 + evaluate_territory_potential(adj_r, adj_c) + 
+                                evaluate_shape_bonus(adj_r, adj_c))
+                        defense_moves.append(((adj_r, adj_c), score))
+    
+    if defense_moves:
+        defense_moves.sort(key=lambda x: -x[1])
+        return defense_moves[0][0], memory
+    
+    # Priority 3: General strategic moves
+    move_scores = []
+    
+    for r, c in legal_moves:
+        score = 0
+        
+        # Territory evaluation
+        score += evaluate_territory_potential(r, c) * 2
+        
+        # Influence evaluation
+        score += evaluate_influence(r, c)
+        
+        # Shape evaluation
+        score += evaluate_shape_bonus(r, c)
+        
+        # Edge/corner bonus
+        score += edge_corner_bonus(r, c)
+        
+        # Proximity to our stones (good for connectivity)
+        min_dist = float('inf')
+        for mr, mc in me:
+            dist = abs(mr - r) + abs(mc - c)
+            min_dist = min(min_dist, dist)
+        
+        if min_dist < float('inf'):
+            if min_dist <= 2:
+                score += 5
+            elif min_dist <= 4:
+                score += 3
+            elif min_dist <= 6:
+                score += 1
+        
+        # Slight randomness to avoid deterministic play
+        score += random.uniform(-0.5, 0.5)
+        
+        move_scores.append(((r, c), score))
+    
+    # Sort by score and return best move
+    move_scores.sort(key=lambda x: -x[1])
+    
+    # Return top move with memory
+    return move_scores[0][0], memory

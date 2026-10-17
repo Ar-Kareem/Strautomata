@@ -1,0 +1,62 @@
+
+import numpy as np
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    A targeting policy for a Battleship-like game on a 10x10 grid.
+
+    Args:
+        board: A 10x10 list of lists representing the opponent's grid.
+               0: unknown cell
+               -1: miss
+               1: hit
+
+    Returns:
+        A tuple (row, col) with integers in the range 0-9,
+        choosing a cell you have not previously fired at.
+    """
+
+    board_np = np.array(board)
+    hits = np.argwhere(board_np == 1)
+
+    if len(hits) > 0:
+        # Target adjacent cells to hits
+        row, col = hits[0]
+        
+        # Check adjacent cells in order: right, left, down, up
+        adjacent_cells = []
+        if col + 1 < 10 and board[row][col + 1] == 0:
+            adjacent_cells.append((row, col + 1))
+        if col - 1 >= 0 and board[row][col - 1] == 0:
+            adjacent_cells.append((row, col - 1))
+        if row + 1 < 10 and board[row + 1][col] == 0:
+            adjacent_cells.append((row + 1, col))
+        if row - 1 >= 0 and board[row - 1][col] == 0:
+            adjacent_cells.append((row - 1, col))
+        
+        if adjacent_cells:
+            return random.choice(adjacent_cells)
+        else:
+            # If no adjacent cells are available, try to find another unexplored cell near other hits
+            for row, col in hits:
+                adjacent_cells = []
+                if col + 1 < 10 and board[row][col + 1] == 0:
+                    adjacent_cells.append((row, col + 1))
+                if col - 1 >= 0 and board[row][col - 1] == 0:
+                    adjacent_cells.append((row, col - 1))
+                if row + 1 < 10 and board[row + 1][col] == 0:
+                    adjacent_cells.append((row + 1, col))
+                if row - 1 >= 0 and board[row - 1][col] == 0:
+                    adjacent_cells.append((row - 1, col))
+                    
+                if adjacent_cells:
+                    return random.choice(adjacent_cells)
+            
+
+    # Random targeting if no hits
+    while True:
+        row = random.randint(0, 9)
+        col = random.randint(0, 9)
+        if board[row][col] == 0:
+            return (row, col)

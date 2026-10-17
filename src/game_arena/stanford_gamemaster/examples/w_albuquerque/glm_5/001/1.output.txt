@@ -1,0 +1,126 @@
+The strategy for this policy is:
+
+1. **Capture Priority**: Always prioritize jumps (captures) over regular moves, as they score 10 points and remove opponent pieces.
+
+2. **Multi-Capture Bonus**: Evaluate jumps for potential chain captures - if landing position enables another jump, boost that move's score.
+
+3. **Advancement Evaluation**: Score moves based on forward progress toward the opponent's side (red advances toward row 1, black toward row 5).
+
+4. **Safety Consideration**: Penalize moves that leave pieces vulnerable to opponent capture by simulating the resulting board state.
+
+5. **Threat Creation**: Bonus for moves that create immediate capture opportunities on the next turn.
+
+6. **Center Control**: Slight bonus for positioning pieces near the center of the board for greater mobility.
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse board state into a dictionary
+    board = {(int(p[1]), int(p[2])): p[3] for p in state if p[0] == "cell"}
+    
+    my_color = role
+    opp_color = "black" if role == "red" else "red"
+    
+    # All 8 movement directions (orthogonal + diagonal)
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    
+    # Collect all legal moves and jumps
+    moves, jumps = [], []
+    for (r, c), piece in board.items():
+        if piece != my_color:
+            continue
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if not (1 <= nr <= 5 and 1 <= nc <= 5):
+                continue
+            target = board.get((nr, nc))
+            if target == "blank":
+                moves.append((r, c, nr, nc))
+            elif target == opp_color:
+                # Check for jump (capture)
+                jr, jc = nr + dr, nc + dc
+                if 1 <= jr <= 5 and 1 <= jc <= 5 and board.get((jr, jc)) == "blank":
+                    jumps.append((r, c, nr, nc, jr, jc))
+    
+    # Helper: advancement score (higher = closer to opponent's side)
+    def advancement(row):
+        return (5 - row) if my_color == "red" else row
+    
+    # Helper: check if a position is vulnerable to capture
+    def is_vulnerable(brd, r, c):
+        for dr, dc in directions:
+            ar, ac = r - dr, c - dc
+            lr, lc = r + dr, c + dc
+            if 1 <= ar <= 5 and 1 <= ac <= 5:
+                if brd.get((ar, ac)) == opp_color:
+                    if 1 <= lr <= 5 and 1 <= lc <= 5:
+                        if brd.get((lr, lc)) == "blank":
+                            return True
+        return False
+    
+    # Evaluate and select best jump (capture)
+    if jumps:
+        def jump_score(j):
+            r, c, or_, oc, jr, jc = j
+            score = 100 + (advancement(jr) - advancement(r)) * 5
+            
+            # Simulate the jump
+            new_board = board.copy()
+            new_board[(r, c)] = "blank"
+            new_board[(or_, oc)] = "blank"
+            new_board[(jr, jc)] = my_color
+            
+            # Bonus for potential chain capture
+            for dr, dc in directions:
+                nr, nc = jr + dr, jc + dc
+                if 1 <= nr <= 5 and 1 <= nc <= 5:
+                    if new_board.get((nr, nc)) == opp_color:
+                        lr, lc = nr + dr, nc + dc
+                        if 1 <= lr <= 5 and 1 <= lc <= 5:
+                            if new_board.get((lr, lc)) == "blank":
+                                score += 25
+                                break
+            
+            # Penalty for landing in vulnerable position
+            if is_vulnerable(new_board, jr, jc):
+                score -= 10
+            
+            return score
+        
+        best_jump = max(jumps, key=jump_score)
+        return f"jump({best_jump[0]},{best_jump[1]},{best_jump[2]},{best_jump[3]},{best_jump[4]},{best_jump[5]})"
+    
+    # Evaluate and select best regular move
+    if moves:
+        def move_score(m):
+            r, c, nr, nc = m
+            score = (advancement(nr) - advancement(r)) * 10
+            score += (5 - abs(nr - 3)) + (5 - abs(nc - 3))
+            
+            # Simulate the move
+            new_board = board.copy()
+            new_board[(r, c)] = "blank"
+            new_board[(nr, nc)] = my_color
+            
+            # Penalty for moving into vulnerable position
+            if is_vulnerable(new_board, nr, nc):
+                score -= 30
+            
+            # Bonus for creating capture threat
+            for dr, dc in directions:
+                tr, tc = nr + dr, nc + dc
+                if 1 <= tr <= 5 and 1 <= tc <= 5:
+                    if new_board.get((tr, tc)) == opp_color:
+                        lr, lc = nr + 2*dr, nc + 2*dc
+                        if 1 <= lr <= 5 and 1 <= lc <= 5:
+                            if new_board.get((lr, lc)) == "blank":
+                                score += 15
+                                break
+            
+            return score
+        
+        best_move = max(moves, key=move_score)
+        return f"move({best_move[0]},{best_move[1]},{best_move[2]},{best_move[3]})"
+    
+    # Fallback (should not happen in valid game state)
+    return "move(1,1,1,1)"
+</code>

@@ -1,0 +1,196 @@
+I'll create a competitive Breakthrough AI policy. Let me outline my strategy first:
+
+## Strategy
+
+My policy will use a combination of:
+
+1. **Minimax with Alpha-Beta Pruning**: Search several moves ahead to find optimal plays
+2. **Advanced Evaluation Function** considering:
+   - **Progress towards goal**: Reward pieces closer to the opponent's home row
+   - **Material count**: Value having more pieces
+   - **Forward positioning**: Encourage aggressive advancement
+   - **Center control**: Value pieces in central columns
+   - **Piece safety**: Penalize pieces that can be captured
+   - **Winning moves**: Heavily prioritize moves that reach the goal row
+   - **Capture opportunities**: Value capturing opponent pieces
+
+3. **Move Ordering**: Prioritize promising moves (captures, advances, winning moves) to improve alpha-beta pruning efficiency
+
+4. **Depth-based Search**: Search as deep as time permits (typically 3-4 plies)
+
+<code>
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    import time
+    
+    def get_legal_moves(pieces, opponent_pieces, is_white):
+        moves = []
+        opp_set = set(opponent_pieces)
+        all_pieces = set(pieces) | opp_set
+        
+        direction = 1 if is_white else -1
+        goal_row = 7 if is_white else 0
+        
+        for row, col in pieces:
+            new_row = row + direction
+            
+            if not (0 <= new_row <= 7):
+                continue
+            
+            # Forward move
+            if (new_row, col) not in all_pieces:
+                moves.append(((row, col), (new_row, col)))
+            
+            # Diagonal moves
+            for dc in [-1, 1]:
+                new_col = col + dc
+                if 0 <= new_col <= 7:
+                    target = (new_row, new_col)
+                    # Can move diagonally if empty or opponent piece
+                    if target not in all_pieces or target in opp_set:
+                        moves.append(((row, col), target))
+        
+        return moves
+    
+    def evaluate(my_pieces, opp_pieces, is_white):
+        if not opp_pieces:
+            return 10000
+        if not my_pieces:
+            return -10000
+        
+        goal_row = 7 if is_white else 0
+        opp_goal_row = 0 if is_white else 7
+        
+        # Check for winning positions
+        for row, col in my_pieces:
+            if row == goal_row:
+                return 10000
+        for row, col in opp_pieces:
+            if row == opp_goal_row:
+                return -10000
+        
+        score = 0
+        
+        # Material advantage
+        score += (len(my_pieces) - len(opp_pieces)) * 100
+        
+        # Progress towards goal
+        for row, col in my_pieces:
+            if is_white:
+                progress = row
+            else:
+                progress = 7 - row
+            score += progress * 15
+            
+            # Center control bonus
+            center_dist = abs(col - 3.5)
+            score += (3.5 - center_dist) * 3
+            
+            # Extra bonus for advanced pieces
+            if progress >= 5:
+                score += 30
+        
+        # Opponent progress (penalty)
+        for row, col in opp_pieces:
+            if is_white:
+                opp_progress = 7 - row
+            else:
+                opp_progress = row
+            score -= opp_progress * 15
+            
+            if opp_progress >= 5:
+                score -= 30
+        
+        return score
+    
+    def minimax(my_pieces, opp_pieces, depth, alpha, beta, is_maximizing, is_white):
+        if depth == 0:
+            return evaluate(my_pieces, opp_pieces, is_white), None
+        
+        if is_maximizing:
+            moves = get_legal_moves(my_pieces, opp_pieces, is_white)
+            if not moves:
+                return -10000, None
+            
+            max_eval = float('-inf')
+            best_move = moves[0]
+            
+            # Move ordering: prioritize captures and advances
+            def move_priority(move):
+                (from_pos, to_pos) = move
+                priority = 0
+                # Winning move
+                goal_row = 7 if is_white else 0
+                if to_pos[0] == goal_row:
+                    priority += 10000
+                # Capture
+                if to_pos in opp_pieces:
+                    priority += 500
+                # Advance
+                if is_white:
+                    priority += to_pos[0] * 10
+                else:
+                    priority += (7 - to_pos[0]) * 10
+                return -priority
+            
+            moves.sort(key=move_priority)
+            
+            for move in moves:
+                from_pos, to_pos = move
+                
+                new_my = [p for p in my_pieces if p != from_pos]
+                new_my.append(to_pos)
+                new_opp = [p for p in opp_pieces if p != to_pos]
+                
+                eval_score, _ = minimax(new_my, new_opp, depth - 1, alpha, beta, False, is_white)
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best_move
+        else:
+            moves = get_legal_moves(opp_pieces, my_pieces, not is_white)
+            if not moves:
+                return 10000, None
+            
+            min_eval = float('inf')
+            best_move = None
+            
+            for move in moves:
+                from_pos, to_pos = move
+                
+                new_opp = [p for p in opp_pieces if p != from_pos]
+                new_opp.append(to_pos)
+                new_my = [p for p in my_pieces if p != to_pos]
+                
+                eval_score, _ = minimax(new_my, new_opp, depth - 1, alpha, beta, True, is_white)
+                
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                
+                if beta <= alpha:
+                    break
+            
+            return min_eval, best_move
+    
+    is_white = (color == 'w')
+    
+    # Start with depth 3, try depth 4 if time permits
+    depth = 3
+    _, best_move = minimax(me, opp, depth, float('-inf'), float('inf'), True, is_white)
+    
+    # Fallback to any legal move if something goes wrong
+    if best_move is None:
+        moves = get_legal_moves(me, opp, is_white)
+        if moves:
+            best_move = moves[0]
+        else:
+            # Emergency fallback
+            best_move = ((me[0][0], me[0][1]), (me[0][0] + (1 if is_white else -1), me[0][1]))
+    
+    return best_move
+</code>

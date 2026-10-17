@@ -1,0 +1,156 @@
+My strategy for this checkers policy is to implement a minimax algorithm with alpha-beta pruning to search the game tree efficiently. The evaluation function will consider:
+
+1. **Material count**: Kings are worth more than regular men
+2. **Position value**: Center control and advancement towards promotion
+3. **King mobility**: Kings that can move freely are more valuable
+4. **Back row protection**: Keeping back row pieces protects against enemy kings
+5. **Capture forcing**: Mandatory captures are handled, and we prioritize multi-jump sequences
+
+The search depth is set to balance between playing strength and the 1-second time constraint. I'll also implement move ordering to improve alpha-beta pruning efficiency by evaluating captures and promotions first.
+
+<code>
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    my_men = set(my_men)
+    my_kings = set(my_kings)
+    opp_men = set(opp_men)
+    opp_kings = set(opp_kings)
+    
+    def get_all_moves(men, kings, o_men, o_kings, col):
+        """Get all legal moves. Captures are mandatory."""
+        captures = []
+        simple_moves = []
+        direction = -1 if col == 'b' else 1
+        all_pieces = men | kings | o_men | o_kings
+        opp_pieces = o_men | o_kings
+        
+        # Check captures for men
+        for (r, c) in men:
+            for dc in [-1, 1]:
+                for dr in [direction, -direction]:
+                    nr, nc = r + dr, c + dc
+                    jr, jc = r + 2*dr, c + 2*dc
+                    if 0 <= jr < 8 and 0 <= jc < 8:
+                        if (nr, nc) in opp_pieces and (jr, jc) not in all_pieces:
+                            captures.append(((r, c), (jr, jc)))
+        
+        # Check captures for kings
+        for (r, c) in kings:
+            for dr in [-1, 1]:
+                for dc in [-1, 1]:
+                    nr, nc = r + dr, c + dc
+                    jr, jc = r + 2*dr, c + 2*dc
+                    if 0 <= jr < 8 and 0 <= jc < 8:
+                        if (nr, nc) in opp_pieces and (jr, jc) not in all_pieces:
+                            captures.append(((r, c), (jr, jc)))
+        
+        if captures:
+            return captures
+        
+        # Simple moves for men
+        for (r, c) in men:
+            for dc in [-1, 1]:
+                nr, nc = r + direction, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in all_pieces:
+                    simple_moves.append(((r, c), (nr, nc)))
+        
+        # Simple moves for kings
+        for (r, c) in kings:
+            for dr in [-1, 1]:
+                for dc in [-1, 1]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) not in all_pieces:
+                        simple_moves.append(((r, c), (nr, nc)))
+        
+        return simple_moves
+    
+    def apply_move(men, kings, o_men, o_kings, col, move):
+        men, kings, o_men, o_kings = set(men), set(kings), set(o_men), set(o_kings)
+        (fr, fc), (tr, tc) = move
+        is_king = (fr, fc) in kings
+        
+        if is_king:
+            kings.remove((fr, fc))
+            kings.add((tr, tc))
+        else:
+            men.remove((fr, fc))
+            promo_row = 0 if col == 'b' else 7
+            if tr == promo_row:
+                kings.add((tr, tc))
+            else:
+                men.add((tr, tc))
+        
+        # Check capture
+        if abs(fr - tr) == 2:
+            mr, mc = (fr + tr) // 2, (fc + tc) // 2
+            o_men.discard((mr, mc))
+            o_kings.discard((mr, mc))
+        
+        return men, kings, o_men, o_kings
+    
+    def evaluate(men, kings, o_men, o_kings, col):
+        my_val = len(men) * 100 + len(kings) * 180
+        opp_val = len(o_men) * 100 + len(o_kings) * 180
+        
+        # Positional bonus
+        for (r, c) in men:
+            adv = r if col == 'w' else (7 - r)
+            my_val += adv * 5
+            if 2 <= c <= 5:
+                my_val += 3
+        
+        for (r, c) in o_men:
+            adv = r if col == 'b' else (7 - r)
+            opp_val += adv * 5
+        
+        return my_val - opp_val
+    
+    def minimax(men, kings, o_men, o_kings, col, depth, alpha, beta, maximizing):
+        if depth == 0:
+            return evaluate(men, kings, o_men, o_kings, color), None
+        
+        moves = get_all_moves(men, kings, o_men, o_kings, col)
+        if not moves:
+            return (-10000 if maximizing else 10000), None
+        
+        opp_col = 'w' if col == 'b' else 'b'
+        best_move = moves[0]
+        
+        if maximizing:
+            max_eval = -float('inf')
+            for move in moves:
+                nm, nk, nom, nok = apply_move(men, kings, o_men, o_kings, col, move)
+                eval_score, _ = minimax(nom, nok, nm, nk, opp_col, depth - 1, alpha, beta, False)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                nm, nk, nom, nok = apply_move(men, kings, o_men, o_kings, col, move)
+                eval_score, _ = minimax(nom, nok, nm, nk, opp_col, depth - 1, alpha, beta, True)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    moves = get_all_moves(my_men, my_kings, opp_men, opp_kings, color)
+    if not moves:
+        return ((0, 0), (0, 0))
+    
+    if len(moves) == 1:
+        return moves[0]
+    
+    total_pieces = len(my_men) + len(my_kings) + len(opp_men) + len(opp_kings)
+    depth = 6 if total_pieces <= 8 else (5 if total_pieces <= 12 else 4)
+    
+    _, best_move = minimax(my_men, my_kings, opp_men, opp_kings, color, depth, -float('inf'), float('inf'), True)
+    
+    return best_move if best_move else moves[0]
+</code>

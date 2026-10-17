@@ -1,0 +1,116 @@
+
+# Battleship policy implementation
+import collections
+from typing import List, Tuple
+
+def _neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+    """Return orthogonal neighbours inside the 10x10 board."""
+    dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    out = []
+    for dr, dc in dirs:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 10 and 0 <= nc < 10:
+            out.append((nr, nc))
+    return out
+
+def _group_hits(board: List[List[int]]) -> List[List[Tuple[int, int]]]:
+    """Return a list of hit clusters (connected orthogonal cells with value 1)."""
+    visited = [[False] * 10 for _ in range(10)]
+    clusters = []
+
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1 and not visited[r][c]:
+                # BFS to collect the whole cluster
+                q = collections.deque()
+                q.append((r, c))
+                visited[r][c] = True
+                cluster = [(r, c)]
+
+                while q:
+                    cr, cc = q.popleft()
+                    for nr, nc in _neighbors(cr, cc):
+                        if board[nr][nc] == 1 and not visited[nr][nc]:
+                            visited[nr][nc] = True
+                            q.append((nr, nc))
+                            cluster.append((nr, nc))
+                clusters.append(cluster)
+    return clusters
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Return the next shot (row, col) for a 10x10 Battleship board.
+    board[r][c] == 0 : unknown
+    board[r][c] == -1: miss
+    board[r][c] == 1 : hit
+    """
+    # ----- TARGET MODE -----
+    hit_clusters = _group_hits(board)
+    if hit_clusters:
+        # Prefer larger clusters first (more information)
+        hit_clusters.sort(key=len, reverse=True)
+
+        for cluster in hit_clusters:
+            # If only a single hit, try any orthogonal unknown neighbour
+            if len(cluster) == 1:
+                r, c = cluster[0]
+                for nr, nc in _neighbors(r, c):
+                    if board[nr][nc] == 0:
+                        return (nr, nc)
+                # No unknown neighbour (should not happen, but continue)
+                continue
+
+            # Determine orientation: look for any pair with same row or same col
+            rows = {cell[0] for cell in cluster}
+            cols = {cell[1] for cell in cluster}
+            if len(rows) == 1:
+                orientation = 'h'  # horizontal
+            elif len(cols) == 1:
+                orientation = 'v'  # vertical
+            else:
+                # Non‑straight cluster shouldn't occur; fallback to neighbours of any hit
+                for r, c in cluster:
+                    for nr, nc in _neighbors(r, c):
+                        if board[nr][nc] == 0:
+                            return (nr, nc)
+                continue
+
+            # Extend at both ends in the determined orientation
+            if orientation == 'h':
+                # sort by column
+                cluster.sort(key=lambda x: x[1])
+                left_r, left_c = cluster[0][0], cluster[0][1] - 1
+                right_r, right_c = cluster[-1][0], cluster[-1][1] + 1
+                candidates = [(left_r, left_c), (right_r, right_c)]
+            else:  # vertical
+                # sort by row
+                cluster.sort(key=lambda x: x[0])
+                top_r, top_c = cluster[0][0] - 1, cluster[0][1]
+                bottom_r, bottom_c = cluster[-1][0] + 1, cluster[-1][1]
+                candidates = [(top_r, top_c), (bottom_r, bottom_c)]
+
+            for cr, cc in candidates:
+                if 0 <= cr < 10 and 0 <= cc < 10 and board[cr][cc] == 0:
+                    return (cr, cc)
+
+            # If both ends are blocked, fall back to any orthogonal unknown neighbour
+            for r, c in cluster:
+                for nr, nc in _neighbors(r, c):
+                    if board[nr][nc] == 0:
+                        return (nr, nc)
+
+    # ----- HUNT MODE -----
+    # Checkerboard pattern: (row + col) % 2 == 0
+    for r in range(10):
+        for c in range(10):
+            if (r + c) % 2 == 0 and board[r][c] == 0:
+                return (r, c)
+
+    # If parity board exhausted (unlikely), pick any remaining unknown cell
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+
+    # Should never reach here: board is full
+    raise RuntimeError("No legal moves left")

@@ -1,0 +1,160 @@
+The strategy for this policy is a greedy algorithm that generates pseudo-legal moves for the current position, then preferentially selects the move that captures the highest-value piece (piece values: Q=9, R=5, B=3, N=3, P=1; king captures are heavily prioritized to avoid stalemates or simplistic losses). If no captures are available, it falls back to a standard opening move (e4 for white if legal, e5 for black if legal), or otherwise defaults to the first legal move in the list. This approach aims to win material quickly while adhering to the one-second execution constraint by avoiding deep search or complex evaluation.
+
+<code>
+import random
+
+def to_board(pieces):
+    board = [['' for _ in range(8)] for _ in range(8)]
+    for sq, pc in pieces.items():
+        file = ord(sq[0]) - ord('a')
+        rank = int(sq[1]) - 1
+        board[rank][file] = pc
+    return board
+
+def to_uci(r1, f1, r2, f2, promo=''):
+    sq1 = chr(f1 + ord('a')) + str(r1 + 1)
+    sq2 = chr(f2 + ord('a')) + str(r2 + 1)
+    return sq1 + sq2 + promo
+
+def is_on_board(r, f):
+    return 0 <= r < 8 and 0 <= f < 8
+
+def is_empty(board, r, f):
+    return board[r][f] == ''
+
+def is_enemy(board, r, f, color):
+    return not is_empty(board, r, f) and board[r][f][0] != color
+
+def is_ally(board, r, f, color):
+    return not is_empty(board, r, f) and board[r][f][0] == color
+
+def pawn_moves(r, f, board, color):
+    moves = []
+    dir = 1 if color == 'w' else -1
+    start_rank = 1 if color == 'w' else 6
+    promo_rank = 7 if color == 'w' else 0
+    # Single step forward
+    if is_on_board(r + dir, f) and is_empty(board, r + dir, f):
+        if r + dir == promo_rank:
+            for p in 'qrbn':
+                moves.append(to_uci(r, f, r + dir, f, p))
+        else:
+            moves.append(to_uci(r, f, r + dir, f))
+        # Double step if at start
+        if r == start_rank and is_on_board(r + 2 * dir, f) and is_empty(board, r + 2 * dir, f):
+            moves.append(to_uci(r, f, r + 2 * dir, f))
+    # Captures
+    for df in [-1, 1]:
+        cr, cf = r + dir, f + df
+        if is_on_board(cr, cf) and is_enemy(board, cr, cf, color):
+            if cr == promo_rank:
+                for p in 'qrbn':
+                    moves.append(to_uci(r, f, cr, cf, p))
+            else:
+                moves.append(to_uci(r, f, cr, cf))
+    return moves
+
+def knight_moves(r, f, board, color):
+    moves = []
+    deltas = [(1, 2), (1, -2), (-1, 2), (-1, -2), (2, 1), (2, -1), (-2, 1), (-2, -1)]
+    for dr, df in deltas:
+        nr, nf = r + dr, f + df
+        if is_on_board(nr, nf) and not is_ally(board, nr, nf, color):
+            moves.append(to_uci(r, f, nr, nf))
+    return moves
+
+def bishop_moves(r, f, board, color):
+    moves = []
+    dirs = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+    for dr, df in dirs:
+        for i in range(1, 8):
+            nr, nf = r + i * dr, f + i * df
+            if not is_on_board(nr, nf):
+                break
+            if is_ally(board, nr, nf, color):
+                break
+            moves.append(to_uci(r, f, nr, nf))
+            if is_enemy(board, nr, nf, color):
+                break
+    return moves
+
+def rook_moves(r, f, board, color):
+    moves = []
+    dirs = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+    for dr, df in dirs:
+        for i in range(1, 8):
+            nr, nf = r + i * dr, f + i * df
+            if not is_on_board(nr, nf):
+                break
+            if is_ally(board, nr, nf, color):
+                break
+            moves.append(to_uci(r, f, nr, nf))
+            if is_enemy(board, nr, nf, color):
+                break
+    return moves
+
+def queen_moves(r, f, board, color):
+    return bishop_moves(r, f, board, color) + rook_moves(r, f, board, color)
+
+def king_moves(r, f, board, color):
+    moves = []
+    for dr in [-1, 0, 1]:
+        for df in [-1, 0, 1]:
+            if dr == 0 and df == 0:
+                continue
+            nr, nf = r + dr, f + df
+            if is_on_board(nr, nf) and not is_ally(board, nr, nf, color):
+                moves.append(to_uci(r, f, nr, nf))
+    return moves
+
+def generate_legal_moves(board, color):
+    moves = []
+    for r in range(8):
+        for f in range(8):
+            pc = board[r][f]
+            if not pc or pc[0] != color:
+                continue
+            type_ = pc[1]
+            if type_ == 'P':
+                moves += pawn_moves(r, f, board, color)
+            elif type_ == 'N':
+                moves += knight_moves(r, f, board, color)
+            elif type_ == 'B':
+                moves += bishop_moves(r, f, board, color)
+            elif type_ == 'R':
+                moves += rook_moves(r, f, board, color)
+            elif type_ == 'Q':
+                moves += queen_moves(r, f, board, color)
+            elif type_ == 'K':
+                moves += king_moves(r, f, board, color)
+    return moves
+
+def select_best_move(board, to_play, moves):
+    values = {'p': 1, 'n': 3, 'b': 3, 'r': 5, 'q': 9, 'k': 999}
+    best_move = None
+    best_score = -1
+    for move in moves:
+        s2 = move[2:4]
+        f2 = ord(s2[0]) - ord('a')
+        r2 = int(s2[1]) - 1
+        captured = board[r2][f2].lower()[1] if board[r2][f2] else None
+        score = values.get(captured, 0)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    if best_move is None:
+        # Fallback: try opening move or first available
+        if 'e2e4' in moves and to_play == 'white':
+            best_move = 'e2e4'
+        elif 'e7e5' in moves and to_play == 'black':
+            best_move = 'e7e5'
+        else:
+            best_move = moves[0] if moves else ''
+    return best_move
+
+def policy(pieces, to_play):
+    color = 'w' if to_play == 'white' else 'b'
+    board = to_board(pieces)
+    legal_moves = generate_legal_moves(board, color)
+    return select_best_move(board, to_play, legal_moves)
+</code>

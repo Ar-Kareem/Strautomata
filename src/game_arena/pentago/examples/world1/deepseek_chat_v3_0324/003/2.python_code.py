@@ -1,0 +1,192 @@
+
+import numpy as np
+
+def policy(you, opponent):
+    # Convert to numpy arrays for easier manipulation
+    you_board = np.array(you)
+    opp_board = np.array(opponent)
+    empty_cells = np.where((you_board == 0) & (opp_board == 0))
+    
+    # First check for any immediate winning moves
+    for r, c in zip(empty_cells[0], empty_cells[1]):
+        temp_you = you_board.copy()
+        temp_you[r, c] = 1
+        if check_win(temp_you):
+            # Try all possible rotations to see if we can win
+            for quad in range(4):
+                for dir in ['L', 'R']:
+                    rotated_you = rotate_quadrant(temp_you, quad, dir)
+                    if check_win(rotated_you):
+                        return f"{r+1},{c+1},{quad},{dir}"
+            # If no rotation gives win, just pick first valid rotation
+            return f"{r+1},{c+1},0,L"
+    
+    # Then check for opponent threats to block
+    for r, c in zip(empty_cells[0], empty_cells[1]):
+        temp_opp = opp_board.copy()
+        temp_opp[r, c] = 1
+        if check_win(temp_opp):
+            # Block this position, then choose rotation that least helps opponent
+            for quad in range(4):
+                for dir in ['L', 'R']:
+                    rotated_you = rotate_quadrant(you_board, quad, dir)
+                    rotated_opp = rotate_quadrant(opp_board, quad, dir)
+                    if not check_win(rotated_opp):
+                        return f"{r+1},{c+1},{quad},{dir}"
+            return f"{r+1},{c+1},0,L"
+    
+    # No immediate threats or wins, use strategic placement
+    # Prefer center positions and positions near our existing marbles
+    best_score = -1
+    best_move = None
+    
+    for r, c in zip(empty_cells[0], empty_cells[1]):
+        # Calculate score for this position
+        score = 0
+        
+        # Center control
+        if 2 <= r <= 3 and 2 <= c <= 3:
+            score += 3
+        elif 2 <= r <= 3 or 2 <= c <= 3:
+            score += 1
+            
+        # Proximity to our marbles
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 6 and 0 <= nc < 6 and you_board[nr, nc] == 1:
+                    score += 1
+        
+        # Try to find the best rotation for this position
+        best_quad = 0
+        best_dir = 'L'
+        best_rot_score = -1
+        
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                rot_score = evaluate_rotation(you_board, opp_board, quad, dir, r, c)
+                if rot_score > best_rot_score:
+                    best_rot_score = rot_score
+                    best_quad = quad
+                    best_dir = dir
+        
+        total_score = score + best_rot_score
+        
+        if total_score > best_score or best_move is None:
+            best_score = total_score
+            best_move = f"{r+1},{c+1},{best_quad},{best_dir}"
+    
+    return best_move
+
+def check_win(board):
+    # Check horizontal
+    for r in range(6):
+        for c in range(2):
+            if np.all(board[r, c:c+5] == 1):
+                return True
+    # Check vertical
+    for c in range(6):
+        for r in range(2):
+            if np.all(board[r:r+5, c] == 1):
+                return True
+    # Check diagonals
+    for r in range(2):
+        for c in range(2):
+            if np.all([board[r+i, c+i] == 1 for i in range(5)]):
+                return True
+    for r in range(2):
+        for c in range(4, 6):
+            if np.all([board[r+i, c-i] == 1 for i in range(5)]):
+                return True
+    return False
+
+def rotate_quadrant(board, quad, direction):
+    # Get quadrant boundaries
+    if quad == 0:
+        r_start, r_end = 0, 3
+        c_start, c_end = 0, 3
+    elif quad == 1:
+        r_start, r_end = 0, 3
+        c_start, c_end = 3, 6
+    elif quad == 2:
+        r_start, r_end = 3, 6
+        c_start, c_end = 0, 3
+    else:
+        r_start, r_end = 3, 6
+        c_start, c_end = 3, 6
+    
+    # Extract quadrant
+    quadrant = board[r_start:r_end, c_start:c_end].copy()
+    
+    # Rotate
+    if direction == 'L':
+        rotated = np.rot90(quadrant, 1)
+    else:
+        rotated = np.rot90(quadrant, -1)
+    
+    # Put back
+    new_board = board.copy()
+    new_board[r_start:r_end, c_start:c_end] = rotated
+    return new_board
+
+def evaluate_rotation(you_board, opp_board, quad, dir, placed_r, placed_c):
+    # Evaluate how good this rotation is for us
+    score = 0
+    
+    # Rotate both boards
+    rotated_you = rotate_quadrant(you_board, quad, dir)
+    rotated_opp = rotate_quadrant(opp_board, quad, dir)
+    
+    # Check if rotation creates potential lines for us
+    for r in range(6):
+        for c in range(6):
+            if rotated_you[r, c] == 1:
+                # Check horizontal potential
+                if c <= 1 and np.sum(rotated_you[r, c:c+5]) >= 3:
+                    score += 2
+                # Check vertical potential
+                if r <= 1 and np.sum(rotated_you[r:r+5, c]) >= 3:
+                    score += 2
+                # Check diagonal potential
+                if r <= 1 and c <= 1:
+                    diag = [rotated_you[r+i, c+i] for i in range(5)]
+                    if sum(diag) >= 3:
+                        score += 2
+                if r <= 1 and c >= 4:
+                    diag = [rotated_you[r+i, c-i] for i in range(5)]
+                    if sum(diag) >= 3:
+                        score += 2
+    
+    # Penalize if rotation helps opponent
+    for r in range(6):
+        for c in range(6):
+            if rotated_opp[r, c] == 1:
+                # Check horizontal potential
+                if c <= 1 and np.sum(rotated_opp[r, c:c+5]) >= 3:
+                    score -= 1
+                # Check vertical potential
+                if r <= 1 and np.sum(rotated_opp[r:r+5, c]) >= 3:
+                    score -= 1
+                # Check diagonal potential
+                if r <= 1 and c <= 1:
+                    diag = [rotated_opp[r+i, c+i] for i in range(5)]
+                    if sum(diag) >= 3:
+                        score -= 1
+                if r <= 1 and c >= 4:
+                    diag = [rotated_opp[r+i, c-i] for i in range(5)]
+                    if sum(diag) >= 3:
+                        score -= 1
+    
+    # Bonus if rotation affects our placed marble
+    if quad == 0 and 0 <= placed_r < 3 and 0 <= placed_c < 3:
+        score += 1
+    elif quad == 1 and 0 <= placed_r < 3 and 3 <= placed_c < 6:
+        score += 1
+    elif quad == 2 and 3 <= placed_r < 6 and 0 <= placed_c < 3:
+        score += 1
+    elif quad == 3 and 3 <= placed_r < 6 and 3 <= placed_c < 6:
+        score += 1
+    
+    return score

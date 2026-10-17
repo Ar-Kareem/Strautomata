@@ -1,0 +1,327 @@
+**Strategy Explanation**
+
+The program plays a perfect (or close to perfect) 3‑D Tic‑Tac‑Toe by combining three ideas  
+
+1. **Immediate threats** – a move that wins the game on the spot is always taken.  
+2. **Forced blocks** – if the opponent can win on his next turn, the only cells that prevent the win are collected and the most useful one (the one that also creates a threat for us) is chosen.  
+3. **Look‑ahead search** – for all other positions a depth‑limited minimax search with α‑β pruning is used.  
+   * The evaluation function counts how many lines contain 1, 2 or 3 friendly markers (and symmetrically for the opponent) and gives a weighted score (`1 → 1 pt, 2 → 10 pts, 3 → 100 pts`).  
+   * Moves are ordered by a simple heuristic that prefers  
+      * winning moves,  
+      * blocking opponent wins,  
+      * creating new double‑threats (`··X → ·XX`),  
+      * occupying cells that are part of many winning lines (the centre is the strongest cell).  
+   * The search depth adapts to the number of empties on the board – the fewer empty cells, the deeper the search.  
+
+All winning lines of the 3×3×3 cube (49 triples of cell indices) are generated once when the module is loaded.  
+The board is stored as a flat list of 27 ints (`‑1, 0, 1`) – this makes copying, undoing moves and scanning lines very fast.
+
+The algorithm always returns a legal move; the rules of the competition are never violated.
+
+---
+
+```python
+# -----------------------------------------------------------
+# 3‑Dimensional Tic‑Tac‑Toe – smart policy for the arena
+# -----------------------------------------------------------
+#
+# The algorithm follows a simple priority:
+#
+#   1. If we can win immediately → do it.
+#   2. Otherwise, if the opponent can win on his next move → block the
+#      most dangerous such cell (the cell that also creates a threat for us
+#      is preferred).
+#   3. Otherwise use a depth‑limited minimax search with α‑β pruning.
+#      Moves are ordered with the same heuristics that drive the block‑
+#      selection, which makes the pruning very effective.
+#
+# The board is stored as a flat list of 27 integers (‑1, 0, 1).  All 49
+# winning lines are generated once – a line is a list of three cell indices.
+# The evaluator adds a weighted score for each line that contains only
+# our markers (or only opponent markers).  The centre cell is the most
+# valuable because it belongs to the largest number of winning lines.
+#
+# The search depth is adapted to the number of empty cells, guaranteeing
+# that the whole search finishes well inside the 1 s limit.
+# -----------------------------------------------------------
+
+from itertools import product
+
+# ------------------------------------------------------------
+#  Global data – generated once
+# ------------------------------------------------------------
+SIZE = 3
+NCELLS = SIZE ** 3                     # 27
+
+# all 49 winning lines (list of triples of flat indices)
+LINES = []
+# for each cell keep the indices of the lines it belongs to
+CELL_TO_LINES = [[] for _ in range(NCELLS)]
+
+def _generate_lines():
+    """Build all straight lines of length 3 in a 3×3×3 cube."""
+    # direction vectors (dx,dy,dz) with at least one non‑zero component
+    dirs = [(dx, dy, dz)
+            for dx in (-1, 0, 1)
+            for dy in (-1, 0, 1)
+            for dz in (-1, 0, 1)
+            if not (dx == dy == dz == 0)]
+
+    seen = set()
+    for i0, j0, k0 in product(range(SIZE), repeat=3):
+        for dx, dy, dz in dirs:
+            i1, j1, k1 = i0 + dx, j0 + dy, k0 + dz
+            i2, j2, k2 = i0 + 2*dx, j0 + 2*dy, k0 + 2*dz
+            if all(0 <= c < SIZE for c in (i1, j1, k1, i2, j2, k2)):
+                # flat indices
+                idx0 = i0*9 + j0*3 + k0
+                idx1 = i1*9 + j1*3 + k1
+                idx2 = i2*9 + j2*3 + k2
+                key = tuple(sorted((idx0, idx1, idx2)))
+                if key not in seen:
+                    seen.add(key)
+                    LINES.append([idx0, idx1, idx2])
+                    # update cell → line mapping
+                    for ix in (idx0, idx1, idx2):
+                        CELL_TO_LINES[ix].append(len(LINES)-1)
+
+_generate_lines()
+
+# constant for a “big” win‑value (far above any heuristic score)
+WIN_SCORE = 10 ** 6
+
+# ------------------------------------------------------------
+#  Helpers
+# ------------------------------------------------------------
+def flatten(board_3d):
+    """Convert the supplied 3‑dimensional list into a flat list of 27 ints."""
+    return [board_3d[i][j][k] for i in range(3) for j in range(3) for k in range(3)]
+
+def idx_to_coord(idx):
+    """Flat index → (i,j,k) tuple."""
+    i = idx // 9
+    r = idx % 9
+    j = r // 3
+    k = r % 3
+    return (i, j, k)
+
+def board_empties(board):
+    """List of flat indices of cells that are still empty."""
+    return [i for i, v in enumerate(board) if v == 0]
+
+def check_full(board):
+    """True when the board does not contain a zero."""
+    return all(v != 0 for v in board)
+
+def line_sum(board, line):
+    """Sum of the three cells belonging to a line."""
+    return board[line[0]] + board[line[1]] + board[line[2]]
+
+def check_winner(board):
+    """Return 1 if the AI (X) has a line of three,
+       -1 if the opponent (O) has a line, otherwise 0."""
+    for line in LINES:
+        s = line_sum(board, line)
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+def evaluate(board):
+    """
+    Heuristic evaluation of *board* from the AI's point of view.
+    For every line that contains only our markers we add
+        1 point for a single marker,
+       10 points for two markers,
+      100 points for a winning line (three markers).
+    The same values are subtracted for lines owned by the opponent.
+    """
+    total = 0
+    for line in LINES:
+        s = line_sum(board, line)
+        if s == 1:
+            total += 1
+        elif s == 2:
+            total += 10
+        elif s == 3:
+            total += 100
+        elif s == -1:
+            total -= 1
+        elif s == -2:
+            total -= 10
+        elif s == -3:
+            total -= 100
+    return total
+
+def is_winning_move(board, idx, player):
+    """Would placing *player* at *idx* win the game immediately?"""
+    for line_idx in CELL_TO_LINES[idx]:
+        line = LINES[line_idx]
+        # the empty cell is already zero, so the new sum is old sum + player
+        if line_sum(board, line) + player == 3 * player:
+            return True
+    return False
+
+def opponent_threat_cells(board, player):
+    """
+    Return a list of empty cells that block a line where *opponent*
+    already has two markers (i.e. a one‑move win for the opponent).
+    player = 1 → opponent = -1, and vice‑versa.
+    """
+    opp = -player
+    threats = set()
+    for line in LINES:
+        s = line_sum(board, line)
+        if s == -2 * player:          # two opponent markers
+            for i in line:
+                if board[i] == 0:
+                    threats.add(i)
+    return list(threats)
+
+def move_score(board, idx, player):
+    """
+    A quick estimate of how valuable a move at *idx* is.
+    Used for ordering moves in the minimax search.
+    Larger score → better move.
+    """
+    # cell weight – the more lines run through it, the better
+    score = len(CELL_TO_LINES[idx])
+    for line_idx in CELL_TO_LINES[idx]:
+        line = LINES[line_idx]
+        s = line_sum(board, line)
+        new_s = s + player           # cell is empty at the moment
+
+        # immediate win → unbeatable
+        if new_s == 3 * player:
+            return float('inf')
+
+        # creating a new double‑threat (··X → ·XX)
+        if s == player and new_s == 2 * player:
+            score += 10
+
+        # blocking an opponent double‑threat
+        if s == -2 * player:
+            score += 5
+
+        # developing a line (··· → ··· with one of ours)
+        if s == 0 and new_s == player:
+            score += 1
+    return score
+
+# ------------------------------------------------------------
+#  Minimax with α‑β pruning
+# ------------------------------------------------------------
+def minimax(board, depth, alpha, beta, player):
+    """
+    Classic α‑β minimax.  *player* is the player to move at this node.
+    The evaluation is always from the AI's (player = 1) point of view.
+    """
+    # terminal tests
+    winner = check_winner(board)
+    if winner != 0:
+        # a finished game
+        if winner == 1:
+            return WIN_SCORE - depth
+        else:
+            return -WIN_SCORE + depth
+    if check_full(board):
+        return 0
+    if depth == 0:
+        return evaluate(board)
+
+    opponent = -player
+    empties = board_empties(board)
+
+    if player == 1:                     # maximizing player (the AI)
+        max_eval = -float('inf')
+        # order moves – best first, speeds pruning
+        empties.sort(key=lambda i: move_score(board, i, player), reverse=True)
+        for i in empties:
+            board[i] = player
+            eval_ = minimax(board, depth-1, alpha, beta, opponent)
+            board[i] = 0
+            max_eval = max(max_eval, eval_)
+            alpha = max(alpha, eval_)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:                                # minimizing player (opponent)
+        min_eval = float('inf')
+        empties.sort(key=lambda i: move_score(board, i, player), reverse=True)
+        for i in empties:
+            board[i] = player
+            eval_ = minimax(board, depth-1, alpha, beta, opponent)
+            board[i] = 0
+            min_eval = min(min_eval, eval_)
+            beta = min(beta, eval_)
+            if beta <= alpha:
+                break
+        return min_eval
+
+# ------------------------------------------------------------
+#  Public API – the only function called by the arena
+# ------------------------------------------------------------
+def policy(board):
+    """
+    Return the next move as a tuple (i, j, k).
+    *board* is the 3‑dimensional list supplied by the game controller.
+    """
+    # work on a flat copy so we never modify the original board
+    flat = flatten(board)
+    empties = board_empties(flat)
+    player = 1               # we are always the 'X' player (value 1)
+    opponent = -player
+
+    # --------------------------------------------------------
+    #  1) immediate win
+    # --------------------------------------------------------
+    for idx in empties:
+        if is_winning_move(flat, idx, player):
+            return idx_to_coord(idx)
+
+    # --------------------------------------------------------
+    #  2) forced block (opponent could win next turn)
+    # --------------------------------------------------------
+    block_cells = opponent_threat_cells(flat, player)
+    if block_cells:
+        # pick the block that also creates the biggest threat for us
+        best = max(block_cells, key=lambda i: move_score(flat, i, player))
+        return idx_to_coord(best)
+
+    # --------------------------------------------------------
+    #  3) otherwise choose by minimax
+    # --------------------------------------------------------
+    # adapt depth to the number of empty cells – the fewer empties,
+    # the deeper we can search.
+    n = len(empties)
+    if n <= 5:
+        depth = n                       # search to the end of the game
+    elif n <= 12:
+        depth = 6
+    elif n <= 18:
+        depth = 5
+    elif n <= 23:
+        depth = 4
+    else:
+        depth = 3                       # early game – still very strong
+
+    best_move = None
+    best_score = -float('inf')
+    # order the root moves as well – good moves are examined first
+    empties.sort(key=lambda i: move_score(flat, i, player), reverse=True)
+
+    for idx in empties:
+        flat[idx] = player
+        value = minimax(flat, depth-1, -WIN_SCORE, WIN_SCORE, opponent)
+        flat[idx] = 0
+        if value > best_score:
+            best_score = value
+            best_move = idx
+
+    # fallback (should never be needed, but guarantees a legal answer)
+    if best_move is None:
+        best_move = empties[0]
+
+    return idx_to_coord(best_move)
+```

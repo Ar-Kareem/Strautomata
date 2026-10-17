@@ -1,0 +1,142 @@
+# Strategy
+
+This is a 3x3 Tic Tac Toe game where 5 cells are already filled and only 5 empty cells remain. The strategy should prioritize:
+
+1. **Win immediately**: If we can complete three-in-a-row, do it.
+2. **Block opponent**: If opponent can win on their next move, block them.
+3. **Create winning threats**: If possible, create a position where we have two ways to win (forcing opponent into a losing position).
+4. **Strategic positioning**: Place marks in central/corner positions that maximize future winning opportunities.
+
+The policy will:
+- Parse the board state from the proposition list
+- Identify all empty cells (marked with "b")
+- Check for immediate winning moves
+- Check for blocking moves needed to prevent opponent wins
+- Evaluate remaining moves based on strategic value
+- Return the best legal move in `mark(row,col)` format
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the board
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            row, col, value = int(prop[1]), int(prop[2]), prop[3]
+            board[(row, col)] = value
+    
+    # Get all empty cells
+    empty_cells = []
+    for row in range(1, 4):
+        for col in range(1, 4):
+            if board.get((row, col), "b") == "b":
+                empty_cells.append((row, col))
+    
+    # Helper function to check if a player has won or can win
+    def check_line(cells, player):
+        """Check if three cells form a winning line for player"""
+        return all(board.get(cell, "b") == player for cell in cells)
+    
+    def count_in_line(cells, player):
+        """Count how many cells in a line belong to player"""
+        return sum(1 for cell in cells if board.get(cell, "b") == player)
+    
+    def has_empty_in_line(cells):
+        """Check if line has at least one empty cell"""
+        return any(board.get(cell, "b") == "b" for cell in cells)
+    
+    # All possible lines (rows, cols, diagonals)
+    all_lines = []
+    # Rows
+    for row in range(1, 4):
+        all_lines.append([(row, 1), (row, 2), (row, 3)])
+    # Columns
+    for col in range(1, 4):
+        all_lines.append([(1, col), (2, col), (3, col)])
+    # Diagonals
+    all_lines.append([(1, 1), (2, 2), (3, 3)])
+    all_lines.append([(1, 3), (2, 2), (3, 1)])
+    
+    opponent = "o" if role == "x" else "x"
+    
+    # Priority 1: Check if we can win immediately
+    for move in empty_cells:
+        board[move] = role
+        for line in all_lines:
+            if check_line(line, role):
+                del board[move]
+                return f"mark({move[0]},{move[1]})"
+        del board[move]
+    
+    # Priority 2: Block opponent from winning
+    for move in empty_cells:
+        board[move] = opponent
+        for line in all_lines:
+            if check_line(line, opponent):
+                del board[move]
+                return f"mark({move[0]},{move[1]})"
+        del board[move]
+    
+    # Priority 3: Create winning threats (2 in a line with empty cell)
+    best_move = None
+    best_score = -1
+    
+    for move in empty_cells:
+        board[move] = role
+        threat_count = 0
+        
+        for line in all_lines:
+            if move in line:
+                count = count_in_line(line, role)
+                if count == 2 and has_empty_in_line(line):
+                    threat_count += 1
+        
+        del board[move]
+        
+        if threat_count > best_score:
+            best_score = threat_count
+            best_move = move
+    
+    if best_move and best_score > 0:
+        return f"mark({best_move[0]},{best_move[1]})"
+    
+    # Priority 4: Block opponent threats
+    best_move = None
+    best_score = -1
+    
+    for move in empty_cells:
+        board[move] = opponent
+        threat_count = 0
+        
+        for line in all_lines:
+            if move in line:
+                count = count_in_line(line, opponent)
+                if count == 2 and has_empty_in_line(line):
+                    threat_count += 1
+        
+        del board[move]
+        
+        if threat_count > best_score:
+            best_score = threat_count
+            best_move = move
+    
+    if best_move and best_score > 0:
+        return f"mark({best_move[0]},{best_move[1]})"
+    
+    # Priority 5: Take center if available
+    if (2, 2) in empty_cells:
+        return "mark(2,2)"
+    
+    # Priority 6: Take corners
+    corners = [(1, 1), (1, 3), (3, 1), (3, 3)]
+    for corner in corners:
+        if corner in empty_cells:
+            return f"mark({corner[0]},{corner[1]})"
+    
+    # Priority 7: Take any remaining move
+    if empty_cells:
+        move = empty_cells[0]
+        return f"mark({move[0]},{move[1]})"
+    
+    # Fallback (shouldn't reach here in valid game state)
+    return "mark(1,1)"
+</code>

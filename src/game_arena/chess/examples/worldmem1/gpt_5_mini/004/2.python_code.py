@@ -1,0 +1,176 @@
+
+import re
+from typing import Tuple, Dict, List
+
+# Simple policy for choosing a strong chess move from SAN legal moves.
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str], memory: Dict) -> Tuple[str, Dict]:
+    """
+    pieces: dict mapping square -> piece code like 'wK','bQ',...
+    to_play: 'white' or 'black'
+    legal_moves: list of SAN move strings (as provided)
+    memory: persistent dict (unused)
+    Returns: (chosen_move, memory)
+    """
+    if not legal_moves:
+        # Should not happen per problem statement, but be safe.
+        return ("", memory)
+
+    # Piece value map
+    piece_value = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 100}
+
+    # Helpers
+    file_to_idx = lambda f: ord(f) - ord('a')
+    rank_to_idx = lambda r: int(r) - 1
+
+    # Extract last square in SAN string (destination). Return None for castling (O-O/O-O-O).
+    square_re = re.compile(r'([a-h][1-8])')
+    def extract_dest_sq(move: str):
+        matches = square_re.findall(move)
+        if matches:
+            return matches[-1]
+        return None
+
+    # Determine if move is a capture and which piece (if any) gets captured.
+    def captured_piece_value(move: str, dest: str):
+        # If no 'x', then usually no capture (except rare annotation); still treat as no capture.
+        if 'x' not in move:
+            return 0
+        # If destination square currently has an opponent piece, that's what is captured.
+        if dest and dest in pieces:
+            code = pieces[dest]
+            # ensure it's opponent color
+            if (to_play == 'white' and code.startswith('b')) or (to_play == 'black' and code.startswith('w')):
+                return piece_value.get(code[1], 0)
+        # Might be en-passant: pawn capture into an empty destination.
+        # Detect pawn move by SAN starting with file letter (a-h).
+        if dest and move and move[0] in 'abcdefgh':
+            dest_file = dest[0]
+            dest_rank = int(dest[1])
+            if to_play == 'white':
+                cap_rank = dest_rank - 1
+            else:
+                cap_rank = dest_rank + 1
+            if 1 <= cap_rank <= 8:
+                cap_sq = f"{dest_file}{cap_rank}"
+                if cap_sq in pieces:
+                    code = pieces[cap_sq]
+                    if (to_play == 'white' and code == 'bP') or (to_play == 'black' and code == 'wP'):
+                        return piece_value['P']
+        # Fallback: unknown captured piece (shouldn't happen with correct SAN), return 0
+        return 0
+
+    # Parse moving piece type from SAN: uppercase leading letter indicates piece, otherwise pawn.
+    def moving_piece_type(move: str):
+        if move.startswith(('N','B','R','Q','K')):
+            return move[0]
+        # Some SAN may have like 'O-O' (castling), treat as king move.
+        if move.startswith('O'):
+            return 'K'
+        # Pawn move
+        return 'P'
+
+    # Promotion detection and promoted piece type (if any)
+    def promotion_piece(move: str):
+        if '=' in move:
+            idx = move.find('=')
+            if idx + 1 < len(move):
+                piece = move[idx+1]
+                if piece in ('N','B','R','Q'):
+                    return piece
+        return None
+
+    # Centrality / square attractiveness: higher is better.
+    def centrality_score(sq: str):
+        if not sq:
+            return 0.0
+        file_idx = file_to_idx(sq[0])
+        rank_idx = rank_to_idx(sq[1])
+        # Compute Manhattan-like distance from board center (3.5,3.5) and convert to score
+        dx = abs(file_idx - 3.5)
+        dy = abs(rank_idx - 3.5)
+        score = max(0.0, 4.0 - (dx + dy))  # range ~0..4
+        return score
+
+    # Pawn advancement bonus (toward promotion)
+    def pawn_advance_score(sq: str):
+        if not sq:
+            return 0.0
+        rank_idx = rank_to_idx(sq[1])
+        if to_play == 'white':
+            return rank_idx / 7.0  # 0..1
+        else:
+            return (7 - rank_idx) / 7.0
+
+    # Evaluate a move heuristically, higher is better.
+    def evaluate_move(move: str):
+        # Immediate mate annotation gets highest priority
+        if '#' in move or 'mate' in move.lower():
+            return 1e9
+
+        score = 0.0
+
+        # Check annotation
+        if '+' in move:
+            score += 50.0  # checks are valuable
+
+        # Castling
+        if move.startswith('O-O'):
+            score += 40.0
+
+        dest = extract_dest_sq(move)
+        mover = moving_piece_type(move)
+        promo = promotion_piece(move)
+
+        # Promotion
+        if promo:
+            # Value of promotion piece minus pawn
+            score += 800.0  # large bonus for promotion
+            score += (piece_value.get(promo, 9) - 1) * 10.0
+
+        # Capture value (handle en-passant)
+        cap_val = captured_piece_value(move, dest)
+        if cap_val > 0:
+            score += cap_val * 100.0  # weight captures heavily
+            # prefer capturing larger pieces earlier with a small extra
+            score += cap_val * 5.0
+
+        # Centralization and mobility heuristics per piece
+        cent = centrality_score(dest)
+        score += cent * 10.0
+
+        # Bonus for moving knights/bishops to center a bit more
+        if mover in ('N','B'):
+            score += cent * 3.0
+
+        # Slight preference to develop (non-pawn moves from their home rank get a bonus)
+        # We cannot know source square reliably from SAN, so skip heavy source-aware heuristics.
+
+        # Pawn advancement toward promotion
+        if mover == 'P':
+            score += pawn_advance_score(dest) * 20.0
+            # Encourage captures by pawns (passed pawn creation) slightly already captured above.
+
+        # Slight preference for moving higher-valued pieces out if not capturing (to use them)
+        if mover in ('Q','R'):
+            score += 1.0
+
+        # Small tie-breaker: shorter SAN lexicographically later to prefer concise moves? We'll use lexicographic tie-break outside.
+        return score
+
+    # Compute score for each legal move
+    scored_moves = []
+    for m in legal_moves:
+        try:
+            sc = evaluate_move(m)
+        except Exception:
+            sc = -1e6
+        scored_moves.append((sc, m))
+
+    # Find best score
+    max_score = max(sc for sc, _ in scored_moves)
+    # Collect moves that tie for best and pick deterministic smallest string
+    best_moves = [mv for sc, mv in scored_moves if sc == max_score]
+    best_moves.sort()  # deterministic tie-break
+    chosen = best_moves[0]
+
+    return (chosen, memory)

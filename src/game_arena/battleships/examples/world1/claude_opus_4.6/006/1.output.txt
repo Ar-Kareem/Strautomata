@@ -1,0 +1,104 @@
+## Strategy
+
+My strategy implements a probability density map approach combined with hunt/target modes:
+
+1. **Target Mode**: When there are hits (1s) on the board that haven't been fully sunk, I prioritize shooting adjacent cells to those hits. I detect unsunk hits by finding hit cells that are part of incomplete ship segments (adjacent to unknown cells).
+
+2. **Hunt Mode (Probability Density)**: When there are no active targets, I compute a probability density map by trying to place every possible remaining ship in every valid position on the board. Cells that can accommodate more ship placements get higher probability scores. I then shoot at the highest-probability cell.
+
+3. **Ship Tracking**: I estimate which ships have been sunk by analyzing connected components of hits. If a connected line of hits has length matching a ship and is fully surrounded by misses/edges (no adjacent unknowns that could extend it), I consider that ship sunk and remove it from the remaining ships list.
+
+4. **Targeting Logic**: When targeting unsunk hits, I look at the pattern of consecutive hits to determine the ship's orientation and prioritize extending along that line. For isolated hits, I try all 4 adjacent cells.
+
+5. **Parity Optimization**: In hunt mode, I apply a checkerboard-like parity bias since the smallest remaining ship has length 2, meaning we can skip every other cell to guarantee finding all ships faster.
+
+<code>
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    grid = np.array(board)
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # Find connected components of hits
+    hits = set(zip(*np.where(grid == 1)))
+    visited = set()
+    components = []
+    
+    for h in hits:
+        if h not in visited:
+            comp = []
+            stack = [h]
+            while stack:
+                c = stack.pop()
+                if c in visited:
+                    continue
+                visited.add(c)
+                comp.append(c)
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nr, nc = c[0]+dr, c[1]+dc
+                    if (nr, nc) in hits and (nr, nc) not in visited:
+                        stack.append((nr, nc))
+            components.append(comp)
+    
+    # Determine sunk ships
+    remaining_ships = list(ship_lengths)
+    for comp in components:
+        rows = [c[0] for c in comp]
+        cols = [c[1] for c in comp]
+        is_line = (len(set(rows)) == 1 or len(set(cols)) == 1)
+        if not is_line and len(comp) > 1:
+            continue
+        length = len(comp)
+        # Check if fully enclosed (no adjacent unknowns)
+        has_adjacent_unknown = False
+        for c in comp:
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = c[0]+dr, c[1]+dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and grid[nr][nc] == 0 and (nr, nc) not in hits:
+                    # Check if this direction is along the ship line
+                    if len(comp) == 1 or (len(set(rows))==1 and dr==0) or (len(set(cols))==1 and dc==0):
+                        has_adjacent_unknown = True
+                        break
+            if has_adjacent_unknown:
+                break
+        if not has_adjacent_unknown and length in remaining_ships:
+            remaining_ships.remove(length)
+    
+    if not remaining_ships:
+        remaining_ships = [2]
+    
+    # Probability density map
+    prob = np.zeros((10, 10), dtype=float)
+    
+    for length in remaining_ships:
+        for r in range(10):
+            for c in range(10 - length + 1):
+                cells = [(r, c+i) for i in range(length)]
+                if all(grid[cr][cc] != -1 for cr, cc in cells):
+                    has_hit = any(grid[cr][cc] == 1 for cr, cc in cells)
+                    weight = 100 if has_hit else 1
+                    for cr, cc in cells:
+                        if grid[cr][cc] == 0:
+                            prob[cr][cc] += weight
+        for r in range(10 - length + 1):
+            for c in range(10):
+                cells = [(r+i, c) for i in range(length)]
+                if all(grid[cr][cc] != -1 for cr, cc in cells):
+                    has_hit = any(grid[cr][cc] == 1 for cr, cc in cells)
+                    weight = 100 if has_hit else 1
+                    for cr, cc in cells:
+                        if grid[cr][cc] == 0:
+                            prob[cr][cc] += weight
+    
+    # Mask already-shot cells
+    prob[grid != 0] = -1
+    
+    if prob.max() <= 0:
+        unknowns = list(zip(*np.where(grid == 0)))
+        if unknowns:
+            idx = np.random.randint(len(unknowns))
+            return (int(unknowns[idx][0]), int(unknowns[idx][1]))
+    
+    best = np.unravel_index(np.argmax(prob), prob.shape)
+    return (int(best[0]), int(best[1]))
+</code>

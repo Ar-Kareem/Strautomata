@@ -1,0 +1,248 @@
+The strategy for this policy is a strong alpha-beta search with Connect-4-specific heuristics:
+
+- Always return a legal move.
+- First check tactical forced moves:
+  - play an immediate winning move if available,
+  - otherwise block any immediate opponent win.
+- Prefer center columns for stronger positional play.
+- Use minimax with alpha-beta pruning on a negamax formulation.
+- Score positions using:
+  - made 4s / threats,
+  - 3-in-a-row and 2-in-a-row patterns with empty spaces,
+  - center-column control.
+- Detect terminal wins/losses exactly.
+- Use move ordering to search stronger moves first, improving pruning.
+- Include a safe fallback so the function always returns a legal column.
+
+<code>
+from typing import List
+
+ROWS = 6
+COLS = 7
+CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
+WIN_SCORE = 10**9
+
+def legal_moves(board: List[List[int]]) -> List[int]:
+    return [c for c in range(COLS) if board[0][c] == 0]
+
+def next_open_row(board: List[List[int]], col: int) -> int:
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return -1
+
+def make_move(board: List[List[int]], col: int, piece: int) -> List[List[int]]:
+    r = next_open_row(board, col)
+    nb = [row[:] for row in board]
+    nb[r][col] = piece
+    return nb
+
+def winning_move(board: List[List[int]], piece: int) -> bool:
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            if (
+                board[r][c] == piece and
+                board[r][c + 1] == piece and
+                board[r][c + 2] == piece and
+                board[r][c + 3] == piece
+            ):
+                return True
+    # Vertical
+    for r in range(ROWS - 3):
+        for c in range(COLS):
+            if (
+                board[r][c] == piece and
+                board[r + 1][c] == piece and
+                board[r + 2][c] == piece and
+                board[r + 3][c] == piece
+            ):
+                return True
+    # Positive diagonal
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if (
+                board[r][c] == piece and
+                board[r + 1][c + 1] == piece and
+                board[r + 2][c + 2] == piece and
+                board[r + 3][c + 3] == piece
+            ):
+                return True
+    # Negative diagonal
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            if (
+                board[r][c] == piece and
+                board[r - 1][c + 1] == piece and
+                board[r - 2][c + 2] == piece and
+                board[r - 3][c + 3] == piece
+            ):
+                return True
+    return False
+
+def evaluate_window(window: List[int]) -> int:
+    score = 0
+    my_count = window.count(1)
+    opp_count = window.count(-1)
+    empty_count = window.count(0)
+
+    if my_count == 4:
+        score += 100000
+    elif my_count == 3 and empty_count == 1:
+        score += 120
+    elif my_count == 2 and empty_count == 2:
+        score += 12
+
+    if opp_count == 4:
+        score -= 100000
+    elif opp_count == 3 and empty_count == 1:
+        score -= 150
+    elif opp_count == 2 and empty_count == 2:
+        score -= 10
+
+    return score
+
+def score_position(board: List[List[int]]) -> int:
+    score = 0
+
+    # Center control
+    center_col = [board[r][COLS // 2] for r in range(ROWS)]
+    score += center_col.count(1) * 10
+    score -= center_col.count(-1) * 10
+
+    # Horizontal
+    for r in range(ROWS):
+        row = board[r]
+        for c in range(COLS - 3):
+            score += evaluate_window(row[c:c + 4])
+
+    # Vertical
+    for c in range(COLS):
+        col = [board[r][c] for r in range(ROWS)]
+        for r in range(ROWS - 3):
+            score += evaluate_window(col[r:r + 4])
+
+    # Positive diagonal
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r + i][c + i] for i in range(4)]
+            score += evaluate_window(window)
+
+    # Negative diagonal
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r - i][c + i] for i in range(4)]
+            score += evaluate_window(window)
+
+    return score
+
+def is_terminal(board: List[List[int]]) -> bool:
+    return winning_move(board, 1) or winning_move(board, -1) or len(legal_moves(board)) == 0
+
+def ordered_moves(board: List[List[int]]) -> List[int]:
+    legal = set(legal_moves(board))
+    return [c for c in CENTER_ORDER if c in legal]
+
+def count_immediate_wins(board: List[List[int]], piece: int) -> int:
+    count = 0
+    for col in legal_moves(board):
+        nb = make_move(board, col, piece)
+        if winning_move(nb, piece):
+            count += 1
+    return count
+
+def heuristic(board: List[List[int]]) -> int:
+    score = score_position(board)
+
+    # Bonus/penalty for immediate tactical threats next turn
+    my_wins = count_immediate_wins(board, 1)
+    opp_wins = count_immediate_wins(board, -1)
+    score += my_wins * 500
+    score -= opp_wins * 700
+
+    return score
+
+def negamax(board: List[List[int]], depth: int, alpha: int, beta: int, color: int) -> int:
+    if winning_move(board, 1):
+        return color * WIN_SCORE
+    if winning_move(board, -1):
+        return -color * WIN_SCORE
+
+    moves = legal_moves(board)
+    if depth == 0 or not moves:
+        return color * heuristic(board)
+
+    best = -10**18
+    for col in ordered_moves(board):
+        nb = make_move(board, col, 1 if color == 1 else -1)
+        # Flip perspective by negating board pieces logically through color
+        val = -negamax(flip_board(nb), depth - 1, -beta, -alpha, -color)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+def flip_board(board: List[List[int]]) -> List[List[int]]:
+    # Convert next player to "1" in recursive negamax representation
+    return [[-cell for cell in row] for row in board]
+
+def choose_depth(num_moves: int) -> int:
+    if num_moves <= 8:
+        return 6
+    if num_moves <= 16:
+        return 7
+    if num_moves <= 28:
+        return 8
+    return 9
+
+def policy(board: List[List[int]]) -> int:
+    moves = legal_moves(board)
+    if not moves:
+        return 0
+
+    # 1. Immediate win
+    for col in ordered_moves(board):
+        nb = make_move(board, col, 1)
+        if winning_move(nb, 1):
+            return col
+
+    # 2. Immediate block
+    opp_winning_cols = []
+    for col in ordered_moves(board):
+        nb = make_move(board, col, -1)
+        if winning_move(nb, -1):
+            opp_winning_cols.append(col)
+    if opp_winning_cols:
+        for col in ordered_moves(board):
+            if col in opp_winning_cols:
+                return col
+        return opp_winning_cols[0]
+
+    # 3. Search
+    num_filled = sum(1 for r in range(ROWS) for c in range(COLS) if board[r][c] != 0)
+    depth = choose_depth(num_filled)
+
+    best_score = -10**18
+    best_col = None
+
+    for col in ordered_moves(board):
+        nb = make_move(board, col, 1)
+        score = -negamax(flip_board(nb), depth - 1, -10**18, 10**18, -1)
+        # Small center preference tie-break
+        score -= abs(3 - col) * 0.01
+        if best_col is None or score > best_score:
+            best_score = score
+            best_col = col
+
+    if best_col is not None and best_col in moves:
+        return best_col
+
+    # 4. Guaranteed legal fallback
+    for col in CENTER_ORDER:
+        if col in moves:
+            return col
+    return moves[0]
+</code>

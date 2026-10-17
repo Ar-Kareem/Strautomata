@@ -1,0 +1,121 @@
+The strategy for this policy is to prioritize capturing moves that eliminate the most opponent pieces, especially kings. If multiple capture sequences exist, it selects the one with the highest number of king captures. When no captures are available, the policy focuses on regular moves that maximize material gain and promote pieces to kings. This approach balances short-term tactical advantages with long-term positional strength.
+
+<code>
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    my_pieces = set(my_men + my_kings)
+    opp_pieces = set(opp_men + opp_kings)
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+    
+    all_captures = []
+    
+    def get_jump_directions(current_pos, is_king):
+        directions = []
+        if is_king:
+            for dr in [-2, 2]:
+                for dc in [-2, 2]:
+                    directions.append((dr, dc))
+        else:
+            if color == 'b':
+                for dc in [-2, 2]:
+                    directions.append((-2, dc))
+            else:
+                for dc in [-2, 2]:
+                    directions.append((2, dc))
+        return directions
+    
+    def generate_captures_sequences(current_pos, is_king):
+        sequences = []
+        directions = get_jump_directions(current_pos, is_king)
+        for dr, dc in directions:
+            new_r, new_c = current_pos[0] + dr, current_pos[1] + dc
+            if 0 <= new_r < 8 and 0 <= new_c < 8:
+                mid_r, mid_c = current_pos[0] + (dr // 2), current_pos[1] + (dc // 2)
+                mid_pos = (mid_r, mid_c)
+                if mid_pos in opp_pieces and (new_r, new_c) not in my_pieces and (new_r, new_c) not in opp_pieces:
+                    new_square = (new_r, new_c)
+                    is_captured_king = mid_pos in opp_kings_set
+                    new_opp_pieces = set(opp_pieces)
+                    new_opp_pieces.remove(mid_pos)
+                    new_opp_men = set(opp_men_set)
+                    new_opp_kings = set(opp_kings_set)
+                    if mid_pos in new_opp_men:
+                        new_opp_men.remove(mid_pos)
+                    elif mid_pos in new_opp_kings:
+                        new_opp_kings.remove(mid_pos)
+                    
+                    sub_sequences = generate_captures_sequences(new_square, is_king)
+                    if not sub_sequences:
+                        sequences.append((current_pos, new_square, 1, 1 if is_captured_king else 0))
+                    else:
+                        for sub in sub_sequences:
+                            total_captures = 1 + sub[2]
+                            total_king_captures = (1 if is_captured_king else 0) + sub[3]
+                            sequences.append((current_pos, sub[1], total_captures, total_king_captures))
+        return sequences
+    
+    for piece in my_men + my_kings:
+        is_king = piece in my_kings
+        subs = generate_captures_sequences(piece, is_king)
+        all_captures.extend(subs)
+    
+    if all_captures:
+        best_seq = None
+        max_caps = -1
+        max_kings = -1
+        for seq in all_captures:
+            caps, kings = seq[2], seq[3]
+            if caps > max_caps or (caps == max_caps and kings > max_kings):
+                max_caps = caps
+                max_kings = kings
+                best_seq = seq
+        return (best_seq[0], best_seq[1])
+    
+    def get_regular_directions(is_king):
+        directions = []
+        if is_king:
+            for dr in [-1, 1]:
+                for dc in [-1, 1]:
+                    if dr != 0 and dc != 0:
+                        directions.append((dr, dc))
+        else:
+            if color == 'b':
+                directions.append((-1, -1))
+                directions.append((-1, 1))
+            else:
+                directions.append((1, -1))
+                directions.append((1, 1))
+        return directions
+    
+    def evaluate_move(piece, new_square, color):
+        is_man = piece in my_men
+        new_r, new_c = new_square
+        new_my_men = my_men.copy()
+        new_my_kings = my_kings.copy()
+        if is_man:
+            if (color == 'b' and new_r == 0) or (color == 'w' and new_r == 7):
+                new_my_men.remove(piece)
+                new_my_kings.append(piece)
+        my_material = len(new_my_men) + 2 * len(new_my_kings)
+        opp_material = len(opp_men) + 2 * len(opp_kings)
+        return my_material - opp_material
+    
+    best_move = None
+    best_score = -float('inf')
+    for piece in my_men + my_kings:
+        is_king = piece in my_kings
+        reg_dirs = get_regular_directions(is_king)
+        for dr, dc in reg_dirs:
+            nr, nc = piece[0] + dr, piece[1] + dc
+            new_square = (nr, nc)
+            if 0 <= nr < 8 and 0 <= nc < 8 and new_square not in my_pieces and new_square not in opp_pieces:
+                score = evaluate_move(piece, new_square, color)
+                if score > best_score:
+                    best_score = score
+                    best_move = (piece, new_square)
+    
+    if best_move:
+        return (best_move[0], best_move[1])
+    else:
+        return (my_men[0], my_men[0])
+</code>

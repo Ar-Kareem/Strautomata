@@ -1,0 +1,477 @@
+**Solution Overview**
+
+The game is a simplified version of Blackjack:
+
+* There are 13 different cards – one copy of each rank.
+* The target score `T` (10 … 30) is fixed for the whole game.
+* An Ace can count as **1** or **11** – we always use the value that gives the
+  largest possible total not exceeding `T`.  
+  If even with all Aces counted as 1 the total is larger than `T` the player
+  *busts* and loses immediately.
+* Both players own an independent deck, therefore a player knows exactly which
+  cards are still available to him (the complement of his hand in the full set
+  of 13 ranks).
+
+Our policy decides at every step whether to **HIT** (draw the next card) or
+**STAY**.  
+The decision must maximise the expected result of the whole game
+(win = +1, draw = 0, loss = –1) against an *optimal* opponent (who also
+chooses the best action for himself, i.e. the worst for us).
+
+The state of the game can be described by a bit‑mask `mask` of the already
+drawn cards – the remaining deck is the complement `FULL ^ mask`.  
+There are at most `2¹³ = 8192` different masks, and the target `T` only has 21
+different values, therefore the whole search space is tiny enough to be solved
+exactly with memoised dynamic programming.
+
+--------------------------------------------------------------------
+
+### 1.   Card representation
+
+| rank | index |
+|------|-------|
+| A    | 0 |
+| 2…9  | 1…8 |
+| 10   | 9 |
+| J    | 10 |
+| Q    | 11 |
+| K    | 12 |
+
+`non_ace_values[i]` gives the non‑Ace contribution of the card with index
+`i` (A contributes 0 here, because its value 1 is added later).
+
+For a mask we pre‑compute
+
+```
+sum_non_ace[mask]  – sum of non‑Ace values of all cards in mask
+ace_cnt[mask]      – number of Aces in mask
+```
+
+Both arrays are built in O(2¹³) time.
+
+--------------------------------------------------------------------
+
+### 2.   Hand value (including the Ace rule)
+
+```
+base = sum_non_ace[mask] + ace_cnt[mask]          # all Aces counted as 1
+if base > T:  bust
+extra = min(ace_cnt, (T - base) // 10)           # as many Aces as possible as 11
+total = base + extra * 10                        # <= T
+```
+
+If `total` is `None` the hand is already bust.
+
+--------------------------------------------------------------------
+
+### 3.   Utility of a finished round
+
+```
+player_utility(opp_total, my_total):
+    if opp_total > T:                # opponent busts
+        return +1
+    d_opp = abs(opp_total - T)
+    d_me  = abs(my_total  - T)
+    if d_opp < d_me:  return -1      # opponent closer
+    if d_opp > d_me:  return +1      # I am closer
+    return 0                         # same distance – draw
+```
+
+--------------------------------------------------------------------
+
+### 4.   DP for the *opponent*
+
+`opp_utility(mask_opp, my_total, T)`  
+returns the **expected utility of the opponent** when it is his turn,
+starting with the card set `mask_opp` (the opponent knows his hand, the player
+already has finished with total `my_total`).  
+The opponent wants to **maximise** his own utility, i.e. minimise ours.
+
+```
+opp_total = hand_value(mask_opp, T)
+if opp_total is None:               # opponent busts immediately
+    return -1.0                     # opponent loses → his utility = -1
+
+# stay
+stay = - player_utility(opp_total, my_total)
+
+# hit
+remaining = FULL ^ mask_opp
+if remaining == 0:                  # no card left – must stay
+    return stay
+hit = average of opp_utility(mask_opp | bit, my_total, T) over all bits in remaining
+        (if the new hand busts the contribution is -1)
+
+return max(stay, hit)               # opponent chooses the best for himself
+```
+
+The function is memoised (`@lru_cache`).  
+There are at most `8192 × (T+1) ≤ 254 000` distinct arguments,
+well within limits.
+
+--------------------------------------------------------------------
+
+### 5.   DP for the *player*
+
+`player_value(mask, T)`  
+returns the **expected utility of the player** when it is his turn,
+starting with the already drawn cards `mask`.  
+The player wants to **maximise** his utility.
+
+```
+my_total = hand_value(mask, T)
+if my_total is None:                 # bust → loss
+    return -1.0
+
+# stay
+stay = - opp_utility(0, my_total, T)   # opponent starts with empty hand
+
+# hit
+remaining = FULL ^ mask
+if remaining == 0:                     # no card left – must stay
+    return stay
+hit = average of player_value(mask | bit, T) over all bits in remaining
+        (if the new hand busts the contribution is -1)
+
+return max(stay, hit)                 # player chooses the best for himself
+```
+
+Again memoised, only `8192` states per target.
+
+--------------------------------------------------------------------
+
+### 6.   Policy
+
+For the current `hand` we build its mask, compute the two possible utilities
+as described above and return the action with the larger expected utility.
+If they are (almost) equal we stay – “STAY” is the default safe action.
+
+--------------------------------------------------------------------
+
+### 7.   Correctness Proof  
+
+We prove that the implementation returns an optimal action for every
+reachable game state.
+
+---
+
+#### Lemma 1  
+`hand_value(mask, T)` returns the exact total of the hand represented by
+`mask` according to the rules of the game, and returns `None` iff the hand
+busts.
+
+*Proof.*  
+All non‑Ace cards contribute their face value, which is stored in
+`non_ace_values`. All Aces contribute 1 each (the `ace_cnt` term).  
+If this sum already exceeds `T`, even counting every Ace as 1 is illegal,
+hence the hand busts.  
+Otherwise we can turn up to `min(ace_cnt, (T-base)//10)` Aces into 11,
+adding ten points each, without exceeding `T`.  
+That is the maximal possible total not exceeding `T`, exactly the rule of the
+game. ∎
+
+
+
+#### Lemma 2  
+For any opponent state `mask_opp`, any player finished total `my_total` and
+target `T`, `opp_utility(mask_opp, my_total, T)` equals the opponent’s
+maximal expected utility from that state.
+
+*Proof.*  
+The function enumerates all legal actions of the opponent:
+
+* Staying yields immediate utility `stay = -player_utility(opp_total, my_total)`.
+  This follows from the zero‑sum definition of the game (opponent’s utility
+  is the negation of the player’s).
+
+* Hitting draws uniformly from the remaining cards.
+  – If the drawn card makes the hand bust, the opponent’s utility is `‑1`
+    (player wins).  
+  – Otherwise the game continues from the new opponent state, whose expected
+    utility is already stored in the memoised value
+    `opp_utility(new_mask, my_total, T)` by the induction hypothesis.
+
+The function returns the maximum of the two possibilities, which is exactly
+the optimal expected utility for a rational opponent. ∎
+
+
+
+#### Lemma 3  
+For any player state `mask` and target `T`, `player_value(mask, T)` equals the
+player’s maximal expected utility from that state.
+
+*Proof.*  
+Induction on the number of cards already drawn (`|mask|`).
+
+*Base*: If `mask` is bust (`hand_value` returns `None`), the player has already
+lost, the utility is `‑1`, which the function returns.
+
+*Induction step*: Assume the claim holds for all masks with more cards than the
+current one.  
+The player has two legal actions:
+
+* **Stay** – the opponent will start from an empty hand with the player’s
+  current total `my_total`. By Lemma&nbsp;2 the opponent’s optimal expected
+  utility is `opp_utility(0, my_total, T)`. The player’s utility is its
+  negation, which the function stores in `stay`.
+
+* **Hit** – the next card is drawn uniformly from the remaining set.
+  For each possible card the resulting state is `new_mask`.  
+  If the hand busts the utility is `‑1`.  
+  Otherwise, by induction hypothesis the value of the new state is
+  `player_value(new_mask, T)`. The function averages those values,
+  obtaining the expected utility of a hit, stored in `hit`.
+
+Because the player chooses the action with larger expected utility,
+`player_value(mask, T) = max(stay, hit)`, which is exactly the optimal
+expected utility. ∎
+
+
+
+#### Lemma 4  
+In `policy(hand, T)` the computed `stay_util` equals the player’s expected
+utility if he **stays** now, and `hit_util` equals the expected utility if he
+**hits** now.
+
+*Proof.*  
+Both utilities are calculated exactly as in the definitions of
+`player_value` for the current mask, using the already proven
+Lemma&nbsp;2 for the opponent’s reaction. ∎
+
+
+
+#### Theorem  
+`policy` always returns a **HIT** iff hitting yields a strictly larger
+expected utility than staying; otherwise it returns **STAY**. Consequently the
+returned action is optimal for the current game state.
+
+*Proof.*  
+By Lemma&nbsp;4 `stay_util` and `hit_util` are the true expected utilities of
+the two admissible actions.  
+The function compares them with a tiny tolerance and returns the action with
+the larger value, breaking ties in favour of **STAY**.  
+Hence the returned action maximises the expected utility, i.e. is optimal. ∎
+
+
+
+--------------------------------------------------------------------
+
+### 8.   Complexity Analysis  
+
+*Pre‑computation* (once, for all targets)
+
+* building `sum_non_ace` and `ace_cnt` for all `2¹³` masks:  
+  `O(2¹³) = 8192` operations.
+
+*For a single target `T`*
+
+* `opp_utility` has at most `8192 × (T+1) ≤ 254 000` distinct states,
+  each evaluated once.  
+  For each state we iterate over at most 13 remaining cards →  
+  `O(8192·T·13) ≤ 3·10⁶` elementary operations.
+
+* `player_value` has at most `8192` states, each again scanning ≤13 cards →  
+  `O(8192·13) ≤ 1·10⁵` operations.
+
+Overall time for a fresh target is well below the 1 second limit; subsequent
+calls with the same target are answered by cache look‑ups in constant time.
+
+Memory consumption
+
+* `sum_non_ace` and `ace_cnt` – 2 × 8192 integers.
+* `opp_utility` cache – ≤ 254 000 floating‑point numbers.
+* `player_value` cache – ≤ 8192 floating‑point numbers.
+
+All comfortably fit into a few megabytes.
+
+--------------------------------------------------------------------
+
+### 9.   Reference Implementation
+```python
+# -*- coding: utf-8 -*-
+
+from functools import lru_cache
+
+# ------------------------------------------------------------
+# 1.  Card representation
+# ------------------------------------------------------------
+RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+RANK_TO_INDEX = {r: i for i, r in enumerate(RANKS)}
+
+# non‑ace contribution (Ace contributes 0 here, its 1 is added later)
+NON_ACE_VALUES = [0] + list(range(2, 11)) + [10, 10, 10]   # indices 0‑12
+
+FULL_MASK = (1 << 13) - 1   # all 13 bits set
+
+# ------------------------------------------------------------
+# 2.  Pre‑compute mask‑wise sums
+# ------------------------------------------------------------
+def _precompute_masks():
+    n_masks = FULL_MASK + 1
+    sum_non_ace = [0] * n_masks
+    ace_cnt = [0] * n_masks
+    for mask in range(1, n_masks):
+        low = mask & -mask
+        idx = low.bit_length() - 1
+        prev = mask ^ low
+        sum_non_ace[mask] = sum_non_ace[prev] + NON_ACE_VALUES[idx]
+        ace_cnt[mask] = ace_cnt[prev] + (1 if idx == 0 else 0)
+    return sum_non_ace, ace_cnt
+
+
+SUM_NON_ACE, ACE_CNT = _precompute_masks()
+
+# ------------------------------------------------------------
+# 3.  Hand value (including Ace adjustment)
+# ------------------------------------------------------------
+def hand_value(mask: int, target: int):
+    """Return the hand total for the given mask and target.
+    Return None if the hand busts (even with all Aces as 1)."""
+    base = SUM_NON_ACE[mask] + ACE_CNT[mask]            # all Aces as 1
+    if base > target:
+        return None
+    extra = min(ACE_CNT[mask], (target - base) // 10)   # how many Aces become 11
+    return base + extra * 10
+
+# ------------------------------------------------------------
+# 4.  Utility for a finished round (from the player’s point of view)
+# ------------------------------------------------------------
+def player_utility(opp_total, my_total, target: int):
+    """Utility for the player when opponent finished with opp_total,
+    player finished with my_total."""
+    if opp_total is not None and opp_total > target:
+        # opponent busts → player wins
+        return 1.0
+    # both totals ≤ target
+    d_opp = abs(opp_total - target)
+    d_me = abs(my_total - target)
+    if d_opp < d_me:
+        return -1.0      # opponent closer
+    if d_opp > d_me:
+        return 1.0       # player closer
+    return 0.0           # same distance → draw
+
+# ------------------------------------------------------------
+# 5.  DP for opponent (maximises opponent utility)
+# ------------------------------------------------------------
+@lru_cache(maxsize=None)
+def opp_utility(opp_mask: int, my_total: int, target: int):
+    """Expected utility of the opponent (who wants to maximise his own utility)
+    when it is his turn, his hand is opp_mask, and the player has already
+    finished with total my_total."""
+    opp_total = hand_value(opp_mask, target)
+    if opp_total is None:                 # opponent busts immediately
+        return -1.0
+
+    # staying
+    stay = -player_utility(opp_total, my_total, target)
+
+    # hitting
+    remaining = FULL_MASK ^ opp_mask
+    if remaining == 0:
+        return stay
+
+    hit_sum = 0.0
+    cnt = 0
+    rem = remaining
+    while rem:
+        low = rem & -rem
+        new_mask = opp_mask | low
+        new_total = hand_value(new_mask, target)
+        if new_total is None:
+            # bust → opponent loses
+            util = -1.0
+        else:
+            util = opp_utility(new_mask, my_total, target)
+        hit_sum += util
+        cnt += 1
+        rem ^= low
+    hit = hit_sum / cnt
+    return max(stay, hit)
+
+# ------------------------------------------------------------
+# 6.  DP for player (maximises player utility)
+# ------------------------------------------------------------
+@lru_cache(maxsize=None)
+def player_value(mask: int, target: int):
+    """Expected utility of the player when it is his turn,
+    his hand is mask, and opponent has not started yet."""
+    my_total = hand_value(mask, target)
+    if my_total is None:                 # bust → immediate loss
+        return -1.0
+
+    # staying → opponent starts from empty hand
+    stay = -opp_utility(0, my_total, target)
+
+    # hitting
+    remaining = FULL_MASK ^ mask
+    if remaining == 0:
+        return stay
+
+    hit_sum = 0.0
+    cnt = 0
+    rem = remaining
+    while rem:
+        low = rem & -rem
+        new_mask = mask | low
+        new_total = hand_value(new_mask, target)
+        if new_total is None:
+            val = -1.0
+        else:
+            val = player_value(new_mask, target)
+        hit_sum += val
+        cnt += 1
+        rem ^= low
+    hit = hit_sum / cnt
+    return max(stay, hit)
+
+# ------------------------------------------------------------
+# 7.  Policy – the function called by the arena
+# ------------------------------------------------------------
+def policy(hand: list[str], target: int) -> str:
+    """Return 'HIT' or 'STAY' according to the optimal strategy."""
+    # build mask from the hand
+    mask = 0
+    for card in hand:
+        idx = RANK_TO_INDEX[card]
+        mask |= (1 << idx)
+
+    # total of current hand (cannot be None here)
+    my_total = hand_value(mask, target)
+    if my_total is None:          # should never happen in a real turn
+        return "STAY"
+
+    # stay outcome
+    stay_util = -opp_utility(0, my_total, target)
+
+    # hit outcome (expected value of a random draw)
+    remaining = FULL_MASK ^ mask
+    if remaining == 0:
+        hit_util = -1.0          # cannot hit
+    else:
+        hit_sum = 0.0
+        cnt = 0
+        rem = remaining
+        while rem:
+            low = rem & -rem
+            new_mask = mask | low
+            new_total = hand_value(new_mask, target)
+            if new_total is None:
+                val = -1.0
+            else:
+                val = player_value(new_mask, target)
+            hit_sum += val
+            cnt += 1
+            rem ^= low
+        hit_util = hit_sum / cnt
+
+    # choose the action with the larger expected utility
+    if hit_util > stay_util + 1e-12:
+        return "HIT"
+    else:
+        return "STAY"
+```
+
+The code follows exactly the algorithm proven correct above and conforms to
+the required function signature. It runs well within the one‑second limit
+and uses only standard Python libraries.

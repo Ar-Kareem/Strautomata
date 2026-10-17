@@ -1,0 +1,87 @@
+
+def policy(board: list[list[int]]) -> int:
+    def get_row(col):
+        for r in range(5, -1, -1):
+            if board[r][col] == 0:
+                return r
+        return -1
+
+    def is_win(player, row, col):
+        # Check horizontal
+        consecutive = 1
+        c = col - 1
+        while c >= 0 and board[row][c] == player:
+            consecutive += 1
+            c -= 1
+        c = col + 1
+        while c < 7 and board[row][c] == player:
+            consecutive += 1
+            c += 1
+        if consecutive >= 4:
+            return True
+
+        # Check vertical
+        consecutive = 1
+        r = row - 1
+        while r >= 0 and board[r][col] == player:
+            consecutive += 1
+            r -= 1
+        r = row + 1
+        while r < 6 and board[r][col] == player:
+            consecutive += 1
+            r += 1
+        if consecutive >= 4:
+            return True
+
+        # Check diagonal (top-left to bottom-right)
+        consecutive = 1
+        r, c = row - 1, col - 1
+        while r >= 0 and c >= 0 and board[r][c] == player:
+            consecutive += 1
+            r -= 1
+            c -= 1
+        r, c = row + 1, col + 1
+        while r < 6 and c < 7 and board[r][c] == player:
+            consecutive += 1
+            r += 1
+            c += 1
+        if consecutive >= 4:
+            return True
+
+        # Check diagonal (bottom-left to top-right)
+        consecutive = 1
+        r, c = row + 1, col - 1
+        while r < 6 and c >= 0 and board[r][c] == player:
+            consecutive += 1
+            r += 1
+            c -= 1
+        r, c = row - 1, col + 1
+        while r >= 0 and c < 7 and board[r][c] == player:
+            consecutive += 1
+            r -= 1
+            c += 1
+        if consecutive >= 4:
+            return True
+
+        return False
+
+    # Check winning move
+    for col in range(7):
+        if board[0][col] == 0:
+            row = get_row(col)
+            if is_win(1, row, col):
+                return col
+
+    # Block opponent's winning move
+    for col in range(7):
+        if board[0][col] == 0:
+            row = get_row(col)
+            if is_win(-1, row, col):
+                return col
+
+    # Prefer center columns
+    for col in [3, 2, 4, 1, 5, 0, 6]:
+        if board[0][col] == 0:
+            return col
+
+    return -1  # Should never be reached

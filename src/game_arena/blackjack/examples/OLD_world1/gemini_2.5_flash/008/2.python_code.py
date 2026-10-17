@@ -1,0 +1,113 @@
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Implements a policy for a simplified Blackjack-like game.
+
+    Args:
+        hand: A list of strings representing the cards you currently hold.
+        target: The integer T you are trying to approach.
+
+    Returns:
+        "HIT" to draw another card, or "STAY" to stop drawing.
+    """
+
+    def get_card_value(card: str, current_total: int, target_score: int) -> int:
+        if card.isdigit():
+            return int(card)
+        elif card in ["J", "Q", "K"]:
+            return 10
+        elif card == "A":
+            # If adding 11 doesn't bust and doesn't exceed target too much,
+            # and current_total + 11 is closer to target than current_total + 1,
+            # use 11. Otherwise, use 1.
+            if current_total + 11 <= target:
+                return 11
+            else:
+                return 1
+        return 0  # Should not happen
+
+    current_score = 0
+    num_aces = 0
+    for card in hand:
+        if card == "A":
+            num_aces += 1
+            current_score += 11  # Initially assume A is 11
+        else:
+            current_score += get_card_value(card, 0, target) # 0 and target are dummy for non-A cards
+
+    # Adjust for Aces if busting
+    while current_score > target and num_aces > 0:
+        current_score -= 10  # Change an Ace from 11 to 1
+        num_aces -= 1
+
+    # If already busted, we can't do anything, but the game handles this.
+    # Our policy should aim not to bust.
+    if current_score > target:
+        return "STAY"
+
+    # Define a threshold for hitting.
+    # This is a heuristic. We want to get close to the target without busting.
+    # The optimal strategy would involve considering probabilities of drawing cards,
+    # but without knowing the remaining deck or opponent's strategy,
+    # a simple heuristic based on current score and target is most practical.
+
+    # If current score is already very close to target, STAY.
+    if current_score >= target - 2:  # Example: 18, 19, 20 for target 20.
+        return "STAY"
+    
+    # If a low target (e.g., 10-15), we might be more cautious
+    # if target <= 15:
+    #     if current_score >= target - 1:
+    #         return "STAY"
+
+    # If we have a very low score, definitely HIT to improve.
+    if current_score < target / 2:
+        return "HIT"
+
+    # Consider the remaining cards we could draw (worst case for not busting)
+    # The smallest possible card value is 2, the largest is 11 (Ace as 11).
+    # If drawing even a '2' would bust us, we should STAY.
+    if current_score + 2 > target:
+        return "STAY"
+
+    # If current score is moderately low but safe to hit, HIT.
+    # This is a general "reach for the target" strategy.
+    # We want to keep hitting as long as it's reasonably safe and we aren't close enough.
+    
+    # A simple threshold:
+    if current_score < target - 3: # If target is 20, hit until current_score is 17 or more
+        return "HIT"
+    
+    # More nuanced: if we have an Ace, we have more flexibility.
+    # If we have an Ace (which can be 1 or 11), we are safer.
+    # However, our current_score logic already adjusts for aces.
+
+    # If we made it this far, meaning we are not busted, not super close,
+    # and not too low, a general strategy is to hit if there's still
+    # a good chance of improving without busting.
+    # A common "hit until X" strategy, where X is slightly below target.
+    # Let's say we aim for scores around target - 3, target - 2.
+    
+    # If hitting a 10 (J, Q, K, 10) would bust you, it's risky to hit.
+    if current_score + 10 > target:
+        # If we are almost certainly going to bust with a high card, stay.
+        # But if there's a chance of drawing a small card (2-9), we might still hit
+        # if our current score is not good enough.
+        
+        # If the gap to the target is small, just stay.
+        if target - current_score < 7: # If target is 20 and current is 15, gap is 5.
+            return "STAY"
+        else:
+            # If the gap is larger, e.g., target 30, current 15 (gap 15),
+            # hitting a 10 is fine. Hitting even a `9` or `8` would not bust.
+            # So, stay unless hitting a 2-9 is guaranteed to not bust us.
+            if current_score + 9 <= target: # If current_score + largest non-10 card possible is safe...
+                return "HIT"
+            
+            # If current_score + 2 (smallest card) is good, and it's not too close to target,
+            # this check might be redundant given previous checks but is a good final catch-all.
+            if current_score + 2 <= target:
+                return "HIT"
+
+    return "STAY" # Fallback, if no other condition met, usually means it's safer to STAY.
+

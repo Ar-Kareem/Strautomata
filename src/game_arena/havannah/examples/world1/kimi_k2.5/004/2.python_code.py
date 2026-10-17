@@ -1,0 +1,279 @@
+
+import numpy as np
+from collections import deque
+
+# Global cache for board topology computation
+_cache = {}
+
+# Hex grid neighbor directions based on the problem description
+# (r-1,c), (r+1,c), (r-1,c-1), (r,c-1), (r-1,c+1), (r,c+1)
+DIRS = [(-1, 0), (1, 0), (-1, -1), (0, -1), (-1, 1), (0, 1)]
+
+def _get_board_features(valid_mask):
+    """Identify corners and edge assignments from valid_mask."""
+    key = id(valid_mask)
+    if key in _cache:
+        return _cache[key]
+    
+    valid_set = set(zip(*np.where(valid_mask)))
+    if not valid_set:
+        return [], {}, valid_set
+    
+    # Count valid neighbors for each cell to identify boundary
+    neighbor_count = {}
+    boundary_cells = []
+    
+    for (r, c) in valid_set:
+        count = 0
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in valid_set:
+                count += 1
+        neighbor_count[(r, c)] = count
+        if count < 6:
+            boundary_cells.append((r, c))
+    
+    # Corners have exactly 2 neighbors in a hexagonal board
+    corners = [cell for cell in boundary_cells if neighbor_count[cell] == 2]
+    
+    # Sort corners cyclically around centroid for edge assignment
+    if len(corners) == 6:
+        cr = sum(r for r, c in corners) / 6.0
+        cc = sum(c for r, c in corners) / 6.0
+        corners.sort(key=lambda x: np.arctan2(x[0] - cr, x[1] - cc))
+    
+    # Map each boundary cell to an edge index (0-5)
+    edge_map = {}
+    if len(corners) == 6:
+        # Build boundary adjacency
+        adj = {cell: [] for cell in boundary_cells}
+        for (r, c) in boundary_cells:
+            for dr, dc in DIRS:
+                nb = (r + dr, c + dc)
+                if nb in valid_set and nb in adj:
+                    adj[(r, c)].append(nb)
+        
+        # For each edge (between corner i and i+1), find cells on that edge
+        for i in range(6):
+            c1, c2 = corners[i], corners[(i + 1) % 6]
+            # BFS from c1 to c2 along boundary
+            queue = deque([c1])
+            visited = {c1}
+            parent = {c1: None}
+            found = False
+            while queue:
+                cur = queue.popleft()
+                if cur == c2:
+                    found = True
+                    break
+                for nb in adj[cur]:
+                    if nb not in visited:
+                        visited.add(nb)
+                        parent[nb] = cur
+                        queue.append(nb)
+            
+            if found:
+                # Backtrack to mark edge
+                cur = c2
+                while cur is not None:
+                    edge_map[cur] = i
+                    cur = parent[cur]
+    else:
+        # Fallback: treat all boundary as edge 0
+        for cell in boundary_cells:
+            edge_map[cell] = 0
+    
+    result = (corners, edge_map, valid_set)
+    _cache[key] = result
+    return result
+
+class UnionFind:
+    def __init__(self):
+        self.parent = {}
+        self.rank = {}
+        self.edges = {}   # Set of edges touched by component
+        self.corners = {} # Set of corners touched by component
+    
+    def add(self, cell, edge_map, corners_set):
+        if cell not in self.parent:
+            self.parent[cell] = cell
+            self.rank[cell] = 0
+            self.edges[cell] = set()
+            self.corners[cell] = set()
+            if cell in edge_map:
+                self.edges[cell].add(edge_map[cell])
+            if cell in corners_set:
+                self.corners[cell].add(cell)
+    
+    def find(self, cell):
+        # Path compression
+        path = []
+        while self.parent[cell] != cell:
+            path.append(cell)
+            cell = self.parent[cell]
+        for p in path:
+            self.parent[p] = cell
+        return cell
+    
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return False
+        if self.rank[ra] < self.rank[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        if self.rank[ra] == self.rank[rb]:
+            self.rank[ra] += 1
+        self.edges[ra] = self.edges[ra] | self.edges[rb]
+        self.corners[ra] = self.corners[ra] | self.corners[rb]
+        return True
+    
+    def get_component_data(self, cell):
+        root = self.find(cell)
+        return self.edges[root], self.corners[root]
+
+def _check_move_wins(cell, uf, edge_map, corners_set, me_set):
+    """Check if placing a stone at cell creates a win."""
+    r, c = cell
+    # Find all neighbors that are my stones
+    my_neighbors = []
+    for dr, dc in DIRS:
+        nb = (r + dr, c + dc)
+        if nb in me_set:
+            my_neighbors.append(nb)
+    
+    # Check for Ring: any two neighbors in same component
+    roots = set()
+    for nb in my_neighbors:
+        root = uf.find(nb)
+        if root in roots:
+            return True, "ring"
+        roots.add(root)
+    
+    # Calculate new component's edge/corner coverage
+    new_edges = set()
+    new_corners = set()
+    if cell in edge_map:
+        new_edges.add(edge_map[cell])
+    if cell in corners_set:
+        new_corners.add(cell)
+    
+    for nb in my_neighbors:
+        edges, corners = uf.get_component_data(nb)
+        new_edges.update(edges)
+        new_corners.update(corners)
+    
+    if len(new_corners) >= 2:
+        return True, "bridge"
+    if len(new_edges) >= 3:
+        return True, "fork"
+    
+    return False, None
+
+def policy(me, opp, valid_mask):
+    me_set = set(me)
+    opp_set = set(opp)
+    corners, edge_map, valid_set = _get_board_features(valid_mask)
+    corners_set = set(corners)
+    
+    # Build Union-Find for my stones
+    uf_me = UnionFind()
+    for cell in me:
+        uf_me.add(cell, edge_map, corners_set)
+        r, c = cell
+        for dr, dc in DIRS:
+            nb = (r + dr, c + dc)
+            if nb in me_set:
+                uf_me.union(cell, nb)
+    
+    # Build Union-Find for opponent stones
+    uf_opp = UnionFind()
+    for cell in opp:
+        uf_opp.add(cell, edge_map, corners_set)
+        r, c = cell
+        for dr, dc in DIRS:
+            nb = (r + dr, c + dc)
+            if nb in opp_set:
+                uf_opp.union(cell, nb)
+    
+    # Get empty valid cells
+    empty = [c for c in valid_set if c not in me_set and c not in opp_set]
+    if not empty:
+        return (0, 0)  # Should not happen
+    
+    winning_moves = []
+    blocking_moves = []
+    
+    # Check all empty cells for wins and blocks
+    for cell in empty:
+        # My win?
+        is_win, _ = _check_move_wins(cell, uf_me, edge_map, corners_set, me_set)
+        if is_win:
+            winning_moves.append(cell)
+            continue
+        
+        # Opponent win?
+        is_opp_win, _ = _check_move_wins(cell, uf_opp, edge_map, corners_set, opp_set)
+        if is_opp_win:
+            blocking_moves.append(cell)
+    
+    if winning_moves:
+        return winning_moves[0]
+    
+    if blocking_moves:
+        # If multiple threats, we block one (prioritize corners/edges if needed)
+        return blocking_moves[0]
+    
+    # Heuristic evaluation
+    best_move = empty[0]
+    best_score = -999999
+    center = (7, 7)
+    
+    for cell in empty:
+        r, c = cell
+        score = 0
+        
+        # Center control (Manhattan distance approximation)
+        dist = abs(r - center[0]) + abs(c - center[1])
+        score -= dist * 3
+        
+        # Local connectivity
+        my_nbrs = 0
+        opp_nbrs = 0
+        unique_roots = set()
+        
+        for dr, dc in DIRS:
+            nb = (r + dr, c + dc)
+            if nb in me_set:
+                my_nbrs += 1
+                unique_roots.add(uf_me.find(nb))
+            elif nb in opp_set:
+                opp_nbrs += 1
+        
+        score += my_nbrs * 5
+        score -= opp_nbrs * 2
+        
+        # Bonus for connecting separate components (bridge/fork setup)
+        if len(unique_roots) > 1:
+            score += 15 * len(unique_roots)
+        
+        # Edge/corner potential for future wins
+        if cell in edge_map:
+            score += 3
+            # Bonus if we already touch this edge elsewhere
+            edge_idx = edge_map[cell]
+            for nb in [(r+dr, c+dc) for dr, dc in DIRS]:
+                if nb in me_set:
+                    edges, _ = uf_me.get_component_data(nb)
+                    if edge_idx in edges:
+                        score += 5  # Reinforcing existing edge
+                        break
+        
+        if cell in corners_set:
+            score += 8
+        
+        if score > best_score:
+            best_score = score
+            best_move = cell
+    
+    return best_move

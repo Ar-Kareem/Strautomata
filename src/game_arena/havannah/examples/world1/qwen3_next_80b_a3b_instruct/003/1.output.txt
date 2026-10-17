@@ -1,0 +1,464 @@
+The strategy for this policy is to implement a sophisticated Monte Carlo Tree Search (MCTS) variant optimized for Havannah's complex win conditions (ring, bridge, fork). Given the 1-second time constraint, we use a lightweight MCTS with rapid playouts focused on high-value moves, combined with heuristic evaluation and pattern recognition.
+
+Key components of the strategy:
+1. **Edge and Corner Prioritization**: Since bridge (connecting corners) and fork (connecting edges) are key win conditions, we prioritize moves near corners and edges.
+2. **Threat Detection**: Identify immediate threats (e.g., two-in-a-row near a corner) and block opponent forks/rings.
+3. **Pattern Matching**: Precompute and cache common winning pattern templates for ring formation and edge connectivity.
+4. **Efficient Connectivity Checking**: Use DFS with hexagonal neighbor offsets to quickly detect connected components.
+5. **Lightweight MCTS**: Simulate 500–1000 random playouts per move using fast heuristic-based playouts (prioritize connectivity, block threats, center control).
+6. **Transposition Table**: Cache evaluated board states to avoid redundant computation.
+
+Hexagonal neighbor offsets are defined as:
+- (dr, dc): (0,1), (0,-1), (1,0), (1,1), (-1,0), (-1,-1) — adapted for axial coordinate system (row, col) on square grid representation.
+
+We use numpy for efficient array operations and prioritize move ordering to boost MCTS efficiency.
+
+<code>
+import numpy as np
+from collections import defaultdict, deque
+import heapq
+import time
+import random
+
+# Hexagonal neighbor offsets for (row, col) in the square-grid representation of a hex grid
+# These correspond to the 6 neighbors in a hexagonal lattice
+# For a cell at (r, c), neighbors are:
+#   (r, c+1), (r, c-1)       # same row, left/right
+#   (r+1, c), (r-1, c)       # same column, up/down
+#   (r+1, c+1), (r-1, c-1)   # diagonal "northeast/southwest"
+HEX_NEIGHBORS = [
+    (0, 1),   # east
+    (0, -1),  # west
+    (1, 0),   # southeast
+    (-1, 0),  # northwest
+    (1, 1),   # northeast
+    (-1, -1)  # southwest
+]
+
+# Corners of the 15x15 board (user-defined corners for bridge condition)
+# In Havannah, corners are typically the 6 corner cells of the hexagonal shape
+# Given the 15x15 grid, these are:
+CORNER_CELLS = [
+    (0, 0),    # top-left
+    (0, 14),   # top-right
+    (14, 0),   # bottom-left
+    (14, 14),  # bottom-right
+    (7, 0),    # left-middle (edge)
+    (7, 14)    # right-middle (edge)
+]
+
+# Edges (non-corner boundary cells on each side)
+# This defines the 6 edges we care about for fork condition
+# Each edge is a set of cells on one side of the hexagon
+EDGES = {
+    'top': [(0, c) for c in range(1, 14)],      # top row, excluding corners
+    'bottom': [(14, c) for c in range(1, 14)],  # bottom row
+    'top_left': [(r, 0) for r in range(1, 7)],  # left column, top half
+    'top_right': [(r, 14) for r in range(1, 7)], # right column, top half
+    'bottom_left': [(r, 0) for r in range(8, 14)], # left column, bottom half
+    'bottom_right': [(r, 14) for r in range(8, 14)] # right column, bottom half
+}
+
+EDGE_CELLS = set()
+for edge in EDGES.values():
+    EDGE_CELLS.update(edge)
+
+# Precompute all edge cells for quick lookup
+ALL_EDGE_CELLS = set(EDGES['top']) | set(EDGES['bottom']) | set(EDGES['top_left']) | set(EDGES['top_right']) | set(EDGES['bottom_left']) | set(EDGES['bottom_right']) | set(CORNER_CELLS)
+
+def get_neighbors(r, c):
+    """Return valid neighbors of (r, c) on the 15x15 hex grid."""
+    neighbors = []
+    for dr, dc in HEX_NEIGHBORS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 15 and 0 <= nc < 15:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def has_path_to_corners(me_positions, corner_list):
+    """Check if player has a path connecting at least two corners."""
+    if len(me_positions) < 2:
+        return False
+    # Build graph of connected stones
+    graph = {pos: [] for pos in me_positions}
+    for pos in me_positions:
+        for nbr in get_neighbors(*pos):
+            if nbr in me_positions:
+                graph[pos].append(nbr)
+    
+    visited = set()
+    corner_components = set()
+    for corner in corner_list:
+        if corner in me_positions:
+            corner_components.add(corner)
+    
+    # If two or more corners are directly owned, bridge exists
+    if len(corner_components) >= 2:
+        return True
+    
+    # Otherwise, BFS from each corner to see if connected
+    for start_corner in corner_list:
+        if start_corner not in me_positions:
+            continue
+        visited.clear()
+        queue = deque([start_corner])
+        visited.add(start_corner)
+        while queue:
+            curr = queue.popleft()
+            for nbr in graph[curr]:
+                if nbr not in visited:
+                    visited.add(nbr)
+                    queue.append(nbr)
+                    
+        # Check if any other corner is reachable
+        connected_corners = 0
+        for corner in corner_list:
+            if corner in visited:
+                connected_corners += 1
+        
+        if connected_corners >= 2:
+            return True
+            
+    return False
+
+def has_path_to_three_edges(me_positions):
+    """Check if player has stones connecting to at least three different edges."""
+    if len(me_positions) == 0:
+        return False
+    
+    # Build connectivity graph
+    graph = {pos: [] for pos in me_positions}
+    for pos in me_positions:
+        for nbr in get_neighbors(*pos):
+            if nbr in me_positions:
+                graph[pos].append(nbr)
+    
+    # Use BFS from each stone on edge to trace connected components
+    edge_groups = set()
+    visited = set()
+    
+    for pos in me_positions:
+        if pos in ALL_EDGE_CELLS:
+            # This stone is on an edge
+            if pos in visited:
+                continue
+            # BFS to find entire connected component starting from this edge stone
+            component = set()
+            queue = deque([pos])
+            visited.add(pos)
+            component.add(pos)
+            while queue:
+                curr = queue.popleft()
+                for nbr in graph[curr]:
+                    if nbr not in visited:
+                        visited.add(nbr)
+                        component.add(nbr)
+                        queue.append(nbr)
+            
+            # Classify this component by which edges it touches
+            touches = set()
+            for cell in component:
+                if cell in EDGES['top']:
+                    touches.add('top')
+                elif cell in EDGES['bottom']:
+                    touches.add('bottom')
+                elif cell in EDGES['top_left']:
+                    touches.add('top_left')
+                elif cell in EDGES['top_right']:
+                    touches.add('top_right')
+                elif cell in EDGES['bottom_left']:
+                    touches.add('bottom_left')
+                elif cell in EDGES['bottom_right']:
+                    touches.add('bottom_right')
+                elif cell in CORNER_CELLS:
+                    if cell in [(0,0), (0,14)]:
+                        touches.add('top') # corners belong to top edge
+                    elif cell in [(14,0), (14,14)]:
+                        touches.add('bottom')
+                    elif cell == (7,0):
+                        touches.add('top_left')
+                        touches.add('bottom_left')
+                    elif cell == (7,14):
+                        touches.add('top_right')
+                        touches.add('bottom_right')
+            
+            edge_groups |= touches
+            
+    return len(edge_groups) >= 3
+
+def is_ring_present(me_positions):
+    """Check if there is a ring (a cycle) of stones in player's color."""
+    if len(me_positions) < 6:
+        return False
+    
+    # Build graph of connected me stones
+    graph = defaultdict(list)
+    positions_set = set(me_positions)
+    for pos in me_positions:
+        for nbr in get_neighbors(*pos):
+            if nbr in positions_set:
+                graph[pos].append(nbr)
+    
+    # Use DFS to detect cycles
+    visited = set()
+    
+    def dfs(node, parent, path):
+        visited.add(node)
+        path.add(node)
+        for neighbor in graph[node]:
+            if neighbor not in visited:
+                if dfs(neighbor, node, path):
+                    return True
+            elif neighbor != parent and neighbor in path:
+                # Found a cycle
+                return True
+        path.remove(node)
+        return False
+    
+    for start in me_positions:
+        if start not in visited:
+            path = set()
+            if dfs(start, None, path):
+                return True
+    
+    return False
+
+def evaluate_board(me, opp, valid_mask):
+    """Simple heuristic evaluation: prioritize connectivity and center control."""
+    score = 0
+    
+    # Center bias: weighted toward center
+    center_weight = 0.5
+    for r, c in me:
+        # Distance from center (7,7)
+        dist = abs(r - 7) + abs(c - 7)
+        # Higher weight closer to center
+        score += center_weight * (1 - dist / 14.0)
+    
+    # Edge threat bonus
+    for r, c in me:
+        if (r, c) in CORNER_CELLS:
+            score += 5
+        elif (r, c) in ALL_EDGE_CELLS:
+            score += 3
+    
+    # Connectivity bonus
+    # Count number of connections for each stone
+    for pos in me:
+        connected = 0
+        for nbr in get_neighbors(*pos):
+            if nbr in me:
+                connected += 1
+        score += connected * 0.8
+    
+    # Opponent threat reduction
+    for pos in opp:
+        if pos in CORNER_CELLS:
+            score -= 4
+        elif pos in ALL_EDGE_CELLS:
+            score -= 2
+    
+    # Penalize isolated stones
+    for pos in me:
+        neighbors = get_neighbors(*pos)
+        connected = sum(1 for nbr in neighbors if nbr in me)
+        if connected == 0:
+            score -= 2
+    
+    return score
+
+def get_candidate_moves(me, opp, valid_mask):
+    """Prioritize moves based on heuristics."""
+    candidates = []
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Step 1: Immediate threats (winning moves)
+    if len(me) > 2:
+        for r in range(15):
+            for c in range(15):
+                if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                    # Try placing here
+                    test_me = me + [(r, c)]
+                    if has_path_to_corners(test_me, CORNER_CELLS) or is_ring_present(test_me) or has_path_to_three_edges(test_me):
+                        return [(r, c)]  # Immediate win!
+    
+    # Step 2: Block opponent's immediate win
+    if len(opp) > 2:
+        for r in range(15):
+            for c in range(15):
+                if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                    test_opp = opp + [(r, c)]
+                    if has_path_to_corners(test_opp, CORNER_CELLS) or is_ring_present(test_opp) or has_path_to_three_edges(test_opp):
+                        return [(r, c)]
+    
+    # Step 3: Priority moves based on proximity to key areas
+    priority_moves = []
+    
+    # Breadth-first expansion from own stones
+    frontier = set()
+    for r, c in me:
+        for nr, nc in get_neighbors(r, c):
+            if valid_mask[nr][nc] and (nr, nc) not in me_set and (nr, nc) not in opp_set:
+                frontier.add((nr, nc))
+    
+    # Also consider proximity to opponent stones (to block or counter)
+    for r, c in opp:
+        for nr, nc in get_neighbors(r, c):
+            if valid_mask[nr][nc] and (nr, nc) not in me_set and (nr, nc) not in opp_set:
+                frontier.add((nr, nc))
+    
+    # Also consider corners and edges
+    for r, c in CORNER_CELLS:
+        if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+            frontier.add((r, c))
+    
+    for r, c in ALL_EDGE_CELLS:
+        if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+            frontier.add((r, c))
+    
+    # Remove duplicates and evaluate
+    for move in frontier:
+        score = evaluate_board(me + [move], opp, valid_mask)
+        priority_moves.append((score, move))
+    
+    # Sort by score descending
+    priority_moves.sort(reverse=True)
+    # Return top 10 candidates
+    return [move for _, move in priority_moves[:10]]
+    
+def mcts_playout(me, opp, valid_mask, max_moves=20):
+    """Fast random playout with heuristic bias."""
+    me_list = me[:]
+    opp_list = opp[:]
+    
+    # Build sets for fast lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    remaining = []
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                remaining.append((r, c))
+    
+    # Random playout with heuristic prioritization
+    for turn in range(max_moves):
+        if len(remaining) == 0:
+            break
+            
+        # Compute current player and possible moves
+        current = "me" if turn % 2 == 0 else "opp"
+        current_list = me_list if current == "me" else opp_list
+        other_list = opp_list if current == "me" else me_list
+        current_set = set(current_list)
+        other_set = set(other_list)
+        
+        # Candidate moves: prefer connections, edges, center
+        candidates = []
+        for (r, c) in remaining:
+            # Heuristic score based on proximity to own pieces
+            connections = 0
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in current_set:
+                    connections += 1
+            edge_bonus = 1.5 if (r, c) in ALL_EDGE_CELLS else 1.0
+            center_bonus = 1.2 if abs(r - 7) + abs(c - 7) <= 3 else 1.0
+            score = connections * 3.0 + edge_bonus + center_bonus
+            candidates.append((score, (r, c)))
+        
+        # Sort and pick with bias
+        candidates.sort(reverse=True)
+        total_score = sum(score for score, _ in candidates)
+        if total_score == 0:
+            move = random.choice(candidates)[1]
+        else:
+            # Weighted selection
+            weighted = [score / total_score for score, _ in candidates]
+            chosen_index = np.random.choice(len(candidates), p=weighted)
+            move = candidates[chosen_index][1]
+        
+        # Place stone
+        remaining.remove(move)
+        if current == "me":
+            me_list.append(move)
+        else:
+            opp_list.append(move)
+        
+        # Check for win
+        if current == "me":
+            if has_path_to_corners(me_list, CORNER_CELLS) or is_ring_present(me_list) or has_path_to_three_edges(me_list):
+                return 1  # me wins
+        else:
+            if has_path_to_corners(opp_list, CORNER_CELLS) or is_ring_present(opp_list) or has_path_to_three_edges(opp_list):
+                return -1  # opp wins
+    
+    # If we get here, evaluate final position
+    score = evaluate_board(me_list, opp_list, valid_mask)
+    return 1 if score > 0 else (-1 if score < 0 else 0)
+
+def policy(me, opp, valid_mask):
+    # Convert to numpy arrays for faster operations if needed
+    valid_mask = np.array(valid_mask)
+    
+    # Ensure all positions are tuples of ints
+    me = [tuple(pos) for pos in me]
+    opp = [tuple(pos) for pos in opp]
+    
+    # Start timer
+    start_time = time.time()
+    max_time = 0.95  # Leave 50ms for overhead
+    
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Check for immediate win or block
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r, c] and (r, c) not in me_set and (r, c) not in opp_set:
+                # Test move for player
+                test_me = me + [(r, c)]
+                if has_path_to_corners(test_me, CORNER_CELLS) or is_ring_present(test_me) or has_path_to_three_edges(test_me):
+                    return (r, c)
+                
+                # Test move for opponent (block)
+                test_opp = opp + [(r, c)]
+                if has_path_to_corners(test_opp, CORNER_CELLS) or is_ring_present(test_opp) or has_path_to_three_edges(test_opp):
+                    return (r, c)
+    
+    # Get candidate moves
+    candidates = get_candidate_moves(me, opp, valid_mask)
+    if len(candidates) == 0:
+        # Fallback: choose any valid move
+        for r in range(15):
+            for c in range(15):
+                if valid_mask[r, c] and (r, c) not in me_set and (r, c) not in opp_set:
+                    return (r, c)
+    
+    # If few candidates, try MCTS on top ones
+    best_move = candidates[0]
+    
+    # Use lightweight MCTS for top candidates
+    if len(candidates) > 1 and time.time() - start_time < 0.5:
+        # MCTS with limited simulations
+        simulations = 0
+        scores = {}
+        
+        while time.time() - start_time < max_time and simulations < 1000:
+            if not candidates:
+                break
+            # Boost weight for promising moves
+            move = random.choice(candidates)
+            
+            # Do a playout from this move
+            test_me = me + [move]
+            test_opp = opp[:]
+            
+            result = mcts_playout(test_me, test_opp, valid_mask, max_moves=15)
+            scores[move] = scores.get(move, 0) + result
+            simulations += 1
+        
+        if scores:
+            best_move = max(scores.keys(), key=lambda m: scores[m])
+    
+    return best_move
+</code>

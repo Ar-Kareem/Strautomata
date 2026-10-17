@@ -1,0 +1,228 @@
+
+import random
+from typing import List, Tuple, Optional
+
+# Directions for movement (row, col)
+DIRECTIONS = {
+    'b': [(1, -1), (1, 1)],  # Black moves downward
+    'w': [(-1, -1), (-1, 1)]  # White moves upward
+}
+
+# Directions for king movement (can move both directions)
+KING_DIRECTIONS = [(1, -1), (1, 1), (-1, -1), (-1, 1)]
+
+def is_valid_square(row: int, col: int) -> bool:
+    """Check if a square is within bounds and playable (dark square)."""
+    return 0 <= row < 8 and 0 <= col < 8 and (row + col) % 2 == 1
+
+def get_all_pieces(my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]],
+                  opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]]) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    """Combine all pieces into my_pieces and opp_pieces lists."""
+    my_pieces = my_men + my_kings
+    opp_pieces = opp_men + opp_kings
+    return my_pieces, opp_pieces
+
+def get_piece_type(piece: Tuple[int, int], my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]]) -> str:
+    """Return 'man' or 'king' for a given piece."""
+    if piece in my_kings:
+        return 'king'
+    return 'man'
+
+def get_possible_moves(piece: Tuple[int, int], my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]],
+                      opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]], color: str) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """Get all possible non-capture moves for a piece."""
+    moves = []
+    row, col = piece
+    piece_type = get_piece_type(piece, my_men, my_kings)
+    directions = KING_DIRECTIONS if piece_type == 'king' else DIRECTIONS[color]
+
+    for dr, dc in directions:
+        new_row, new_col = row + dr, col + dc
+        if is_valid_square(new_row, new_col):
+            # Check if destination is empty
+            my_pieces, opp_pieces = get_all_pieces(my_men, my_kings, opp_men, opp_kings)
+            if (new_row, new_col) not in my_pieces and (new_row, new_col) not in opp_pieces:
+                moves.append(((row, col), (new_row, new_col)))
+
+    return moves
+
+def get_possible_captures(piece: Tuple[int, int], my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]],
+                         opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]], color: str) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """Get all possible capture moves for a piece."""
+    captures = []
+    row, col = piece
+    piece_type = get_piece_type(piece, my_men, my_kings)
+    directions = KING_DIRECTIONS if piece_type == 'king' else DIRECTIONS[color]
+
+    my_pieces, opp_pieces = get_all_pieces(my_men, my_kings, opp_men, opp_kings)
+
+    for dr, dc in directions:
+        # Check for opponent piece to capture
+        mid_row, mid_col = row + dr, col + dc
+        if is_valid_square(mid_row, mid_col) and (mid_row, mid_col) in opp_pieces:
+            # Check if landing square is empty
+            land_row, land_col = row + 2*dr, col + 2*dc
+            if is_valid_square(land_row, land_col) and (land_row, land_col) not in my_pieces and (land_row, land_col) not in opp_pieces:
+                captures.append(((row, col), (land_row, land_col)))
+
+    return captures
+
+def get_all_possible_moves(my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]],
+                          opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]], color: str) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """Get all possible moves (both regular and captures) for the current player."""
+    moves = []
+    captures = []
+    my_pieces = my_men + my_kings
+
+    for piece in my_pieces:
+        piece_captures = get_possible_captures(piece, my_men, my_kings, opp_men, opp_kings, color)
+        if piece_captures:
+            captures.extend(piece_captures)
+        else:
+            moves.extend(get_possible_moves(piece, my_men, my_kings, opp_men, opp_kings, color))
+
+    # Captures are mandatory if available
+    return captures if captures else moves
+
+def evaluate_board(my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]],
+                  opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]], color: str) -> float:
+    """Evaluate the current board state with a simple heuristic."""
+    # Material advantage
+    my_score = len(my_men) + 1.5 * len(my_kings)
+    opp_score = len(opp_men) + 1.5 * len(opp_kings)
+    material = my_score - opp_score
+
+    # Positional advantage (center control and proximity to king row)
+    positional = 0
+    center = [(2, 3), (3, 2), (3, 4), (4, 3), (4, 5), (5, 4)]
+    king_row = 7 if color == 'b' else 0
+
+    for piece in my_men + my_kings:
+        row, col = piece
+        # Center control
+        if (row, col) in center:
+            positional += 0.2
+        # Proximity to king row
+        if color == 'b':
+            positional += (row - 1) * 0.1  # Black wants to move down
+        else:
+            positional += (6 - row) * 0.1  # White wants to move up
+
+    # Mobility (number of possible moves)
+    mobility = len(get_all_possible_moves(my_men, my_kings, opp_men, opp_kings, color)) * 0.1
+
+    return material + positional + mobility
+
+def minimax(my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]],
+           opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]], color: str,
+           depth: int, alpha: float, beta: float, maximizing_player: bool) -> Tuple[float, Optional[Tuple[Tuple[int, int], Tuple[int, int]]]]:
+    """Minimax algorithm with alpha-beta pruning."""
+    if depth == 0:
+        return evaluate_board(my_men, my_kings, opp_men, opp_kings, color), None
+
+    moves = get_all_possible_moves(my_men, my_kings, opp_men, opp_kings, color)
+    if not moves:
+        return -float('inf') if maximizing_player else float('inf'), None
+
+    best_move = None
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in moves:
+            # Make the move
+            new_my_men, new_my_kings, new_opp_men, new_opp_kings = make_move(move, my_men, my_kings, opp_men, opp_kings, color)
+
+            # Recurse
+            eval, _ = minimax(new_opp_men, new_opp_kings, new_my_men, new_my_kings,
+                            'w' if color == 'b' else 'b', depth - 1, alpha, beta, False)
+
+            # Undo the move (not needed as we're creating new lists)
+            if eval > max_eval:
+                max_eval = eval
+                best_move = move
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            # Make the move
+            new_my_men, new_my_kings, new_opp_men, new_opp_kings = make_move(move, opp_men, opp_kings, my_men, my_kings, color)
+
+            # Recurse
+            eval, _ = minimax(new_opp_men, new_opp_kings, new_my_men, new_my_kings,
+                            'w' if color == 'b' else 'b', depth - 1, alpha, beta, True)
+
+            # Undo the move (not needed as we're creating new lists)
+            if eval < min_eval:
+                min_eval = eval
+                best_move = move
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def make_move(move: Tuple[Tuple[int, int], Tuple[int, int]], my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]],
+             opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]], color: str) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]], List[Tuple[int, int]], List[Tuple[int, int]]]:
+    """Make a move and return new board state."""
+    from_pos, to_pos = move
+    from_row, from_col = from_pos
+    to_row, to_col = to_pos
+
+    # Create copies of the lists
+    new_my_men = my_men.copy()
+    new_my_kings = my_kings.copy()
+    new_opp_men = opp_men.copy()
+    new_opp_kings = opp_kings.copy()
+
+    # Remove the piece from its original position
+    if from_pos in new_my_men:
+        new_my_men.remove(from_pos)
+    elif from_pos in new_my_kings:
+        new_my_kings.remove(from_pos)
+
+    # Check if this is a capture move
+    is_capture = abs(from_row - to_row) == 2
+    if is_capture:
+        # Remove the captured piece
+        mid_row = (from_row + to_row) // 2
+        mid_col = (from_col + to_col) // 2
+        captured_pos = (mid_row, mid_col)
+
+        if captured_pos in new_opp_men:
+            new_opp_men.remove(captured_pos)
+        elif captured_pos in new_opp_kings:
+            new_opp_kings.remove(captured_pos)
+
+    # Check if the piece becomes a king
+    if (color == 'b' and to_row == 7) or (color == 'w' and to_row == 0):
+        new_my_kings.append(to_pos)
+    else:
+        new_my_men.append(to_pos)
+
+    return new_my_men, new_my_kings, new_opp_men, new_opp_kings
+
+def policy(my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]],
+          opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """Main policy function that returns the best move."""
+    # First check if there are any captures (mandatory)
+    captures = []
+    my_pieces = my_men + my_kings
+
+    for piece in my_pieces:
+        captures.extend(get_possible_captures(piece, my_men, my_kings, opp_men, opp_kings, color))
+
+    if captures:
+        # If there are captures, use minimax to find the best one
+        _, best_move = minimax(my_men, my_kings, opp_men, opp_kings, color, depth=3, alpha=-float('inf'), beta=float('inf'), maximizing_player=True)
+        return best_move
+    else:
+        # If no captures, find the best regular move
+        moves = get_all_possible_moves(my_men, my_kings, opp_men, opp_kings, color)
+        if not moves:
+            # No legal moves (shouldn't happen as game would be over)
+            return random.choice([((0, 1), (1, 0)), ((1, 0), (0, 1))])  # Fallback
+
+        # Use minimax to find the best move
+        _, best_move = minimax(my_men, my_kings, opp_men, opp_kings, color, depth=3, alpha=-float('inf'), beta=float('inf'), maximizing_player=True)
+        return best_move

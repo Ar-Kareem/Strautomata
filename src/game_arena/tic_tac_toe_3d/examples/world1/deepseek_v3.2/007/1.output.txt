@@ -1,0 +1,394 @@
+<thinking>
+We need to design an AI for 3D Tic Tac Toe (3x3x3). The board is a 3D list: board[z][y][x] where each dimension is 0-2? Actually the problem says "n-th integer corresponds to the n-th dimension in the input board." But board is given as list[list[list[int]]], likely board[z][y][x] or board[x][y][z]? Let's clarify: Example says "front and top line has the first two cells empty and the last cell is occupied by you". In typical representation, board[i][j][k] where i is layer? Usually in 3D Tic Tac Toe, we have three dimensions: x (columns), y (rows), z (layers). But they didn't specify. Since they said "n-th integer corresponds to the n-th dimension in the input board", maybe we assume board[z][y][x] (z depth, y row, x column). However, we must be consistent with the move output: tuple of three integers 0–2 that correspond to dimensions of board. If we interpret board as board[dim1][dim2][dim3], then the tuple should be (dim1_index, dim2_index, dim3_index) to index board. But we need to see typical coding challenge: The board is 3x3x3, likely indexed as board[z][y][x]. We'll assume that.
+
+We need to implement a policy that returns a move. We could implement minimax with alpha-beta pruning for 3D Tic Tac Toe. However, the state space is 3^27 ~ 7.6e12, too large for exhaustive search. But we can limit depth. Since it's a small game, we can do minimax with depth limited to, say, 4-5 moves ahead. But we can also use heuristics.
+
+Alternatively, we can use a simpler approach: check for immediate win (two in a line with empty third), block opponent's immediate win, then take center or corners? But 3D Tic Tac Toe has many lines: There are 49 winning lines? Actually, for 3x3x3, there are 3 horizontal lines per layer (3*3=9), 3 vertical lines per layer (9), 3 depth lines per vertical column (9), plus 4 space diagonals per layer (2 per layer * 3 = 6), plus 4 triagonal diagonals that go through the center cube (like from corner to opposite corner through the center). Let's count: Actually total winning lines in 3x3x3 Tic Tac Toe is 49. We'll need to check all.
+
+We can generate all lines: coordinates for each of the 49 lines. Then evaluate.
+
+We need to decide representation: board[z][y][x]. Let's fix z as depth, y as row, x as column.
+
+We'll write a function to generate all lines: For each z, rows: (z, y, 0)-(z, y, 1)-(z, y, 2) for y=0..2. Columns: (z,0,x)-(z,1,x)-(z,2,x) for x=0..2. Depth lines: (0,y,x)-(1,y,x)-(2,y,x) for each y,x. Now diagonals within a layer: (z,0,0)-(z,1,1)-(z,2,2) and (z,0,2)-(z,1,1)-(z,2,0) for each z. That's 2 per layer => 6.
+
+Now space diagonals: those that go across layers as well: There are 4 main triagonals: From (0,0,0) to (2,2,2), from (0,0,2) to (2,2,0), from (0,2,0) to (2,0,2), from (0,2,2) to (2,0,0). Also there are other diagonals that involve two dimensions? Actually in 3D, there are also "face diagonals" that go across two dimensions but fixed in third? Wait, those are covered by layer diagonals plus depth lines? Let's list all:
+
+Let's systematically generate: For each of the three axes, we have lines where two coordinates vary and one fixed? That's rows, columns, depth lines. Then lines where all three coordinates vary together: three types:
+1. (i,i,i) for i=0..2.
+2. (i,i,2-i) i=0..2.
+3. (i,2-i,i) i=0..2.
+4. (i,2-i,2-i) i=0..2.
+
+That's 4 lines. Also there are lines where two coordinates vary together and third varies opposite? Actually there are more: e.g., (0,0,1)-(1,1,1)-(2,2,1) is a line? That's a diagonal in x-y plane but fixed z=1? Wait, that's not a straight line? Actually points (0,0,1), (1,1,1), (2,2,1) are collinear? Yes, they are diagonal in x-y plane at fixed z. That is within a layer diagonal, already counted. But what about lines that go through layers but not through corners? For example (0,0,1)-(1,1,1)-(2,2,1) is same as layer diagonal at z=1. So those are covered.
+
+Actually total winning lines are: For each of the 3x3 rows in each dimension? Wait, let's compute: For each of the 3 axes, lines parallel to that axis: 3*3*3? No: lines parallel to x-axis: there are 3 choices for y and 3 for z => 9 rows. Similarly for y-axis: 9 columns. For z-axis: 9 pillars. That's 27. Then the two diagonals in each of the 3 layers: 3*2 = 6. Then the four triagonals that go through the center: 4. Total = 27+6+4 = 37. Wait, maybe there are also diagonals that are not within a layer nor through the center? Like from (0,0,1) to (2,2,1) is already in layer diagonal. So total 37. But I recall 49? Let's verify: Actually 3D Tic Tac Toe has 3^3 cells, winning lines = rows (9) + columns (9) + pillars (9) + diagonals within layers (6) + triagonals (4) = 37. Yes, 37. I think 49 might be for 4x4x4.
+
+So we'll implement checking for lines of 3.
+
+Our policy: We'll use minimax with alpha-beta pruning, but with heuristic evaluation. Since branching factor is up to 27, depth limited to 2-3 maybe okay. But we can also implement a simpler rule-based approach with fallback.
+
+Let's design a heuristic: For each line, compute count of player pieces and opponent pieces. Assign scores for potential wins. For example, if a line has 2 of our pieces and 1 empty, that's immediate win. If 2 opponent and 1 empty, immediate block. Then consider lines with 1 of ours and 2 empty, etc. Also center cell (1,1,1) is valuable because it's involved in many lines.
+
+We'll implement:
+
+1. Generate all empty cells.
+2. If there is a move that wins immediately, take it.
+3. If opponent has two in a line (with empty third), block it.
+4. Otherwise, choose move with highest heuristic score.
+
+Heuristic: For each empty cell, evaluate sum of line potentials. For each line through that cell, compute:
+- If line has 2 of our pieces: add large value (e.g., 100).
+- If line has 2 opponent pieces: add large value (but less than winning? Actually blocking is priority, but we already handled immediate block. So after immediate block, we can still consider lines where opponent has 1 piece and we have 0, maybe we want to block future threats. So we can assign scores: 
+   - line with 2 ours: +1000 (already handled immediate win)
+   - line with 2 opponent: +800 (already handled immediate block)
+   - line with 1 ours and 2 empty: +10
+   - line with 1 opponent and 2 empty: +5 (to block)
+   - line with 1 ours and 1 opponent: 0 (neutral)
+   - line with 1 ours and 1 empty: maybe +2?
+   - line with 1 opponent and 1 empty: +1?
+   - line with all empty: +1?
+   - center cell bonus: +5.
+
+We can also consider that having two in a line with a third empty but opponent also has one in that line is not useful.
+
+Simpler: Use minimax with depth 3? Let's think: 27 moves initially, depth 3 -> 27*26*25 ~ 17500 nodes, manageable. But we need to evaluate non-terminal states. We can use a simple evaluation function: For each line, compute score = (our count - opponent count) * something. For example, if our count = 2 and opponent = 0, score high. If our count = 1 and opponent = 0, medium. If opponent count = 2, score negative high.
+
+Let's implement minimax with alpha-beta pruning, depth=3. Since the board is small, we can even go depth until terminal. But 27! is huge, but we can do depth limited to 5 maybe.
+
+However, we must ensure our function runs quickly. Minimax with depth 3 should be fine.
+
+We'll implement:
+
+- generate_moves(board): returns list of (z,y,x) empty cells.
+- check_winner(board): returns 1 if we win, -1 if opponent wins, 0 if draw or ongoing.
+- evaluate(board): compute heuristic score for non-terminal states.
+
+We'll implement minimax with maximizing player (us=1). The board is from our perspective.
+
+We'll use recursive minimax with alpha-beta.
+
+But note: The board size is fixed 3x3x3. We'll store as list of lists of lists.
+
+We'll also cache evaluations? Not necessary for depth 3.
+
+Implementation steps:
+
+1. Generate all winning lines (list of list of (z,y,x) tuples). Precompute.
+
+2. In evaluate(board): For each line, count our pieces (1) and opponent pieces (-1). If count1 == 3: return +inf. If count_opp == 3: return -inf. Otherwise, compute score = sum over lines of (count1^2 - count_opp^2). This gives higher weight to lines with 2 pieces. Actually we can weight by square: score += 10^(count1) - 10^(count_opp) for count1>0 and count_opp>0? Simpler: score += (count1 - count_opp) * 10^(max(count1,count_opp)). But we can just use count1^3 - count_opp^3.
+
+Let's use: score += (count1 - count_opp) * (10 ** (max(count1, count_opp))). For count1=2, count_opp=0: (2-0)*10^2=200. For count1=1, count_opp=0: (1)*10^1=10. For count1=0, count_opp=2: (-2)*10^2=-200. For count1=1, count_opp=1: 0. For count1=2, count_opp=1: (1)*10^2=100. That seems okay.
+
+Also add center bonus: if board[1][1][1] == 1: score+=50; if == -1: score-=50.
+
+3. Minimax with alpha-beta: We'll implement maximizing player (our turn). We'll call minimax(board, depth, alpha, beta, maximizing_player). If depth==0 or terminal, return evaluate(board). For terminal, we can return +10000 for win, -10000 for loss, 0 for draw.
+
+But evaluate already includes large numbers for winning lines? Actually evaluate may not detect win? We'll check winner separately.
+
+Better: check_winner(board) returns 1, -1, or 0. If winner != 0, return winner * large number (adjusted for depth). So we can have: if winner == 1: return 10000 - depth (encourage faster win). If winner == -1: return -10000 + depth (encourage slower loss). If draw (no empty cells): return 0.
+
+Then evaluate only for non-terminal.
+
+We'll call minimax with depth=4 maybe.
+
+We need to decide who's turn? In policy, we are making a move for us (player 1). So we call minimax on board after our move? Actually we need to choose the best move. So we can iterate over empty cells, make move, call minimax with depth-1 and minimizing player (since opponent will move next). Choose move with highest minimax value.
+
+But we can also implement minimax from the current board with maximizing player as us. So we generate moves, for each move, create new board with that move, call minimax with depth-1 and minimizing player, get score, and pick max.
+
+We'll implement minimax recursively.
+
+Potential performance: depth=4, branching factor ~27. That's 27^4 ~ 531441 nodes, maybe borderline but okay with alpha-beta pruning. Actually with alpha-beta, might be less.
+
+But we can limit depth dynamically based on number of empty cells. We'll use depth=4.
+
+We'll use numpy for easier board copying? But we can use deepcopy or list comprehension.
+
+We'll implement our own copy_board and make_move.
+
+Let's code.
+
+First, generate all winning lines:
+
+We'll define LINES as list of lines, each line is list of 3 (z,y,x) tuples.
+
+We'll generate:
+
+- rows: for z in range(3), for y in range(3): [(z,y,x) for x in range(3)]
+- columns: for z in range(3), for x in range(3): [(z,y,x) for y in range(3)]
+- pillars: for y in range(3), for x in range(3): [(z,y,x) for z in range(3)]
+- layer diagonals: for z in range(3): [(z,0,0),(z,1,1),(z,2,2)] and [(z,0,2),(z,1,1),(z,2,0)]
+- triagonals: [(0,0,0),(1,1,1),(2,2,2)], [(0,0,2),(1,1,1),(2,2,0)], [(0,2,0),(1,1,1),(2,0,2)], [(0,2,2),(1,1,1),(2,0,0)]
+
+That's total: rows 9 + columns 9 + pillars 9 + layer diagonals 6 + triagonals 4 = 37.
+
+We'll precompute LINES.
+
+Now evaluate(board):
+- winner = check_winner(board) using LINES. If winner != 0, return winner * 10000.
+- score = 0.
+- For each line in LINES, count count1, count_opp.
+   - if count1 == 3: return +inf (but already caught)
+   - if count_opp == 3: return -inf
+   - else: score += (count1 - count_opp) * (10 ** max(count1, count_opp))
+- if board[1][1][1] == 1: score += 50
+- if board[1][1][1] == -1: score -= 50
+- return score.
+
+But we need to handle when both have pieces in line: max(count1, count_opp) may be 1 or 2. If both have 1, then count1-count_opp=0, so contribution 0. If we have 2 and opponent 1, contribution = (2-1)*10^2=100. That's good.
+
+Now minimax:
+
+We'll implement:
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    winner = check_winner(board)
+    if winner != 0:
+        return winner * (10000 - depth)  # encourage faster win/delay loss
+    if depth == 0:
+        return evaluate(board)
+    empty_cells = [(z,y,x) for z in range(3) for y in range(3) for x in range(3) if board[z][y][x]==0]
+    if not empty_cells:
+        return 0  # draw
+    if maximizing_player:
+        value = -float('inf')
+        for (z,y,x) in empty_cells:
+            new_board = copy_board(board)
+            new_board[z][y][x] = 1
+            value = max(value, minimax(new_board, depth-1, alpha, beta, False))
+            alpha = max(alpha, value)
+            if value >= beta:
+                break
+        return value
+    else:
+        value = float('inf')
+        for (z,y,x) in empty_cells:
+            new_board = copy_board(board)
+            new_board[z][y][x] = -1
+            value = min(value, minimax(new_board, depth-1, alpha, beta, True))
+            beta = min(beta, value)
+            if value <= alpha:
+                break
+        return value
+
+Now in policy:
+- generate empty cells.
+- if there's immediate win, take it.
+- if opponent immediate win, block it.
+- else, use minimax to choose best move. We'll set depth=4 (or maybe adaptive depth based on empty cells? We'll use depth=4).
+- For each empty cell, compute minimax score after making move (with minimizing player next). Choose max.
+
+But we can also call minimax with maximizing player true on current board? Actually we are to choose our move, so we can iterate over moves, set maximizing_player=False after our move? Wait: after we place our piece, it's opponent's turn, so we are minimizing? Actually we want to maximize our outcome, but after our move, the opponent will try to minimize our score. So we should evaluate from the perspective of us as maximizer. So we can call minimax with maximizing_player=False after our move, and take the score. Then choose move with highest score.
+
+Alternatively, we can call minimax with maximizing_player=True on the current board? That would assume it's our turn now, which it is. So we can generate moves, and for each move, make new board, call minimax with depth-1 and maximizing_player=False. That is correct.
+
+We'll implement:
+
+best_move = None
+best_value = -float('inf')
+for (z,y,x) in empty_cells:
+    new_board = copy_board(board)
+    new_board[z][y][x] = 1
+    move_value = minimax(new_board, depth=4, alpha=-float('inf'), beta=float('inf'), maximizing_player=False)
+    if move_value > best_value:
+        best_value = move_value
+        best_move = (z,y,x)
+
+If multiple moves have same value, we can choose randomly or prefer center. But we can also add a tie-breaker based on heuristic.
+
+We should also check for immediate win/block before minimax to save time.
+
+Now we need to implement copy_board: we can use deepcopy or nested list comprehension.
+
+We'll implement:
+
+def copy_board(board):
+    return [[[board[z][y][x] for x in range(3)] for y in range(3)] for z in range(3)]
+
+Now check_winner(board):
+    for line in LINES:
+        values = [board[z][y][x] for (z,y,x) in line]
+        if values[0]==values[1]==values[2]!=0:
+            return values[0]
+    return 0
+
+Now evaluate(board) must not be called when there's a winner (already caught). But we'll call evaluate only when depth>0 and no winner. So we can compute heuristic.
+
+Potential issue: evaluate might be called when board is terminal? We'll avoid by checking winner first.
+
+Now we need to decide depth. We'll use depth=4. But for early moves, depth=4 is fine. For later moves, branching factor reduces. We'll keep depth=4.
+
+Edge cases: If board is empty, we can return center (1,1,1) as good first move. Our minimax will likely pick center anyway.
+
+Let's implement.
+
+One more thing: The board is given as list[list[list[int]]]. We assume board[z][y][x]. We'll maintain that.
+
+We'll also handle the case where there are no empty cells? Should not happen because game would be over. But policy might be called anyway. We'll return (0,0,0) maybe.
+
+Now code.
+
+We'll import copy for deepcopy? We'll implement our own.
+
+Let's code step by step.
+</thinking>
+<code>
+import itertools
+import math
+
+# Precompute all winning lines
+LINES = []
+
+# Rows: fixed z and y, varying x
+for z in range(3):
+    for y in range(3):
+        LINES.append([(z, y, x) for x in range(3)])
+
+# Columns: fixed z and x, varying y
+for z in range(3):
+    for x in range(3):
+        LINES.append([(z, y, x) for y in range(3)])
+
+# Pillars: fixed y and x, varying z
+for y in range(3):
+    for x in range(3):
+        LINES.append([(z, y, x) for z in range(3)])
+
+# Layer diagonals
+for z in range(3):
+    LINES.append([(z, 0, 0), (z, 1, 1), (z, 2, 2)])
+    LINES.append([(z, 0, 2), (z, 1, 1), (z, 2, 0)])
+
+# Space diagonals (triagonals)
+LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+LINES.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+
+def copy_board(board):
+    """Return a deep copy of the board."""
+    return [[[board[z][y][x] for x in range(3)] for y in range(3)] for z in range(3)]
+
+def check_winner(board):
+    """Return 1 if player 1 wins, -1 if player -1 wins, 0 otherwise."""
+    for line in LINES:
+        a, b, c = line
+        az, ay, ax = a
+        bz, by, bx = b
+        cz, cy, cx = c
+        val = board[az][ay][ax]
+        if val != 0 and val == board[bz][by][bx] == board[cz][cy][cx]:
+            return val
+    return 0
+
+def evaluate(board):
+    """
+    Heuristic evaluation of the board from the perspective of player 1.
+    Higher score means better for player 1.
+    """
+    score = 0
+    for line in LINES:
+        counts = {1: 0, -1: 0}
+        for (z, y, x) in line:
+            val = board[z][y][x]
+            if val != 0:
+                counts[val] += 1
+        if counts[1] == 3:
+            return 10000  # already caught by check_winner, but just in case
+        if counts[-1] == 3:
+            return -10000
+        if counts[1] > 0 and counts[-1] == 0:
+            # line only has our pieces
+            score += (counts[1] - counts[-1]) * (10 ** counts[1])
+        elif counts[-1] > 0 and counts[1] == 0:
+            # line only has opponent pieces
+            score += (counts[1] - counts[-1]) * (10 ** counts[-1])
+        else:
+            # line has both, subtract opponent's threat
+            score += (counts[1] - counts[-1]) * (10 ** max(counts[1], counts[-1]))
+    # Center bonus
+    if board[1][1][1] == 1:
+        score += 50
+    elif board[1][1][1] == -1:
+        score -= 50
+    return score
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    """
+    Minimax with alpha-beta pruning.
+    Returns a score for the board state.
+    """
+    winner = check_winner(board)
+    if winner != 0:
+        return winner * (10000 - depth)  # prefer faster win / slower loss
+    if depth == 0:
+        return evaluate(board)
+    empty_cells = [(z, y, x) for z in range(3) for y in range(3) for x in range(3) if board[z][y][x] == 0]
+    if not empty_cells:
+        return 0  # draw
+    if maximizing_player:
+        value = -math.inf
+        for (z, y, x) in empty_cells:
+            new_board = copy_board(board)
+            new_board[z][y][x] = 1
+            value = max(value, minimax(new_board, depth - 1, alpha, beta, False))
+            alpha = max(alpha, value)
+            if value >= beta:
+                break
+        return value
+    else:
+        value = math.inf
+        for (z, y, x) in empty_cells:
+            new_board = copy_board(board)
+            new_board[z][y][x] = -1
+            value = min(value, minimax(new_board, depth - 1, alpha, beta, True))
+            beta = min(beta, value)
+            if value <= alpha:
+                break
+        return value
+
+def policy(board):
+    """
+    Determine the next move for player 1 (you) on the given 3D board.
+    Returns a tuple (z, y, x) with indices 0–2.
+    """
+    # List all empty cells
+    empty_cells = [(z, y, x) for z in range(3) for y in range(3) for x in range(3) if board[z][y][x] == 0]
+    if not empty_cells:
+        return (0, 0, 0)  # no move possible, return arbitrary
+
+    # Check for immediate winning move
+    for (z, y, x) in empty_cells:
+        new_board = copy_board(board)
+        new_board[z][y][x] = 1
+        if check_winner(new_board) == 1:
+            return (z, y, x)
+
+    # Check for immediate blocking move
+    for (z, y, x) in empty_cells:
+        new_board = copy_board(board)
+        new_board[z][y][x] = -1
+        if check_winner(new_board) == -1:
+            return (z, y, x)
+
+    # Use minimax with depth 4 to choose the best move
+    best_move = None
+    best_value = -math.inf
+    depth = 4  # adjustable
+    for (z, y, x) in empty_cells:
+        new_board = copy_board(board)
+        new_board[z][y][x] = 1
+        move_value = minimax(new_board, depth - 1, -math.inf, math.inf, False)
+        if move_value > best_value:
+            best_value = move_value
+            best_move = (z, y, x)
+        # Tie-break: prefer center if score is close (within 10)
+        elif move_value == best_value and best_move is not None:
+            if (z, y, x) == (1, 1, 1):
+                best_move = (z, y, x)
+
+    if best_move is None:
+        # Fallback: choose first empty cell (should not happen)
+        best_move = empty_cells[0]
+
+    return best_move
+</code>

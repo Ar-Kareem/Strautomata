@@ -1,0 +1,409 @@
+
+import numpy as np
+from collections import deque
+
+# Define hexagonal neighbor offsets for (row, col) in 2D grid representation
+# For a stone at (r, c), the six neighbors are:
+# NW: (r-1, c-1), NE: (r-1, c), W: (r, c-1), E: (r, c+1), SW: (r+1, c), SE: (r+1, c+1)
+NEIGHBORS = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, 0), (1, 1)]
+
+# Corners of the 15x15 board in Havannah coordinates
+CORNERS = [(0, 0), (0, 14), (14, 0), (14, 14), (7, 0), (7, 14)]  # 6 corners: top-left, top-right, bottom-left, bottom-right, left-middle, right-middle
+# Edges: non-corner boundary cells
+EDGES = set()
+for r in range(15):
+    for c in range(15):
+        if r == 0 or r == 14 or c == 0 or c == 14:
+            if (r, c) not in CORNERS:
+                EDGES.add((r, c))
+
+# Define which edge each corner belongs to (simplified for bridge)
+CORNER_TO_EDGE = {
+    (0, 0): 'top-left',
+    (0, 14): 'top-right',
+    (14, 0): 'bottom-left',
+    (14, 14): 'bottom-right',
+    (7, 0): 'left',
+    (7, 14): 'right'
+}
+
+def get_neighbors(r, c):
+    """Return list of valid neighbor coordinates for a cell (r, c) on the 15x15 board."""
+    neighbors = []
+    for dr, dc in NEIGHBORS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 15 and 0 <= nc < 15:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def is_on_edge(r, c):
+    """Check if (r, c) is on any edge of the board (including corners)."""
+    return r == 0 or r == 14 or c == 0 or c == 14
+
+def find_connected_components(stones, valid_mask):
+    """Find connected components of stones using BFS. Return a list of components."""
+    visited = set()
+    components = []
+    stone_set = set(stones)
+    
+    for stone in stones:
+        if stone not in visited:
+            component = []
+            queue = deque([stone])
+            visited.add(stone)
+            while queue:
+                r, c = queue.popleft()
+                component.append((r, c))
+                for nr, nc in get_neighbors(r, c):
+                    if (nr, nc) in stone_set and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+            components.append(component)
+    return components
+
+def count_edge_connections(stones, valid_mask):
+    """Count how many edges (non-corner boundaries) are connected to the stones."""
+    edge_count = 0
+    edge_set = set()
+    for r, c in stones:
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in EDGES and (nr, nc) not in edge_set:
+                edge_set.add((nr, nc))
+    # Count unique edge cells connected
+    return len(edge_set)
+
+def get_edge_set(stones):
+    """Return the set of edges (non-corner boundary cells) connected by the stone group."""
+    edge_set = set()
+    for r, c in stones:
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in EDGES:
+                edge_set.add((nr, nc))
+    return edge_set
+
+def count_corners_connected(stones):
+    """Count how many corners are connected to the stone group."""
+    corner_set = set()
+    for r, c in stones:
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in CORNERS:
+                corner_set.add((nr, nc))
+    return len(corner_set), corner_set
+
+def is_bridge_possible(me, valid_mask):
+    """Return True if current player can complete a bridge in next move."""
+    # Check all pairs of corners
+    corner_pairs = [
+        ((0, 0), (0, 14)), ((0, 0), (14, 0)), ((0, 0), (14, 14)), ((0, 0), (7, 0)), ((0, 0), (7, 14)),
+        ((0, 14), (14, 0)), ((0, 14), (14, 14)), ((0, 14), (7, 0)), ((0, 14), (7, 14)),
+        ((14, 0), (14, 14)), ((14, 0), (7, 0)), ((14, 0), (7, 14)),
+        ((14, 14), (7, 0)), ((14, 14), (7, 14)),
+        ((7, 0), (7, 14))
+    ]
+    
+    me_set = set(me)
+    
+    for c1, c2 in corner_pairs:
+        if c1 in me_set and c2 in me_set:
+            # If both corners are already ours, check if they are connected
+            # Use BFS to see if c1 and c2 are connected via our stones
+            if are_connected(me_set, c1, c2):
+                # We already have a bridge — return empty list (not needed since we're looking for win moves)
+                continue
+        elif c1 in me_set:
+            # c1 is ours, c2 is not — check if we can connect to c2 in one move
+            for n in get_neighbors(c2[0], c2[1]):
+                if n in me_set and valid_mask[n[0]][n[1]]:
+                    # Check if from n we can reach c1
+                    if are_connected(me_set, n, c1):
+                        return [c2]  # We can play c2 to complete bridge
+        elif c2 in me_set:
+            # c2 is ours, c1 is not
+            for n in get_neighbors(c1[0], c1[1]):
+                if n in me_set and valid_mask[n[0]][n[1]]:
+                    if are_connected(me_set, n, c2):
+                        return [c1]
+        else:
+            # Neither corner is ours — try to connect via a common neighbor
+            for n1 in get_neighbors(c1[0], c1[1]):
+                for n2 in get_neighbors(c2[0], c2[1]):
+                    if n1 in me_set and n2 in me_set and are_connected(me_set, n1, n2):
+                        # We can potentially play either c1 or c2 to complete bridge
+                        possible_moves = []
+                        if valid_mask[c1[0]][c1[1]]:
+                            possible_moves.append(c1)
+                        if valid_mask[c2[0]][c2[1]]:
+                            possible_moves.append(c2)
+                        if possible_moves:
+                            return possible_moves
+    return []
+
+def are_connected(stone_set, start, end):
+    """Check if two stones are connected via a path of stones in stone_set using BFS."""
+    if start == end:
+        return True
+    if start not in stone_set or end not in stone_set:
+        return False
+    queue = deque([start])
+    visited = {start}
+    
+    while queue:
+        r, c = queue.popleft()
+        if (r, c) == end:
+            return True
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in stone_set and (nr, nc) not in visited:
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+    return False
+
+def count_edge_connections_to_group(group):
+    """Count how many unique non-corner edge cells are connected to this group."""
+    edges = set()
+    for r, c in group:
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in EDGES:
+                edges.add((nr, nc))
+    return len(edges)
+
+def find_fork_threats(me, valid_mask):
+    """Find moves that create a fork (connect 3 non-corner edges)."""
+    # Find connected components
+    components = find_connected_components(me, valid_mask)
+    threats = []
+    
+    for component in components:
+        edges = get_edge_set(component)
+        if len(edges) >= 2:
+            # Try adding each valid neighbor to see if it creates a fork
+            for r, c in component:
+                for nr, nc in get_neighbors(r, c):
+                    if valid_mask[nr][nc] and (nr, nc) not in me:
+                        # Temporarily add this move
+                        new_component = component + [(nr, nc)]
+                        new_edges = get_edge_set(new_component)
+                        if len(new_edges) >= 3:
+                            threats.append((nr, nc))
+    return list(set(threats))  # Remove duplicates
+
+def find_ring_threats(me, valid_mask):
+    """Find moves that complete a ring (loop around empty cells)."""
+    # Simple ring detection: look for stones that form a partial loop
+    # We'll use a simplified BFS to detect cycles in our own stones
+    stone_set = set(me)
+    threats = []
+    
+    # For each empty cell, check if placing a stone there would create a ring
+    for r in range(15):
+        for c in range(15):
+            if not valid_mask[r][c] or (r, c) in stone_set:
+                continue
+            
+            # Temporarily place stone at (r, c)
+            temp_stones = stone_set | {(r, c)}
+            # Check if this creates a loop — we'll check if there's a cycle in the component containing (r, c)
+            if creates_ring(temp_stones, (r, c)):
+                threats.append((r, c))
+                
+    return threats
+
+def creates_ring(stone_set, new_stone):
+    """Check if adding new_stone creates a ring (cycle) in the graph."""
+    # Use BFS to explore connectivity and detect cycles
+    # We care about cycles of stones that enclose at least one empty cell
+    visited = set()
+    queue = deque([new_stone])
+    visited.add(new_stone)
+    parent = {new_stone: None}
+    
+    while queue:
+        r, c = queue.popleft()
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in stone_set:
+                if (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    parent[(nr, nc)] = (r, c)
+                    queue.append((nr, nc))
+                elif (nr, nc) != parent[(r, c)]:
+                    # We found a cycle — now check if it encloses an empty cell
+                    if encloses_empty_cell(stone_set, (r, c), (nr, nc)):
+                        return True
+    return False
+
+def encloses_empty_cell(stone_set, edge1, edge2):
+    """Simple heuristic: if cycle contains a cell that is surrounded by stones on all 6 sides?"""
+    # Very simplified: we count the number of cells bounded by the ring
+    # Instead, we look for a central cell that is surrounded by the ring path
+    # This is a complex task — we do a approximate version: look for any empty cell
+    # that is entirely surrounded by stones in the ring
+    return False  # Placeholder — implement advanced ring detection for production
+    
+    # For now, we'll return True if the path is long enough (min 6 stones) and not线上
+    # This is a simplified detection: assume any cycle of >= 6 stones can enclose something
+    return len(stone_set) >= 6
+
+def evaluate_move(me, opp, move, valid_mask):
+    """Heuristic evaluation score for a move."""
+    me_set = set(me)
+    me_after = me_set | {move}
+    opp_set = set(opp)
+    
+    score = 0
+    components = find_connected_components(list(me_after), valid_mask)
+    comp = None
+    for c in components:
+        if move in c:
+            comp = c
+            break
+
+    if comp is None:
+        return 0
+
+    # Edge connections for fork
+    edge_count = count_edge_connections_to_group(comp)
+    if edge_count >= 3:
+        score += 30
+    elif edge_count == 2:
+        score += 10
+    elif edge_count == 1:
+        score += 3
+
+    # Corner connections for bridge
+    corner_count, _ = count_corners_connected(comp)
+    if corner_count >= 2:
+        score += 20
+    elif corner_count == 1:
+        score += 8
+    
+    # Ring potential
+    if len(comp) >= 6:
+        # Check if we can form a ring by adding adjacent empty cells
+        for r, c in comp:
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) not in me_after and (nr, nc) not in opp_set:
+                    # This empty cell is surrounded? Check number of surrounding stones
+                    stone_neighbors = 0
+                    for nnr, nnc in get_neighbors(nr, nc):
+                        if (nnr, nnc) in me_after:
+                            stone_neighbors += 1
+                    if stone_neighbors >= 3:
+                        score += 5
+
+    # Centrality bonus: closer to center is better
+    center = (7, 7)
+    distance = abs(move[0] - center[0]) + abs(move[1] - center[1])
+    score += (14 - distance) * 0.5  # Max 7 bonus at center
+
+    # Threats we create
+    if is_bridge_threat(me_after, opp_set):
+        score += 15
+    if is_fork_threat(me_after, opp_set):
+        score += 15
+
+    return score
+
+def is_bridge_threat(me, opp):
+    """Return True if me has a potential bridge threat."""
+    # Same logic as is_bridge_possible but without requiring immediate win
+    corner_pairs = [((0, 0), (0, 14)), ((0, 0), (14, 0)), ((0, 0), (14, 14)), ((0, 0), (7, 0)), ((0, 0), (7, 14)),
+                    ((0, 14), (14, 0)), ((0, 14), (14, 14)), ((0, 14), (7, 0)), ((0, 14), (7, 14)),
+                    ((14, 0), (14, 14)), ((14, 0), (7, 0)), ((14, 0), (7, 14)),
+                    ((14, 14), (7, 0)), ((14, 14), (7, 14)), ((7, 0), (7, 14))]
+    
+    for c1, c2 in corner_pairs:
+        if c1 in me and c2 in me:
+            if are_connected(me, c1, c2):
+                return True
+        elif c1 in me:
+            for n in get_neighbors(c2[0], c2[1]):
+                if n in me and are_connected(me, n, c1):
+                    return True
+        elif c2 in me:
+            for n in get_neighbors(c1[0], c1[1]):
+                if n in me and are_connected(me, n, c2):
+                    return True
+    return False
+
+def is_fork_threat(me, opp):
+    """Return True if me has potential fork (connects to 3 or more edges)"""
+    components = find_connected_components(list(me), None)
+    for comp in components:
+        edges = get_edge_set(comp)
+        if len(edges) >= 3:
+            return True
+    return False
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    # Convert to sets for fast lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # 1. Check for immediate win: can we complete a ring, bridge, or fork in one move?
+    
+    # Check if any move completes a bridge
+    bridge_win_moves = is_bridge_possible(me, valid_mask)
+    if bridge_win_moves:
+        return bridge_win_moves[0]  # Return first winning move
+    
+    # Check if any move completes a fork
+    fork_win_moves = find_fork_threats(me, valid_mask)
+    # Fork win: if placing a stone creates 3 edge connections
+    for move in fork_win_moves:
+        if not (move in me_set or move in opp_set) and valid_mask[move[0]][move[1]]:
+            # Check if this move makes 3 edges
+            me_temp = me_set | {move}
+            components = find_connected_components(list(me_temp), valid_mask)
+            for comp in components:
+                if move in comp:
+                    edges = get_edge_set(comp)
+                    if len(edges) >= 3:
+                        return move
+    
+    # Check for ring wins (simplified — assume we win if we complete a loop)
+    ring_win_moves = find_ring_threats(me, valid_mask)
+    if ring_win_moves:
+        return ring_win_moves[0]
+    
+    # 2. Block opponent's immediate wins (if they are about to win)
+    opp_bridge_moves = is_bridge_possible(opp, valid_mask)
+    if opp_bridge_moves:
+        return opp_bridge_moves[0]  # Block the bridge
+    
+    opp_fork_moves = find_fork_threats(opp, valid_mask)
+    for move in opp_fork_moves:
+        if not (move in me_set or move in opp_set) and valid_mask[move[0]][move[1]]:
+            # See if this move creates fork for opp
+            opp_temp = opp_set | {move}
+            components = find_connected_components(list(opp_temp), valid_mask)
+            for comp in components:
+                if move in comp:
+                    edges = get_edge_set(comp)
+                    if len(edges) >= 3:
+                        return move
+    
+    # 3. Look for beneficial moves: create threats, improve position
+    candidate_moves = []
+    
+    # Generate all valid moves
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                # Heuristic evaluation
+                score = evaluate_move(me, opp, (r, c), valid_mask)
+                candidate_moves.append((score, (r, c)))
+    
+    # Sort by score descending
+    candidate_moves.sort(key=lambda x: x[0], reverse=True)
+    
+    # Return best move if exists
+    if candidate_moves:
+        return candidate_moves[0][1]
+    
+    # Fallback: if no good moves, pick any valid move (shouldn't happen in normal play)
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                return (r, c)
+    
+    # Last resort — this should never be reached because valid_mask must have at least one
+    raise RuntimeError("No valid move available!")

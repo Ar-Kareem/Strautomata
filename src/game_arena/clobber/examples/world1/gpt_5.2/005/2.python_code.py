@@ -1,0 +1,230 @@
+
+import time
+from typing import List, Tuple, Optional, Dict
+
+# Board: 5 rows x 6 cols => 30 cells, index = r*6 + c
+R, C, N = 5, 6, 30
+
+DIRS = [('U', -1, 0), ('R', 0, 1), ('D', 1, 0), ('L', 0, -1)]
+DIR_INDEX = {d[0]: i for i, d in enumerate(DIRS)}
+
+# Precompute neighbor index for each square and direction
+NEI = [[-1] * 4 for _ in range(N)]
+for r in range(R):
+    for c in range(C):
+        idx = r * C + c
+        for di, (ch, dr, dc) in enumerate(DIRS):
+            rr, cc = r + dr, c + dc
+            if 0 <= rr < R and 0 <= cc < C:
+                NEI[idx][di] = rr * C + cc
+
+MATE = 10**9
+
+# Transposition table entry: (depth, value, flag, best_move)
+# flag: 0 exact, 1 lowerbound, 2 upperbound
+TT: Dict[Tuple[int, int], Tuple[int, int, int, Optional[Tuple[int, int, int]]]] = {}
+
+def _flatten(board: List[int]) -> List[int]:
+    # Accept either flat length-30 list or nested 5x6 list
+    if len(board) == N and isinstance(board[0], int):
+        return board
+    # nested
+    out = []
+    for row in board:
+        out.extend(row)
+    return out
+
+def _to_bitboard(arr: List[int]) -> int:
+    b = 0
+    for i, v in enumerate(arr):
+        if v:
+            b |= 1 << i
+    return b
+
+def _iter_bits(x: int):
+    while x:
+        lsb = x & -x
+        idx = (lsb.bit_length() - 1)
+        yield idx
+        x ^= lsb
+
+def _gen_moves(you: int, opp: int) -> List[Tuple[int, int, int]]:
+    # move = (from_idx, to_idx, dir_index)
+    moves = []
+    for frm in _iter_bits(you):
+        nbs = NEI[frm]
+        # Check each direction; legal if neighbor contains opponent
+        for di in range(4):
+            to = nbs[di]
+            if to != -1 and (opp >> to) & 1:
+                moves.append((frm, to, di))
+    return moves
+
+def _count_moves(you: int, opp: int) -> int:
+    cnt = 0
+    for frm in _iter_bits(you):
+        nbs = NEI[frm]
+        for di in range(4):
+            to = nbs[di]
+            if to != -1 and (opp >> to) & 1:
+                cnt += 1
+    return cnt
+
+def _apply_move(you: int, opp: int, move: Tuple[int, int, int]) -> Tuple[int, int]:
+    frm, to, _di = move
+    you2 = (you & ~(1 << frm)) | (1 << to)
+    opp2 = opp & ~(1 << to)
+    return you2, opp2
+
+def _evaluate(you: int, opp: int) -> int:
+    # Heuristic from perspective of side to move (you)
+    m = _count_moves(you, opp)
+    if m == 0:
+        return -MATE
+    om = _count_moves(opp, you)
+    piece_term = (you.bit_count() - opp.bit_count())
+    # Mobility dominates in clobber; piece count is secondary
+    return 12 * (m - om) + 2 * piece_term
+
+def _order_moves(you: int, opp: int, moves: List[Tuple[int, int, int]],
+                 tt_best: Optional[Tuple[int, int, int]]) -> List[Tuple[int, int, int]]:
+    # Put TT best first, then prefer moves that reduce opponent mobility after the turn swaps.
+    if not moves:
+        return moves
+    if tt_best is not None and tt_best in moves:
+        moves = [tt_best] + [m for m in moves if m != tt_best]
+
+    # Light ordering: approximate by opponent mobility after move (lower is better),
+    # and a small tie-breaker by creating own mobility.
+    scored = []
+    for mv in moves:
+        you2, opp2 = _apply_move(you, opp, mv)
+        # After move, it's opponent's turn: their "you" = opp2, their "opp" = you2
+        opp_mob = _count_moves(opp2, you2)
+        my_next_mob = _count_moves(you2, opp2)
+        scored.append((opp_mob, -my_next_mob, mv))
+    scored.sort(key=lambda t: (t[0], t[1]))
+    return [t[2] for t in scored]
+
+def _negamax(you: int, opp: int, depth: int, alpha: int, beta: int, ply: int,
+             t_end: float) -> Tuple[int, Optional[Tuple[int, int, int]]]:
+    if time.perf_counter() >= t_end:
+        # Signal cutoff by returning heuristic; caller will treat as incomplete
+        return _evaluate(you, opp), None
+
+    key = (you, opp)
+    tt = TT.get(key)
+    tt_best = None
+    if tt is not None:
+        tt_depth, tt_val, tt_flag, tt_move = tt
+        tt_best = tt_move
+        if tt_depth >= depth:
+            if tt_flag == 0:
+                return tt_val, tt_move
+            elif tt_flag == 1:
+                alpha = max(alpha, tt_val)
+            elif tt_flag == 2:
+                beta = min(beta, tt_val)
+            if alpha >= beta:
+                return tt_val, tt_move
+
+    moves = _gen_moves(you, opp)
+    if not moves:
+        return -MATE + ply, None
+    if depth <= 0:
+        return _evaluate(you, opp), None
+
+    moves = _order_moves(you, opp, moves, tt_best)
+
+    best_move = moves[0]
+    orig_alpha = alpha
+    best_val = -MATE
+
+    for mv in moves:
+        if time.perf_counter() >= t_end:
+            break
+        you2, opp2 = _apply_move(you, opp, mv)
+        # swap roles for next player to move
+        val, _ = _negamax(opp2, you2, depth - 1, -beta, -alpha, ply + 1, t_end)
+        val = -val
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+
+    # Store in TT
+    flag = 0
+    if best_val <= orig_alpha:
+        flag = 2  # upperbound
+    elif best_val >= beta:
+        flag = 1  # lowerbound
+    TT[key] = (depth, best_val, flag, best_move)
+
+    return best_val, best_move
+
+def _move_to_str(move: Tuple[int, int, int]) -> str:
+    frm, _to, di = move
+    r, c = divmod(frm, C)
+    ch = DIRS[di][0]
+    return f"{r},{c},{ch}"
+
+def policy(you: List[int], opponent: List[int]) -> str:
+    y = _to_bitboard(_flatten(you))
+    o = _to_bitboard(_flatten(opponent))
+
+    moves = _gen_moves(y, o)
+    if not moves:
+        # Normally the environment should not call policy if no legal moves exist.
+        # Return a deterministic placeholder to satisfy the API.
+        return "0,0,U"
+
+    # Time-bounded iterative deepening
+    t0 = time.perf_counter()
+    t_end = t0 + 0.95
+
+    # Start with a fast, safe move ordering result
+    # Prefer reducing opponent mobility
+    ordered = _order_moves(y, o, moves, None)
+    best_move = ordered[0]
+
+    # Iterative deepening
+    # Depth cap chosen to be safe under 1s; may finish earlier depending on branching.
+    max_depth = 12
+
+    # Aspiration window (helps speed after first iteration)
+    last_val = None
+
+    for depth in range(1, max_depth + 1):
+        if time.perf_counter() >= t_end:
+            break
+
+        if last_val is None:
+            alpha, beta = -MATE, MATE
+        else:
+            window = 60
+            alpha, beta = last_val - window, last_val + window
+
+        val, mv = _negamax(y, o, depth, alpha, beta, 0, t_end)
+
+        # If aspiration failed, re-search with full window if time allows
+        if mv is not None and not (alpha < val < beta) and time.perf_counter() < t_end:
+            val2, mv2 = _negamax(y, o, depth, -MATE, MATE, 0, t_end)
+            if mv2 is not None:
+                val, mv = val2, mv2
+
+        if mv is not None:
+            best_move = mv
+            last_val = val
+
+        # Early exit on forced win indication
+        if last_val is not None and last_val > MATE // 2:
+            break
+
+    # Ensure legality
+    if best_move not in moves:
+        best_move = moves[0]
+
+    return _move_to_str(best_move)

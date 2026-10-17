@@ -1,0 +1,404 @@
+The strategy for this policy is a fast tactical search with strong safety guarantees:
+
+- Always generate only legal Pentago moves.
+- First, look for an immediate winning move.
+- If none exists, block any opponent immediate winning move when possible.
+- Then use a depth-limited minimax with alpha-beta pruning over a reduced candidate set.
+- Candidate moves are prioritized by tactical strength:
+  - winning now
+  - blocking opponent wins
+  - extending our lines
+  - centrality / local proximity
+- The evaluation emphasizes:
+  - made 5-in-a-row
+  - open and semi-open 4s / 3s
+  - center control
+  - avoiding positions where the opponent can win immediately
+- A legality fallback is always included, so the function always returns a valid move string.
+
+<code>
+import math
+
+def policy(you, opponent) -> str:
+    N = 6
+
+    # ---------- Helpers ----------
+    def to_lists(a):
+        return [list(map(int, row)) for row in a]
+
+    you_b = to_lists(you)
+    opp_b = to_lists(opponent)
+
+    def empties(y, o):
+        out = []
+        for r in range(N):
+            yr = y[r]
+            orow = o[r]
+            for c in range(N):
+                if yr[c] == 0 and orow[c] == 0:
+                    out.append((r, c))
+        return out
+
+    def rotate_sub(board, quad, dirc):
+        r0 = 0 if quad < 2 else 3
+        c0 = 0 if quad % 2 == 0 else 3
+        sub = [row[c0:c0+3] for row in board[r0:r0+3]]
+        if dirc == 'R':
+            rot = [[sub[2-j][i] for j in range(3)] for i in range(3)]
+        else:
+            rot = [[sub[j][2-i] for j in range(3)] for i in range(3)]
+        nb = [row[:] for row in board]
+        for i in range(3):
+            for j in range(3):
+                nb[r0+i][c0+j] = rot[i][j]
+        return nb
+
+    def apply_move(y, o, move, me=True):
+        r, c, q, d = move
+        ny = [row[:] for row in y]
+        no = [row[:] for row in o]
+        if me:
+            ny[r][c] = 1
+        else:
+            no[r][c] = 1
+        ny = rotate_sub(ny, q, d)
+        no = rotate_sub(no, q, d)
+        return ny, no
+
+    def lines(board):
+        res = []
+        # rows
+        for r in range(6):
+            res.append(board[r][:])
+        # cols
+        for c in range(6):
+            res.append([board[r][c] for r in range(6)])
+        # diagonals len>=5
+        # main diagonals
+        for start_r, start_c in [(0,0),(0,1),(1,0)]:
+            d = []
+            r, c = start_r, start_c
+            while r < 6 and c < 6:
+                d.append(board[r][c])
+                r += 1
+                c += 1
+            if len(d) >= 5:
+                res.append(d)
+        # anti-diagonals
+        for start_r, start_c in [(0,5),(0,4),(1,5)]:
+            d = []
+            r, c = start_r, start_c
+            while r < 6 and c >= 0:
+                d.append(board[r][c])
+                r += 1
+                c -= 1
+            if len(d) >= 5:
+                res.append(d)
+        return res
+
+    def has_five(board):
+        for line in lines(board):
+            cnt = 0
+            for v in line:
+                if v:
+                    cnt += 1
+                    if cnt >= 5:
+                        return True
+                else:
+                    cnt = 0
+        return False
+
+    def result_score(y, o):
+        my5 = has_five(y)
+        op5 = has_five(o)
+        if my5 and op5:
+            return 0
+        if my5:
+            return 1
+        if op5:
+            return -1
+        full = True
+        for r in range(6):
+            for c in range(6):
+                if y[r][c] == 0 and o[r][c] == 0:
+                    full = False
+                    break
+            if not full:
+                break
+        if full:
+            return 0
+        return None
+
+    def immediate_wins(y, o, me=True, limit=None):
+        emps = empties(y, o)
+        wins = []
+        count = 0
+        for r, c in emps:
+            for q in range(4):
+                for d in ('L', 'R'):
+                    mv = (r, c, q, d)
+                    ny, no = apply_move(y, o, mv, me=me)
+                    rs = result_score(ny, no)
+                    if me:
+                        if rs == 1:
+                            wins.append(mv)
+                    else:
+                        # from opponent's perspective, their win means our board loses
+                        # apply_move with me=False puts on opponent board
+                        my5 = has_five(ny)
+                        op5 = has_five(no)
+                        if op5 and not my5:
+                            wins.append(mv)
+                    count += 1
+                    if limit is not None and count >= limit:
+                        return wins
+        return wins
+
+    def line_windows(vals, k=5):
+        if len(vals) < k:
+            return []
+        return [vals[i:i+k] for i in range(len(vals)-k+1)]
+
+    def feature_score_line(my_line, op_line):
+        score = 0
+        L = len(my_line)
+        for i in range(L - 4):
+            m = my_line[i:i+5]
+            o = op_line[i:i+5]
+            sm = sum(m)
+            so = sum(o)
+            if sm and so:
+                continue
+            if sm == 5:
+                score += 1000000
+            elif so == 5:
+                score -= 1000000
+            elif so == 0:
+                if sm == 4:
+                    score += 15000
+                elif sm == 3:
+                    score += 900
+                elif sm == 2:
+                    score += 80
+                elif sm == 1:
+                    score += 8
+            elif sm == 0:
+                if so == 4:
+                    score -= 18000
+                elif so == 3:
+                    score -= 1100
+                elif so == 2:
+                    score -= 90
+                elif so == 1:
+                    score -= 8
+        return score
+
+    def evaluate(y, o):
+        rs = result_score(y, o)
+        if rs is not None:
+            return rs * 10_000_000
+
+        score = 0
+
+        # Center preference
+        center_weights = [
+            [3, 4, 5, 5, 4, 3],
+            [4, 6, 7, 7, 6, 4],
+            [5, 7, 8, 8, 7, 5],
+            [5, 7, 8, 8, 7, 5],
+            [4, 6, 7, 7, 6, 4],
+            [3, 4, 5, 5, 4, 3],
+        ]
+        for r in range(6):
+            for c in range(6):
+                if y[r][c]:
+                    score += center_weights[r][c]
+                elif o[r][c]:
+                    score -= center_weights[r][c]
+
+        # Pattern windows
+        y_lines = lines(y)
+        o_lines = lines(o)
+        for yl, ol in zip(y_lines, o_lines):
+            score += feature_score_line(yl, ol)
+
+        # Immediate tactical danger / chance
+        my_wins = 0
+        op_wins = 0
+        emps = empties(y, o)
+        if len(emps) <= 10:
+            sample_cells = emps
+        else:
+            sample_cells = emps[:5] + emps[-5:]
+        for r, c in sample_cells:
+            for q in range(4):
+                for d in ('L', 'R'):
+                    ny, no = apply_move(y, o, (r, c, q, d), me=True)
+                    rs = result_score(ny, no)
+                    if rs == 1:
+                        my_wins += 1
+                    ny2, no2 = apply_move(y, o, (r, c, q, d), me=False)
+                    if has_five(no2) and not has_five(ny2):
+                        op_wins += 1
+        score += 5000 * my_wins
+        score -= 7000 * op_wins
+
+        return score
+
+    def move_heuristic(y, o, mv, me=True):
+        ny, no = apply_move(y, o, mv, me=me)
+        rs = result_score(ny, no)
+        if me:
+            if rs == 1:
+                return 10**12
+            if rs == 0 and has_five(ny):
+                return 10**10
+        else:
+            if has_five(no) and not has_five(ny):
+                return 10**12
+
+        r, c, q, d = mv
+        h = 0
+
+        # placement centrality
+        h += 20 - ((r - 2.5) ** 2 + (c - 2.5) ** 2)
+
+        # adjacency
+        for rr in range(max(0, r-1), min(6, r+2)):
+            for cc in range(max(0, c-1), min(6, c+2)):
+                if rr == r and cc == c:
+                    continue
+                if y[rr][cc]:
+                    h += 3 if me else -1
+                elif o[rr][cc]:
+                    h += 2 if me else 2
+
+        # resulting static eval
+        h += evaluate(ny, no) * (1 if me else -1) * 0.001
+        return h
+
+    def generate_moves(y, o, me=True, max_moves=24):
+        emps = empties(y, o)
+
+        # tactical prefilter: direct wins
+        direct = []
+        for r, c in emps:
+            for q in range(4):
+                for d in ('L', 'R'):
+                    mv = (r, c, q, d)
+                    ny, no = apply_move(y, o, mv, me=me)
+                    rs = result_score(ny, no)
+                    if me and rs == 1:
+                        return [mv]
+                    if (not me) and has_five(no) and not has_five(ny):
+                        return [mv]
+                    direct.append(mv)
+
+        # score all moves
+        scored = []
+        for mv in direct:
+            scored.append((move_heuristic(y, o, mv, me=me), mv))
+        scored.sort(reverse=True, key=lambda x: x[0])
+
+        # deduplicate by keeping best rotations for same placement somewhat naturally
+        return [mv for _, mv in scored[:max_moves]]
+
+    INF = 10**18
+
+    def negamax(y, o, depth, alpha, beta, me_turn):
+        rs = result_score(y, o)
+        if rs is not None:
+            # from current player perspective:
+            return rs * 10_000_000 if me_turn else -rs * 10_000_000
+
+        if depth == 0:
+            return evaluate(y, o) if me_turn else -evaluate(y, o)
+
+        moves = generate_moves(y, o, me=me_turn, max_moves=18 if depth >= 2 else 24)
+        if not moves:
+            return evaluate(y, o) if me_turn else -evaluate(y, o)
+
+        best = -INF
+        for mv in moves:
+            ny, no = apply_move(y, o, mv, me=me_turn)
+            val = -negamax(ny, no, depth - 1, -beta, -alpha, not me_turn)
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return best
+
+    # ---------- Main decision ----------
+    legal_empties = empties(you_b, opp_b)
+    fallback = None
+    if legal_empties:
+        r0, c0 = legal_empties[0]
+        fallback = f"{r0+1},{c0+1},0,L"
+    else:
+        return "1,1,0,L"
+
+    # 1) Immediate win
+    mywins = immediate_wins(you_b, opp_b, me=True)
+    if mywins:
+        r, c, q, d = mywins[0]
+        return f"{r+1},{c+1},{q},{d}"
+
+    # 2) Must-block opponent immediate wins if possible
+    oppwins = immediate_wins(you_b, opp_b, me=False)
+    if oppwins:
+        oppset = set(oppwins)
+        blockers = []
+        candidates = generate_moves(you_b, opp_b, me=True, max_moves=80)
+        for mv in candidates:
+            ny, no = apply_move(you_b, opp_b, mv, me=True)
+            next_oppwins = immediate_wins(ny, no, me=False, limit=200)
+            if not next_oppwins:
+                blockers.append(mv)
+        if blockers:
+            blockers.sort(key=lambda mv: move_heuristic(you_b, opp_b, mv, me=True), reverse=True)
+            r, c, q, d = blockers[0]
+            return f"{r+1},{c+1},{q},{d}"
+
+    # 3) Search
+    emps = len(legal_empties)
+    if emps >= 20:
+        depth = 2
+        max_root = 18
+    elif emps >= 10:
+        depth = 2
+        max_root = 24
+    else:
+        depth = 3
+        max_root = 28
+
+    root_moves = generate_moves(you_b, opp_b, me=True, max_moves=max_root)
+    if not root_moves:
+        return fallback
+
+    best_val = -INF
+    best_move = root_moves[0]
+
+    alpha = -INF
+    beta = INF
+
+    for mv in root_moves:
+        ny, no = apply_move(you_b, opp_b, mv, me=True)
+        val = -negamax(ny, no, depth - 1, -beta, -alpha, False)
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if val > alpha:
+            alpha = val
+
+    r, c, q, d = best_move
+    move_str = f"{r+1},{c+1},{q},{d}"
+
+    # Final safety legality check
+    rr, cc, qq, dd = best_move
+    if 0 <= rr < 6 and 0 <= cc < 6 and qq in (0, 1, 2, 3) and dd in ('L', 'R'):
+        if you_b[rr][cc] == 0 and opp_b[rr][cc] == 0:
+            return move_str
+    return fallback
+</code>

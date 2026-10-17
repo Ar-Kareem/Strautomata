@@ -1,0 +1,185 @@
+To solve this problem, we need to implement a targeting policy for a Connect 4 game on a 6x7 grid. The policy function will choose the best column to drop a disc for the current player (represented as 1) against an opponent (represented as -1). The solution uses a minimax algorithm with alpha-beta pruning and heuristic scoring to efficiently search the game tree within the given constraints.
+
+### Approach
+1. **Game Representation**: The board is a 6x7 grid where:
+   - `0` represents an empty cell.
+   - `1` represents the current player's disc.
+   - `-1` represents the opponent's disc.
+
+2. **Minimax Algorithm with Alpha-Beta Pruning**: 
+   - The algorithm recursively evaluates possible moves by alternating between the current player (maximizing) and the opponent (minimizing).
+   - Alpha-beta pruning reduces the number of nodes evaluated by cutting off branches that cannot improve the result.
+
+3. **Heuristic Scoring**:
+   - **Center Column Preference**: Disc placement in the center column is given higher priority as it offers more winning opportunities.
+   - **Window Evaluation**: For each possible line of four cells (horizontal, vertical, diagonal), the number of current player's pieces, opponent's pieces, and empty cells is counted. Based on these counts, a score is assigned:
+     - Four consecutive pieces of the current player yield a high positive score.
+     - Three pieces and one empty cell yield a moderate positive score.
+     - Two pieces and two empty cells yield a small positive score.
+     - One piece and three empty cells yield a negligible positive score.
+     - Correspondingly, the opponent's pieces reduce the score in a similar manner.
+
+4. **Winning Move Detection**: The algorithm checks if any player has won by connecting four discs in any direction (horizontal, vertical, or diagonal) after each move.
+
+5. **Move Ordering**: Columns are prioritized by proximity to the center to enhance the effectiveness of alpha-beta pruning.
+
+### Solution Code
+```python
+import math
+
+def policy(board: list[list[int]]) -> int:
+    def get_valid_columns(board):
+        valid = []
+        for col in range(7):
+            if board[0][col] == 0:
+                valid.append(col)
+        return valid
+    
+    def get_next_open_row(board, col):
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                return row
+        return -1
+    
+    def winning_move(board, piece):
+        for r in range(6):
+            for c in range(4):
+                if (board[r][c] == piece and board[r][c+1] == piece and
+                    board[r][c+2] == piece and board[r][c+3] == piece):
+                    return True
+        for c in range(7):
+            for r in range(3):
+                if (board[r][c] == piece and board[r+1][c] == piece and
+                    board[r+2][c] == piece and board[r+3][c] == piece):
+                    return True
+        for r in range(3):
+            for c in range(4):
+                if (board[r][c] == piece and board[r+1][c+1] == piece and
+                    board[r+2][c+2] == piece and board[r+3][c+3] == piece):
+                    return True
+        for r in range(3):
+            for c in range(3, 7):
+                if (board[r][c] == piece and board[r+1][c-1] == piece and
+                    board[r+2][c-2] == piece and board[r+3][c-3] == piece):
+                    return True
+        return False
+    
+    def evaluate_window(window, player):
+        score = 0
+        opp = -player
+        count_player = window.count(player)
+        count_opp = window.count(opp)
+        count_empty = window.count(0)
+        
+        if count_player == 4:
+            score += 100000
+        elif count_player == 3 and count_empty == 1:
+            score += 1000
+        elif count_player == 2 and count_empty == 2:
+            score += 100
+        elif count_player == 1 and count_empty == 3:
+            score += 1
+            
+        if count_opp == 4:
+            score -= 100000
+        elif count_opp == 3 and count_empty == 1:
+            score -= 10000
+        elif count_opp == 2 and count_empty == 2:
+            score -= 100
+        elif count_opp == 1 and count_empty == 3:
+            score -= 1
+            
+        return score
+    
+    def score_board(board, player):
+        score = 0
+        center_col = 3
+        center_array = [board[r][center_col] for r in range(6)]
+        center_count = center_array.count(player)
+        score += center_count * 3
+        
+        for r in range(6):
+            row = [board[r][c] for c in range(7)]
+            for c in range(4):
+                window = row[c:c+4]
+                score += evaluate_window(window, player)
+                
+        for c in range(7):
+            col = [board[r][c] for r in range(6)]
+            for r in range(3):
+                window = col[r:r+4]
+                score += evaluate_window(window, player)
+                
+        for r in range(3):
+            for c in range(4):
+                window = [board[r+i][c+i] for i in range(4)]
+                score += evaluate_window(window, player)
+                
+        for r in range(3):
+            for c in range(3, 7):
+                window = [board[r+i][c-i] for i in range(4)]
+                score += evaluate_window(window, player)
+                
+        return score
+    
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        valid_columns = get_valid_columns(board)
+        
+        if winning_move(board, 1):
+            return (100000000, None)
+        if winning_move(board, -1):
+            return (-100000000, None)
+        if depth == 0 or len(valid_columns) == 0:
+            return (score_board(board, 1), None)
+        
+        center = 3
+        valid_columns.sort(key=lambda x: abs(x - center))
+        
+        if maximizing_player:
+            max_eval = -100000000
+            best_col = valid_columns[0] if valid_columns else None
+            for col in valid_columns:
+                new_board = [row[:] for row in board]
+                row = get_next_open_row(board, col)
+                if row == -1:
+                    continue
+                new_board[row][col] = 1
+                eval_score = minimax(new_board, depth-1, alpha, beta, False)[0]
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_col = col
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return (max_eval, best_col)
+        else:
+            min_eval = 100000000
+            best_col = valid_columns[0] if valid_columns else None
+            for col in valid_columns:
+                new_board = [row[:] for row in board]
+                row = get_next_open_row(board, col)
+                if row == -1:
+                    continue
+                new_board[row][col] = -1
+                eval_score = minimax(new_board, depth-1, alpha, beta, True)[0]
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_col = col
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return (min_eval, best_col)
+    
+    depth = 4
+    _, col = minimax(board, depth, -math.inf, math.inf, True)
+    return col
+```
+
+### Explanation
+1. **Game State Handling**: The board is processed to identify valid columns where discs can be dropped, and the next available row in each column is determined.
+2. **Winning Condition Check**: The algorithm checks if any player has won after each move by examining horizontal, vertical, and diagonal lines.
+3. **Heuristic Scoring**: The board is scored based on the positions of discs, with emphasis on the center column and potential winning lines.
+4. **Minimax with Alpha-Beta Pruning**: The algorithm explores possible moves recursively, alternating between maximizing and minimizing players. Alpha-beta pruning helps in reducing the search space by ignoring branches that cannot lead to better outcomes.
+5. **Move Selection**: The best move is selected from valid columns, prioritizing those closer to the center to enhance the effectiveness of pruning.
+
+This approach efficiently navigates the game tree within the time constraints, leveraging heuristic evaluations and pruning to make optimal decisions.

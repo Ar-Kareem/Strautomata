@@ -1,0 +1,104 @@
+
+
+The strategy for this policy prioritizes immediate captures of opponent stones and defense of its own vulnerable groups before transitioning to strategic placement. In the early game, it opts for standard corner and side enclosures to secure territory. As the game progresses, it selects moves that maximize adjacent liberties while centering control for influence and expansion.
+
+<code>
+def get_adjacent(point):
+    r, c = point
+    adjacent = []
+    if r > 1:
+        adjacent.append((r-1, c))
+    if r < 19:
+        adjacent.append((r+1, c))
+    if c > 1:
+        adjacent.append((r, c-1))
+    if c < 19:
+        adjacent.append((r, c+1))
+    return adjacent
+
+def find_group(start, color_set, occupied_set):
+    visited = set([start])
+    queue = [start]
+    group = []
+    liberties = set()
+    while queue:
+        current = queue.pop(0)
+        group.append(current)
+        for adj in get_adjacent(current):
+            if adj in visited:
+                continue
+            if adj in color_set:
+                visited.add(adj)
+                queue.append(adj)
+            elif adj not in occupied_set:
+                liberties.add(adj)
+    return group, liberties
+
+def policy(me, opponent):
+    me_set = set(me)
+    opponent_set = set(opponent)
+    occupied_set = me_set | opponent_set
+    empty_points = [(r, c) for r in range(1, 20) for c in range(1, 20) if (r, c) not in occupied_set]
+    
+    def is_move_valid(move, capture_dict):
+        for adj in get_adjacent(move):
+            if adj not in occupied_set:
+                return True
+        return move in capture_dict
+    
+    capture_candidates = {}
+    opponent_visited = set()
+    for stone in opponent:
+        if stone in opponent_visited:
+            continue
+        group, liberties = find_group(stone, opponent_set, occupied_set)
+        opponent_visited.update(group)
+        if len(liberties) == 1:
+            lib = liberties.pop()
+            if lib in capture_candidates:
+                capture_candidates[lib] = max(capture_candidates[lib], len(group))
+            else:
+                capture_candidates[lib] = len(group)
+    
+    valid_captures = {lib: size for lib, size in capture_candidates.items() if lib in empty_points and is_move_valid(lib, capture_candidates)}
+    if valid_captures:
+        best_capture = max(valid_captures, key=lambda k: valid_captures[k])
+        return best_capture
+    
+    defense_candidates = {}
+    my_visited = set()
+    for stone in me:
+        if stone in my_visited:
+            continue
+        group, liberties = find_group(stone, me_set, occupied_set)
+        my_visited.update(group)
+        if len(liberties) == 1:
+            lib = liberties.pop()
+            defense_candidates[lib] = len(group)
+    
+    valid_defense = {lib: size for lib, size in defense_candidates.items() if lib in empty_points and is_move_valid(lib, capture_candidates)}
+    if valid_defense:
+        best_defense = max(valid_defense, key=lambda k: valid_defense[k])
+        return best_defense
+    
+    if len(me) + len(opponent) < 40:
+        openings = [(4,4), (4,16), (16,4), (16,16), (4,10), (16,10), (10,4), (10,16), (3,3), (3,17), (17,3), (17,17)]
+        for move in openings:
+            if move in empty_points and is_move_valid(move, capture_candidates):
+                return move
+    
+    valid_moves = [point for point in empty_points if is_move_valid(point, capture_candidates)]
+    if not valid_moves:
+        return (0, 0)
+    
+    move_scores = []
+    for move in valid_moves:
+        score = sum(1 for adj in get_adjacent(move) if adj not in occupied_set)
+        move_scores.append((score, move))
+    
+    max_score = max(score for score, _ in move_scores)
+    best_moves = [move for score, move in move_scores if score == max_score]
+    center = (10, 10)
+    best_move = min(best_moves, key=lambda m: (m[0]-10)**2 + (m[1]-10)**2)
+    return best_move
+</code>

@@ -1,0 +1,126 @@
+
+import numpy as np
+from itertools import product
+
+DIRECTIONS = [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]
+
+def policy(board):
+    # Identify our amazons
+    our_amazons = list(zip(*np.where(board == 1)))
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for ar, ac in our_amazons:
+        # Generate possible moves from (ar, ac)
+        for dr, dc in DIRECTIONS:
+            r, c = ar + dr, ac + dc
+            while 0 <= r < 6 and 0 <= c < 6 and board[r, c] == 0:
+                # (r,c) is a possible destination
+                # Temporarily move amazon
+                # Generate arrow shots from (r,c)
+                for adr, adc in DIRECTIONS:
+                    arrow_r, arrow_c = r + adr, c + adc
+                    while 0 <= arrow_r < 6 and 0 <= arrow_c < 6:
+                        # Check if arrow square is empty in original board (since arrow can't land on amazon or existing arrow)
+                        # But must also not land on the moving amazon's original square (ar, ac) unless path is clear? Actually arrow can pass through vacated from square.
+                        # However, the arrow square itself must be empty (0) in original board (since arrows are placed after move).
+                        if board[arrow_r, arrow_c] != 0:
+                            break
+                        # Check arrow path unobstructed from (r,c) to (arrow_r, arrow_c)
+                        # We need to ensure that the path does not cross any piece except possibly the vacated (ar, ac)
+                        if is_path_clear(board, (r, c), (arrow_r, arrow_c), (ar, ac)):
+                            # Legal move found
+                            score = evaluate_move(board, (ar, ac), (r, c), (arrow_r, arrow_c))
+                            if score > best_score:
+                                best_score = score
+                                best_move = f"{ar},{ac}:{r},{c}:{arrow_r},{arrow_c}"
+                        arrow_r += adr
+                        arrow_c += adc
+                r += dr
+                c += dc
+    
+    # safety: if no move found (should not happen), return first legal move (redundant)
+    if best_move is None:
+        # fallback: find any legal move
+        for ar, ac in our_amazons:
+            for dr, dc in DIRECTIONS:
+                r, c = ar + dr, ac + dc
+                while 0 <= r < 6 and 0 <= c < 6 and board[r, c] == 0:
+                    for adr, adc in DIRECTIONS:
+                        arrow_r, arrow_c = r + adr, c + adc
+                        while 0 <= arrow_r < 6 and 0 <= arrow_c < 6:
+                            if board[arrow_r, arrow_c] != 0:
+                                break
+                            if is_path_clear(board, (r, c), (arrow_r, arrow_c), (ar, ac)):
+                                return f"{ar},{ac}:{r},{c}:{arrow_r},{arrow_c}"
+                            arrow_r += adr
+                            arrow_c += adc
+                    r += dr
+                    c += dc
+    
+    return best_move
+
+def is_path_clear(board, start, end, vacated):
+    """Check queen path from start to end is clear except possibly vacated square."""
+    sr, sc = start
+    er, ec = end
+    dr = 0 if er == sr else (1 if er > sr else -1)
+    dc = 0 if ec == sc else (1 if ec > sc else -1)
+    r, c = sr + dr, sc + dc
+    while (r, c) != (er, ec):
+        if board[r, c] != 0 and (r, c) != vacated:
+            return False
+        r += dr
+        c += dc
+    return True
+
+def evaluate_move(board, from_pos, to_pos, arrow_pos):
+    """Score a legal move."""
+    # Simulate board after move
+    new_board = board.copy()
+    fr, fc = from_pos
+    tr, tc = to_pos
+    arr, arc = arrow_pos
+    new_board[fr, fc] = 0
+    new_board[tr, tc] = 1
+    new_board[arr, arc] = -1
+    
+    # 1. Mobility of moved amazon after move (queen moves from new position)
+    mobility = count_reachable_empty(new_board, tr, tc)
+    
+    # 2. Opponent mobility reduction: compute opponent mobility before and after
+    # Simple approximation: count how many opponent squares are adjacent to arrow (blocking potential moves)
+    opponent_reduction = 0
+    for dr, dc in DIRECTIONS:
+        nr, nc = arr + dr, arc + dc
+        if 0 <= nr < 6 and 0 <= nc < 6 and new_board[nr, nc] == 2:
+            opponent_reduction += 1
+    
+    # 3. Bonus for shooting near opponent amazons
+    near_opponent = 0
+    for dr, dc in product([-1,0,1], repeat=2):
+        if dr == 0 and dc == 0:
+            continue
+        nr, nc = arr + dr, arc + dc
+        if 0 <= nr < 6 and 0 <= nc < 6 and new_board[nr, nc] == 2:
+            near_opponent += 1
+    
+    # 4. Penalty if our amazon's mobility is too low
+    penalty = 0
+    if mobility < 3:
+        penalty = 10 - mobility * 2
+    
+    score = mobility * 2 + opponent_reduction * 3 + near_opponent * 4 - penalty
+    return score
+
+def count_reachable_empty(board, r, c):
+    """Count empty squares reachable by queen moves from (r,c)."""
+    count = 0
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == 0:
+            count += 1
+            nr += dr
+            nc += dc
+    return count

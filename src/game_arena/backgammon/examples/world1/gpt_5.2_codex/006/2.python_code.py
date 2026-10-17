@@ -1,0 +1,136 @@
+
+import copy
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+
+    def all_home(my_pts, my_bar):
+        return my_bar == 0 and sum(my_pts[6:]) == 0
+
+    def apply_move(cur_state, start_token, die):
+        my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off = cur_state
+        my_pts = my_pts[:]  # copy
+        opp_pts = opp_pts[:]
+
+        if start_token == 'B':
+            if my_bar <= 0:
+                return None
+            dest = 24 - die
+            if opp_pts[dest] >= 2:
+                return None
+            my_bar -= 1
+            if opp_pts[dest] == 1:
+                opp_pts[dest] = 0
+                opp_bar += 1
+            my_pts[dest] += 1
+            return (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+
+        # from board
+        if not start_token.startswith('A'):
+            return None
+        i = int(start_token[1:])
+        if i < 0 or i > 23 or my_pts[i] <= 0:
+            return None
+        dest = i - die
+        if dest >= 0:
+            if opp_pts[dest] >= 2:
+                return None
+            my_pts[i] -= 1
+            if opp_pts[dest] == 1:
+                opp_pts[dest] = 0
+                opp_bar += 1
+            my_pts[dest] += 1
+            return (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+        else:
+            # bearing off
+            if not all_home(my_pts, my_bar):
+                return None
+            if i > 5:
+                return None
+            if die == i + 1:
+                pass
+            elif die > i + 1:
+                # allowed only if no checkers on higher points in home board
+                if any(my_pts[j] > 0 for j in range(i + 1, 6)):
+                    return None
+            else:
+                return None
+            my_pts[i] -= 1
+            my_off += 1
+            return (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+
+    def gen_moves_with_die(cur_state, die):
+        my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off = cur_state
+        moves = []
+        if my_bar > 0:
+            st = apply_move(cur_state, 'B', die)
+            if st is not None:
+                moves.append(('B', st))
+        else:
+            for i in range(24):
+                if my_pts[i] > 0:
+                    token = f"A{i}"
+                    st = apply_move(cur_state, token, die)
+                    if st is not None:
+                        moves.append((token, st))
+        return moves
+
+    def evaluate(st):
+        my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off = st
+        score = 1000 * (my_off - opp_off)
+        score += -100 * my_bar + 50 * opp_bar
+        made = sum(1 for x in my_pts if x >= 2)
+        blots = sum(1 for x in my_pts if x == 1)
+        score += 10 * made - 5 * blots
+        my_pips = sum((i + 1) * my_pts[i] for i in range(24)) + my_bar * 25
+        opp_pips = sum((24 - i) * opp_pts[i] for i in range(24)) + opp_bar * 25
+        score += (opp_pips - my_pips)
+        return score
+
+    # initial state tuple
+    init_state = (my_pts[:], opp_pts[:], my_bar, opp_bar, my_off, opp_off)
+
+    if len(dice) == 0:
+        return "H:P,P"
+
+    if len(dice) == 1:
+        d = dice[0]
+        moves = gen_moves_with_die(init_state, d)
+        if not moves:
+            return "H:P,P"
+        best = max(moves, key=lambda m: evaluate(m[1]))
+        return f"H:{best[0]},P"
+
+    # two dice
+    high = max(dice)
+    low = min(dice)
+
+    legal_sequences = []
+    # sequences using both dice
+    for order, d1, d2 in [('H', high, low), ('L', low, high)]:
+        for from1, st1 in gen_moves_with_die(init_state, d1):
+            for from2, st2 in gen_moves_with_die(st1, d2):
+                legal_sequences.append((order, from1, from2, st2))
+
+    if legal_sequences:
+        best = max(legal_sequences, key=lambda x: evaluate(x[3]))
+        return f"{best[0]}:{best[1]},{best[2]}"
+
+    # if no sequences with both dice, play single die (higher if possible)
+    moves_high = gen_moves_with_die(init_state, high)
+    if moves_high:
+        best = max(moves_high, key=lambda m: evaluate(m[1]))
+        return f"H:{best[0]},P"
+
+    moves_low = gen_moves_with_die(init_state, low)
+    if moves_low:
+        best = max(moves_low, key=lambda m: evaluate(m[1]))
+        return f"L:{best[0]},P"
+
+    return "H:P,P"

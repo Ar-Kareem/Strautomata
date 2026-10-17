@@ -1,0 +1,130 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    me_set = set(me)
+    opp_set = set(opp)
+    direction = 1 if color == 'w' else -1
+    my_goal = 7 if color == 'w' else 0
+    opp_goal = 0 if color == 'w' else 7
+    
+    def get_moves(pieces, opponents, d):
+        moves = []
+        opp_s = set(opponents)
+        all_pieces = set(pieces) | opp_s
+        for r, c in pieces:
+            nr = r + d
+            if 0 <= nr <= 7:
+                # Forward move
+                if (nr, c) not in all_pieces:
+                    moves.append(((r, c), (nr, c)))
+                # Diagonal moves
+                for dc in [-1, 1]:
+                    nc = c + dc
+                    if 0 <= nc <= 7:
+                        if (nr, nc) in opp_s:
+                            moves.append(((r, c), (nr, nc)))
+                        elif (nr, nc) not in all_pieces:
+                            moves.append(((r, c), (nr, nc)))
+        return moves
+    
+    def order_moves(moves, goal_row, opp_s):
+        scored = []
+        for m in moves:
+            fr, to = m
+            score = 0
+            if to[0] == goal_row:
+                score = 1000
+            elif to in opp_s:
+                score = 100
+            elif to[0] != fr[0]:
+                score = 10
+            else:
+                score = 50
+            scored.append((score, m))
+        scored.sort(reverse=True, key=lambda x: x[0])
+        return [m for _, m in scored]
+    
+    def evaluate(my_pieces, opp_pieces, my_dir, my_goal_row, opp_goal_row):
+        if not opp_pieces:
+            return 10000
+        if not my_pieces:
+            return -10000
+        for r, c in my_pieces:
+            if r == my_goal_row:
+                return 10000
+        for r, c in opp_pieces:
+            if r == opp_goal_row:
+                return -10000
+        
+        score = (len(my_pieces) - len(opp_pieces)) * 100
+        for r, c in my_pieces:
+            adv = r if my_dir == 1 else (7 - r)
+            score += adv * 5
+            if 2 <= c <= 5:
+                score += 2
+        for r, c in opp_pieces:
+            adv = (7 - r) if my_dir == 1 else r
+            score -= adv * 5
+        return score
+    
+    def minimax(my_p, opp_p, depth, alpha, beta, is_max, my_d, my_g, opp_g):
+        if depth == 0 or not my_p or not opp_p:
+            return evaluate(my_p, opp_p, my_d, my_g, opp_g), None
+        
+        if is_max:
+            moves = get_moves(my_p, opp_p, my_d)
+            if not moves:
+                return -9000, None
+            moves = order_moves(moves, my_g, set(opp_p))
+            best_val = -float('inf')
+            best_move = moves[0]
+            for m in moves:
+                fr, to = m
+                new_my = [p for p in my_p if p != fr] + [to]
+                new_opp = [p for p in opp_p if p != to]
+                if to[0] == my_g:
+                    return 10000, m
+                val, _ = minimax(new_my, new_opp, depth - 1, alpha, beta, False, my_d, my_g, opp_g)
+                if val > best_val:
+                    best_val = val
+                    best_move = m
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return best_val, best_move
+        else:
+            opp_d = -my_d
+            moves = get_moves(opp_p, my_p, opp_d)
+            if not moves:
+                return 9000, None
+            moves = order_moves(moves, opp_g, set(my_p))
+            best_val = float('inf')
+            for m in moves:
+                fr, to = m
+                new_opp = [p for p in opp_p if p != fr] + [to]
+                new_my = [p for p in my_p if p != to]
+                if to[0] == opp_g:
+                    return -10000, None
+                val, _ = minimax(new_my, new_opp, depth - 1, alpha, beta, True, my_d, my_g, opp_g)
+                if val < best_val:
+                    best_val = val
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return best_val, None
+    
+    moves = get_moves(list(me_set), list(opp_set), direction)
+    
+    if not moves:
+        return (me[0], me[0])  # Should never happen in legal game
+    
+    # Check for immediate wins
+    for m in moves:
+        if m[1][0] == my_goal:
+            return m
+    
+    # Run minimax
+    _, best_move = minimax(list(me_set), list(opp_set), 4, -float('inf'), float('inf'), True, direction, my_goal, opp_goal)
+    
+    if best_move:
+        return best_move
+    return moves[0]

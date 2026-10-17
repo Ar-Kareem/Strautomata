@@ -1,0 +1,91 @@
+
+import random
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    me_set = set(me)
+    opp_set = set(opp)
+    direction = 1 if color == 'w' else -1
+    home_row = 7 if color == 'w' else 0
+    all_moves = []
+    
+    # Precompute opponent positions for vulnerability check
+    def is_vulnerable(r, c):
+        if color == 'w':
+            attackers = [(r-1, c-1), (r-1, c+1)]
+        else:
+            attackers = [(r+1, c-1), (r+1, c+1)]
+        for pos in attackers:
+            if pos in opp_set and 0 <= pos[0] <= 7 and 0 <= pos[1] <= 7:
+                return True
+        return False
+    
+    for (r, c) in me:
+        # Generate possible moves
+        new_r = r + direction
+        if not (0 <= new_r <= 7):
+            continue
+            
+        # Straight move
+        if 0 <= c <=7:
+            straight = (new_r, c)
+            if straight not in me_set and straight not in opp_set:
+                all_moves.append(((r, c), straight))
+        
+        # Left diagonal
+        if c - 1 >= 0:
+            left = (new_r, c - 1)
+            if left in opp_set:
+                all_moves.append(((r, c), left))  # Capture
+            elif left not in me_set and left not in opp_set:
+                all_moves.append(((r, c), left))  # Empty
+        
+        # Right diagonal
+        if c + 1 <= 7:
+            right = (new_r, c + 1)
+            if right in opp_set:
+                all_moves.append(((r, c), right))  # Capture
+            elif right not in me_set and right not in opp_set:
+                all_moves.append(((r, c), right))  # Empty
+    
+    if not all_moves:
+        return ((0,0),(0,0))  # Fallback if no moves (shouldn't happen for valid states)
+    
+    # Score moves
+    max_score = -float('inf')
+    best_moves = []
+    
+    for move in all_moves:
+        from_pos, to_pos = move
+        to_r, to_c = to_pos
+        
+        # Immediate win
+        if to_r == home_row:
+            score = 1000
+        else:
+            # Advancement
+            if color == 'w':
+                advancement = to_r
+            else:
+                advancement = 7 - to_r
+            score = advancement
+            
+            # Capture bonus
+            if to_pos in opp_set:
+                score += 2
+            
+            # Vulnerability penalty
+            if is_vulnerable(to_r, to_c):
+                score -= 1
+            
+            # Centrality bonus
+            centrality = 1 - abs(to_c - 3.5) / 3.5  # Range 0 to 1
+            score += centrality * 0.1
+        
+        # Track best moves
+        if score > max_score:
+            max_score = score
+            best_moves = [move]
+        elif score == max_score:
+            best_moves.append(move)
+    
+    return random.choice(best_moves)
